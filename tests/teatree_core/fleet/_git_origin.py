@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+from teatree.instance_id import instance_id
+
 FIXTURE_IDENTITY = (
     "-c",
     "user.name=teatree-fixture",
@@ -87,6 +89,18 @@ def private_origin(tmp: Path, token: str) -> tuple[Path, Path]:
 def as_other_instance(data_home: Path) -> Iterator[None]:
     """Act as a separate teatree installation: ``instance_id()`` resolves its own machine data dir."""
     with patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}):
+        yield
+
+
+@contextmanager
+def as_twin_instance(data_home: Path) -> Iterator[None]:
+    """Act as a separate installation that shares this one's ``instance_id`` but not its ledger."""
+    ours = instance_id()
+    twin_dir = data_home / "teatree"
+    twin_dir.mkdir(parents=True, exist_ok=True)
+    (twin_dir / "instance_id").write_text(ours, encoding="utf-8")
+    with as_other_instance(data_home):
+        assert instance_id() == ours
         yield
 
 

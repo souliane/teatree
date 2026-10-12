@@ -142,6 +142,32 @@ class TestReleaseAndFence:
         assert beat.sha == ref_sha(bare, claim.ref) == unrecorded.sha
 
 
+class TestLineage:
+    def test_steal_mints_a_new_lineage_and_heartbeat_carries_it_forward(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        holder = init_client(tmp_path / "holder", bare)
+        acquired = fleet_claim.acquire(_KEY, repo=str(holder), ttl_seconds=10.0, now=1000.0)
+        assert acquired is not None
+        assert acquired.lineage
+
+        beat = fleet_claim.heartbeat(acquired, repo=str(holder), now=1001.0)
+        assert isinstance(beat, fleet_claim.Claim)
+        after_beat = fleet_claim.read_tip(_KEY, repo=str(holder))
+        assert after_beat is not None
+        assert after_beat.sha == beat.sha
+        assert after_beat.lineage == beat.lineage == acquired.lineage
+
+        with as_other_instance(tmp_path / "rival-data"):
+            stolen = fleet_claim.steal_if_expired(
+                _KEY, repo=str(init_client(tmp_path / "rival", bare)), ttl_seconds=10.0, now=5000.0
+            )
+        assert stolen is not None
+        after_steal = fleet_claim.read_tip(_KEY, repo=str(holder))
+        assert after_steal is not None
+        assert after_steal.lineage == stolen.lineage
+        assert stolen.lineage not in {"", acquired.lineage}
+
+
 def _reject_pushes(bare) -> None:
     """Install a ``pre-receive`` hook that refuses every push (push denied, reads OK)."""
     hook = Path(bare) / "hooks" / "pre-receive"

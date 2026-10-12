@@ -40,7 +40,7 @@ def _origin(tmp_path: Path, name: str = "clone") -> tuple[Path, Path]:
 def _write_claim_commit_unisolated(repo: Path) -> None:
     """The leaking write shape — the module's own writer, minus the ephemeral object dir."""
     scope = fleet_claim._Scope(repo=str(repo), remote="origin", env=git_env_without_overrides())
-    fleet_claim._write_claim_commit(scope, fleet_claim._meta(_WORK_KEY, "instance", 0.0, _TTL))
+    fleet_claim._write_claim_commit(scope, fleet_claim._meta(_WORK_KEY, "instance", 0.0, _TTL, lineage="f" * 32))
 
 
 def test_probe_detects_an_unisolated_object_write(tmp_path: Path) -> None:

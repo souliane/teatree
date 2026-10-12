@@ -88,6 +88,7 @@ class MarkerClaimFields(TypedDict, total=False):
     head_sha: str
     claim_ref_sha: str
     claimed_by_instance: str
+    claim_lineage: str
 
 
 class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
@@ -120,6 +121,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
             "ticket": None,
             "head_sha": "",
             "claim_ref_sha": "",
+            "claim_lineage": "",
             **kw,
         }
         reclaimed = self.filter(pk=row.pk, state=ImplementedIssueMarker.State.ABANDONED).update(**reclaim_fields)
@@ -129,7 +131,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         return row
 
     def cache_from_fleet_claim(
-        self, issue_url: str, overlay: str, *, claim_ref_sha: str, claimed_by_instance: str
+        self, issue_url: str, overlay: str, *, claim_ref_sha: str, claimed_by_instance: str, claim_lineage: str
     ) -> "ImplementedIssueMarker":
         """Record the marker as a CACHE of a won fleet claim ref (Stage 2).
 
@@ -137,15 +139,19 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         (``teatree.core.fleet.claim``) granted the ref, so exactly-once was already
         enforced by the server. Unlike :meth:`claim` (which returns ``None`` on a
         pre-existing row), this always returns a usable marker stamped with the
-        fencing sha the ship gate re-verifies — the ref is the authority, the row
-        its cache. The fleet wiring lives in the dispatch layer, not here, so the
-        model layer keeps no dependency on the higher ``teatree.core`` coordination
-        modules.
+        fencing sha and the claim lineage the ship gate re-verifies — the ref is the
+        authority, the row its cache; a re-steal restamps both. The fleet wiring
+        lives in the dispatch layer, not here, so the model layer keeps no dependency
+        on the higher ``teatree.core`` coordination modules.
         """
         row, _created = self.update_or_create(
             issue_url=issue_url,
             overlay=overlay,
-            defaults={"claim_ref_sha": claim_ref_sha, "claimed_by_instance": claimed_by_instance},
+            defaults={
+                "claim_ref_sha": claim_ref_sha,
+                "claimed_by_instance": claimed_by_instance,
+                "claim_lineage": claim_lineage,
+            },
         )
         return row
 
@@ -374,9 +380,8 @@ class ImplementedIssueMarker(models.Model):
     )
     dispatched_at = models.DateTimeField(default=timezone.now)
     head_sha = models.CharField(max_length=64, blank=True, default="")
-    #: The fleet ``instance_id`` that claimed this issue. The row is per-instance,
-    #: so this names the owner for cross-instance reconciliation and is what
-    #: Stage 2's GitHub claim refs fence on.
+    #: The fleet ``instance_id`` that claimed this issue, for cross-instance
+    #: reconciliation; the fence compares the process's own id, not this column.
     claimed_by_instance = models.CharField(max_length=64, blank=True, default="")
     #: The Stage 2 fleet-claim CAS token: the sha of the commit
     #: ``refs/teatree/claims/<slug>`` points at when this instance won the mutex,
@@ -384,6 +389,9 @@ class ImplementedIssueMarker(models.Model):
     #: Non-empty marks the ticket as fenced; the fence itself reads the holder
     #: named at the ref tip, not this sha.
     claim_ref_sha = models.CharField(max_length=64, blank=True, default="")
+    #: The tenure token of the fleet claim this instance won (``ClaimMeta.lineage``).
+    #: Empty for a claim won before lineages; such a marker keeps strict sha equality.
+    claim_lineage = models.CharField(max_length=32, blank=True, default="", db_default="")
 
     objects: ClassVar[ImplementedIssueMarkerManager] = ImplementedIssueMarkerManager()
 

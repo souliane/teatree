@@ -442,7 +442,11 @@ class IssueIntakeScanner:
         if claim is None:
             return None
         return ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            url, self.overlay_name, claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            url,
+            self.overlay_name,
+            claim_ref_sha=claim.sha,
+            claimed_by_instance=claim.instance_id,
+            claim_lineage=claim.lineage,
         )
 
     def _trusted_author_set(self) -> frozenset[str]:

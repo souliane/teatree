@@ -279,6 +279,10 @@ class ClaimLoss(StrEnum):
     STOLEN = "another instance now holds the fleet claim ref and is doing this work"
     UNREADABLE = "the fleet claim ref's tip carries no readable claim record, so its holder cannot be confirmed"
     MISSING = "the fleet claim ref this instance held no longer exists"
+    UNPROVEN = (
+        "the fleet claim ref names this instance's id, but neither its sha nor its claim lineage matches"
+        " what this instance recorded, so the write cannot be proven to be this instance's"
+    )
     UNREACHABLE = "the fleet claim ref infrastructure is unreachable, so ownership cannot be confirmed"
 
     @classmethod
@@ -364,6 +368,7 @@ def _heartbeat_one(marker: "ImplementedIssueMarker") -> None:
         ref=claim.claim_ref(marker.issue_url),
         sha=marker.claim_ref_sha,
         instance_id=instance_id(),
+        lineage=marker.claim_lineage,
         claimed_at=0.0,
         ttl_seconds=claim.DEFAULT_TTL_SECONDS,
     )

@@ -54,7 +54,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 from teatree.instance_id import instance_id
 from teatree.utils import git_branch
@@ -76,6 +76,8 @@ class ClaimMeta(TypedDict):
     #: Random per-attempt token — guarantees a unique commit sha so two claimants
     #: never compute the same sha (which a plain push would report as success).
     nonce: str
+    #: Minted by acquire and steal, written forward by every heartbeat; absent from pre-lineage records.
+    lineage: NotRequired[str]
 
 
 #: A claim not re-affirmed by a ``heartbeat`` within this window is considered
@@ -124,6 +126,7 @@ class Claim:
     #: The commit sha the ref points at — the CAS token a heartbeat re-points against.
     sha: str
     instance_id: str
+    lineage: str
     claimed_at: float
     ttl_seconds: float
 
@@ -138,6 +141,11 @@ class ClaimTip:
     @property
     def holder(self) -> str:
         return str(self.meta.get("instance_id") or "") if self.meta else ""
+
+    @property
+    def lineage(self) -> str:
+        value = self.meta.get("lineage") if self.meta else None
+        return value if isinstance(value, str) else ""
 
     def held_by(self, instance: str) -> bool:
         return bool(instance) and self.holder == instance
@@ -191,11 +199,20 @@ def acquire(
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
     inst = instance_id()
+    lineage = uuid.uuid4().hex
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
-        sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
+        sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds, lineage=lineage))
         push = _try_create(scope, sha, ref)
     if push.returncode == 0:
-        return Claim(work_key=work_key, ref=ref, sha=sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
+        return Claim(
+            work_key=work_key,
+            ref=ref,
+            sha=sha,
+            instance_id=inst,
+            lineage=lineage,
+            claimed_at=ts,
+            ttl_seconds=ttl_seconds,
+        )
     # The create failed. A present ref means a rival holds it (a normal loss);
     # an absent ref means the push failed for an infra/permission reason.
     if _ls_remote_sha(repo, _ORIGIN, ref, extra_env):
@@ -226,11 +243,20 @@ def steal_if_expired(
     if tip is None or not _is_expired(tip.meta, ts):
         return None
     inst = instance_id()
+    lineage = uuid.uuid4().hex
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
-        new_sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
+        new_sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds, lineage=lineage))
         push = _cas(scope, ref, old_sha=tip.sha, new_sha=new_sha)
     if push.returncode == 0:
-        return Claim(work_key=work_key, ref=ref, sha=new_sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
+        return Claim(
+            work_key=work_key,
+            ref=ref,
+            sha=new_sha,
+            instance_id=inst,
+            lineage=lineage,
+            claimed_at=ts,
+            ttl_seconds=ttl_seconds,
+        )
     if _ls_remote_sha(repo, _ORIGIN, ref, extra_env) == tip.sha:
         msg = f"claim steal push for {ref} was refused and the ref is unchanged: {_redacted_output(push, extra_env)}"
         raise FleetClaimUnavailableError(msg)
@@ -256,7 +282,8 @@ def heartbeat(
     """
     ts = _resolve_now(now)
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
-        new_sha = _write_claim_commit(scope, _meta(claim.work_key, claim.instance_id, ts, claim.ttl_seconds))
+        meta = _meta(claim.work_key, claim.instance_id, ts, claim.ttl_seconds, lineage=claim.lineage)
+        new_sha = _write_claim_commit(scope, meta)
         push = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
     if push.returncode == 0:
         return replace(claim, sha=new_sha, claimed_at=ts)
@@ -319,13 +346,14 @@ def _resolve_now(now: float | None) -> float:
     return time.time() if now is None else now
 
 
-def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float) -> ClaimMeta:
+def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float, *, lineage: str) -> ClaimMeta:
     return {
         "work_key": work_key,
         "instance_id": inst,
         "claimed_at": claimed_at,
         "ttl_seconds": ttl_seconds,
         "nonce": uuid.uuid4().hex,
+        "lineage": lineage,
     }
 
 

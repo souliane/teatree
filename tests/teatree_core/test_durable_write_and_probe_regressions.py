@@ -124,6 +124,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
             ref="refs/teatree/claims/issue-1-abc",
             sha="a" * 40,
             instance_id="inst",
+            lineage="f" * 32,
             claimed_at=0.0,
             ttl_seconds=10.0,
         )
@@ -141,7 +142,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
 
     def test_a_genuine_steal_is_still_reported_lost(self) -> None:
         held = self._claim()
-        rival = claim_mod._meta(held.work_key, "rival-instance", 0.0, held.ttl_seconds)
+        rival = claim_mod._meta(held.work_key, "rival-instance", 0.0, held.ttl_seconds, lineage="e" * 32)
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),

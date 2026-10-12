@@ -85,6 +85,33 @@ class TestDispatchClaim(TestCase):
         assert row is not None
         ref = fleet_claim.claim_ref(_ISSUE)
         assert row.claim_ref_sha == ref_sha(bare, ref) != ""  # cache stamped with the live ref sha
+        tip = fleet_claim.read_tip(_ISSUE, repo=str(client))
+        assert tip is not None
+        assert row.claim_lineage == tip.lineage != ""
+
+    def test_re_stealing_our_own_expired_claim_restamps_the_lineage(self) -> None:
+        tmp = Path(self._make_tmp())
+        bare = init_bare(tmp / "origin.git")
+        client = init_client(tmp / "client", bare)
+        earlier = fleet_claim.acquire(_ISSUE, repo=str(client), ttl_seconds=10.0, now=1000.0)
+        assert earlier is not None
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE,
+            "acme",
+            claim_ref_sha=earlier.sha,
+            claimed_by_instance=earlier.instance_id,
+            claim_lineage=earlier.lineage,
+        )
+        with _route_claims(client):
+            row = _scanner()._claim(_ISSUE)
+
+        assert row is not None
+        row.refresh_from_db()
+        tip = fleet_claim.read_tip(_ISSUE, repo=str(client))
+        assert tip is not None
+        assert row.claim_ref_sha == tip.sha != earlier.sha
+        assert row.claim_lineage == tip.lineage
+        assert row.claim_lineage not in {"", earlier.lineage}
 
     def test_second_claim_finds_ref_held_and_stands_down(self) -> None:
         tmp = Path(self._make_tmp())
@@ -214,16 +241,17 @@ class TestCacheFromFleetClaim(TestCase):
 
     def test_creates_then_updates_in_place(self) -> None:
         first = ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-1"
+            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-1", claim_lineage="1" * 32
         )
         # A reclaim (steal) re-stamps the SAME cache row with the new fencing token.
         second = ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha="b" * 40, claimed_by_instance="box-2"
+            _ISSUE, "acme", claim_ref_sha="b" * 40, claimed_by_instance="box-2", claim_lineage="2" * 32
         )
         assert first.pk == second.pk
         second.refresh_from_db()
         assert second.claim_ref_sha == "b" * 40
         assert second.claimed_by_instance == "box-2"
+        assert second.claim_lineage == "2" * 32
 
 
 class TestShipFenceGate(TestCase):
@@ -251,7 +279,7 @@ class TestShipFenceGate(TestCase):
         # the ticket FK, so the fence must resolve it by the marker's (issue_url,
         # overlay) natural key, exactly as it will in production.
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
         return ticket, worktree
 
@@ -389,7 +417,7 @@ class TestShipFenceGate(TestCase):
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(ticket=ticket, overlay="acme", repo_path="", branch="feat")
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder"
+            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder", claim_lineage=""
         )
         assert "infrastructure is unreachable" in self._refusal(ticket, worktree)
 
@@ -450,7 +478,7 @@ class TestHeartbeatSweep(TestCase):
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
         assert claim is not None
         marker = ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
         unrecorded = fleet_claim.heartbeat(claim, repo=str(holder))
         assert isinstance(unrecorded, fleet_claim.Claim)
@@ -460,6 +488,30 @@ class TestHeartbeatSweep(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.DISPATCHED
         assert marker.claim_ref_sha == ref_sha(bare, claim.ref) != claim.sha
+
+    def test_an_old_code_beat_passes_and_the_next_beat_restores_the_lineage(self) -> None:
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
+        assert claim is not None
+        marker = ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
+        )
+        old_code_beat = fleet_claim.heartbeat(replace(claim, lineage=""), repo=str(holder))
+        assert isinstance(old_code_beat, fleet_claim.Claim)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(claim_ref_sha=old_code_beat.sha)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
+        assert fleet_claim_wire.ticket_claim_loss(ticket, str(holder)) is None
+
+        with patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
+        tip = fleet_claim.read_tip(_ISSUE, repo=str(holder))
+        assert tip is not None
+        assert tip.lineage == claim.lineage
+        marker.refresh_from_db()
+        assert marker.claim_ref_sha == tip.sha != old_code_beat.sha
 
     def test_heartbeat_skips_a_declined_marker(self) -> None:
         """An operator let this one go — refreshing its claim keeps a sibling out (#4105)."""
@@ -544,7 +596,7 @@ class TestExecuteShipFence(TestCase):
         assert claim is not None
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.PR_OPENED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
         with as_other_instance(tmp / "rival-data"):
             assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
@@ -574,7 +626,7 @@ class TestExecuteShipFence(TestCase):
         assert claim is not None
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.PR_OPENED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
@@ -608,7 +660,7 @@ class TestEnsurePrFence(TestCase):
         assert claim is not None
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
         with as_other_instance(tmp / "rival-data"):
             assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
