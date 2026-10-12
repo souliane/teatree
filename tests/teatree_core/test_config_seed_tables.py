@@ -43,7 +43,7 @@ def _sorted_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
 def _emitted() -> dict[str, dict[str, dict[str, ConfigValue]]]:
     """The emitted seed tables, read back through a real TOML parse."""
     document = tomlkit.document()
-    emit_seed_tables(document, _sorted_table, guard=ExportGuard(ExportPrivacy.SHARED, (), [], []))
+    emit_seed_tables(document, _sorted_table, guard=ExportGuard(ExportPrivacy.SHARED, (), ()))
     return tomllib.loads(tomlkit.dumps(document))
 
 

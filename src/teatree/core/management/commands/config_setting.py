@@ -113,7 +113,7 @@ def _export_privacy(*, include_private: bool, include_banned_term_values: bool) 
 
 def _withheld_hint(redacted: Sequence[RedactedRow]) -> str:
     flags = _TERM_VALUES_FLAGS if any(row.reason == BANNED_TERM for row in redacted) else "--include-private"
-    return f"  {len(redacted)} private/tainted row(s) withheld; pass {flags} to include them."
+    return f"  the rows above were withheld; pass {flags} to include them."
 
 
 def _governance_suffix(key: str) -> str:
@@ -472,7 +472,7 @@ class Command(TyperCommand):
         for row in result.omitted:
             self.stderr.write(f"  omitted {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.omitted:
-            self.stderr.write(f"  {len(result.omitted)} stored row(s) omitted: import has no home for them.")
+            self.stderr.write("  the rows above were omitted: import has no home for them.")
         if result.private_backup:
             self.stderr.write("  this is a PERSONAL BACKUP carrying private rows an ordinary import refuses.")
             self.stderr.write("  never share it; restore it with `config_setting import --restore-private`.")

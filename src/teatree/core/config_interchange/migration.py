@@ -40,10 +40,9 @@ from teatree.core.config_interchange.import_rows import ImportPolicy, ImportRows
 from teatree.core.config_interchange.secret_guard import (
     ExportPrivacy,
     RedactedRow,
-    ScanTermsUnavailableError,
+    available_scan_terms,
     is_private_backup,
     mark_private_backup,
-    resolve_export_scan_terms,
     stamp_private_backup,
 )
 from teatree.core.config_interchange.seed_tables import emit_seed_tables, write_seed_field
@@ -96,9 +95,11 @@ def export_db_to_toml(
     so a SHARED export cannot leak customer data even though the private DB store keeps it.
     PRIVATE is a personal backup: it carries the key classes but still withholds every row
     carrying a banned term, the term registry itself included. Only
-    ``PRIVATE_WITH_TERM_VALUES`` carries those, and it resolves no terms at all. Everything
-    under a scope or entry NAME carrying a term is withheld too, reported without the name.
-    The withheld rows ride back on the result so the caller can warn what it dropped.
+    ``PRIVATE_WITH_TERM_VALUES`` carries those and needs no term to proceed; it uses the terms
+    it can find only to keep a term-carrying name out of its omitted-row report, and names no
+    omitted row when it finds none. Everything under a scope or entry NAME carrying a term is
+    withheld too, reported without the name. The withheld rows ride back on the result so the
+    caller can warn what it dropped.
 
     The two scanning shapes raise :class:`ScanTermsUnavailableError` when the store holds no
     ban-class term: an unclassified row would leave the box.
@@ -113,8 +114,7 @@ def export_db_to_toml(
     the file says which of the two formats it is and ``import --restore-private`` can read
     it back. The SHARED defaults shape stays byte-identical to ``defaults.toml``.
     """
-    terms = () if privacy is ExportPrivacy.PRIVATE_WITH_TERM_VALUES else scan_terms
-    guard = ExportGuard(privacy, resolve_export_scan_terms() if terms is None else terms, redacted=[], omitted=[])
+    guard = ExportGuard.for_export(privacy, scan_terms)
     document = tomlkit.document()
     if guard.private_backup:
         mark_private_backup(document)
@@ -156,7 +156,7 @@ def export_db_to_toml(
 
 
 def _exported(text: str, guard: ExportGuard) -> ConfigExport:
-    return ConfigExport(text, tuple(guard.redacted), tuple(guard.omitted), private_backup=guard.private_backup)
+    return ConfigExport(text, tuple(guard.redacted), guard.reported_omissions(), private_backup=guard.private_backup)
 
 
 def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: ExportGuard) -> None:
@@ -340,7 +340,7 @@ def import_toml_to_db(
     """
     doc = tomllib.loads(text)
     policy = ImportPolicy(
-        terms=scan_terms if scan_terms is not None else _available_scan_terms(),
+        terms=scan_terms if scan_terms is not None else available_scan_terms(),
         allow_safety_posture=allow_safety_posture,
         private_backup=is_private_backup(doc),
         restore_private=restore_private,
@@ -369,10 +369,3 @@ def _imported(
         private_backup=policy.private_backup,
         unscanned=policy.unscanned,
     )
-
-
-def _available_scan_terms() -> tuple[str, ...] | None:
-    try:
-        return resolve_export_scan_terms()
-    except ScanTermsUnavailableError:
-        return None

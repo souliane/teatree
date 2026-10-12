@@ -1,18 +1,21 @@
 """Classify stored settings rows before TOML export."""
 
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 
 from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
 from teatree.core.config_interchange.secret_guard import (
     BANNED_TERM,
     ExportPrivacy,
     RedactedRow,
+    available_scan_terms,
     carries_banned_term,
     redaction_reason,
+    resolve_export_scan_terms,
     withheld_within,
 )
 from teatree.core.config_interchange.types import OmittedRow
-from teatree.core.models.config_setting import WITHHELD_NAME_SCOPE, ConfigValue
+from teatree.core.models.config_setting import UNSCANNED_NAME_SCOPE, WITHHELD_NAME_SCOPE, ConfigValue
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.hooks.term_match import line_matches
 
@@ -23,18 +26,40 @@ class ExportGuard:
 
     A SHARED export withholds every class :func:`redaction_reason` names; a PRIVATE one
     carries the key classes and withholds only what carries a banned term; a
-    ``PRIVATE_WITH_TERM_VALUES`` one has no terms, so it withholds nothing. Each withheld
-    row is appended to the shared ``redacted`` accumulator.
+    ``PRIVATE_WITH_TERM_VALUES`` one withholds nothing, so its ``terms`` are empty while
+    ``report_terms`` still vet the names its stderr report prints. Each withheld row is
+    appended to the shared ``redacted`` accumulator.
     """
 
     privacy: ExportPrivacy
     terms: tuple[str, ...]
-    redacted: list[RedactedRow]
-    omitted: list[OmittedRow]
+    report_terms: tuple[str, ...] | None
+    redacted: list[RedactedRow] = field(default_factory=list)
+    omitted: list[OmittedRow] = field(default_factory=list)
+
+    @classmethod
+    def for_export(cls, privacy: ExportPrivacy, scan_terms: tuple[str, ...] | None) -> "ExportGuard":
+        """Refuses a scanning export with no term; the term-values backup needs none to proceed."""
+        if privacy is ExportPrivacy.PRIVATE_WITH_TERM_VALUES:
+            return cls(privacy, (), available_scan_terms() if scan_terms is None else scan_terms)
+        terms = resolve_export_scan_terms() if scan_terms is None else scan_terms
+        return cls(privacy, terms, terms)
 
     @property
     def private_backup(self) -> bool:
         return self.privacy is not ExportPrivacy.SHARED
+
+    def reported_omissions(self) -> tuple[OmittedRow, ...]:
+        """Each omitted row, named only where ``report_terms`` prove its names carry no term."""
+        named: list[OmittedRow] = []
+        unnamed: Counter[str] = Counter()
+        for row in self.omitted:
+            if self.report_terms is None or line_matches(f"{row.scope} {row.key}", self.report_terms):
+                unnamed[row.reason] += 1
+            else:
+                named.append(row)
+        scope = UNSCANNED_NAME_SCOPE if self.report_terms is None else WITHHELD_NAME_SCOPE
+        return (*named, *(OmittedRow(scope, f"{count} row(s)", reason) for reason, count in unnamed.items()))
 
     def reason(self, key: str, value: ConfigValue) -> str | None:
         if self.private_backup:

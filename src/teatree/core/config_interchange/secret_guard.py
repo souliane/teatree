@@ -86,6 +86,14 @@ def resolve_export_scan_terms() -> tuple[str, ...]:
         raise ScanTermsUnavailableError(str(exc)) from exc
 
 
+def available_scan_terms() -> tuple[str, ...] | None:
+    """The scan terms for a caller that can still act without them, else None."""
+    try:
+        return resolve_export_scan_terms()
+    except ScanTermsUnavailableError:
+        return None
+
+
 def carries_banned_term(key: str, value: object, terms: tuple[str, ...]) -> bool:
     """Whether *key* or *value* carries a scan term — the one normalisation every scan uses."""
     # ensure_ascii would escape a non-ASCII letter and split the term's token run.
@@ -224,6 +232,7 @@ __all__ = [
     "ScanTermsUnavailableError",
     "Substitute",
     "Withheld",
+    "available_scan_terms",
     "carries_banned_term",
     "is_private_backup",
     "mark_private_backup",

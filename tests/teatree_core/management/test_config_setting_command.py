@@ -1110,6 +1110,40 @@ class TestTheSeedImportIsScanned(_TermGuardCase):
         assert not line_matches(out, SCAN)
 
 
+class TestTheTermValuesBackupNamesOnlyWhatAScanClears(_TermGuardCase):
+    def _arrange(self) -> None:
+        self._run("create", f"{LEAK}-probe", command="loop_preset")
+        self._run("create", "probe-preset", command="loop_preset")
+        ConfigSetting.objects.set_value("loop_preset_transition_stamp", "maintenance", scope=OV)
+
+    def _backup(self) -> tuple[int, str, str]:
+        target = self.tmp_path / "f.toml"
+        return self._run("export", "--include-private", "--include-banned-term-values", "--output", str(target))
+
+    def _omitted_lines(self, err: str) -> list[str]:
+        return [line for line in err.splitlines() if line.startswith("  omitted ")]
+
+    def test_a_clean_name_is_named_and_a_term_carrying_one_is_not(self) -> None:
+        self._arrange()
+        code, out, err = self._backup()
+        assert code == 0
+        assert not line_matches(out, SCAN)
+        assert not line_matches(err, SCAN)
+        assert any("modes.probe-preset" in line and "not shipped" in line for line in self._omitted_lines(err))
+        assert any("under a name that carries a banned term" in line for line in self._omitted_lines(err))
+
+    def test_with_no_term_to_scan_no_omitted_row_is_named(self) -> None:
+        self._arrange()
+        self._no_terms()
+        code, out, err = self._backup()
+        lines = self._omitted_lines(err)
+        assert code == 0
+        assert not line_matches(out, SCAN)
+        assert not line_matches(err, SCAN)
+        assert lines
+        assert all("[names not shown: no term to scan them]" in line for line in lines), lines
+
+
 class TestABackupFromABoxWithACustomPresetRestores(_TermGuardCase):
     def test_the_unshipped_preset_is_omitted_by_name_and_the_rest_restores(self) -> None:
         self._run("create", "probe-preset", command="loop_preset")
