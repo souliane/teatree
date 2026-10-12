@@ -32,8 +32,8 @@ EXECUTOR_LOGIN_ENTRY: Final = "teatree/codex/ro-executor-auth-json-b64"
 DOCKER_TIMEOUT_SECONDS: Final = 180.0
 
 _PROBE_PROGRAM: Final = Path(codex_read_only_probe_program.__file__).read_text(encoding="utf-8")
-_EXECUTOR_FORMAT: Final = '{"Id":{{json .Id}},"Mounts":{{json .Mounts}},"HostConfig":{{json .HostConfig}}}'
-_WORKER_FORMAT: Final = (
+EXECUTOR_INSPECT_FORMAT: Final = '{"Id":{{json .Id}},"Mounts":{{json .Mounts}},"HostConfig":{{json .HostConfig}}}'
+WORKER_INSPECT_FORMAT: Final = (
     '{"Id":{{json .Id}},"Project":{{json (index .Config.Labels "com.docker.compose.project")}},'
     '"Mounts":{{json .Mounts}},"CheckoutEnv":[{{range .Config.Env}}'
     '{{if eq (index (split . "=") 0) "TEATREE_DEPLOY_CHECKOUT"}}{{json .}}{{end}}{{end}}]}'
@@ -115,7 +115,7 @@ class ExecutorDocker:
         return ["docker", *self.exec_argv(container_id, command, env=(("CODEX_HOME", home), ("HOME", home)))]
 
     def worker(self) -> Mapping[str, object]:
-        answer = self.answer(["inspect", "--format", _WORKER_FORMAT, socket.gethostname()])
+        answer = self.answer(["inspect", "--format", WORKER_INSPECT_FORMAT, socket.gethostname()])
         if not isinstance(answer, dict) or not isinstance(project := answer.get("Project"), str) or not project:
             msg = "this process is not running in a compose service container"
             raise ExecutorRefusalError(msg)
@@ -197,7 +197,7 @@ def attest(
     docker = docker or ExecutorDocker()
     worker = docker.worker()
     container_id = docker.executor_id(str(worker["Project"]))
-    executor = docker.answer(["inspect", "--format", _EXECUTOR_FORMAT, container_id])
+    executor = docker.answer(["inspect", "--format", EXECUTOR_INSPECT_FORMAT, container_id])
     observation = docker.probe(container_id, roots, home)
     if refusal := evaluate(observation, executor, worker, roots):
         msg = f"{EXECUTOR_SERVICE} is not read-only: {refusal}"

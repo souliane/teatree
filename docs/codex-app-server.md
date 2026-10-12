@@ -330,6 +330,11 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   explicit `--from`, and refuses a login without `tokens.account_id` or `tokens.refresh_token` and one
   on the worker's own refresh-token chain: two consumers of one chain break at its first rotation, so the
   executor needs a second device login.
+- **Proof on a real container.** `uv run python dev/ro_executor_proof.py scratch --dir DIR` builds the
+  `ro-executor` stage, runs this compose file's executor block in a throwaway project on placeholder trees,
+  checks the live verdict, the sweep against a detached env-cleared process, the tmpfs reset and the home
+  mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
+  `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
 - **Routing planning to Codex.** Once the executor login checks green, add an `architecture-design` row to
   `agent_skill_models` that mirrors the `code` row (Codex first, Claude second). An owner another owner
   requires yields to it, so reviews keep their `code` route and only `planning` and
