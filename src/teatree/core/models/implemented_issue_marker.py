@@ -378,11 +378,11 @@ class ImplementedIssueMarker(models.Model):
     #: so this names the owner for cross-instance reconciliation and is what
     #: Stage 2's GitHub claim refs fence on.
     claimed_by_instance = models.CharField(max_length=64, blank=True, default="")
-    #: The Stage 2 fleet-claim fencing token: the sha of the commit
-    #: ``refs/teatree/claims/<slug>`` points at when this instance won the mutex.
-    #: Empty when the claim was granted local-only (kill-switch OFF). The ship
-    #: fence re-reads the ref and refuses the outward write if it no longer points
-    #: here (the claim was stolen).
+    #: The Stage 2 fleet-claim CAS token: the sha of the commit
+    #: ``refs/teatree/claims/<slug>`` points at when this instance won the mutex,
+    #: re-stamped by every heartbeat. Empty when the claim was granted local-only.
+    #: Non-empty marks the ticket as fenced; the fence itself reads the holder
+    #: named at the ref tip, not this sha.
     claim_ref_sha = models.CharField(max_length=64, blank=True, default="")
 
     objects: ClassVar[ImplementedIssueMarkerManager] = ImplementedIssueMarkerManager()

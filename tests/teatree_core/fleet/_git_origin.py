@@ -5,8 +5,12 @@ receive-pack ref transaction (server-side CAS) as a GitHub push, with no network
 Not a test module — no ``test_`` prefix, so pytest never collects it.
 """
 
+import os
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 
 def _run(*args: str) -> str:
@@ -60,6 +64,13 @@ def private_origin(tmp: Path, token: str) -> tuple[Path, Path]:
     upload_pack.chmod(0o755)
     git(client, "config", "remote.origin.uploadpack", str(upload_pack))
     return bare, client
+
+
+@contextmanager
+def as_other_instance(data_home: Path) -> Iterator[None]:
+    """Act as a separate teatree installation: ``instance_id()`` resolves its own machine data dir."""
+    with patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}):
+        yield
 
 
 def ref_sha(bare: Path, ref: str) -> str:

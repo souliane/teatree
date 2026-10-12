@@ -14,8 +14,9 @@ import pytest
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.fleet.wire import host_from_issue_url
+from teatree.instance_id import instance_id
 
-from ._git_origin import git, init_bare, init_client, init_with_origin
+from ._git_origin import as_other_instance, git, init_bare, init_client, init_with_origin, ref_sha
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
 
@@ -44,7 +45,7 @@ class TestReleaseAndFence:
         claim = fleet_claim.acquire(_KEY, repo=str(client))
         assert claim is not None
         fleet_claim.release(claim, repo=str(client))
-        assert not fleet_claim.is_held_by_me(_KEY, claim, repo=str(client))
+        assert fleet_claim.read_tip(_KEY, repo=str(client)) is None
         # Freed: a fresh acquire succeeds.
         again = fleet_claim.acquire(_KEY, repo=str(client))
         assert again is not None
@@ -60,26 +61,46 @@ class TestReleaseAndFence:
         # A releases its OWN (stale) claim: the CAS lease mismatches, so it is a
         # no-op — the thief's live claim survives.
         fleet_claim.release(original, repo=str(a))
-        assert fleet_claim.is_held_by_me(_KEY, stolen, repo=str(b))
+        assert ref_sha(bare, original.ref) == stolen.sha
 
-    def test_is_held_by_me_is_false_for_empty_token(self, tmp_path) -> None:
+    def test_read_tip_is_none_when_ref_absent(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
-        token = fleet_claim.Claim.from_token(_KEY, "")
-        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client)) is False
+        assert fleet_claim.read_tip(_KEY, repo=str(client)) is None
 
-    def test_is_held_by_me_is_false_when_ref_absent(self, tmp_path) -> None:
+    def test_read_tip_names_the_instance_that_wrote_the_claim(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
-        token = fleet_claim.Claim.from_token(_KEY, "deadbeef" * 5)
-        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client)) is False
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        tip = fleet_claim.read_tip(_KEY, repo=str(client))
+        assert tip is not None
+        assert tip.sha == claim.sha
+        assert tip.held_by(instance_id())
+        assert not tip.held_by("")
+        with as_other_instance(tmp_path / "rival-data"):
+            assert not tip.held_by(instance_id())
 
     def test_heartbeat_moves_the_ref_and_stays_held(self, tmp_path) -> None:
-        client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
         claim = fleet_claim.acquire(_KEY, repo=str(client))
         assert claim is not None
         beat = fleet_claim.heartbeat(claim, repo=str(client))
         assert isinstance(beat, fleet_claim.Claim)
         assert beat.sha != claim.sha
-        assert fleet_claim.is_held_by_me(_KEY, beat, repo=str(client))
+        assert ref_sha(bare, claim.ref) == beat.sha
+
+    def test_heartbeat_adopts_a_tip_this_instance_wrote_since_its_recorded_sha(self, tmp_path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        unrecorded = fleet_claim.heartbeat(claim, repo=str(client))
+        assert isinstance(unrecorded, fleet_claim.Claim)
+
+        beat = fleet_claim.heartbeat(claim, repo=str(client))
+
+        assert isinstance(beat, fleet_claim.Claim)
+        assert beat.sha == ref_sha(bare, claim.ref) == unrecorded.sha
 
 
 def _reject_pushes(bare) -> None:
@@ -150,7 +171,7 @@ class TestErrorPaths:
         monkeypatch.setattr(fleet_claim, "_cas", rival_steals_first)
         assert fleet_claim.steal_if_expired(_KEY, repo=str(b), ttl_seconds=10.0, now=5000.0) is None
 
-    def test_fetch_claim_raises_when_object_unfetchable(self, tmp_path, monkeypatch) -> None:
+    def test_steal_raises_when_the_tip_object_is_unfetchable(self, tmp_path, monkeypatch) -> None:
         # The ref exists (ls-remote OK) but fetching its object fails — a corrupt
         # or unreachable remote mid-read. Fail safe: raise rather than mis-decide
         # liveness.
@@ -371,19 +392,3 @@ class TestWireFailSafe:
         claim = fleet_claim_wire.acquire_issue_claim(_KEY)
         assert claim is not None
         assert claim.sha
-
-    def test_still_held_empty_sha_is_false(self) -> None:
-        assert fleet_claim_wire.issue_claim_still_held(_KEY, "", "/some/repo") is False
-
-    def test_still_held_true_when_ref_matches(self, tmp_path, monkeypatch) -> None:
-        client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
-        monkeypatch.setattr(fleet_claim_wire, "resolve_claim_repo", lambda _: str(client))
-        claim = fleet_claim_wire.acquire_issue_claim(_KEY)
-        assert claim is not None
-        assert fleet_claim_wire.issue_claim_still_held(_KEY, claim.sha, str(client)) is True
-
-    def test_still_held_unreachable_fails_safe_false(self, tmp_path) -> None:
-        # A repo whose origin is unreachable: is_held_by_me raises, the fence
-        # catches and treats it as not-held (refuse the outward write).
-        client = init_client(tmp_path / "c", tmp_path / "absent.git")
-        assert fleet_claim_wire.issue_claim_still_held(_KEY, "deadbeef" * 5, str(client)) is False

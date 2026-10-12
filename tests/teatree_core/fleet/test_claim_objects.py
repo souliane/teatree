@@ -117,7 +117,10 @@ class TestLiveClaimSurvivesTheZeroFootprintCycle:
     def test_the_ref_still_carries_the_holders_fencing_token(self, tmp_path: Path) -> None:
         bare, holder, held = self._held_after_cycle(tmp_path)
         assert ref_sha(bare, held.ref) == held.sha
-        assert fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder)) is True
+        tip = fleet_claim.read_tip(_WORK_KEY, repo=str(holder))
+        assert tip is not None
+        assert tip.sha == held.sha
+        assert tip.held_by(held.instance_id)
 
     def test_a_rival_still_loses_the_acquire(self, tmp_path: Path) -> None:
         bare, _holder, held = self._held_after_cycle(tmp_path)

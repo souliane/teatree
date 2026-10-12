@@ -10,7 +10,7 @@ in the model manager, so ``teatree.core.models`` keeps no dependency on the high
 ``teatree.core`` coordination modules (the tach boundary).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
@@ -29,7 +29,7 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
-from ._git_origin import init_bare, init_client, private_origin, ref_sha
+from ._git_origin import as_other_instance, init_bare, init_client, private_origin, ref_sha
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -234,13 +234,13 @@ class TestShipFenceGate(TestCase):
 
         return Path(self.enterContext(tempfile.TemporaryDirectory()))
 
-    def _ship_setup(self, tmp: Path) -> tuple[Ticket, Worktree, str, Path]:
+    def _ship_setup(self, tmp: Path) -> tuple[Ticket, Worktree, fleet_claim.Claim, Path]:
         bare = init_bare(tmp / "origin.git")
         holder = init_client(tmp / "holder", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
         assert claim is not None
         ticket, worktree = self._fenced_ticket(holder, claim)
-        return ticket, worktree, claim.sha, bare
+        return ticket, worktree, claim, bare
 
     def _fenced_ticket(self, holder: Path, claim: fleet_claim.Claim) -> tuple[Ticket, Worktree]:
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
@@ -255,33 +255,94 @@ class TestShipFenceGate(TestCase):
         )
         return ticket, worktree
 
+    @staticmethod
+    def _relinquish(state: str) -> None:
+        ImplementedIssueMarker.objects.filter(issue_url=_ISSUE, overlay="acme").update(state=state)
+
+    def _steal_as_another_instance(self, tmp: Path, bare: Path) -> None:
+        with as_other_instance(tmp / "rival-data"):
+            assert fleet_claim.steal_if_expired(_ISSUE, repo=str(init_client(tmp / "rival", bare)), now=1e12)
+
+    def _refusal(self, ticket: Ticket, worktree: Worktree) -> str:
+        failure = run_fleet_claim_fence_gate(ticket, worktree)
+        assert failure is not None
+        assert failure["allowed"] is False
+        return failure["error"]
+
     def test_passes_when_claim_still_held(self) -> None:
         tmp = self._tmp()
-        ticket, worktree, _sha, _bare = self._ship_setup(tmp)
+        ticket, worktree, _claim, _bare = self._ship_setup(tmp)
         assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
     def test_passes_on_a_private_origin_with_the_routed_credential(self) -> None:
-        _bare, holder = private_origin(self._tmp(), _ROUTED_TOKEN)
+        bare, holder = private_origin(self._tmp(), _ROUTED_TOKEN)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), extra_env={"GH_TOKEN": _ROUTED_TOKEN})
         assert claim is not None
         ticket, worktree = self._fenced_ticket(holder, claim)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="credential refused"):
-            fleet_claim.is_held_by_me(_ISSUE, claim, repo=str(holder))
+            fleet_claim.read_tip(_ISSUE, repo=str(holder))
 
         with _route_credential():
             assert run_fleet_claim_fence_gate(ticket, worktree) is None
+        assert ref_sha(bare, fleet_claim.claim_ref(_ISSUE)) == claim.sha
 
-    def test_blocks_when_claim_was_stolen(self) -> None:
+    def test_blocks_when_another_instance_stole_the_claim(self) -> None:
         tmp = self._tmp()
-        ticket, worktree, _sha, bare = self._ship_setup(tmp)
-        # Another instance steals the expired claim, moving the ref off our sha.
-        thief = init_client(tmp / "thief", bare)
-        stolen = fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12)
-        assert stolen is not None
-        failure = run_fleet_claim_fence_gate(ticket, worktree)
-        assert failure is not None
-        assert failure["allowed"] is False
-        assert "no longer held by this instance" in failure["error"]
+        ticket, worktree, _claim, bare = self._ship_setup(tmp)
+        self._steal_as_another_instance(tmp, bare)
+
+        assert "another instance now holds the fleet claim ref" in self._refusal(ticket, worktree)
+
+    def test_passes_when_this_instance_moved_the_ref_past_the_recorded_sha(self) -> None:
+        # This instance's own heartbeat landed but its new sha never reached the marker.
+        tmp = self._tmp()
+        ticket, worktree, claim, bare = self._ship_setup(tmp)
+        beat = fleet_claim.heartbeat(claim, repo=worktree.repo_path)
+        assert isinstance(beat, fleet_claim.Claim)
+        assert ref_sha(bare, claim.ref) == beat.sha != claim.sha
+
+        assert run_fleet_claim_fence_gate(ticket, worktree) is None
+
+    def test_passes_for_a_relinquished_marker_whose_ref_this_instance_still_holds(self) -> None:
+        ticket, worktree, claim, _bare = self._ship_setup(self._tmp())
+        assert isinstance(fleet_claim.heartbeat(claim, repo=worktree.repo_path), fleet_claim.Claim)
+        for state in ImplementedIssueMarker.State.relinquished():
+            with self.subTest(state=state):
+                self._relinquish(state)
+                assert run_fleet_claim_fence_gate(ticket, worktree) is None
+
+    def test_relinquished_marker_with_no_claim_ref_does_not_fence(self) -> None:
+        ticket, worktree, claim, bare = self._ship_setup(self._tmp())
+        fleet_claim.release(claim, repo=worktree.repo_path)
+        assert ref_sha(bare, claim.ref) == ""
+        for state in ImplementedIssueMarker.State.relinquished():
+            with self.subTest(state=state):
+                self._relinquish(state)
+                assert run_fleet_claim_fence_gate(ticket, worktree) is None
+
+    def test_blocks_a_relinquished_marker_whose_claim_another_instance_holds(self) -> None:
+        tmp = self._tmp()
+        ticket, worktree, _claim, bare = self._ship_setup(tmp)
+        self._relinquish(ImplementedIssueMarker.State.ABANDONED)
+        self._steal_as_another_instance(tmp, bare)
+
+        assert "another instance now holds the fleet claim ref" in self._refusal(ticket, worktree)
+
+    def test_blocks_an_in_flight_marker_whose_claim_ref_is_gone(self) -> None:
+        tmp = self._tmp()
+        ticket, worktree, claim, bare = self._ship_setup(tmp)
+        fleet_claim.release(claim, repo=worktree.repo_path)
+        assert ref_sha(bare, claim.ref) == ""
+
+        assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
+
+    def test_blocks_when_the_claim_record_at_the_tip_names_no_holder(self) -> None:
+        tmp = self._tmp()
+        ticket, worktree, claim, _bare = self._ship_setup(tmp)
+        nameless = replace(claim, instance_id="")
+        assert isinstance(fleet_claim.heartbeat(nameless, repo=worktree.repo_path), fleet_claim.Claim)
+
+        assert "carries no readable claim record" in self._refusal(ticket, worktree)
 
     def test_ticket_with_issue_url_but_no_marker_is_a_no_op(self) -> None:
         tmp = self._tmp()
@@ -303,12 +364,22 @@ class TestShipFenceGate(TestCase):
 
     def test_fence_fails_closed_when_ref_infra_unreachable(self) -> None:
         tmp = self._tmp()
+        broken = init_client(tmp / "broken", tmp / "absent.git")  # origin absent -> ls-remote raises
+        claim = fleet_claim.acquire(_ISSUE, repo=str(init_client(tmp / "holder", init_bare(tmp / "origin.git"))))
+        assert claim is not None
+        ticket, worktree = self._fenced_ticket(broken, claim)
+
+        error = self._refusal(ticket, worktree)
+        assert "infrastructure is unreachable" in error
+        assert "another instance" not in error
+
+    def test_fence_fails_closed_with_no_clone_to_read_the_ref_from(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
+        worktree = Worktree.objects.create(ticket=ticket, overlay="acme", repo_path="", branch="feat")
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder"
         )
-        broken = init_client(tmp / "broken", tmp / "absent.git")  # origin absent -> ls-remote raises
-        assert fleet_claim_wire.ticket_claim_is_lost(ticket, str(broken)) is True
+        assert "infrastructure is unreachable" in self._refusal(ticket, worktree)
 
 
 def _tempdir(tc: TestCase) -> Path:
@@ -350,14 +421,33 @@ class TestHeartbeatSweep(TestCase):
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), ttl_seconds=10.0, now=1000.0)
         assert claim is not None
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha=claim.sha)
-        # A rival steals the expired claim: the ref moves off the holder's sha.
-        assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), ttl_seconds=10.0, now=5000.0)
+        # A rival instance steals the expired claim: the ref moves off the holder's sha.
+        with as_other_instance(tmp / "rival-data"):
+            assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), ttl_seconds=10.0, now=5000.0)
         with (
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_heartbeat_resyncs_a_marker_whose_own_beat_went_unrecorded(self) -> None:
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
+        assert claim is not None
+        marker = ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
+        unrecorded = fleet_claim.heartbeat(claim, repo=str(holder))
+        assert isinstance(unrecorded, fleet_claim.Claim)
+        with patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert marker.claim_ref_sha == ref_sha(bare, claim.ref) != claim.sha
 
     def test_heartbeat_skips_a_declined_marker(self) -> None:
         """An operator let this one go — refreshing its claim keeps a sibling out (#4105)."""
@@ -430,7 +520,8 @@ class TestExecuteShipFence(TestCase):
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )
-        assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
+        with as_other_instance(tmp / "rival-data"):
+            assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
 
@@ -443,7 +534,7 @@ class TestExecuteShipFence(TestCase):
             result = executor._push_and_open(ticket, {}, cast("object", None), str(holder), "feat")
 
         assert result.ok is False
-        assert "no longer held by this instance" in result.detail
+        assert "another instance now holds the fleet claim ref" in result.detail
         assert pushed == []  # fenced CLOSED before the push — never pushed under a lost claim
 
     def test_re_fences_between_the_push_and_the_pr_open(self) -> None:
@@ -464,7 +555,8 @@ class TestExecuteShipFence(TestCase):
 
         def _steal_during_push(**_kw: object) -> PushOutcome:
             # a rival steals the claim in the gap between the push and the PR-open
-            fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12)
+            with as_other_instance(tmp / "rival-data"):
+                fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12)
             return _LANDED
 
         executor = ShipExecutor(ticket)
@@ -475,7 +567,7 @@ class TestExecuteShipFence(TestCase):
             result = executor._push_and_open(ticket, {}, cast("object", None), str(holder), "feat")
 
         assert result.ok is False
-        assert "no longer held by this instance" in result.detail
+        assert "another instance now holds the fleet claim ref" in result.detail
 
 
 class TestEnsurePrFence(TestCase):
@@ -492,7 +584,8 @@ class TestEnsurePrFence(TestCase):
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )
-        assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
+        with as_other_instance(tmp / "rival-data"):
+            assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12) is not None
 
         from teatree.core.management.commands._ensure_pr import (  # noqa: PLC0415 — test-local
             _owning_ticket_pre_create_gate,
@@ -508,3 +601,4 @@ class TestEnsurePrFence(TestCase):
 
         assert result is not None
         assert "refusing to open a PR" in result["error"]
+        assert "another instance now holds the fleet claim ref" in result["error"]

@@ -37,7 +37,7 @@ import pytest
 
 from teatree.core.fleet import claim as fleet_claim
 
-from ._git_origin import require_credential
+from ._git_origin import as_other_instance, require_credential
 
 _CTX = multiprocessing.get_context("spawn" if sys.platform == "darwin" else "fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
@@ -222,7 +222,7 @@ def test_steal_impossible_before_ttl(tmp_path: Path) -> None:
     assert all(r["error"] == "" for r in results), [r["error"] for r in results if r["error"]]
     assert [r for r in results if r["won"]] == [], f"a live claim was stolen: {results}"
     # The holder still holds it — no failed steal disturbed the live claim.
-    assert fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo))
+    assert _remote_sha(bare, held.ref) == held.sha
 
 
 @pytest.mark.parametrize("n", [2, 10])
@@ -243,16 +243,16 @@ def test_concurrent_steal_after_ttl_has_exactly_one_winner(tmp_path: Path, n: in
     assert all(r["error"] == "" for r in results), [r["error"] for r in results if r["error"]]
     winners = [r for r in results if r["won"]]
     assert len(winners) == 1, f"expected exactly one steal winner among {n}, got {len(winners)}: {results}"
-    # Fencing: the original holder is now stolen-from and must read False.
-    assert not fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo))
+    # Fencing: the ref has moved off the original holder's token.
+    assert _remote_sha(bare, held.ref) not in {"", held.sha}
 
 
 def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tmp_path: Path) -> None:
     """A dead holder is stolen after TTL; the revived original is fenced.
 
-    The holder acquires then dies (never heartbeats); a survivor steals once the
-    TTL lapses; the revived original reads fenced at ``is_held_by_me`` and
-    ``heartbeat``.
+    The holder acquires then dies (never heartbeats); a survivor INSTANCE steals once
+    the TTL lapses; the revived original reads the survivor at the tip and its
+    ``heartbeat`` reports the claim lost.
     """
     bare = tmp_path / "origin.git"
     _init_bare(bare)
@@ -266,16 +266,19 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     # The holder dies: it never heartbeats. While it is alive (before TTL) no one
     # can steal.
     assert fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), now=1005.0) is None
-    assert fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead))
+    assert _remote_sha(bare, original.ref) == original.sha
 
     # After the TTL lapses the survivor steals.
-    stolen = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), ttl_seconds=10.0, now=2000.0)
+    with as_other_instance(tmp_path / "survivor-data"):
+        stolen = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), ttl_seconds=10.0, now=2000.0)
     assert stolen is not None
     assert stolen.sha != original.sha
 
-    # The revived original is fenced: it no longer holds the ref, and its own
+    # The revived original is fenced: the tip names the survivor, and its own
     # heartbeat CAS (against its stale sha) reports the claim lost.
-    assert not fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead))
+    tip = fleet_claim.read_tip(_WORK_KEY, repo=str(dead))
+    assert tip is not None
+    assert not tip.held_by(original.instance_id)
     lost = fleet_claim.heartbeat(original, repo=str(dead), now=2001.0)
     assert isinstance(lost, fleet_claim.ClaimLost)
     assert lost.expected_sha == original.sha
@@ -283,7 +286,7 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     # The survivor can still heartbeat its live claim.
     beat = fleet_claim.heartbeat(stolen, repo=str(survivor), now=2002.0)
     assert isinstance(beat, fleet_claim.Claim)
-    assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(survivor))
+    assert _remote_sha(bare, beat.ref) == beat.sha
 
 
 def test_refused_steal_push_is_an_infra_fault_not_a_contended_loss(tmp_path: Path) -> None:
@@ -333,7 +336,9 @@ def test_claim_lifecycle_against_an_origin_that_requires_the_routed_credential(t
     assert isinstance(beat, fleet_claim.Claim)
     assert beat.sha != held.sha
     assert _remote_sha(bare, ref) == beat.sha
-    assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(client), extra_env=auth)
+    tip = fleet_claim.read_tip(_WORK_KEY, repo=str(client), extra_env=auth)
+    assert tip is not None
+    assert tip.sha == beat.sha
 
     fleet_claim.release(beat, repo=str(client), extra_env=auth)
     assert _remote_sha(bare, ref) == ""

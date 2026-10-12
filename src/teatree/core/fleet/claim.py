@@ -18,10 +18,12 @@ lives at ``refs/teatree/claims/<slug>`` on the forge remote:
     the caller observed. The first CAS lands; every rival CAS carries a now-stale
     expected value and is rejected server-side. Exactly one steal wins.
 
-The commit the ref points at IS the fencing token: its sha is unforgeable and
-changes on every steal, so :func:`is_held_by_me` (re-read the ref, compare shas)
-is the fence a caller runs before an outward write — a stolen-from instance sees
-a sha that is no longer its own and stands down.
+The commit the ref points at is the CAS token: its sha changes on every heartbeat
+and every steal, so a re-point lands only against the value its writer observed.
+WHO holds the claim is the ``instance_id`` in the tip's claim record
+(:func:`read_tip`) — a steal always writes the thief's, a heartbeat always its
+own — so a stolen-from instance reads another holder and stands down, while a
+heartbeat whose new sha its writer never recorded still reads as its own.
 
 No new database: the forge that owns the work domain (issues, branches, PRs) is
 the same server that arbitrates the claim, so the mutex is consistent with the
@@ -112,26 +114,30 @@ class FleetClaimUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """A won claim — the ref name plus the sha that is its fencing token."""
+    """A won claim — the ref name plus the sha its next heartbeat CASes against."""
 
     work_key: str
     ref: str
-    #: The commit sha the ref points at. THIS is the fencing token: it is
-    #: re-read by :func:`is_held_by_me` and changes on every steal.
+    #: The commit sha the ref points at — the CAS token a heartbeat re-points against.
     sha: str
     instance_id: str
     claimed_at: float
     ttl_seconds: float
 
-    @classmethod
-    def from_token(cls, work_key: str, sha: str) -> "Claim":
-        """A fencing-token handle for the fence check, not a live acquired claim.
 
-        A caller (e.g. a ship gate) that persisted only the ref sha rebuilds the
-        handle :func:`is_held_by_me` needs from ``work_key`` + ``sha``; the
-        liveness fields are irrelevant to the sha comparison and are left empty.
-        """
-        return cls(work_key=work_key, ref=claim_ref(work_key), sha=sha, instance_id="", claimed_at=0.0, ttl_seconds=0.0)
+@dataclass(frozen=True, slots=True)
+class ClaimTip:
+    """The commit a claim ref points at, with its claim record (``None`` when unreadable)."""
+
+    sha: str
+    meta: ClaimMeta | None
+
+    @property
+    def holder(self) -> str:
+        return str(self.meta.get("instance_id") or "") if self.meta else ""
+
+    def held_by(self, instance: str) -> bool:
+        return bool(instance) and self.holder == instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,19 +219,16 @@ def steal_if_expired(
     """
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
-    snapshot = _fetch_claim(repo, _ORIGIN, ref, extra_env)
-    if snapshot is None:
-        return None
-    current_sha, meta = snapshot
-    if not _is_expired(meta, ts):
+    tip = read_tip(work_key, repo=repo, extra_env=extra_env)
+    if tip is None or not _is_expired(tip.meta, ts):
         return None
     inst = instance_id()
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
         new_sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
-        push = _cas(scope, ref, old_sha=current_sha, new_sha=new_sha)
+        push = _cas(scope, ref, old_sha=tip.sha, new_sha=new_sha)
     if push.returncode == 0:
         return Claim(work_key=work_key, ref=ref, sha=new_sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
-    if _ls_remote_sha(repo, _ORIGIN, ref, extra_env) == current_sha:
+    if _ls_remote_sha(repo, _ORIGIN, ref, extra_env) == tip.sha:
         msg = f"claim steal push for {ref} was refused and the ref is unchanged: {_redacted_output(push, extra_env)}"
         raise FleetClaimUnavailableError(msg)
     return None
@@ -240,15 +243,13 @@ def heartbeat(
 ) -> Claim | ClaimLost:
     """Re-point the ref to a fresh commit via CAS against the caller's OWN sha.
 
-    Returns the refreshed :class:`Claim` when the CAS lands (the ref still held
-    this instance's sha). Returns :class:`ClaimLost` only once the ref is READ
-    BACK off ``claim.sha`` — mirroring :func:`acquire`'s own failed-push read: a
-    push a pre-receive hook or a permission blip rejected leaves the ref on our
-    own token, and reporting that as a steal marked a still-owned marker
-    ABANDONED. An unchanged ref raises :class:`FleetClaimUnavailableError` so
-    the caller leaves the marker live for the next tick. The CAS is against
-    ``claim.sha`` (this instance's own token), so a heartbeat can never clobber
-    a rival's steal.
+    Returns the refreshed :class:`Claim` when the CAS lands. A failed CAS reads the
+    tip back, mirroring :func:`acquire`: a ref still on ``claim.sha`` (a hook or a
+    permission blip refused the push) raises :class:`FleetClaimUnavailableError` so
+    the caller retries next tick; a tip naming ``claim.instance_id`` is this
+    instance's own unrecorded write and is adopted; any other tip, or a deleted ref,
+    is :class:`ClaimLost`. The CAS is against ``claim.sha``, so a heartbeat can never
+    clobber a rival's steal.
     """
     ts = _resolve_now(now)
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
@@ -256,11 +257,14 @@ def heartbeat(
         push = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
     if push.returncode == 0:
         return replace(claim, sha=new_sha, claimed_at=ts)
-    observed = _ls_remote_sha(repo, _ORIGIN, claim.ref, extra_env)
+    tip = read_tip(claim.work_key, repo=repo, extra_env=extra_env)
+    observed = tip.sha if tip else ""
     if observed == claim.sha:
         refusal = _redacted_output(push, extra_env)
         msg = f"heartbeat push for {claim.ref} was refused and the ref still holds our sha: {refusal}"
         raise FleetClaimUnavailableError(msg)
+    if tip and tip.held_by(claim.instance_id):
+        return replace(claim, sha=tip.sha)
     return ClaimLost(
         work_key=claim.work_key,
         ref=claim.ref,
@@ -281,17 +285,28 @@ def release(claim: Claim, *, repo: str = ".", extra_env: Mapping[str, str] = _NO
         _cas_delete(repo, _ORIGIN, claim.ref, old_sha=claim.sha, extra_env=extra_env)
 
 
-def is_held_by_me(work_key: str, claim: Claim, *, repo: str = ".", extra_env: Mapping[str, str] = _NO_ENV) -> bool:
-    """THE fence: re-read the ref and return whether it still points at ``claim.sha``.
+def read_tip(work_key: str, *, repo: str = ".", extra_env: Mapping[str, str] = _NO_ENV) -> ClaimTip | None:
+    """The commit *work_key*'s claim ref points at and its claim record, or ``None`` when the ref is absent.
 
-    ``False`` when the ref was stolen (its sha changed) or deleted. Raises
-    :class:`FleetClaimUnavailableError` when the remote is unreachable — a caller
-    must treat that as "cannot confirm ownership" and refuse the outward write,
-    same fail-safe posture as a lost fence.
+    The commit is fetched into an ephemeral object dir with no destination
+    refspec and no ``FETCH_HEAD``, so reading a rival's record mutates neither
+    the clone's object DB nor its ref store. The sha is the one ``ls-remote``
+    reported, so a steal CASes against exactly the value whose record drove the
+    expiry decision; a ref that moved under us leaves that sha unfetched and the
+    record unreadable. Raises :class:`FleetClaimUnavailableError` when the remote
+    is unreachable — a fence must read that as "cannot confirm ownership".
     """
-    if not claim.sha:
-        return False
-    return _ls_remote_sha(repo, _ORIGIN, claim_ref(work_key), extra_env) == claim.sha
+    ref = claim_ref(work_key)
+    sha = _ls_remote_sha(repo, _ORIGIN, ref, extra_env)
+    if not sha:
+        return None
+    with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
+        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", _ORIGIN, ref]
+        if _git(repo, fetch, env=scope.env).returncode != 0:
+            msg = f"fetch {ref} failed (remote unreachable)"
+            raise FleetClaimUnavailableError(msg)
+        read = _git(repo, ["log", "-1", "--format=%B", sha], env=scope.env)
+    return ClaimTip(sha=sha, meta=_parse_meta(read.stdout) if read.returncode == 0 else None)
 
 
 def _resolve_now(now: float | None) -> float:
@@ -406,28 +421,6 @@ def _ls_remote_sha(repo: str, remote: str, ref: str, extra_env: Mapping[str, str
         raise FleetClaimUnavailableError(msg)
     line = result.stdout.strip()
     return line.split()[0] if line else ""
-
-
-def _fetch_claim(repo: str, remote: str, ref: str, extra_env: Mapping[str, str]) -> tuple[str, ClaimMeta | None] | None:
-    """Return the ref's current ``(sha, metadata)`` or ``None`` when absent.
-
-    The commit is fetched into an ephemeral object dir with no destination
-    refspec and no ``FETCH_HEAD``, so reading a rival's metadata mutates neither
-    the clone's object DB nor its ref store. The sha is the one ``ls-remote``
-    reported, so a steal CASes against exactly the value whose metadata drove the
-    expiry decision; a ref that moved under us leaves that sha unfetched, the read
-    fails, and the steal is skipped this round (fail-safe).
-    """
-    tip = _ls_remote_sha(repo, remote, ref, extra_env)
-    if not tip:
-        return None
-    with _ephemeral_odb(repo, remote, extra_env) as scope:
-        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", remote, ref]
-        if _git(repo, fetch, env=scope.env).returncode != 0:
-            msg = f"fetch {ref} failed (remote unreachable)"
-            raise FleetClaimUnavailableError(msg)
-        read = _git(repo, ["log", "-1", "--format=%B", tip], env=scope.env)
-    return (tip, _parse_meta(read.stdout)) if read.returncode == 0 else None
 
 
 def _parse_meta(body: str) -> ClaimMeta | None:

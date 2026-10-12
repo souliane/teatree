@@ -28,7 +28,7 @@ from teatree.core import handover as handover_mod
 from teatree.core import prek_hook
 from teatree.core.account_fingerprint import load_recorded_fingerprint, record_fingerprint
 from teatree.core.fleet import claim as claim_mod
-from teatree.core.fleet.claim import Claim, ClaimLost, FleetClaimUnavailableError, heartbeat
+from teatree.core.fleet.claim import Claim, ClaimLost, ClaimTip, FleetClaimUnavailableError, heartbeat
 from teatree.core.provision.provision_report import StepResult
 
 
@@ -134,18 +134,19 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
             patch.object(claim_mod, "_cas", return_value=_REFUSED_PUSH),
-            patch.object(claim_mod, "_ls_remote_sha", return_value=held.sha),
+            patch.object(claim_mod, "read_tip", return_value=ClaimTip(sha=held.sha, meta=None)),
             pytest.raises(FleetClaimUnavailableError),
         ):
             heartbeat(held)
 
     def test_a_genuine_steal_is_still_reported_lost(self) -> None:
         held = self._claim()
+        rival = claim_mod._meta(held.work_key, "rival-instance", 0.0, held.ttl_seconds)
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
             patch.object(claim_mod, "_cas", return_value=_REFUSED_PUSH),
-            patch.object(claim_mod, "_ls_remote_sha", return_value="c" * 40),
+            patch.object(claim_mod, "read_tip", return_value=ClaimTip(sha="c" * 40, meta=rival)),
         ):
             outcome = heartbeat(held)
         assert isinstance(outcome, ClaimLost)

@@ -445,12 +445,9 @@ def run_debt_delta_gate(ticket: Ticket, worktree: Worktree) -> DebtDeltaGateFail
 class FleetClaimFenceFailure(TypedDict):
     """Pre-ship fleet-claim fence refusal (fleet-safety Stage 2).
 
-    Returned when the ship's ticket carries a
-    fleet-claim (an issue-implementer marker with a fencing sha), and the claim
-    ref no longer points at that sha — the claim was stolen by another instance,
-    or the ref infra is unreachable so ownership cannot be confirmed. Either way
-    pushing under a lost claim is the double-work the mutex exists to prevent, so
-    the ship is refused.
+    Returned when the ship's ticket carries a fleet claim (an issue-implementer
+    marker with a fencing sha) this instance can no longer confirm it holds;
+    ``error`` names the :class:`~teatree.core.fleet.wire.ClaimLoss` cause.
     """
 
     allowed: bool
@@ -460,23 +457,15 @@ class FleetClaimFenceFailure(TypedDict):
 def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaimFenceFailure | None:
     """Refuse to open the PR for a claimed work item this instance no longer holds.
 
-    The fence: when the ticket was claimed through the
-    Stage 2 mutex, re-read ``refs/teatree/claims/<slug>`` and confirm it still
-    points at the fencing sha this instance recorded. A mismatch (stolen) or an
-    unreachable ref (cannot confirm) blocks the ship — pushing under a lost claim
-    is exactly the double-claim the mutex prevents. A ticket with no fleet-claim,
+    The fence (:func:`teatree.core.fleet.wire.ticket_claim_loss`): when the ticket was
+    claimed through the Stage 2 mutex, re-read ``refs/teatree/claims/<slug>`` and
+    confirm its claim record still names this instance. A ticket with no fleet claim
     is a no-op.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
-    if not wire.ticket_claim_is_lost(ticket, repo_path):
+    loss = wire.ticket_claim_loss(ticket, repo_path)
+    if loss is None:
         return None
-    return FleetClaimFenceFailure(
-        allowed=False,
-        error=(
-            "Refusing to ship: the fleet claim ref is no longer held by this instance "
-            "(stolen by another instance, or the ref infra is unreachable so ownership cannot be confirmed). "
-            "Another instance is doing this work."
-        ),
-    )
+    return FleetClaimFenceFailure(allowed=False, error=f"Refusing to ship: {loss}.")

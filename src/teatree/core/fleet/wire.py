@@ -16,6 +16,7 @@ import contextlib
 import hashlib
 import logging
 import os
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -272,35 +273,30 @@ def _clear_claim_fault(issue_url: str) -> None:
         logger.exception("fleet_claim could not clear recovered claim fault for %s", issue_url)
 
 
-def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
-    """THE ship fence: does the claim ref still point at our fencing token ``sha``?
+class ClaimLoss(StrEnum):
+    """Why the fence cannot confirm this instance still holds a ticket's fleet claim."""
 
-    Fail-safe: an unreachable ref infra returns ``False`` (cannot confirm
-    ownership → the caller must refuse the outward write), the same posture as a
-    stolen claim. An empty ``sha`` (no claim recorded) is also ``False``.
-    """
-    if not sha or not repo:
-        return False
-    try:
-        held = claim.Claim.from_token(issue_url, sha)
-        return claim.is_held_by_me(issue_url, held, repo=repo, extra_env=forge_write_env(repo))
-    except claim.FleetClaimUnavailableError:
-        logger.warning(
-            "fleet_claim fence: ref infra unreachable for %s — failing safe (treating as not held)",
-            issue_url,
-            exc_info=True,
-        )
-        return False
+    STOLEN = "another instance now holds the fleet claim ref and is doing this work"
+    UNREADABLE = "the fleet claim ref's tip carries no readable claim record, so its holder cannot be confirmed"
+    MISSING = "the fleet claim ref this instance held no longer exists"
+    UNREACHABLE = "the fleet claim ref infrastructure is unreachable, so ownership cannot be confirmed"
+
+    @classmethod
+    def at_tip(cls, tip: claim.ClaimTip | None, *, asserted: bool) -> "ClaimLoss | None":
+        if tip is None:
+            return cls.MISSING if asserted else None
+        if tip.held_by(instance_id()):
+            return None
+        return cls.STOLEN if tip.holder else cls.UNREADABLE
 
 
-def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
+def ticket_claim_loss(ticket: "Ticket", repo: str) -> ClaimLoss | None:
     """The outward-write fence shared by the ship gate, ``execute_ship`` and ``ensure-pr``.
 
-    ``True`` (= ABORT the write) iff the ticket carries a fleet claim (an issue-implementer marker with a fencing
-    sha), and the claim ref no longer confirms this instance holds it — stolen, or
-    the ref infra is unreachable so ownership cannot be confirmed (fail CLOSED).
-    ``False`` when no claim exists or we still hold it — so a
-    non-fleet ship is never affected.
+    ``None`` (proceed) when the ticket carries no fleet claim or the claim record at the
+    ref tip names this instance, whatever sha the marker last recorded; otherwise the
+    :class:`ClaimLoss` that aborts the write. A relinquished marker asserts no claim,
+    so its absent ref is no loss; a rival at its tip still is.
 
     The marker is resolved by its own natural key ``(issue_url, overlay)`` — the key
     ``ImplementedIssueMarkerManager.cache_from_fleet_claim`` populates on the dispatch
@@ -308,7 +304,7 @@ def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
     on ``ticket`` would find nothing and leave the fence a permanent no-op.
     """
     if not ticket.issue_url:
-        return False
+        return None
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
 
     marker = (
@@ -317,8 +313,15 @@ def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
         .first()
     )
     if marker is None:
-        return False
-    return not issue_claim_still_held(marker.issue_url, marker.claim_ref_sha, repo)
+        return None
+    if not repo:
+        return ClaimLoss.UNREACHABLE
+    try:
+        tip = claim.read_tip(marker.issue_url, repo=repo, extra_env=forge_write_env(repo))
+    except claim.FleetClaimUnavailableError:
+        logger.warning("fleet_claim fence: ref infra unreachable for %s, failing safe", marker.issue_url, exc_info=True)
+        return ClaimLoss.UNREACHABLE
+    return ClaimLoss.at_tip(tip, asserted=marker.state not in ImplementedIssueMarker.State.relinquished())
 
 
 def heartbeat_inflight_claims(overlay: str) -> None:
@@ -328,10 +331,11 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     shorter than the TTL — so a live claim is re-affirmed long before it could
     expire and be stolen while its dispatch runs. Per non-abandoned marker carrying
     a fencing sha: re-point the claim ref (CAS against our own sha) and PERSIST the
-    refreshed sha. A ``ClaimLost`` means another instance stole it while our dispatch
-    stalled — abandon the marker so the in-flight work aborts rather than push under
-    a lost claim. An unreachable forge is transient: leave the marker and retry next
-    tick (the TTL is the backstop).
+    refreshed sha — or the tip this instance wrote earlier without recording it. A
+    ``ClaimLost`` means another instance stole it while our dispatch stalled — abandon
+    the marker so the in-flight work aborts rather than push under a lost claim. An
+    unreachable forge is transient: leave the marker and retry next tick (the TTL is
+    the backstop).
 
     Both RELINQUISHED states are skipped — ABANDONED (given up) and DECLINED (an
     operator cancelled it, #4105) — because a refreshed claim ref on work nobody is
