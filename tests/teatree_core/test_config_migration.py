@@ -30,6 +30,10 @@ from teatree.core.config_interchange.secret_guard import (
 )
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from tests.placeholder_terms import TEST_TERM_REGISTRY
+
+_LEAK = TEST_TERM_REGISTRY["leak"][0]
+_OV = TEST_TERM_REGISTRY["overlay"][0]
 
 
 def _teatree(document: dict[str, object]) -> dict[str, object]:
@@ -181,13 +185,14 @@ class TestExportSecretGuard(TestCase):
         assert result.redacted[0].key == "ban_close_trailers_on_namespaces"
         assert result.redacted[0].reason == "banned-term"
 
-    def test_include_private_exports_everything(self) -> None:
-        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
-        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
-        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES, scan_terms=("acmecorp", "acmebrand"))
+    def test_the_term_values_backup_exports_everything(self) -> None:
+        registry = {"leak": [_LEAK], "prose_collider": []}
+        ConfigSetting.objects.set_value("banned_term_registry", registry)
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", [_OV])
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES, scan_terms=(_LEAK, _OV))
         teatree = _teatree(tomllib.loads(result.toml))
-        assert teatree["banned_term_registry"] == {"leak": ["acmebrand"], "prose_collider": []}
-        assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
+        assert teatree["banned_term_registry"] == registry
+        assert teatree["ban_close_trailers_on_namespaces"] == [_OV]
         assert result.redacted == ()
 
     def test_known_pass_key_rows_are_withheld_from_shared_export_and_kept_in_private_backup(self) -> None:
