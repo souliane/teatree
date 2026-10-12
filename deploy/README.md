@@ -1486,9 +1486,9 @@ mount instead, and the worker never takes the executor's word for it:
   data dir, credential store, agent home or docker socket.
 - **Nothing outlives a session.** Under the executor lease, before a server starts and after
   it stops, a sweep ends every process outside PID 1's session (`tini` and its `sleep`) except
-  the worker's own `docker exec` programs, which are the only processes with a parent outside
-  the container. A process cannot clear that by changing its environment or detaching, and a
-  survivor refuses the next session before any home is created.
+  the worker's own `docker exec` programs that run no Codex home; only `docker exec` gives a
+  process a parent outside the container. A process cannot clear that by changing its
+  environment or detaching, and a survivor refuses the next session before any home is created.
 - **No privilege.** `cap_drop: [ALL]`, `no-new-privileges`, its own bridge network (never
   the host's, whose loopback the admin trusts), and it runs as `nobody` (65534), not as
   `TEATREE_UID`, so it owns none of the trees it reads and an owner-only file there stays
