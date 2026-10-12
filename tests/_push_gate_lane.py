@@ -4,6 +4,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -13,11 +14,34 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 #: environment uv resolved on its own, which for a member is the shared one.
 NO_REDIRECT = "-"
 
-UV_STUB = f"""#!/usr/bin/env bash
-set -euo pipefail
-if [ "${{1:-}}" = "--version" ]; then echo "uv 0.0.0-test"; exit 0; fi
-printf '%s\\n' "${{UV_PROJECT_ENVIRONMENT:-{NO_REDIRECT}}}" >>"${{UV_STUB_ENVS}}"
-printf '%s\\n' "${{DJANGO_SETTINGS_MODULE:-{NO_REDIRECT}}}" >>"${{UV_STUB_DJANGO_SETTINGS}}"
+UV_STUB = f"""#!/usr/bin/env python3
+import fcntl
+import os
+import sys
+import time
+
+if sys.argv[1:2] == ["--version"]:
+    print("uv 0.0.0-test")
+    raise SystemExit(0)
+
+
+def append(log, line):
+    with open(os.environ[log], "a", encoding="utf-8") as handle:
+        handle.write(line + "\\n")
+
+
+append("UV_STUB_ENVS", os.environ.get("UV_PROJECT_ENVIRONMENT", {NO_REDIRECT!r}))
+append("UV_STUB_DJANGO_SETTINGS", os.environ.get("DJANGO_SETTINGS_MODULE", {NO_REDIRECT!r}))
+stage = len(open(os.environ["UV_STUB_ENVS"], encoding="utf-8").read().splitlines())
+with open(os.environ["T3_PUSH_GATE_LOCK_PATH"], "a", encoding="utf-8") as probe:
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = "free"
+    except BlockingIOError:
+        lock = "held"
+started = time.time()
+time.sleep(float(os.environ.get("UV_STUB_STAGE_SLEEP", "0")))
+append("UV_STUB_STAGES", f"{{stage}} {{lock}} {{started}} {{time.time()}}")
 """
 
 COPIED = (
@@ -28,6 +52,22 @@ COPIED = (
     "scripts/hooks/lib/resolve-uv.sh",
     "src/teatree/utils/push_gate_lock.py",
 )
+
+
+class StageRun(NamedTuple):
+    number: int
+    lock: str
+    started: float
+    ended: float
+
+
+def stage_runs(tmp_path: Path) -> list[StageRun]:
+    """Each stage the stub ran, with whether the machine-wide lock was still held when it started."""
+    log = tmp_path / "stages.log"
+    if not log.exists():
+        return []
+    rows = (line.split() for line in log.read_text(encoding="utf-8").splitlines())
+    return [StageRun(int(number), lock, float(started), float(ended)) for number, lock, started, ended in rows]
 
 
 def lane_repo(tmp_path: Path, *, vendored: bool) -> Path:
@@ -95,6 +135,7 @@ def run_lane(
             "T3_PUSH_GATE_LOCK": str(tmp_path / "push-gate.lock"),
             "UV_STUB_ENVS": str(envs_log),
             "UV_STUB_DJANGO_SETTINGS": str(django_settings_log),
+            "UV_STUB_STAGES": str(tmp_path / "stages.log"),
             **(extra_env or {}),
         },
     )
