@@ -78,6 +78,7 @@ t3 <overlay> config_setting set require_human_approval_to_merge false --overlay 
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
 t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # dump the store to a TOML backup (stdout default)
 t3 <overlay> config_setting export --default-keys-only --include-defaults      # the defaults.toml shape: a drop-in replacement for the shipped file
+t3 <overlay> config_setting export --include-private --include-banned-term-values --output backup.toml  # full personal backup, term-bearing rows included
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -701,7 +702,7 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 | `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | optional |
 
 * **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
-* **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate and settings export/import also refuse when their scan classes contain no terms. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
+* **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate also refuses when its scan classes contain no terms, and so do the settings export (shared and `--include-private`), the settings snapshot and `snapshot_settings_defaults` (`secret_guard.ScanTermsUnavailableError`): an unclassified row would leave the box. `--include-private --include-banned-term-values --output <file>` resolves no term at all, so it is the backup a box with no term can still make. The import proceeds UNSCANNED instead — the receiving box's terms are what its scan protects — applying the key classes alone, showing every value withheld, and saying so in one line on the CLI and a banner on the dashboard. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
 * **Single resolver.** Every gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. Legacy keys have no runtime fallback. Migration `0123` preserves registry class values when both old and new rows exist, and removes the old rows per scope.
 
 **Code-resident public tier.** A second tier of term data is generic, DB-free, and ships in the repo — it carries no operator-private value, so it stays committed and is NOT part of the registry:
@@ -904,10 +905,17 @@ the backup before retrying the import. **Zero-row normalization:** a value equal
 default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
 dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
 `export → import → export` is byte-stable; a shareable export withholds Secret values and
-keeps Personal ones. Refusals report the key and class without repeating a suppressed term.
-A private export stamps its restore marker even in the defaults shape, and suppressed-term
-content requires both `--include-private` and `--include-banned-terms`; the completed TOML
-is scanned before it can be written. The private backup imports with `--restore-private`. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
+keeps Personal ones. Every report names a withheld or refused row by key and class, never by
+the matched term, and an invalid private value drops the parser message that would quote it.
+Every private export stamps its restore marker, defaults shape included; only the SHARED
+defaults shape stays byte-identical to `defaults.toml`. `--include-private` carries the key
+classes but still withholds each row carrying a banned term (the term registry included);
+`--include-banned-term-values` carries those too, needs `--include-private` and `--output`,
+and never prints to stdout. A scope or entry NAME carrying a term withholds every row under
+it, reported once without the name, and the import refuses such rows the same way. A loop,
+preset or schedule the shipped file does not carry is omitted from every export, named on
+stderr as not shipped, so every export restores. The seed tables are content-scanned on
+import too. The private backup imports with `--restore-private`. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
 CHANGE the store is rejected unless the caller passes `allow_safety_posture`, which defaults
 to False so a caller that never considered the question refuses those keys — the same boundary
 the settings editor's typed confirm and the MCP write-tool refusal enforce, closing the route
@@ -961,8 +969,9 @@ format marker being the one named exception. The dry-run preview is counted PER 
 (`dash/interchange.py`'s `changed_sections`, over the single `section_for_row` canonicaliser),
 so a preview reading "12 rows" cannot hide the one that changes a loop. Export and the
 safety-posture confirm phrase are otherwise unchanged; the settings page links here, and
-`/dash/settings/export/` redirects with its filters intact. An unavailable term source
-refuses both browser export and import before a file or DB row is written.
+`/dash/settings/export/` redirects with its filters intact. With no term source the browser
+export answers 503 `Export refused`, while an import preview proceeds unscanned under a red
+`Rows were not content-scanned` banner with every value shown withheld.
 
 **One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
 Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key
@@ -1159,8 +1168,12 @@ label and its capture date (`core.settings.settings_files.snapshot_filename`). T
 nothing else — one `core.settings_snapshot.build_snapshot` builder, one read-only GET route.
 `build_snapshot(label, note)` takes no `include_private` parameter and emits
 `"includes_private": false`, so the route is structurally incapable of serving a raw secret
-however it is called; a withheld value travels as its reason plus a digest, which still compares
-for difference. The download is linked from both the settings page and the comparison page.
+however it is called; a withheld value travels as its reason class plus a digest, which still
+compares for difference. The term source is REQUIRED: a box with none answers 503 with an
+`error` naming `banned_term_registry`. Values, reasons and the instance label never carry a
+banned term (a label carrying one reads `<withheld: banned-term>` and the filename falls back
+to `instance`); names travel, because the comparison is keyed on scope keys, entry names and
+nested keys. The download is linked from both the settings page and the comparison page.
 
 **An older record stays comparable — that is the point of the file route.** The no-opinion rule
 (`core.settings.settings_compare`) holds for a loaded column exactly as for a live one: no row for a key
