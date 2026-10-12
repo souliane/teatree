@@ -47,9 +47,10 @@ def test_an_address_needs_its_own_at_sign() -> None:
         f"Pre{HANDLE.title()}",
         "2AcmeOwner",
         f"{HANDLE}{ARABIC_INDIC_TWO}",
+        f"_{HANDLE}",
     ],
 )
-def test_a_letter_or_digit_glued_to_either_end_extends_the_identifier(extended: str) -> None:
+def test_a_letter_digit_or_joiner_glued_to_either_end_extends_the_identifier(extended: str) -> None:
     assert mask_exempt(extended, (HANDLE,)) == extended
 
 
@@ -62,8 +63,8 @@ def test_a_letter_or_digit_glued_to_either_end_extends_the_identifier(extended: 
         ("alice@acme", "bob.alice@acme"),
         ("@acme-owner", "acme-owner.evil"),
         (ALIAS, f"bob@{ALIAS}"),
-        (ALIAS, f"{ARABIC_INDIC_TWO}.{ALIAS}"),
-        (ALIAS, f"{ALIAS}.2"),
+        (ALIAS, f"ping {ARABIC_INDIC_TWO}.{ALIAS}"),
+        (ALIAS, f"{ALIAS}.{ARABIC_INDIC_TWO}"),
     ],
 )
 def test_an_address_mark_joined_to_a_word_extends_an_address(entry: str, extended: str) -> None:
