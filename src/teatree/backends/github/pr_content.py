@@ -8,7 +8,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
 
 GhRun = Callable[[list[str]], tuple[int, str, str]]

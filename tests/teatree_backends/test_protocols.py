@@ -16,7 +16,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 
 
 class _FakeCIService:

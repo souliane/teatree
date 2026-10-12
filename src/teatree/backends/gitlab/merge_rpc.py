@@ -33,7 +33,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
 )
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from teatree.core.forge_content import ContentVerdictKind, PrContentSnapshot, classify_content
+from teatree.core.evidence.forge_content import ContentVerdictKind, PrContentSnapshot, classify_content
 
 BASE = {"src/a.py": "a0", "src/b.py": "b0", "src/c.py": "c0", "docs/old.md": "o0"}
 HEAD = {"src/a.py": "a1", "src/b.py": "b1", "src/c.py": "c1", "src/new.py": "n1"}

@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from django.test import TestCase
 
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, apply_void, check_operator, plan_void
 from teatree.core.models import (
     CriticFinding,

@@ -25,7 +25,7 @@ from teatree.core.backend_protocols import (
     changed_paths_unavailable,
     rollup_query_failed,
 )
-from teatree.core.forge_content import ContentVerdictKind, classify_content
+from teatree.core.evidence.forge_content import ContentVerdictKind, classify_content
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeTransientError
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 

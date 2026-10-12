@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, field
 
 from teatree.backends.github.pr_content import GhPrContentReader
-from teatree.core.forge_content import ContentVerdictKind, PrContentSnapshot, classify_content
+from teatree.core.evidence.forge_content import ContentVerdictKind, PrContentSnapshot, classify_content
 
 SLUG = "example-org/example-repo"
 MERGE = "1" * 40

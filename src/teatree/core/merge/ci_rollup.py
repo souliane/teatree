@@ -22,7 +22,7 @@ from teatree.core.backend_protocols import (
     rollup_query_failed,
 )
 from teatree.core.backend_registry import get_backend_provider
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.ci_rollup_dedupe import _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead

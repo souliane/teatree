@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, TextIO
 from django.db import transaction
 
 from teatree.core.backend_protocols import BackendResolutionError
-from teatree.core.forge_content import ContentVerdict, ContentVerdictKind, PrContentSnapshot, classify_content
+from teatree.core.evidence.forge_content import ContentVerdict, ContentVerdictKind, PrContentSnapshot, classify_content
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.pr_slug_resolution import resolved_repo_slug
 from teatree.core.models import MergeAudit, MergeClear, MergeVoid, PullRequest, Ticket

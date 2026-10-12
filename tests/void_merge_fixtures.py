@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.void_merge import apply_void, plan_void
 from teatree.core.models import MergeVoid, PullRequest, Ticket

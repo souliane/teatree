@@ -26,7 +26,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
-from teatree.core.forge_content import PrContentSnapshot
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
