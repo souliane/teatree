@@ -1,4 +1,8 @@
-"""Runs inside the read-only executor as ``python3 -I -S -``: ends what a Codex home started, never PID 1's session."""
+"""Runs inside the read-only executor as ``python3 -I -S -``: ends every process but PID 1's session and its own.
+
+Nothing a process can change about itself decides it: no process joins PID 1's session after the fact, and
+no process inside the container gets a parent outside it, which only ``docker exec`` hands out.
+"""
 
 import json
 import os
@@ -25,24 +29,27 @@ class SweepError(RuntimeError):
 
 
 class _Process(NamedTuple):
+    pid: int
     state: str
     ppid: int
     sid: int
+    entry: Path
 
 
 def _process(entry: Path) -> _Process | None:
     try:
-        fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-    except (OSError, IndexError):
+        head, _, tail = (entry / "stat").read_text(encoding="utf-8").rpartition(")")
+        fields = tail.split()
+        return _Process(int(head.split(" (", 1)[0]), fields[0], int(fields[1]), int(fields[3]), entry)
+    except (OSError, IndexError, ValueError):
         return None
-    return _Process(fields[0], int(fields[1]), int(fields[3]))
 
 
-def _codex_home(entry: Path) -> str:
+def _codex_home(entry: Path) -> str | None:
     try:
         environ = (entry / "environ").read_bytes()
     except OSError:
-        return ""
+        return None
     for item in environ.split(b"\0"):
         name, _, value = item.partition(b"=")
         if name == b"CODEX_HOME":
@@ -54,31 +61,36 @@ def _under(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def codex_processes(home_root: str, proc: Path) -> list[int]:
-    """Every live process with a Codex home under *home_root*, its session and its descendants."""
+def _spared_exec_root(process: _Process, home_root: str) -> bool:
+    """A ``docker exec`` program of the worker's: its parent is outside the container, and it runs no Codex."""
+    home = _codex_home(process.entry)
+    return home is not None and not _under(home, home_root)
+
+
+def strays(home_root: str, proc: Path) -> list[int]:
+    """Every live process outside PID 1's session, but this sweep and the worker's own exec programs."""
     init = _process(proc / "1")
     if init is None:
         msg = f"PID 1 is unreadable under {proc}, so its session cannot be spared"
         raise SweepError(msg)
-    live: dict[int, _Process] = {}
-    for entry in proc.iterdir():
-        if entry.name.isdigit() and int(entry.name) not in {1, os.getpid()}:
-            process = _process(entry)
-            if process is not None and process.state not in {"Z", "X"}:
-                live[int(entry.name)] = process
-    marked = {pid for pid in live if _under(_codex_home(proc / str(pid)), home_root)}
-    while more := {
-        pid
-        for pid, process in live.items()
-        if pid not in marked and (process.ppid in marked or process.sid in {live[mark].sid for mark in marked})
-    }:
-        marked |= more
-    return sorted(pid for pid in marked if live[pid].sid != init.sid)
+    table = {
+        process.pid: process
+        for entry in proc.iterdir()
+        if entry.name.isdigit() and (process := _process(entry)) is not None
+    }
+    return sorted(
+        process.pid
+        for process in table.values()
+        if process.state not in {"Z", "X"}
+        and process.pid != os.getpid()
+        and process.sid != init.sid
+        and (process.ppid in table or not _spared_exec_root(process, home_root))
+    )
 
 
 def sweep(request: SweepRequest, proc: Path = Path("/proc")) -> SweepAnswer:
     for _ in range(ATTEMPTS):
-        victims = codex_processes(request["home_root"], proc)
+        victims = strays(request["home_root"], proc)
         if not victims:
             break
         for pid in victims:
@@ -87,7 +99,7 @@ def sweep(request: SweepRequest, proc: Path = Path("/proc")) -> SweepAnswer:
             except ProcessLookupError:
                 continue
         time.sleep(PAUSE_SECONDS)
-    return SweepAnswer(survivors=codex_processes(request["home_root"], proc))
+    return SweepAnswer(survivors=strays(request["home_root"], proc))
 
 
 def main() -> None:

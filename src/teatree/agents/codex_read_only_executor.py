@@ -38,7 +38,7 @@ _WORKER_FORMAT: Final = (
     '"Mounts":{{json .Mounts}},"CheckoutEnv":[{{range .Config.Env}}'
     '{{if eq (index (split . "=") 0) "TEATREE_DEPLOY_CHECKOUT"}}{{json .}}{{end}}{{end}}]}'
 )
-_APP_SERVER_SCRIPT: Final = 'mkdir -p "$CODEX_HOME" && exec codex "$@"'
+_APP_SERVER_SCRIPT: Final = 'test -d "$CODEX_HOME" && exec codex "$@"'
 
 
 class ExecutorRefusalError(RuntimeError):

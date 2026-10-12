@@ -28,22 +28,35 @@ from teatree.agents.codex_read_only_executor import (
     login_account,
     refusal_reason,
 )
-from teatree.agents.codex_read_only_verdict import EXECUTOR_HOME_ROOT
+from teatree.agents.codex_read_only_verdict import EXECUTOR_HOME_ROOT, SCRATCH_ROOT
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.utils.run import CompletedProcess
 
-WRITE_AUTH_SCRIPT: Final = 'umask 077; mkdir -p "$1" && cat >"$1/.auth.tmp" && mv "$1/.auth.tmp" "$1/auth.json"'
+WRITE_AUTH_SCRIPT: Final = 'umask 077; cat >"$1/.auth.tmp" && mv -f "$1/.auth.tmp" "$1/auth.json"'
 LIST_HOMES_SCRIPT: Final = f'for home in {EXECUTOR_HOME_ROOT}/codex-*; do [ -d "$home" ] && echo "$home"; done; true'
+READ_AUTH_SCRIPT: Final = 'cd -- "$1" && if [ -e auth.json ]; then exec cat auth.json; fi'
+RESET_SCRIPT: Final = (
+    'for root; do find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + '
+    '&& [ -z "$(ls -A -- "$root")" ] || exit 1; done'
+)
+CREATE_HOME_SCRIPT: Final = 'mkdir -m 0700 -- "$1"'
 _SWEEP_PROGRAM: Final = Path(codex_read_only_sweep_program.__file__).read_text(encoding="utf-8")
 
 
-def end_codex_processes(docker: ExecutorDocker, container_id: str) -> None:
-    """Under the lease no other server runs, so every process a Codex home started is a stray."""
+def end_strays(docker: ExecutorDocker, container_id: str) -> None:
+    """Under the lease no server runs, so every process but PID 1's session and the worker's programs is a stray."""
     answer = docker.program(container_id, _SWEEP_PROGRAM, {"home_root": EXECUTOR_HOME_ROOT})
     if answer != {"survivors": []}:
-        msg = f"the sweep did not end every stray Codex process in the executor ({answer!r:.200})"
+        msg = f"the sweep left processes running in the executor ({answer!r:.200})"
+        raise ExecutorRefusalError(msg)
+
+
+def _run_script(docker: ExecutorDocker, container_id: str, script: str, *paths: str, failure: str) -> None:
+    result = docker.run(docker.exec_argv(container_id, ["sh", "-c", script, "_", *paths]))
+    if result.returncode != 0:
+        msg = f"{failure} (exit {result.returncode})"
         raise ExecutorRefusalError(msg)
 
 
@@ -65,12 +78,16 @@ class ExecutorAuthFile:
         except ExecutorRefusalError as exc:
             raise CodexAuthCacheError(str(exc)) from exc
 
-    def read(self) -> bytes:
-        result = self.run(["cat", f"{self.home}/auth.json"])
+    def fetch(self) -> bytes:
+        """The home's ``auth.json`` as it is, ``b""`` for a home that holds none."""
+        result = self.run(["sh", "-c", READ_AUTH_SCRIPT, "_", self.home])
         if result.returncode != 0:
-            msg = f"the executor auth file could not be read (exit {result.returncode})"
+            msg = f"{self.home} could not be read (exit {result.returncode})"
             raise CodexAuthCacheError(msg)
-        raw = result.stdout.encode()
+        return result.stdout.encode()
+
+    def read(self) -> bytes:
+        raw = self.fetch()
         if login_account(raw, self.home) != self.account:
             msg = f"the login in {self.home} is not the executor's account"
             raise CodexAuthCacheError(msg)
@@ -84,6 +101,10 @@ class ExecutorAuthFile:
             raise CodexAuthCacheError(msg)
         self.account = account
 
+    def create(self) -> None:
+        failure = f"the executor home {self.home} could not be created"
+        _run_script(self.docker, self.container_id, CREATE_HOME_SCRIPT, self.home, failure=failure)
+
 
 def _last_refresh(raw: bytes) -> str:
     try:
@@ -93,26 +114,58 @@ def _last_refresh(raw: bytes) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _of_account(raw: bytes, account: str) -> bool:
+    try:
+        return login_account(raw, "a stale executor home") == account
+    except CodexAuthCacheError:
+        return False
+
+
 class ExecutorAuthCache(CodexAuthCache):
-    """Under the lease, end whatever a dead server left running and recover a newer login of the same account."""
+    """Under the lease: end every stray, keep a newer login a stale home holds, and start and stop on empty tmpfs."""
 
     def __init__(self, auth_file: ExecutorAuthFile) -> None:
         super().__init__(executor_lease_dir(), entry=EXECUTOR_LOGIN_ENTRY, store=auth_file)
         self.auth_file = auth_file
 
     def hydrate(self) -> Path:
-        end_codex_processes(self.auth_file.docker, self.auth_file.container_id)
-        account = login_account(self.stored(), EXECUTOR_LOGIN_ENTRY)
-        for home in self._stale_homes():
-            stale = ExecutorAuthFile(self.auth_file.docker, self.auth_file.container_id, home, account=account)
-            try:
-                raw = stale.read()
-            except CodexAuthCacheError:
-                raw = b""
-            if raw and _last_refresh(raw) > _last_refresh(self.stored()):
-                self.write_verified(encode_auth_cache(raw))
-            stale.run(["rm", "-rf", "--", home])
+        end_strays(self.auth_file.docker, self.auth_file.container_id)
+        self._recover_stale_logins()
+        self._empty_tmpfs()
+        self.auth_file.create()
         return super().hydrate()
+
+    async def _finish_persist(self) -> None:
+        """The session's last persist, still under the lease; ``persist`` alone also runs mid-server per thread."""
+        task = asyncio.create_task(asyncio.to_thread(self._end_session))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    def _end_session(self) -> None:
+        end_strays(self.auth_file.docker, self.auth_file.container_id)
+        self.persist()
+        self._empty_tmpfs()
+
+    def _recover_stale_logins(self) -> None:
+        current = self.stored()
+        account = login_account(current, EXECUTOR_LOGIN_ENTRY)
+        for home in self._stale_homes():
+            try:
+                raw = ExecutorAuthFile(self.auth_file.docker, self.auth_file.container_id, home).fetch()
+            except CodexAuthCacheError as exc:
+                msg = f"the stale executor home {exc}; it is kept for the login it may hold"
+                raise ExecutorRefusalError(msg) from exc
+            if _of_account(raw, account) and _last_refresh(raw) > _last_refresh(current):
+                self.write_verified(encode_auth_cache(raw))
+                current = raw
+
+    def _empty_tmpfs(self) -> None:
+        roots = (EXECUTOR_HOME_ROOT, SCRATCH_ROOT)
+        failure = "the executor tmpfs could not be emptied"
+        _run_script(self.auth_file.docker, self.auth_file.container_id, RESET_SCRIPT, *roots, failure=failure)
 
     def _stale_homes(self) -> list[str]:
         listing = self.auth_file.run(["sh", "-c", LIST_HOMES_SCRIPT])
@@ -144,13 +197,6 @@ class ExecutorCodexAppServer(SharedCodexAppServer):
 
     def successor(self, options: CodexAppServerOptions) -> SharedCodexAppServer:
         return executor_codex_app_server(options.executor or self.attestation)
-
-    async def _serve(self, options: CodexAppServerOptions) -> None:
-        try:
-            await super()._serve(options)
-        finally:
-            await asyncio.to_thread(end_codex_processes, self.docker, self.attestation.container_id)
-        await asyncio.to_thread(self.auth_file.run, ["rm", "-rf", "--", self.home])
 
     async def _open_thread(
         self, options: CodexAppServerOptions, resume: str | None, refused_threads: list[str]

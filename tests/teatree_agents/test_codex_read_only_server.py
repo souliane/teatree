@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import signal
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAp
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY
 from teatree.agents.codex_read_only_executor import EXECUTOR_LOGIN_ENTRY
 from teatree.agents.codex_read_only_server import ExecutorCodexAppServer, executor_session
-from teatree.agents.codex_read_only_verdict import EXECUTOR_HOME_ROOT
+from teatree.agents.codex_read_only_verdict import EXECUTOR_HOME_ROOT, SCRATCH_ROOT
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 from teatree.utils import run, secrets
@@ -73,6 +74,10 @@ def _codex_home(call: list[str]) -> str:
     return next(item.partition("=")[2] for item in call if item.startswith("CODEX_HOME="))
 
 
+def _first_script_call(fake: FakeExecutor, script: str) -> int:
+    return next(index for index, call in enumerate(fake.calls) if script in call)
+
+
 def test_a_planning_turn_runs_unsandboxed_inside_the_executor(fake: FakeExecutor) -> None:
     assert asyncio.run(_turn()) == "OK"
 
@@ -94,6 +99,38 @@ def test_executor_home_is_fresh_per_server_start(fake: FakeExecutor) -> None:
     first, second = (_codex_home(call) for call in _app_server_execs(fake))
     assert first != second
     assert fake.homes() == []
+
+
+def test_a_home_is_created_owner_only_after_a_clean_sweep_and_an_emptied_tmpfs(fake: FakeExecutor) -> None:
+    asyncio.run(_turn())
+
+    (launch,) = _app_server_execs(fake)
+    sweep, *_ = _sweeps(fake)
+    steps = [
+        _first_script_call(fake, codex_read_only_server.RESET_SCRIPT),
+        _first_script_call(fake, codex_read_only_server.CREATE_HOME_SCRIPT),
+        _first_script_call(fake, codex_read_only_server.WRITE_AUTH_SCRIPT),
+    ]
+    assert sweep < steps[0] < steps[1] < steps[2] < fake.calls.index(launch)
+    assert stat.S_IMODE(Path(f"{fake.fs}{_codex_home(launch)}").stat().st_mode) == 0o700
+
+
+def test_the_tmpfs_is_empty_when_a_server_starts_and_after_it_stops(fake: FakeExecutor) -> None:
+    Path(f"{fake.fs}{SCRATCH_ROOT}/left-by-an-earlier-session").write_text("x", encoding="utf-8")
+    Path(f"{fake.fs}{EXECUTOR_HOME_ROOT}/notes").write_text("x", encoding="utf-8")
+
+    asyncio.run(_turn())
+    codex_read_only_server.reset_executor_app_servers()
+
+    assert fake.scratch_at_turns == [[]]
+    assert (fake.tmpfs(SCRATCH_ROOT), fake.tmpfs(EXECUTOR_HOME_ROOT)) == ([], [])
+
+
+def test_both_sweeps_run_under_the_executor_lease(fake: FakeExecutor) -> None:
+    asyncio.run(_turn())
+    codex_read_only_server.reset_executor_app_servers()
+
+    assert fake.sweep_leases == ["leased", "leased"]
 
 
 def test_executor_store_persists_a_rotated_login(fake: FakeExecutor) -> None:
@@ -179,8 +216,52 @@ def test_an_unclean_sweep_starts_no_server_and_keeps_stale_homes(fake: FakeExecu
 
     assert refused.value.kind is HarnessFallbackKind.ACCESS
     assert _app_server_execs(fake) == []
-    assert home.exists()
+    assert fake.homes() == [home]
     assert _refresh_token(fake) == "stored"
+
+
+def test_a_stale_home_that_cannot_be_read_is_kept_and_refuses_the_run(fake: FakeExecutor) -> None:
+    home = Path(f"{fake.fs}{EXECUTOR_HOME_ROOT}/codex-unreadable")
+    (home / "auth.json").mkdir(parents=True)
+
+    with pytest.raises(HarnessFallbackError) as refused:
+        asyncio.run(_turn())
+
+    assert refused.value.kind is HarnessFallbackKind.ACCESS
+    assert f"{EXECUTOR_HOME_ROOT}/codex-unreadable could not be read" in str(refused.value)
+    assert _app_server_execs(fake) == []
+    assert fake.homes() == [home]
+
+
+def test_a_newer_stale_login_that_cannot_be_persisted_keeps_its_home_and_refuses(fake: FakeExecutor) -> None:
+    home = _stale_home(fake, "newer", "2026-10-11T00:00:00Z")
+    Path(f"{fake.pass_store}.readonly").touch()
+
+    with pytest.raises(HarnessFallbackError) as refused:
+        asyncio.run(_turn())
+
+    assert refused.value.kind is HarnessFallbackKind.AUTH
+    assert _app_server_execs(fake) == []
+    assert fake.homes() == [home]
+    assert _refresh_token(fake) == "stored"
+
+
+def test_a_thread_on_a_replaced_executor_is_refused(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
+    served = attested(fake, monkeypatch)
+    manager = codex_read_only_server.executor_codex_app_server(served)
+    asyncio.run(_turn())
+    fake.containers = ["container-02"]
+    fake.install()
+    options = CodexAppServerOptions.from_sdk_options(_PLANNING, executor=served)
+
+    try:
+        with pytest.raises(HarnessFallbackError, match="the executor was replaced by container-02"):
+            asyncio.run(manager.open_session(options, None))
+    finally:
+        fake.containers = [EXECUTOR_ID]
+        fake.install()
+
+    assert len(fake.thread_starts) == 1
 
 
 def test_planted_rules_retire_the_executor_server(fake: FakeExecutor) -> None:

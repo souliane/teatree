@@ -22,7 +22,7 @@ from teatree.agents import codex_read_only_server
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY
 from teatree.agents.codex_read_only_executor import EXECUTOR_LOGIN_ENTRY, ExecutorAttestation, attest
 from teatree.agents.codex_read_only_probe_program import Mount, Observation, RootAnswer
-from teatree.agents.codex_read_only_verdict import CLONE_ROOT, EXECUTOR_HOME_ROOT, WORKTREE_ROOT
+from teatree.agents.codex_read_only_verdict import CLONE_ROOT, EXECUTOR_HOME_ROOT, SCRATCH_ROOT, WORKTREE_ROOT
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "codex_read_only_executor"
 CONTAINER_HOME = str(PurePosixPath(CLONE_ROOT).parent)
@@ -30,9 +30,11 @@ EXAMPLE_ROOT = f"{WORKTREE_ROOT}/example/teatree"
 EXECUTOR_ID = "container-01"
 
 _SCRIPT = r"""
+import fcntl
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -118,6 +120,14 @@ elif argv[:1] == ["exec"]:
         sys.exit(1)
     if command[:1] == ["/usr/bin/python3"] and "home_root" in json.loads(command[-1]):
         program = sys.stdin.read()
+        with open(CONFIG["lease"], "a") as lease, open(CONFIG["log"] + ".sweeps", "a", encoding="utf-8") as sweeps:
+            try:
+                fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                sweeps.write("leased\n")
+            else:
+                fcntl.flock(lease.fileno(), fcntl.LOCK_UN)
+                sweeps.write("unleased\n")
         if CONFIG["raw_sweep"] is not None:
             raw = CONFIG["raw_sweep"]
             sys.stdout.write(raw if isinstance(raw, str) else json.dumps(raw))
@@ -155,7 +165,8 @@ elif argv[:1] == ["exec"]:
         return CONFIG["fs"] + path
 
     if command[:4] == ["setsid", "-w", "sh", "-c"]:
-        os.makedirs(mapped(env["CODEX_HOME"]), exist_ok=True)
+        if not os.path.isdir(mapped(env["CODEX_HOME"])):
+            sys.exit(1)
         with open(CONFIG["log"] + ".env", "a", encoding="utf-8") as env_log:
             # PEP 538 locale coercion adds LC_CTYPE to this Python process; a Go docker CLI never does.
             coerced = {"LC_CTYPE"} if os.environ.get("LC_CTYPE") == "C.UTF-8" else set()
@@ -170,29 +181,16 @@ elif argv[:1] == ["exec"]:
             "PATH": os.environ.get("PATH", ""),
         }
         os.execve(sys.executable, [sys.executable, CONFIG["app_server"], *command[6:]], child_env)
-    if command[:2] == ["sh", "-c"] and command[2] == CONFIG["scripts"]["write_auth"]:
-        home = mapped(command[-1])
-        os.makedirs(home, exist_ok=True)
-        with open(home + "/auth.json", "w", encoding="utf-8") as auth:
-            auth.write(sys.stdin.read())
-        sys.exit(0)
     if command[:2] == ["sh", "-c"] and command[2] == CONFIG["scripts"]["list_homes"]:
         root = mapped(CONFIG["home_root"])
         for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
             if name.startswith("codex-") and os.path.isdir(root + "/" + name):
                 print(CONFIG["home_root"] + "/" + name)
         sys.exit(0)
-    if command[:1] == ["cat"]:
-        try:
-            with open(mapped(command[1]), encoding="utf-8") as handle:
-                sys.stdout.write(handle.read())
-        except OSError:
-            sys.exit(1)
-        sys.exit(0)
-    if command[:3] == ["rm", "-rf", "--"]:
-        import shutil
-        shutil.rmtree(mapped(command[3]), ignore_errors=True)
-        sys.exit(0)
+    if command[:2] == ["sh", "-c"] and command[2] in CONFIG["scripts"]["path_args"]:
+        # The core's own script, run by a real sh against this fake's filesystem.
+        script = ["sh", "-c", command[2], command[3], *(mapped(path) for path in command[4:])]
+        sys.exit(subprocess.run(script, check=False).returncode)
     sys.stderr.write("fake docker: unhandled exec " + json.dumps(command) + "\n")
     sys.exit(2)
 else:
@@ -256,6 +254,10 @@ for raw in sys.stdin:
     elif method == "turn/start":
         thread_id = request["params"]["threadId"]
         emit({"id": request_id, "result": {"turn": {"id": "turn-1", "items": [], "status": "inProgress"}}})
+        with open(config["log"] + ".scratch", "a", encoding="utf-8") as scratch:
+            scratch.write(json.dumps(sorted(os.listdir(config["scratch"]))) + "\n")
+        with open(config["scratch"] + "/turn-note", "w", encoding="utf-8") as note:
+            note.write(thread_id)
         rotated = config["rotated_login"]
         if rotated is not None:
             with open(home + "/auth.json", "w", encoding="utf-8") as auth:
@@ -414,6 +416,8 @@ class FakeExecutor:
             assert keeper.stdout is not None
             sleep = int(keeper.stdout.readline())
             self.keeper_path.write_text(json.dumps({"init": keeper.pid, "sleep": sleep}), encoding="utf-8")
+            for tmpfs in (EXECUTOR_HOME_ROOT, SCRATCH_ROOT):
+                Path(f"{self.fs}{tmpfs}").mkdir(parents=True, exist_ok=True)
             yield
         finally:
             for process in self._processes:
@@ -469,6 +473,21 @@ class FakeExecutor:
         return starts
 
     @property
+    def sweep_leases(self) -> list[str]:
+        """``leased`` or ``unleased`` per sweep: whether the executor lease was held while it ran."""
+        log = Path(f"{self.log}.sweeps")
+        return log.read_text(encoding="utf-8").split() if log.exists() else []
+
+    @property
+    def scratch_at_turns(self) -> list[list[str]]:
+        """What ``TMPDIR`` held when each turn started."""
+        log = Path(f"{self.log}.scratch")
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    def tmpfs(self, root: str) -> list[str]:
+        return sorted(entry.name for entry in Path(f"{self.fs}{root}").iterdir())
+
+    @property
     def docker_cli_env(self) -> list[list[str]]:
         log = Path(f"{self.log}.env")
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
@@ -497,9 +516,16 @@ class FakeExecutor:
                     "app_server": str(self.root / "app_server.py"),
                     "reply": self.reply,
                     "rotated_login": self.rotated_login,
+                    "lease": str(self.root / "data" / "codex-ro-executor" / ".auth.lock"),
+                    "scratch": str(self.fs) + SCRATCH_ROOT,
                     "scripts": {
-                        "write_auth": codex_read_only_server.WRITE_AUTH_SCRIPT,
                         "list_homes": codex_read_only_server.LIST_HOMES_SCRIPT,
+                        "path_args": [
+                            codex_read_only_server.WRITE_AUTH_SCRIPT,
+                            codex_read_only_server.READ_AUTH_SCRIPT,
+                            codex_read_only_server.RESET_SCRIPT,
+                            codex_read_only_server.CREATE_HOME_SCRIPT,
+                        ],
                     },
                 }
             ),
