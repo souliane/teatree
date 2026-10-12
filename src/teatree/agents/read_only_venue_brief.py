@@ -23,7 +23,7 @@ SURVEY_CAP_BYTES: Final = 32 * 1024
 HANDOFF_CAP_BYTES: Final = 32 * 1024
 TICKET_CONTEXT_CAP_BYTES: Final = 32 * 1024
 ABSENT_TOOL: Final = "`<teatree tool, absent here>`"
-TEATREE_COMMAND: Final = re.compile(r"(?<![\w/:.-])t3 ")
+_TEATREE_COMMAND: Final = re.compile(r"(?<![\w/:.-])t3 ")
 _TEATREE_TOOL_SPAN: Final = re.compile(r"`[^`\n]*(?:(?<![\w/:.-])t3 |mcp__teatree__)[^`\n]*`")
 
 READ_ONLY_DIRECTIVE: Final = (
@@ -73,7 +73,7 @@ class ReadOnlyFacts:
 def read_only_system_context(context: str) -> str:
     """*context* with every teatree command or tool it names rewritten, or refused: none of them runs here."""
     rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, context)
-    if command := TEATREE_COMMAND.search(rewritten):
+    if command := _TEATREE_COMMAND.search(rewritten):
         reason = (
             f"the system context still names a teatree command: {rewritten[command.start() : command.end() + 40]!r}"
         )
