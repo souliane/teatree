@@ -149,6 +149,7 @@ class CloseCommands(TyperCommand):
         confirm: Annotated[str, typer.Option("--confirm", help="Per-id confirmation above the bulk threshold.")] = "",
         advanced: Annotated[str, typer.Option("--advanced", help="Per-id permission for progressed tickets.")] = "",
     ) -> ReturnGapsResult:
+        """Return guarded legacy gap members to the dream umbrella."""
         target_ids = [chunk.strip() for chunk in ids.split(",") if chunk.strip()]
         confirmed = [chunk.strip() for chunk in confirm.split(",") if chunk.strip()]
         advanced_ids = {chunk.strip() for chunk in advanced.split(",") if chunk.strip()}

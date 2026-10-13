@@ -1272,7 +1272,7 @@
           "name": "bulk-close"
         },
         {
-          "help": "",
+          "help": "Return guarded legacy gap members to the dream umbrella",
           "name": "return-gaps"
         },
         {
