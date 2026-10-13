@@ -1,5 +1,7 @@
 """The Bash PreToolUse gate refuses new linked checkouts outside approved roots."""
 
+# test-path: cross-cutting
+
 from pathlib import Path
 from unittest.mock import patch
 
