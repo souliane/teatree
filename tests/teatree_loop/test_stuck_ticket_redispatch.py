@@ -10,6 +10,7 @@ through the SAME #2009 repair budget, escalating LOUDLY via a ``DeferredQuestion
 when the budget is exhausted — so a stuck ticket is drained or surfaced, never silent.
 """
 
+from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1047,17 +1048,25 @@ class TestCompletedReviewNoCoding(TestCase):
             coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
             coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
             review = _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED)
-            review.attempts.update(result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": head}})
+            review.attempts.update(
+                result={"recording_source": "hand", "review_verdict": {"verdict": "merge_safe", "reviewed_sha": head}}
+            )
+            guards = (
+                "newest_phase_task_was_cancelled",
+                "has_merge_safe_self_review_after_plan",
+                "newest_task_recorded_by_hand",
+            )
 
             assert redispatch_stuck_tickets() == 0
-            with patch.object(Ticket, "has_merge_safe_self_review_after_plan", return_value=False):
-                assert redispatch_stuck_tickets() == 0
-            with patch.object(Ticket, "newest_phase_task_was_cancelled", return_value=False):
-                assert redispatch_stuck_tickets() == 0
-            with (
-                patch.object(Ticket, "newest_phase_task_was_cancelled", return_value=False),
-                patch.object(Ticket, "has_merge_safe_self_review_after_plan", return_value=False),
-            ):
+            for kept in guards:
+                with ExitStack() as patched:
+                    for guard in guards:
+                        if guard != kept:
+                            patched.enter_context(patch.object(Ticket, guard, return_value=False))
+                    assert redispatch_stuck_tickets() == 0, f"{kept} alone did not hold"
+            with ExitStack() as patched:
+                for guard in guards:
+                    patched.enter_context(patch.object(Ticket, guard, return_value=False))
                 assert redispatch_stuck_tickets() == 1
 
             task = ticket.tasks.get(phase="coding", status=Task.Status.PENDING)
@@ -1069,6 +1078,22 @@ class TestCompletedReviewNoCoding(TestCase):
             task.refresh_from_db()
             assert task.status == Task.Status.PENDING
             assert attempt.exit_code == 0
+
+    def test_a_newer_hand_record_keeps_an_older_failed_coding_attempt_from_reminting(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+        plan = _finished_task(ticket, phase="planning", status=Task.Status.COMPLETED)
+        plan.attempts.update(result={"recording_source": "hand"})
+
+        assert redispatch_stuck_tickets() == 0
+        assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
+    def test_a_newer_worker_record_still_lets_a_failed_coding_attempt_remint(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+        _finished_task(ticket, phase="planning", status=Task.Status.COMPLETED)
+
+        assert redispatch_stuck_tickets() == 1
 
     def test_merge_safe_at_head_after_plan_blocks_generic_coding(self) -> None:
         with TemporaryDirectory() as checkout:

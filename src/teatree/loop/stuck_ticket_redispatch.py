@@ -171,6 +171,7 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
 
     One queryset, two admission predicates OR-ed: a ticket idle past *threshold_hours*
     (frozen) or one whose latest attempt for the implied phase failed (failing).
+    A newest task recorded by hand means a session is driving, so only the idle class applies.
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
@@ -179,7 +180,11 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
             continue
         if phase == "coding" and ticket.has_merge_safe_self_review_after_plan():
             continue
-        failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
+        failing = (
+            _phase_is_failing(ticket, phase=phase)
+            and not _review_has_no_head(ticket, phase=phase)
+            and not ticket.newest_task_recorded_by_hand()
+        )
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates

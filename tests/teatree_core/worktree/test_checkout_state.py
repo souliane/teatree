@@ -22,7 +22,11 @@ def test_checkout_state_detects_untracked_content_and_tracked_edits(tmp_path: Pa
 
     untracked.unlink()
     (checkout / "README.md").write_text("edited\n")
-    assert checkout_state(checkout).digest != clean.digest
+    edited = checkout_state(checkout)
+    assert edited.digest != clean.digest
+
+    (checkout / "README.md").write_text("edited differently\n")
+    assert checkout_state(checkout).digest != edited.digest, "same status, different tracked content"
 
 
 def test_checkout_state_counts_commits_ahead(tmp_path: Path) -> None:

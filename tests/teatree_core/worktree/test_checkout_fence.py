@@ -12,7 +12,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
-from teatree.core.worktree.occupancy import occupancy_holder, occupy_ticket_checkout, task_holder_id
+from teatree.core.worktree.occupancy import acquire, occupancy_holder, occupy_ticket_checkout, release, task_holder_id
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -83,6 +83,32 @@ class CheckoutFenceTests(TestCase):
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] != initial
+
+    def test_a_run_whose_checkout_was_handed_to_another_holder_never_attests(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(
+                self.ticket, holder=task_holder_id(self.task), holder_session=self.task.claimed_by_session
+            ),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "new.txt").write_text("run output")
+            self.task.complete()
+            handed = Worktree.objects.get(pk=self.worktree.pk)
+            assert release(handed, holder=task_holder_id(self.task), holder_session="s1")
+            acquire(handed, holder="owner-terminal", holder_session="owner")
+
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        held = occupancy_holder(finished)
+        assert held is not None
+        assert held.holder == "owner-terminal"
+        assert finished.get_extra()["attested_state"] == initial
 
     def test_survivor_keeps_claim_and_prior_attestation(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")

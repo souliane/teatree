@@ -81,6 +81,10 @@ class TicketIntrospectionModel(TicketFacet):
         latest = self.tasks.filter(phase__in=phase_spellings(normalize_phase(phase))).order_by("-pk").first()
         return latest is not None and latest.failure_kind == FailureKind.CANCELLED
 
+    def newest_task_recorded_by_hand(self) -> bool:
+        latest = self.tasks.order_by("-pk").first()
+        return latest is not None and latest.recorded_by_hand()
+
     def has_merge_safe_self_review_after_plan(self: "Ticket") -> bool:
         from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — import cycle
         from teatree.core.models.self_review import SelfReview  # noqa: PLC0415 — import cycle

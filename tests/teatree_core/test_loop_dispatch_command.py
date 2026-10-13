@@ -125,6 +125,36 @@ class TestClaimNextPayload(_LoopDispatchTest):
             assert held is not None
             assert held.holder == f"task:{task.pk}"
 
+    def test_a_recorded_in_session_run_hands_the_checkout_back_without_attesting_it(self) -> None:
+        ticket = planned_ticket(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        task = ticket.schedule_coding()
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            worktree = WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            claimed = StringIO()
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command("loop_dispatch", "claim-next", "--json", stdout=claimed)
+            pristine = Worktree.objects.get(pk=worktree.pk).get_extra()["attested_state"]
+            (checkout / "a.py").write_text("in-session edit\n")
+
+            call_command(
+                "tasks",
+                "record-attempt",
+                str(task.pk),
+                json.dumps({"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]}),
+                claim_token=json.loads(claimed.getvalue())[0]["claim_token"],
+                stdout=StringIO(),
+            )
+
+            finished = Worktree.objects.get(pk=worktree.pk)
+            assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+            assert occupancy_holder(finished) is None
+            assert finished.get_extra()["attested_state"] == pristine
+
     def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
         # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is
         # attributable, never an anonymous general-purpose spawn.
