@@ -341,7 +341,7 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
         if release_now and not (by_holder and task_occupancy_release_deferred(task)):
             # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
             # CAS matches on that exact session value (#4867).
-            release_task_occupancy(task)
+            release_task_occupancy(task, defer_if_driving=by_holder)
             for field, released_value in RELEASED_CLAIM.items():
                 setattr(task, field, released_value)
             update_fields.extend(RELEASED_CLAIM)

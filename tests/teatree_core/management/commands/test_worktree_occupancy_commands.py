@@ -120,17 +120,102 @@ class AttestTests(_CommandCase):
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
         (self.checkout / "new.txt").write_text("hand edit")
         state = checkout_state(self.checkout)
-        with patch(
-            "teatree.core.management.commands._worktree_occupancy.read_process_table",
-            return_value=ProcessTable(frozenset(), "/proc"),
-            create=True,
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch(
+                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+                create=True,
+            ),
         ):
             self.run_cmd("attest", str(self.checkout))
         assert self.fresh().get_extra()["attested_state"] == state.digest
 
+    def test_agent_cannot_attest(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=False),
+            pytest.raises(SystemExit),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert "attested_state" not in self.fresh().get_extra()
+
+    def test_changed_checkout_is_not_attested(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        state = checkout_state(self.checkout)
+        changed = type(state)("changed", state.commits_ahead, state.dirty)
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch("teatree.core.management.commands._worktree_occupancy.checkout_state", side_effect=[state, changed]),
+            patch(
+                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert "attested_state" not in self.fresh().get_extra()
+
+    def test_owner_attest_gives_one_claim_when_process_table_is_unavailable(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        state = checkout_state(self.checkout)
+        unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=unavailable),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert self.fresh().get_extra()["attested_state"] == f"owner:{state.digest}"
+
     def test_explicit_attest_refuses_occupied_checkout(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
         acquire(self.worktree, holder="task:7", holder_session="session-A")
-        with pytest.raises(SystemExit):
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            pytest.raises(SystemExit),
+        ):
             self.run_cmd("attest", str(self.checkout))
         assert "attested_state" not in self.fresh().get_extra()
+
+
+class FenceProbeTests(_CommandCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(lambda: shutil.rmtree(self.checkout, ignore_errors=True))
+
+    def test_probe_reports_every_checkout_without_attesting(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=clear):
+            ready = self.run_cmd("fence-probe")
+            assert f"{self.checkout} | ready" in ready
+            (self.checkout / "hand.txt").write_text("edit")
+            held = self.run_cmd("fence-probe")
+        assert f"{self.checkout} | needs-attest" in held
+        assert "attested_state" not in self.fresh().get_extra()
+
+    def test_probe_reports_occupancy_and_missing_process_evidence(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        clear = ProcessTable(frozenset(), "/proc")
+        unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=unavailable):
+            assert f"{self.checkout} | process-table-unavailable" in self.run_cmd("fence-probe")
+        busy = ProcessTable(frozenset({self.checkout}), "/proc")
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=busy):
+            assert f"{self.checkout} | live-process" in self.run_cmd("fence-probe")
+        acquire(self.worktree, holder="task:7", holder_session="session-A")
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=clear):
+            assert f"{self.checkout} | occupied" in self.run_cmd("fence-probe")
+
+    def test_probe_reports_ambiguous_and_unreadable_checkouts(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=clear):
+            assert f"{self.checkout} | unreadable-state" in self.run_cmd("fence-probe")
+            WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+            assert f"{self.checkout} | duplicate-row" in self.run_cmd("fence-probe")
+
+    def test_probe_reports_unprovisioned_checkout_without_a_write(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(extra={})
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=clear):
+            assert f"{self.worktree.pk} | <unprovisioned> | no-checkout" in self.run_cmd("fence-probe")

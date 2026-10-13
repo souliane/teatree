@@ -19,6 +19,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import ModeOverride, Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import occupancy_holder
 from teatree.loop.admit_budget import write_admit_budget
 from teatree.loop.drain import set_worker_quiescing
@@ -124,8 +125,11 @@ class TestClaimNextPayload(_LoopDispatchTest):
             held = occupancy_holder(Worktree.objects.get(pk=worktree.pk))
             assert held is not None
             assert held.holder == f"task:{task.pk}"
+            assert (
+                held.expires_at - held.since
+            ).total_seconds() == get_effective_settings().watchdog_max_runtime_seconds
 
-    def test_a_recorded_in_session_run_hands_the_checkout_back_without_attesting_it(self) -> None:
+    def test_a_recorded_in_session_run_attests_before_the_next_phase_claim(self) -> None:
         ticket = planned_ticket(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         task = ticket.schedule_coding()
         with tempfile.TemporaryDirectory() as root:
@@ -153,7 +157,15 @@ class TestClaimNextPayload(_LoopDispatchTest):
             finished = Worktree.objects.get(pk=worktree.pk)
             assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
             assert occupancy_holder(finished) is None
-            assert finished.get_extra()["attested_state"] == pristine
+            assert finished.get_extra()["attested_state"] != pristine
+            assert finished.get_extra()["attested_state"] == checkout_state(checkout).digest
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                next_claim = StringIO()
+                call_command("loop_dispatch", "claim-next", "--json", stdout=next_claim)
+            assert json.loads(next_claim.getvalue())[0]["phase"] == "testing"
 
     def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
         # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is

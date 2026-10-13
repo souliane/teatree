@@ -21,6 +21,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("smoke-test", "Quick health check: overlay loads, CLI responds, imports OK."),
             ("diagram", "Print a state diagram as Mermaid. Models: worktree, ticket, task."),
             ("occupancy", "Show every checkout a live agent currently holds."),
+            ("fence-probe", "Read every registered checkout's prospective writing-fence status without changing it."),
             ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
             ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
             ("attest", "Record the checkout state after the owner has inspected it."),

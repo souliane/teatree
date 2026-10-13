@@ -21,6 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.task_claim import claim_generation
 from teatree.utils.git import run_strict
@@ -43,7 +44,7 @@ _HAND_PLAN = {
 
 
 class TestRecordAttemptCommand(TestCase):
-    def test_hand_plan_advances_without_a_writing_task_even_on_replay(self) -> None:
+    def test_loop_plan_schedules_one_coding_task_even_on_replay(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
         task.claim(claimed_by="loop-slot")
@@ -59,12 +60,12 @@ class TestRecordAttemptCommand(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLAN_RECORDED
-        assert task.attempts.latest("pk").result.get("recording_source") == "hand"
-        assert not Task.objects.filter(ticket=ticket, phase="coding").exists(), "minted immediately"
+        assert task.attempts.latest("pk").result.get("recording_source") == "loop"
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
         assert task._apply_phase_transition() is False
-        assert not Task.objects.filter(ticket=ticket, phase="coding").exists(), "minted on replay"
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
 
-    def test_hand_review_advances_without_shipping_or_page_even_on_replay(self) -> None:
+    def test_loop_review_schedules_shipping_once_even_on_replay(self) -> None:
         ticket = author_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
         task.claim(claimed_by="loop-slot")
@@ -91,10 +92,10 @@ class TestRecordAttemptCommand(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED
-        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+        assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
         assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
 
-    def test_hand_review_hold_mints_no_rework_or_page_even_on_replay(self) -> None:
+    def test_loop_review_hold_schedules_one_rework_even_on_replay(self) -> None:
         ticket = author_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
         task.claim(claimed_by="loop-slot")
@@ -111,8 +112,24 @@ class TestRecordAttemptCommand(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
-        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
         assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
+
+    def test_manual_hand_plan_keeps_the_writing_task_unscheduled(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        task.claim(claimed_by="operator")
+        record_result_envelope(task, _HAND_PLAN, usage=AttemptUsage(recording_source="hand"))
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+
+    def test_manual_hand_review_hold_keeps_rework_unscheduled(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="operator")
+        record_result_envelope(task, self_review_result("hold"), usage=AttemptUsage(recording_source="hand"))
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
 
     def _claimed_task(self, *, phase: str = "coding") -> Task:
         ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)

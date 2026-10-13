@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from teatree.core.worktree.checkout_state import checkout_state
+from teatree.utils.git import run_strict
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -35,3 +36,12 @@ def test_checkout_state_counts_commits_ahead(tmp_path: Path) -> None:
     state = checkout_state(checkout)
     assert state.commits_ahead == 3
     assert not state.pristine
+
+
+def test_checkout_state_accepts_detached_head(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+    run_strict(repo=str(checkout), args=["checkout", "--detach", "HEAD"])
+    state = checkout_state(checkout)
+    assert state.commits_ahead == 1
+    assert state.digest

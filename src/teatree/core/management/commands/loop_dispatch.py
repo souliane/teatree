@@ -283,7 +283,7 @@ class Command(TyperCommand):
             )
         entry = _task_to_dict(task) if task is not None else None
         if task is not None and isinstance(entry, dict):
-            parked = claim_task_checkout_or_park(task)
+            parked = claim_task_checkout_or_park(task, lease_seconds=_interactive_claim_lease_seconds())
             if parked is not None:
                 entry = parked
         payload: list[dict[str, Any]] = [entry] if isinstance(entry, dict) else []

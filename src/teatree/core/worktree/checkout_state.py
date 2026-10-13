@@ -23,7 +23,7 @@ class CheckoutState:
 def checkout_state(checkout: Path) -> CheckoutState:
     repo = str(checkout)
     head = run_strict(repo=repo, args=["rev-parse", "--verify", "HEAD"])
-    branch = run_strict(repo=repo, args=["symbolic-ref", "--quiet", "--short", "HEAD"])
+    branch = run_strict(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
     base = _resolve_base_branch(repo)
     commits_ahead = int(run_strict(repo=repo, args=["rev-list", "--count", f"{base}..HEAD"]))
     status = run_strict_verbatim(repo=repo, args=["status", "--porcelain=v1", "-z", "--untracked-files=all"])

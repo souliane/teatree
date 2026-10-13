@@ -12,7 +12,7 @@ from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands.task_cancel_auth import direct_owner_cancel
+from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -24,10 +24,11 @@ from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
-from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
+from teatree.core.worktree.occupancy import finish_recorded_task_checkout
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class Command(TyperCommand):
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=cancel_reason,
-                result={"cancel_reason": cancel_reason, "cancel_source": "owner" if direct_owner_cancel() else "agent"},
+                result={"cancel_reason": cancel_reason, "cancel_source": "owner" if direct_owner_action() else "agent"},
             )
             task.fail(reason=cancel_reason, by_holder=False)
         self.stdout.write(f"Task {task_id} cancelled.")
@@ -342,9 +343,11 @@ class Command(TyperCommand):
         # own Claude Code session — always the Max subscription seat, never
         # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
         usage = AttemptUsage(
-            agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION, recording_source="hand"
+            agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION, recording_source="loop"
         )
-        attempt = record_result_envelope(task, result, usage=usage)
+        with drive_claim(task):
+            attempt = record_result_envelope(task, result, usage=usage)
+            finish_recorded_task_checkout(task)
         task.refresh_from_db()
         self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")
 

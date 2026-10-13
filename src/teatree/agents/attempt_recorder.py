@@ -223,8 +223,6 @@ def record_result_envelope(
     try:
         with transaction.atomic():
             recorded_result = with_transport_records(result, usage)
-            if usage.recording_source:
-                recorded_result["recording_source"] = usage.recording_source
             attempt = TaskAttempt.objects.create(
                 task=task,
                 ended_at=timezone.now(),
@@ -315,6 +313,8 @@ def with_transport_records(result: AgentResultBlob | None, usage: AttemptUsage |
     # through here. Never persist agent-supplied application references; the
     # bounded assurance receipt stores only a declaration marker.
     blob.pop("skill_application", None)
+    if usage is not None and usage.recording_source:
+        blob["recording_source"] = usage.recording_source
     if usage is not None and usage.usage_per_request:
         blob["usage_per_request"] = list(usage.usage_per_request)
     if usage is not None and usage.trajectory:

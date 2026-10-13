@@ -8966,6 +8966,8 @@ Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 │ diagram            Print a state diagram as Mermaid. Models: worktree,       │
 │                    ticket, task.                                             │
 │ occupancy          Show every checkout a live agent currently holds.         │
+│ fence-probe        Read every registered checkout's prospective              │
+│                    writing-fence status without changing it.                 │
 │ claim-occupancy    Claim a checkout for a hand-driven lane, refusing if an   │
 │                    agent already holds it.                                   │
 │ release-occupancy  Hand a checkout back, naming whose claim was freed.       │
@@ -9161,6 +9163,19 @@ Usage: t3 teatree worktree diagram [OPTIONS]
 Usage: t3 teatree worktree occupancy [OPTIONS]
 
  Show every checkout a live agent currently holds (#3952).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree fence-probe`
+
+```
+Usage: t3 teatree worktree fence-probe [OPTIONS]
+
+ Read every registered checkout's prospective writing-fence status without
+ changing it.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

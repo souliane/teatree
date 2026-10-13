@@ -143,6 +143,56 @@ def wait_for_owned_checkout_processes(checkout: Path, *, beat_seconds: float) ->
     return owned_checkout_processes(checkout)
 
 
+def current_pid_namespace() -> str:
+    root = venue_proc_root()
+    if root is None:
+        return ""
+    try:
+        return str((root / "self" / "ns" / "pid").readlink())
+    except OSError:
+        return ""
+
+
+def _same_recorded_writer(pid_dir: Path, checkout: Path, started: int) -> bool:
+    detail = _details(pid_dir)
+    if detail is None or detail[1] != started:
+        return False
+    try:
+        cwd = pid_dir.joinpath("cwd").readlink()
+        argv = pid_dir.joinpath("cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    shared_server = bool(
+        argv and Path(os.fsdecode(argv[0])).name == "codex" and len(argv) > 1 and argv[1] == b"app-server"
+    )
+    return _under(cwd, checkout) and _writer(pid_dir, checkout) and not shared_server
+
+
+def stop_recorded_writers(checkout: Path, candidates: tuple[tuple[int, int], ...], namespace: str) -> tuple[int, ...]:
+    root = venue_proc_root()
+    if root is None or not namespace or current_pid_namespace() != namespace:
+        return ()
+    stopped: list[int] = []
+    checkout = checkout.resolve()
+    for pid, started in candidates:
+        pid_dir = root / str(pid)
+        if not _same_recorded_writer(pid_dir, checkout, started):
+            continue
+        try:
+            descriptor = _pidfd_open(pid)
+        except OSError:
+            continue
+        try:
+            if _same_recorded_writer(pid_dir, checkout, started):
+                _pidfd_signal(descriptor)
+                stopped.append(pid)
+        except OSError:
+            continue
+        finally:
+            os.close(descriptor)
+    return tuple(stopped)
+
+
 def stop_owned_writers(checkout: Path) -> tuple[int, ...]:
     """Signal only descendants still showing checkout write evidence after pidfd opens."""
     signalled: list[int] = []

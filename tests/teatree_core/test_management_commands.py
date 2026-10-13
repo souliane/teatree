@@ -1268,7 +1268,7 @@ class TestTasksCancelCommand(TestCase):
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(ticket=ticket, session=session)
 
-        with mock.patch("teatree.core.management.commands.tasks.direct_owner_cancel", return_value=True):
+        with mock.patch("teatree.core.management.commands.tasks.direct_owner_action", return_value=True):
             call_command("tasks", "cancel", task.pk)
 
         assert task.attempts.get().result["cancel_source"] == "owner"

@@ -5,6 +5,7 @@ from django.test import TestCase
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.worktree.survivor_notice import page_surviving_checkout
 from tests.factories import TaskAttemptFactory, TaskFactory
 
@@ -12,8 +13,19 @@ from tests.factories import TaskAttemptFactory, TaskFactory
 class SurvivorNoticeTests(TestCase):
     def test_agent_cancel_offers_stop_as_one_owner_card(self) -> None:
         task = TaskFactory()
+        task.claim(claimed_by="worker", claimed_by_session="session")
         Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
-        TaskAttemptFactory(task=task, result={"cancel_source": "agent"})
+        TaskAttemptFactory(
+            task=task,
+            result={
+                "cancel_source": "agent",
+                "surviving_writers": {
+                    "namespace": "pid:[1]",
+                    "claim_generation": claim_generation(task),
+                    "processes": [{"pid": 9, "started": 1}],
+                },
+            },
+        )
         with (
             patch("teatree.core.worktree.survivor_notice.DeferredQuestion.record") as card,
             patch("teatree.core.worktree.survivor_notice.notify_user") as notice,
@@ -26,6 +38,29 @@ class SurvivorNoticeTests(TestCase):
         options = card.call_args.kwargs["card"].options
         assert [option.label for option in options] == ["Keep checkout held", "Stop verified writers"]
         assert card.call_args.kwargs["card"].problems(card.call_args.args[0]) == []
+
+    def test_old_claim_snapshot_does_not_offer_a_stop_card(self) -> None:
+        task = TaskFactory()
+        task.claim(claimed_by="worker", claimed_by_session="session")
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
+        TaskAttemptFactory(
+            task=task,
+            result={
+                "cancel_source": "agent",
+                "surviving_writers": {
+                    "namespace": "pid:[1]",
+                    "claim_generation": "older claim",
+                    "processes": [{"pid": 9, "started": 1}],
+                },
+            },
+        )
+        with (
+            patch("teatree.core.worktree.survivor_notice.DeferredQuestion.record") as card,
+            patch("teatree.core.worktree.survivor_notice.notify_user") as notice,
+        ):
+            page_surviving_checkout(task, Path("/checkout"), holder_session="session")
+        card.assert_not_called()
+        notice.assert_called_once()
 
     def test_owner_cancel_sends_one_idempotent_survivor_notice(self) -> None:
         task = TaskFactory()

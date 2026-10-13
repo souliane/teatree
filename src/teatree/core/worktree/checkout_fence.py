@@ -11,9 +11,10 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import WorktreeOccupiedError, _worktree_at, acquire, release, task_holder_id
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_state import checkout_state
+from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 
 logger = logging.getLogger(__name__)
 CHECKOUT_PARKED_PREFIX = "checkout_parked: "
@@ -21,6 +22,17 @@ CHECKOUT_PARKED_PREFIX = "checkout_parked: "
 
 class CheckoutFenceError(RuntimeError):
     pass
+
+
+def _confirm_owner_attestation(path: str, state: CheckoutState) -> None:
+    try:
+        confirmed = checkout_state(Path(path))
+    except (OSError, RuntimeError, ValueError) as exc:
+        message = f"checkout {path} state could not be confirmed: {exc}"
+        raise CheckoutFenceError(message) from exc
+    if confirmed.digest != state.digest:
+        message = f"checkout {path} changed while consuming owner attestation"
+        raise CheckoutFenceError(message)
 
 
 def writes_checkout(task: Task) -> bool:
@@ -35,10 +47,7 @@ def verify_task_checkout(task: Task, path: str) -> None:
         message = f"checkout {path} needs exactly one Worktree row; found {len(rows)}"
         raise CheckoutFenceError(message)
     table = read_process_table()
-    if not table.usable:
-        message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
-        raise CheckoutFenceError(message)
-    if table.holds(Path(path)):
+    if table.usable and table.holds(Path(path)):
         message = f"checkout {path} has a live process working in it"
         raise CheckoutFenceError(message)
     try:
@@ -48,6 +57,14 @@ def verify_task_checkout(task: Task, path: str) -> None:
         raise CheckoutFenceError(message) from exc
     worktree = rows[0]
     attested = worktree.get_extra().get("attested_state")
+    owner_attested = f"owner:{state.digest}"
+    if not table.usable and attested != owner_attested:
+        message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
+        raise CheckoutFenceError(message)
+    if attested == owner_attested:
+        _confirm_owner_attestation(path, state)
+        worktree.merge_extra(set_keys={"attested_state": state.digest})
+        attested = state.digest
     if attested is None and state.pristine:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
@@ -68,7 +85,7 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
-        error="",
+        error=f"{LIMIT_PARKED_PREFIX}{CHECKOUT_PARKED_PREFIX}{reason}",
         result={"summary": f"{CHECKOUT_PARKED_PREFIX}{reason}", "checkout_episode": episode or f"attempt:{task.pk}"},
     )
     if episode is None:
@@ -89,7 +106,7 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
     return attempt
 
 
-def claim_task_checkout_or_park(task: Task) -> TaskAttempt | None:
+def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:
     path = dispatch_worktree_path(task.ticket)
     if not path or not writes_checkout(task):
         return None
@@ -99,7 +116,7 @@ def claim_task_checkout_or_park(task: Task) -> TaskAttempt | None:
     holder = task_holder_id(task)
     session = task.claimed_by_session
     try:
-        acquire(worktree, holder=holder, holder_session=session)
+        acquire(worktree, holder=holder, holder_session=session, lease_seconds=lease_seconds)
     except WorktreeOccupiedError as exc:
         return park_task_checkout(task, reason=str(exc))
     try:

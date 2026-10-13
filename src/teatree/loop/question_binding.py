@@ -44,6 +44,7 @@ from teatree.core.owner_question_message import (
     closed_message,
     replace_root,
 )
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
 
 if TYPE_CHECKING:
@@ -107,6 +108,7 @@ def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None"
     from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
     resume_on_answer(applied, applied.parked_task)
+    apply_stop_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:
         replace_root(applied, closed_message(applied, answered_line(applied)), backend)
     return True

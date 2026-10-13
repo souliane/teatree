@@ -40,6 +40,7 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 """
 
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -137,6 +138,9 @@ def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: st
     task_pk = task.pk
     table = read_process_table()
     path = Path(worktree.worktree_path)
+    if table.usable and table.holds(path):
+        time.sleep(0.25)
+        table = read_process_table()
     if not table.usable or table.holds(path):
         logger.warning(
             "Keeping checkout %s occupied after task %s: process evidence is incomplete or live", path, task_pk
@@ -171,6 +175,13 @@ def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: st
     return True
 
 
+def finish_recorded_task_checkout(task: Task) -> None:
+    path = dispatch_worktree_path(task.ticket)
+    worktree = _worktree_at(task.ticket, path) if path else None
+    if worktree is not None:
+        _finish_task_checkout(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+
 @contextmanager
 def occupy_ticket_checkout(
     ticket: "Ticket",
@@ -181,9 +192,8 @@ def occupy_ticket_checkout(
 ) -> Iterator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
-    Yields the on-disk path an agent should run in, and releases the claim on the
-    way out — including when the body raises, so a crashed run frees the checkout
-    at once instead of making the next requester wait out the TTL.
+    Yields the on-disk path an agent should run in, and settles the claim on exit.
+    An unreadable process table or a surviving writer keeps it reserved for review.
 
     Yields ``""`` and claims nothing when the ticket has no materialised checkout:
     there is no shared resource yet, so there is nothing to contend on and a

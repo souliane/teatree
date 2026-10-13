@@ -726,6 +726,7 @@ Per-worktree FSM operations.
 | `status` | Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27) |
 | `diagnose` | Print a structured health checklist for one worktree |
 | `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
+| `fence-probe` | Read every registered checkout's prospective writing-fence status without changing it |
 | `claim-occupancy` | Claim a checkout for a hand-driven lane, or refuse naming who already holds it |
 | `release-occupancy` | Hand a checkout back, naming whose claim was freed |
 | `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

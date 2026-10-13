@@ -224,14 +224,13 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> boo
     return freed == 1
 
 
-def release_task_occupancy(task: Task) -> bool:
+def release_task_occupancy(task: Task, *, defer_if_driving: bool = True) -> bool:
     """Release *task*'s occupancy claim on its ticket's checkout, iff it holds one (#4867).
 
-    Runs in the SAME transaction as the terminal status write, so a process kill
-    before ``occupy_ticket_checkout``'s ``finally`` cannot strand the claim. The
-    callers are a holder's own report (``complete_claimed()``, ``fail(by_holder=True)``)
-    and a third-party ``fail`` of a confirmed-dead holder; any other third-party fail
-    keeps the claim for the holder's own unwind (#4872).
+    Runs in the SAME transaction as the terminal status write unless the holder
+    is still driving its run; its exit then attests or keeps the checkout held.
+    A third-party fail of a confirmed-dead holder bypasses that marker and releases
+    the claim; a third-party fail of a live holder keeps it for the holder's unwind.
     Callers MUST run this BEFORE blanking ``claimed_by_session``: :func:`release`'s
     CAS matches on that exact session value, so calling this after clearing the claim
     would silently no-op.
@@ -240,7 +239,7 @@ def release_task_occupancy(task: Task) -> bool:
     worktree = _worktree_at(task.ticket, path) if path else None
     if worktree is None:
         return False
-    if task_occupancy_release_deferred(task):
+    if defer_if_driving and task_occupancy_release_deferred(task):
         return False
     return release(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
 

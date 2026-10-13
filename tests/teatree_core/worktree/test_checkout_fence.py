@@ -11,7 +11,9 @@ from teatree.agents import runner
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
+from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
+from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, occupy_ticket_checkout, release, task_holder_id
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -39,6 +41,38 @@ class CheckoutFenceTests(TestCase):
             (self.checkout / "new.txt").write_text("foreign edit")
             with pytest.raises(CheckoutFenceError, match="attested"):
                 verify_task_checkout(self.task, str(self.checkout))
+
+    def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
+        for _ in range(5):
+            attempt = park_task_checkout(self.task, reason="foreign checkout state")
+            assert attempt.error.startswith("limit_parked: checkout_parked:")
+        assert phase_attempts(self.task) == []
+        check_requeue_allowed(self.task)
+
+    def test_owner_attestation_allows_only_one_claim_without_process_table(self) -> None:
+        state = checkout_state(self.checkout)
+        self.worktree.merge_extra(set_keys={"attested_state": f"owner:{state.digest}"})
+        unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):
+            verify_task_checkout(self.task, str(self.checkout))
+            with pytest.raises(CheckoutFenceError, match="process table unavailable"):
+                verify_task_checkout(self.task, str(self.checkout))
+
+    def test_owner_attestation_remains_unused_when_confirmation_cannot_be_read(self) -> None:
+        state = checkout_state(self.checkout)
+        attestation = f"owner:{state.digest}"
+        self.worktree.merge_extra(set_keys={"attested_state": attestation})
+        unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable),
+            patch(
+                "teatree.core.worktree.checkout_fence.checkout_state", side_effect=[state, RuntimeError("unreadable")]
+            ),
+            pytest.raises(CheckoutFenceError, match="could not be confirmed"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == attestation
 
     def test_duplicate_row_or_live_process_refuses_checkout(self) -> None:
         WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
@@ -139,6 +173,22 @@ class CheckoutFenceTests(TestCase):
         assert held is not None
         assert held.holder == task_holder_id(self.task)
         assert finished.get_extra()["attested_state"] == initial
+
+    def test_exiting_child_gets_a_grace_read_before_owner_page(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        busy = ProcessTable(frozenset({self.checkout}), "/proc")
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", side_effect=[busy, clear]),
+            patch("teatree.core.worktree.occupancy.time.sleep") as pause,
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            self.task.complete()
+        pause.assert_called_once()
+        page.assert_not_called()
+        assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 
     def test_deploy_checkpoint_attests_own_edit_for_same_task_resume(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
