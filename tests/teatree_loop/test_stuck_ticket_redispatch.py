@@ -1014,6 +1014,15 @@ class TestOperatorCancelledTickets(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
+    def test_newer_other_phase_record_does_not_undo_coding_cancel(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
+        coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
+        _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED, hours_ago=48)
+
+        assert redispatch_stuck_tickets() == 0
+        assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
 
 class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):
     """A halt escalation is the box reporting its OWN health — the class is already INTERNAL.

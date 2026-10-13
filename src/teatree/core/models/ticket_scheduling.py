@@ -281,7 +281,7 @@ class TicketSchedulingModel(TicketFacet):
             "reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task
         )
 
-    def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
+    def schedule_shipping(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
         """Create an INTERACTIVE shipping task; approval gating rides the reason.
 
         Shipping is a loop-dispatched phase (``(author, shipping)`` →
@@ -292,10 +292,6 @@ class TicketSchedulingModel(TicketFacet):
         ``execution_reason`` (auto = push without waiting; otherwise = gate for
         user approval first).
         """
-        from teatree.core.models.session import Session  # noqa: PLC0415 — import cycle
-        from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
-
-        session = Session.objects.create(ticket=self, agent_id="shipping")
         if _auto_ship_enabled():
             reason = "Auto-scheduled shipping — auto mode, push will proceed without waiting for approval"
         else:
@@ -303,13 +299,7 @@ class TicketSchedulingModel(TicketFacet):
                 "Auto-scheduled shipping — gated for user approval "
                 "(set mode = auto via config_setting set, or T3_MODE=auto, to skip)"
             )
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="shipping",
-            execution_reason=reason,
-            parent_task=parent_task,
-        )
+        return self._schedule_phase_task("shipping", reason, parent_task)
 
     def _cancel_pending_tasks(self) -> None:
         """Fail all pending/claimed tasks when reworking, each naming rework as its cause."""

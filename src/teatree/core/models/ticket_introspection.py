@@ -5,7 +5,7 @@ from django.db.models import Max
 from django_fsm import can_proceed
 
 from teatree.core.forge_url import is_forge_url
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
@@ -75,6 +75,10 @@ class TicketIntrospectionModel(TicketFacet):
         if newest is None:
             return False
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
+
+    def newest_phase_task_was_cancelled(self, phase: str) -> bool:
+        latest = self.tasks.filter(phase__in=phase_spellings(normalize_phase(phase))).order_by("-pk").first()
+        return latest is not None and latest.failure_kind == FailureKind.CANCELLED
 
     @property
     def has_checkout_source(self: "Ticket") -> bool:

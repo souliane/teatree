@@ -175,7 +175,7 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
         phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled():
+        if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
             continue
         failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
