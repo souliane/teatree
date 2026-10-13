@@ -9,9 +9,8 @@ from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path, worktree_has_commits_ahead
+from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils import git
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -84,31 +83,6 @@ class TicketIntrospectionModel(TicketFacet):
     def newest_task_recorded_by_hand(self) -> bool:
         latest = self.tasks.order_by("-pk").first()
         return latest is not None and latest.recorded_by_hand()
-
-    def has_merge_safe_self_review_after_plan(self: "Ticket") -> bool:
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — import cycle
-        from teatree.core.models.self_review import SelfReview  # noqa: PLC0415 — import cycle
-        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — import cycle
-
-        plan_time = (
-            PlanArtifact.objects.filter(ticket=self)
-            .order_by("-recorded_at", "-pk")
-            .values_list("recorded_at", flat=True)
-            .first()
-        )
-        path = dispatch_worktree_path(self)
-        review = SelfReview.latest_for(self)
-        if plan_time is None or not path or review is None or review.verdict != "merge_safe":
-            return False
-        head = git.run_strict(repo=path, args=["rev-parse", "HEAD"])
-        if review.reviewed_sha != head.lower():
-            return False
-        return TaskAttempt.objects.filter(
-            task_id=review.task_pk,
-            ended_at__gt=plan_time,
-            result__review_verdict__verdict="merge_safe",
-            result__review_verdict__reviewed_sha=head,
-        ).exists()
 
     @property
     def has_checkout_source(self: "Ticket") -> bool:

@@ -39,8 +39,10 @@ from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.task_failure_taxonomy import CONTEXT_EXHAUSTED_MARKER
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, dispatch_reason, schedule_resume
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.transient_requeue import requeue_transient_failed
 from tests.factories import planned_ticket
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _PARENT_SESSION = "11111111-1111-4111-8111-111111111111"
 _OWN_SESSION = "22222222-2222-4222-8222-222222222222"
@@ -159,11 +161,15 @@ class TestAPydanticRunReopenedInPlaceContinuesItsOwnConversation(TestCase):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
-        Worktree.objects.create(
-            ticket=self.ticket, repo_path=str(root), branch="feature", extra={"worktree_path": str(root)}
-        )
+        _init_repo_with_branch(root, branch="feature", commits_ahead=1)
         self.notes = root / "notes.txt"
         self.notes.write_text("lock order", encoding="utf-8")
+        Worktree.objects.create(
+            ticket=self.ticket,
+            repo_path=str(root),
+            branch="feature",
+            extra={"worktree_path": str(root), "attested_state": checkout_state(root).digest},
+        )
         self.parent = Task.objects.create(
             ticket=self.ticket, session=Session.objects.create(ticket=self.ticket), phase="debugging"
         )

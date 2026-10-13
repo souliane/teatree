@@ -41,6 +41,7 @@ from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
+from teatree.loop import stuck_ticket_redispatch
 from teatree.loop.stuck_ticket_redispatch import (
     DEFAULT_STUCK_IDLE_HOURS,
     _idle_threshold_hours,
@@ -1052,21 +1053,21 @@ class TestCompletedReviewNoCoding(TestCase):
                 result={"recording_source": "hand", "review_verdict": {"verdict": "merge_safe", "reviewed_sha": head}}
             )
             guards = (
-                "newest_phase_task_was_cancelled",
-                "has_merge_safe_self_review_after_plan",
-                "newest_task_recorded_by_hand",
+                (Ticket, "newest_phase_task_was_cancelled"),
+                (stuck_ticket_redispatch, "_merge_safe_review_after_plan"),
+                (Ticket, "newest_task_recorded_by_hand"),
             )
 
             assert redispatch_stuck_tickets() == 0
             for kept in guards:
                 with ExitStack() as patched:
-                    for guard in guards:
-                        if guard != kept:
-                            patched.enter_context(patch.object(Ticket, guard, return_value=False))
-                    assert redispatch_stuck_tickets() == 0, f"{kept} alone did not hold"
+                    for owner, guard in guards:
+                        if (owner, guard) != kept:
+                            patched.enter_context(patch.object(owner, guard, return_value=False))
+                    assert redispatch_stuck_tickets() == 0, f"{kept[1]} alone did not hold"
             with ExitStack() as patched:
-                for guard in guards:
-                    patched.enter_context(patch.object(Ticket, guard, return_value=False))
+                for owner, guard in guards:
+                    patched.enter_context(patch.object(owner, guard, return_value=False))
                 assert redispatch_stuck_tickets() == 1
 
             task = ticket.tasks.get(phase="coding", status=Task.Status.PENDING)
@@ -1094,6 +1095,23 @@ class TestCompletedReviewNoCoding(TestCase):
         _finished_task(ticket, phase="planning", status=Task.Status.COMPLETED)
 
         assert redispatch_stuck_tickets() == 1
+
+    def test_an_unreadable_checkout_head_does_not_abort_the_sweep_for_other_tickets(self) -> None:
+        with TemporaryDirectory() as not_a_repo:
+            reviewed = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=reviewed,
+                overlay=reviewed.overlay,
+                repo_path="test/repo",
+                branch="feature",
+                extra={"worktree_path": not_a_repo},
+            )
+            review = _finished_task(reviewed, phase="reviewing", status=Task.Status.COMPLETED)
+            review.attempts.update(result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": "a" * 40}})
+            frozen = _stuck_ticket(state=Ticket.State.WORK_STARTED)
+
+            assert redispatch_stuck_tickets() == 1
+            assert frozen.tasks.filter(phase="planning", status=Task.Status.PENDING).exists()
 
     def test_merge_safe_at_head_after_plan_blocks_generic_coding(self) -> None:
         with TemporaryDirectory() as checkout:

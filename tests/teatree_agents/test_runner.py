@@ -46,6 +46,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
@@ -395,7 +396,10 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
         branch = f"feature-{ticket.pk}"
         _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=1)
         Worktree.objects.create(
-            ticket=ticket, repo_path=str(repo_dir), branch=branch, extra={"worktree_path": str(repo_dir)}
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch=branch,
+            extra={"worktree_path": str(repo_dir), "attested_state": checkout_state(repo_dir).digest},
         )
 
         stream = [

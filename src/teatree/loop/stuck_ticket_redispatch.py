@@ -52,20 +52,24 @@ from django.utils import timezone
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
-from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
+from teatree.core.models import PlanArtifact, PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
     schedule_external_review,
 )
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.persistence_phase_task import create_phase_task
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +182,7 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         phase = _implied_phase(ticket)
         if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
             continue
-        if phase == "coding" and ticket.has_merge_safe_self_review_after_plan():
+        if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
             continue
         failing = (
             _phase_is_failing(ticket, phase=phase)
@@ -267,6 +271,34 @@ def _review_has_no_head(ticket: Ticket, *, phase: str) -> bool:
     latest = ticket.tasks.filter(phase__in=phase_spellings("reviewing")).order_by("-pk").first()  # Django reverse FK
     target = review_target_for_task(latest) if latest is not None else None
     return target is not None and not target.head_sha
+
+
+def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
+    """A merge_safe self-review at the live checkout HEAD, recorded after the latest plan."""
+    plan_time = (
+        PlanArtifact.objects.filter(ticket=ticket)
+        .order_by("-recorded_at", "-pk")
+        .values_list("recorded_at", flat=True)
+        .first()
+    )
+    path = dispatch_worktree_path(ticket)
+    review = SelfReview.latest_for(ticket)
+    if plan_time is None or not path or review is None or review.verdict != "merge_safe":
+        return False
+    try:
+        head = git.run_strict(repo=path, args=["rev-parse", "HEAD"])
+    except (CommandFailedError, OSError):
+        # Not proven reviewed; the run-start fence parks a checkout it cannot read.
+        logger.warning("stuck-redispatch: HEAD of %s unreadable for ticket %s", path, ticket.pk, exc_info=True)
+        return False
+    if review.reviewed_sha != head.lower():
+        return False
+    return TaskAttempt.objects.filter(
+        task_id=review.task_pk,
+        ended_at__gt=plan_time,
+        result__review_verdict__verdict="merge_safe",
+        result__review_verdict__reviewed_sha=head,
+    ).exists()
 
 
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).

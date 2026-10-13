@@ -55,6 +55,8 @@ class TestStatusFacetCohesionSplit:
             "has_active_work",
             "has_checkout_source",
             "newest_task_was_cancelled",
+            "newest_phase_task_was_cancelled",
+            "newest_task_recorded_by_hand",
             "is_settled",
             "admits_review",
             "has_completed_phase",
