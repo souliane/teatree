@@ -84,6 +84,29 @@ class _Handoff(TestCase):
         ticket = planned_ticket()
         worktree_dir = self.root / f"repo-{ticket.pk}"
         worktree_dir.mkdir()
+        git_binary = shutil.which("git")
+        assert git_binary is not None
+        subprocess.run([git_binary, "-C", str(worktree_dir), "init", "-b", "main"], check=True, capture_output=True)
+        subprocess.run(
+            [
+                git_binary,
+                "-C",
+                str(worktree_dir),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [git_binary, "-C", str(worktree_dir), "switch", "-c", "feature"], check=True, capture_output=True
+        )
         Worktree.objects.create(
             ticket=ticket, repo_path=str(worktree_dir), branch="feature", extra={"worktree_path": str(worktree_dir)}
         )
