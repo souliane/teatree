@@ -25,6 +25,7 @@ _ACTION = {
     "swap": "Inspect host swap and stop optional heavy work until swap falls below resume.",
     "yield-collapse": "Inspect failed task outcomes and repair the common failure before admitting more work.",
 }
+_QUOTA_CAUSES = frozenset({"accounts-exhausted", "weekly-quota", "5h-quota", "weekly-pace"})
 _FIRST_INCIDENT = 3
 _ESCALATE_TO_SLACK = 10
 _ESCALATE_TO_TICKET = 30
@@ -69,7 +70,9 @@ class PressureIncidentDetector:
             )
             peak = max(float(row["pressure"]) for row in rows)
             rung = (
-                ActionRung.TICKET
+                ActionRung.LOG
+                if cause in _QUOTA_CAUSES
+                else ActionRung.TICKET
                 if tier == _ESCALATE_TO_TICKET
                 else ActionRung.SLACK
                 if tier == _ESCALATE_TO_SLACK
@@ -85,8 +88,9 @@ class PressureIncidentDetector:
                     requested_rung=rung,
                     summary=f"{count} pressure admissions in 30 min share cause {cause} (peak {peak:.2f})",
                     payload={
+                        "kind": self.name,
                         "cause": cause,
-                        "observations": count,
+                        "count": count,
                         "peak_pressure": peak,
                         "suggested_action": _ACTION.get(
                             cause, "Inspect the admission trace and its dominant pressure component."

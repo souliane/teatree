@@ -1,6 +1,7 @@
 """Tests for ``teatree.loop.phases.render`` — the closing statusline phase."""
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +15,9 @@ from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
 from teatree.loop.phases.render import _identity_aliases_for_request, rerender_statusline
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
+from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.tick import TickReport, TickRequest
 from tests.factories import MergeAuditFactory
@@ -192,6 +195,30 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             assert "self-improve: task_failed (harness_crash; 1)" in rendered
             assert "inbound_unanswered" not in rendered
             assert "private" not in rendered
+
+    def test_real_pressure_report_renders_kind_and_count(self) -> None:
+        row = {
+            "epoch": int(_NOW.timestamp()),
+            "cause": "load",
+            "pressure": 1.1,
+            "band": "halt",
+            "admit": False,
+            "reason": "load 10 at/over the 50 watermark on 10 core(s)",
+            "lane": "headless",
+        }
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / f"admission-{_NOW.date().isoformat()}.jsonl").write_text((json.dumps(row) + "\n") * 3)
+            detector = PressureIncidentDetector(
+                directory=root,
+                now=lambda: _NOW,
+                read_resources=lambda: ResourceReading(disk_free_gb=100.0, ram_avail_gb=20.0),
+            )
+            report = next(report for report in detector.detect() if report.payload.get("cause") == "load")
+            record_firing(report, action=ActionRung.STATUSLINE)
+            sl = root / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            assert "self-improve: pressure_incident (load; 3)" in sl.read_text()
 
     def test_self_improve_rerender_preserves_active_finding(self) -> None:
         report = DetectorReport(
