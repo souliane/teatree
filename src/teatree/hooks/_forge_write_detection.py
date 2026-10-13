@@ -14,7 +14,7 @@ from itertools import starmap
 from typing import Final
 
 from teatree.hooks._body_file_resolution import BODY_FILE_FLAG_NAMES, STDIN_DASH, BodyFileContext, append_file_payload
-from teatree.hooks._curl_payload import CURL_DATA_FLAGS, CURL_FORM_FLAGS, CURL_UPLOAD_FLAGS, curl_options
+from teatree.hooks._curl_payload import curl_groups, curl_method
 from teatree.hooks._inline_body_resolution import (
     resolve_attached_value,
     resolve_inline_body_value,
@@ -69,13 +69,6 @@ _CONTENT_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
 
 _GRAPHQL_MUTATION_RE: Final[re.Pattern[str]] = re.compile(r"\bmutation\b")
 
-_CURL_METHOD_FLAGS: Final[frozenset[str]] = frozenset({"-X", "--request"})
-_CURL_IMPLIED_METHODS: Final[tuple[tuple[str, frozenset[str]], ...]] = (
-    ("HEAD", frozenset({"-I", "--head"})),
-    ("GET", frozenset({"-G", "--get"})),
-    ("PUT", CURL_UPLOAD_FLAGS),
-    ("POST", CURL_DATA_FLAGS | CURL_FORM_FLAGS),
-)
 _READ_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 _FORGE_HOSTS: Final[tuple[str, ...]] = ("github.com", "gitlab.com")
 _URL_HOST_RE: Final[re.Pattern[str]] = re.compile(
@@ -119,7 +112,7 @@ def _attached_free_text(word: str, long_flags: frozenset[str]) -> tuple[str, str
 def _token_carries_free_text(word: str, nxt: str) -> bool:
     if word in _FREE_TEXT_FLAGS or _attached_free_text(word, _DETECTED_LONG) is not None:
         return True
-    if any(attached or nxt for _, attached in short_cluster_values(word, _FREE_TEXT_SHORT)):
+    if any(candidate.value or nxt for candidate in short_cluster_values(word, _FREE_TEXT_SHORT)):
         return True
     if word in _FIELD_FLAGS:
         return word == "-F" or "=" in nxt
@@ -207,15 +200,6 @@ def graphql_document_is_read(words: list[str]) -> bool:
     return False
 
 
-def _curl_method(args: list[str]) -> str:
-    options = list(curl_options(args))
-    explicit = [option.value for option in options if option.name in _CURL_METHOD_FLAGS and option.value]
-    if explicit:
-        return explicit[-1].strip("'\"").upper()
-    names = {option.name for option in options}
-    return next((method for method, implying in _CURL_IMPLIED_METHODS if names & implying), "GET")
-
-
 def _url_host(url: str) -> str:
     match = _URL_HOST_RE.match(url)
     return match["host"].lower() if match else ""
@@ -242,16 +226,24 @@ def curl_forge_targets(words: list[str]) -> list[tuple[str, str] | None]:
     rest = strip_wrapper_prefix(words)
     if not rest or canonical_leader(rest[0]) != "curl":
         return []
-    return [next(find_python_forge_rest_urls(url), None) for url in _curl_urls(rest[1:])]
+    return [
+        next(find_python_forge_rest_urls(url), None)
+        for _, positions in curl_groups(rest[1:])
+        for url in _curl_urls(positions)
+    ]
 
 
 def _segment_is_curl_forge_write(words: list[str]) -> bool:
     rest = strip_wrapper_prefix(words)
-    if not rest or canonical_leader(rest[0]) != "curl" or _curl_method(rest[1:]) in _READ_METHODS:
+    if not rest or canonical_leader(rest[0]) != "curl":
         return False
-    return any(
-        _is_forge_host(_url_host(url)) or next(find_python_forge_rest_urls(url), None) is not None
-        for url in _curl_urls(rest[1:])
+    groups = curl_groups(rest[1:])
+    forge_groups = [
+        options for options, positions in groups if any(_is_forge_host(_url_host(url)) for url in _curl_urls(positions))
+    ]
+    return bool(forge_groups) and (
+        any(curl_method(options) not in _READ_METHODS for options in forge_groups)
+        or any(option.unknown or option.name in {"-K", "--config"} for options, _ in groups for option in options)
     )
 
 

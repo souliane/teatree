@@ -17,7 +17,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks import _repo_visibility, banned_terms_scanner, quote_scanner
 from teatree.hooks._command_parser import is_publish_command
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 from tests._uv_stub import working_uv
@@ -312,6 +312,22 @@ _CURL_INLINE_SPELLINGS = [
     f"curl -sF 'body={{text}}' {_GH_COMMENTS}",
     f"curl --data-ascii 'body={{text}}' {_GH_COMMENTS}",
     f"curl --expand-data 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sG -F 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sGF 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sG --form-string 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sG --form 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sSG --form 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -G -F 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --header -H -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --user-agent -sd -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --referer -e -F 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --proxy -sd -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -d'first' -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -d '-x' -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --data '-x' --data 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --request POST -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --request=POST -d 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --request GET -X POST -d 'body={{text}}' {_GH_COMMENTS}",
 ]
 
 _CURL_FILE_SPELLINGS = [
@@ -320,6 +336,9 @@ _CURL_FILE_SPELLINGS = [
     f"curl --upload-file {{path}} {_GH_COMMENTS}",
     f"curl --data-urlencode 'body@{{path}}' {_GH_COMMENTS}",
     f"curl --expand-data 'body={{{{{{{{b}}}}}}}}' --variable 'b@{{path}}' {_GH_COMMENTS}",
+    f"curl -sG -T {{path}} {_GH_COMMENTS}",
+    f"curl -GsT {{path}} {_GH_COMMENTS}",
+    f"curl --get -T {{path}} {_GH_COMMENTS}",
 ]
 
 _CURL_CLUSTERED_READS = [
@@ -362,6 +381,57 @@ class TestEveryCurlSpellingOfABodyIsScanned:
         assert capsys.readouterr().out == ""
 
 
+class TestCurlOptionBoundaries:
+    @pytest.mark.parametrize(
+        ("command", "reason"),
+        [
+            (f"curl -K /tmp/fixture.cfg {_GH_COMMENTS}", "config file"),
+            (f"curl --config=/tmp/fixture.cfg {_GH_COMMENTS}", "config file"),
+            (f"curl --data-asc 'body={_TERM}' {_GH_COMMENTS}", "--data-asc"),
+            (f"curl --frobnicate -d 'body=routine' {_GH_COMMENTS}", "--frobnicate"),
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_unreadable_or_unknown_option_is_denied_with_reason(
+        self, command: str, reason: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert reason in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"curl -X POST -d 'body={_TERM}' {_GH_COMMENTS} --next -X GET https://example.com",
+            f"curl -d 'body={_TERM}' {_GH_COMMENTS} -: -G https://example.com",
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_a_write_group_before_a_read_group_is_denied(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert _TERM in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"curl -X POST -d 'body={_TERM}' -X GET {_GH_COMMENTS}",
+            f"curl --no-location -sS {_GH_COMMENTS}",
+            f"curl --include {_GH_COMMENTS}",
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_known_read_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_unknown_option_reason_is_one_quote_scanner_finding(self) -> None:
+        payload = _payload(f"curl --frobnicate -d 'body=routine' {_GH_COMMENTS}") or ""
+        assert [finding.name for finding in quote_scanner.scan_text(payload).findings] == [
+            quote_scanner.FAIL_CLOSED_FINDING_NAME
+        ]
+
+
 _CLUSTERED_FREE_TEXT = [
     f"gh pr create {_PUB} -dt '{{text}}' --body 'clean body'",
     f"gh pr create {_PUB} -dt'{{text}}' --body 'clean body'",
@@ -371,6 +441,10 @@ _CLUSTERED_FREE_TEXT = [
     f"gh release create v9.9.9 {_PUB} -dn '{{text}}'",
     f"glab mr create {_GL_PUB} -t 'clean title' -yd '{{text}}'",
     "git tag -am '{text}' v9.9.9",
+    f"gh pr merge 5 {_PUB} -sb{{text}}",
+    f"gh pr review 5 {_PUB} -ab{{text}}",
+    f"gh pr create {_PUB} -t{{text}} --body 'clean body'",
+    f"glab mr create {_GL_PUB} -yd{{text}} -t clean",
 ]
 
 
@@ -406,3 +480,53 @@ class TestClusteredShortFlagsCarryFreeText:
     def test_a_clustered_or_attached_commit_message_is_extracted(self, command: str) -> None:
         assert is_publish_command(command) is True
         assert _TERM in (_payload(command) or "")
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unrelated_short_clusters_do_not_resolve_as_body_flags(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f'gh pr create {_PUB} -t routine -b routine && du -sb "$(pwd)"'
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            'ls -lb "$T3_ABSENT_CLUSTER_VAR"',
+            'git diff -wb "$(git merge-base origin/main HEAD)"',
+            'git log -nm "$(git merge-base origin/main HEAD)"',
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_read_segment_cluster_does_not_lock_out_clean_post(
+        self, tail: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(f"gh pr create {_PUB} -t routine -b routine && {tail}")) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unresolved_later_cluster_value_explains_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("T3_ABSENT_CLUSTER_VAR", raising=False)
+        command = f'gh pr merge 5 {_PUB} -sd "$T3_ABSENT_CLUSTER_VAR"'
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "spell the options apart" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unresolved_later_attached_value_fails_closed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f'gh pr merge 5 {_PUB} -sb "$(unknown-cmd)"'
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "spell the options apart" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    def test_commit_cluster_values_are_extracted(self, files: tuple[Path, Path]) -> None:
+        content, _ = files
+        assert _TERM in (_payload(f"git commit -am{_TERM}") or "")
+        assert _TERM in (_payload(f'git commit -m"$(cat {content})"') or "")
+        assert is_fail_closed_sentinel(_payload('git commit -sm "$(unknown-cmd)"') or "")
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unresolved_local_commit_cluster_retains_warn_policy(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("T3_ABSENT_CLUSTER_VAR", raising=False)
+        assert handle_banned_terms_pretool(_bash('git commit -am "$T3_ABSENT_CLUSTER_VAR"')) is False
+        assert capsys.readouterr().out == ""

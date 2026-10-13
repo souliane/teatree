@@ -14,6 +14,7 @@ on.
 """
 
 import re
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -75,6 +76,7 @@ FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not
 UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
     "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
 )
+NAMED_FAIL_CLOSED_PREFIX: Final[str] = "[teatree-gate] fail closed: "
 
 
 def is_fail_closed_sentinel(text: str) -> bool:
@@ -97,7 +99,7 @@ def is_fail_closed_sentinel(text: str) -> bool:
     sentinel on its own line) still fails closed (#1213).
     """
     sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
-    return any(line.strip() in sentinels for line in text.split("\n"))
+    return any(line.strip() in sentinels or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
 
 
 def is_unavailable_body_source_sentinel(text: str) -> bool:
@@ -148,17 +150,34 @@ def attached_value(token: str, prefix: str) -> str | None:
     return None
 
 
-def short_cluster_values(token: str, flags: frozenset[str]) -> list[tuple[str, str]]:
-    """Each ``(prefix, attached)`` a ``-xyz`` cluster can give one of *flags*; ``""`` means the next word.
+@dataclass(frozen=True, slots=True)
+class ClusterValue:
+    prefix: str
+    value: str
+    raw: str
+    offset: int
+    later: bool
 
-    getopt and pflag give the rest of the token, or the next word, to the first letter that takes a value. Which letters
-    are switches depends on the verb, so every letter in *flags* is a candidate: the scan reads a superset, never less.
-    """
+
+def short_cluster_values(token: str, flags: frozenset[str], raw: str = "") -> list[ClusterValue]:
+    """Every candidate value letter in a short cluster, with its source span."""
     if token.startswith("--") or not token.startswith("-"):
         return []
-    return [
-        (token[: at + 1], token[at + 1 :].removeprefix("=")) for at in range(1, len(token)) if f"-{token[at]}" in flags
-    ]
+    candidates: list[ClusterValue] = []
+    for at in range(1, len(token)):
+        if not token[at].isalpha():
+            break
+        if f"-{token[at]}" in flags:
+            candidates.append(
+                ClusterValue(
+                    token[: at + 1],
+                    token[at + 1 :].removeprefix("="),
+                    raw or token,
+                    at + 1 + (token[at + 1 :].startswith("=")),
+                    at > 1,
+                )
+            )
+    return candidates
 
 
 # THE catalogue of body-bearing names, in the snake_case spelling a ``gh``/``glab

@@ -25,7 +25,9 @@ from typing import Final
 
 from teatree.hooks._parser_primitives import (
     FAIL_CLOSED_SENTINEL,
+    NAMED_FAIL_CLOSED_PREFIX,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    is_fail_closed_sentinel,
     read_file_arg,
     short_cluster_values,
 )
@@ -214,17 +216,20 @@ def resolve_attached_value(value: str, base: Path | None, raw: str, prefix: str)
 
 
 def resolve_short_cluster(words: list[str], raws: list[str], flags: frozenset[str], base: Path | None) -> list[str]:
-    """The value each *flags* letter of the ``words[0]`` cluster could take, resolved like an inline body.
-
-    Past the first letter, an attached value counts only where a quote opens right after the letter (``-dt'x'``),
-    and the next word only after a cluster of bare letters (``-dt x``): anything else is a value, not a cluster.
-    """
+    """Resolve every candidate body value in a short cluster."""
     token, raw = words[0], raws[0]
     values: list[str] = []
-    for prefix, attached in short_cluster_values(token, flags):
-        first = len(prefix) == len("-x")
-        if attached and (first or raw.startswith((f"{prefix}'", f'{prefix}"'))):
-            values.append(resolve_attached_value(attached, base, raw, prefix))
-        elif not attached and (first or token[1:].isalpha()) and len(words) > 1:
-            values.append(resolve_inline_body_value(words[1], base, raws[1]))
+    for candidate in short_cluster_values(token, flags, raw):
+        if candidate.value:
+            resolved = resolve_attached_value(candidate.value, base, candidate.raw, candidate.prefix)
+        elif token[1:].isalpha() and len(words) > 1:
+            resolved = resolve_inline_body_value(words[1], base, raws[1])
+        else:
+            continue
+        values.append(resolved)
+        if candidate.later and is_fail_closed_sentinel(resolved):
+            values.append(
+                f"{NAMED_FAIL_CLOSED_PREFIX}a clustered short flag takes the next word or the rest of the token; "
+                "the gate cannot resolve it; spell the options apart or give a literal value"
+            )
     return values

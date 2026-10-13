@@ -55,6 +55,7 @@ from teatree.hooks._forge_write_detection import (
 )
 from teatree.hooks._inline_body_resolution import resolve_inline_body_value, resolve_short_cluster
 from teatree.hooks._publish_detection import (
+    _segment_is_git_message_publish,
     command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
     command_has_token_aware_publish_surface,
@@ -218,6 +219,11 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if leader == "glab"
         else _primitives.BODY_SHORT_FLAGS
     )
+    cluster_publishes = (
+        (leader in {"gh", "glab"} and segment_is_forge_cli_write(words))
+        or (leader == "git" and _segment_is_git_message_publish(words))
+        or (leader == "t3" and _segment_is_t3_publish(words))
+    )
     i = 0
     n = len(words)
     while i < n:
@@ -236,7 +242,8 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if attached_handled:
             i += 1
             continue
-        payloads.extend(resolve_short_cluster(words[i:], raws[i:], short_flags, base))
+        if word in short_flags or cluster_publishes:
+            payloads.extend(resolve_short_cluster(words[i:], raws[i:], short_flags, base))
         i += 2 if word in short_flags and i + 1 < n else 1
 
 

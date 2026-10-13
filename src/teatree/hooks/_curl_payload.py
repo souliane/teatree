@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
-from teatree.hooks._parser_primitives import BODY_FIELD_NAMES, FAIL_CLOSED_SENTINEL
+from teatree.hooks._parser_primitives import BODY_FIELD_NAMES, FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX
 
 # The argv walkers' catalogue plus Slack's ``text``, which has no CLI-flag form.
 _JSON_BODY_KEYS: Final[tuple[str, ...]] = (*sorted(BODY_FIELD_NAMES), "text")
@@ -40,10 +40,17 @@ CURL_FORM_FLAGS: Final[frozenset[str]] = frozenset({"-F", "--form", "--form-stri
 CURL_UPLOAD_FLAGS: Final[frozenset[str]] = frozenset({"-T", "--upload-file"})
 
 _CURL_BODY_FLAGS: Final[frozenset[str]] = CURL_DATA_FLAGS | CURL_FORM_FLAGS | CURL_UPLOAD_FLAGS
-_CURL_LONG_VALUE_FLAGS: Final[frozenset[str]] = _CURL_BODY_FLAGS | {"--request"}
-
-# curl's short options that take an argument; any other letter of a ``-sSfL`` cluster is a switch.
-_CURL_SHORT_VALUE_LETTERS: Final[frozenset[str]] = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
+_CURL_TABLE = json.loads(Path(__file__).with_name("curl_options.json").read_text(encoding="utf-8"))["options"]
+CURL_LONG_KINDS: Final[dict[str, str]] = {f"--{name}": kind for name, kind, _ in _CURL_TABLE}
+CURL_SHORT_KINDS: Final[dict[str, str]] = {f"-{letter}": kind for _, kind, letter in _CURL_TABLE if letter}
+_CURL_METHOD_FLAGS: Final[frozenset[str]] = frozenset({"-X", "--request"})
+_CURL_IMPLIED_METHODS: Final[tuple[tuple[str, frozenset[str]], ...]] = (
+    ("PUT", CURL_UPLOAD_FLAGS),
+    ("POST", CURL_FORM_FLAGS),
+    ("HEAD", frozenset({"-I", "--head"})),
+    ("GET", frozenset({"-G", "--get"})),
+    ("POST", CURL_DATA_FLAGS),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,7 @@ class CurlOption:
     raw: str = ""
     prefix: str = ""
     expands: bool = False
+    unknown: bool = False
 
     def resolved(self, base: Path | None) -> str:
         if self.prefix:
@@ -72,31 +80,35 @@ class CurlOption:
 
 def _long_option(word: str, raw: str, following: tuple[str, str] | None) -> tuple[CurlOption, bool]:
     spelled, eq, attached = word.partition("=")
-    name = spelled.replace("--expand-", "--", 1)
-    expands = name != spelled
+    expands = spelled.startswith("--expand-")
+    negated = spelled.startswith("--no-")
+    name = spelled.replace("--expand-", "--", 1).replace("--no-", "--", 1)
+    kind = CURL_LONG_KINDS.get(name, "unknown")
+    unknown = kind == "unknown" or (expands and kind != "value") or (negated and kind != "boolean")
     if eq:
-        return CurlOption(name, attached, raw, f"{spelled}=", expands=expands), False
-    if name in _CURL_LONG_VALUE_FLAGS and following:
+        return CurlOption(name, attached, raw, f"{spelled}=", expands=expands, unknown=unknown), False
+    if kind == "value" and following and not unknown:
         return CurlOption(name, *following, expands=expands), True
-    return CurlOption(name, expands=expands), False
+    return CurlOption(name, expands=expands, unknown=unknown), False
 
 
 def _short_cluster(word: str, raw: str, following: tuple[str, str] | None) -> tuple[list[CurlOption], bool]:
     options: list[CurlOption] = []
     for at, letter in enumerate(word[1:], start=1):
-        if letter not in _CURL_SHORT_VALUE_LETTERS:
-            options.append(CurlOption(f"-{letter}"))
+        name = f"-{letter}"
+        kind = CURL_SHORT_KINDS.get(name, "unknown")
+        if kind != "value":
+            options.append(CurlOption(name, unknown=kind == "unknown"))
             continue
         if attached := word[at + 1 :]:
-            options.append(CurlOption(f"-{letter}", attached.removeprefix("="), raw, word[: at + 1]))
+            options.append(CurlOption(name, attached.removeprefix("="), raw, word[: at + 1]))
             return options, False
-        options.append(CurlOption(f"-{letter}", *following) if following else CurlOption(f"-{letter}"))
+        options.append(CurlOption(name, *following) if following else CurlOption(name))
         return options, following is not None
     return options, False
 
 
-def curl_options(words: list[str], raws: list[str] | None = None) -> Iterator[CurlOption]:
-    """Every option of a curl argv, in order; positional words (the URLs) are skipped."""
+def curl_argv(words: list[str], raws: list[str] | None = None) -> Iterator[CurlOption | str]:
     spans = raws or words
     i = 0
     while i < len(words):
@@ -110,7 +122,39 @@ def curl_options(words: list[str], raws: list[str] | None = None) -> Iterator[Cu
             options, consumed = _short_cluster(word, raw, following)
             yield from options
             i += consumed
+        else:
+            yield word
         i += 1
+
+
+def curl_options(words: list[str], raws: list[str] | None = None) -> Iterator[CurlOption]:
+    """Every parsed option of a curl argv, in order."""
+    for item in curl_argv(words, raws):
+        if isinstance(item, CurlOption):
+            yield item
+
+
+def curl_groups(words: list[str]) -> list[tuple[list[CurlOption], list[str]]]:
+    groups: list[tuple[list[CurlOption], list[str]]] = [([], [])]
+    for item in curl_argv(words):
+        if isinstance(item, CurlOption):
+            if not item.unknown and item.name in {"--next", "-:"}:
+                groups.append(([], []))
+            else:
+                groups[-1][0].append(item)
+                if item.name == "--url" and item.value:
+                    groups[-1][1].append(item.value)
+        else:
+            groups[-1][1].append(item)
+    return groups
+
+
+def curl_method(options: list[CurlOption]) -> str:
+    explicit = [option.value for option in options if option.name in _CURL_METHOD_FLAGS and option.value]
+    if explicit:
+        return explicit[-1].strip("'\"").upper()
+    names = {option.name for option in options}
+    return next((method for method, implying in _CURL_IMPLIED_METHODS if names & implying), "GET")
 
 
 def _json_body_fields(blob: str) -> list[str]:
@@ -169,6 +213,16 @@ def _walk_curl_args(
     a live substitution failing closed) against its source span in ``raws``.
     """
     for option in curl_options(words, raws):
+        if option.unknown:
+            payloads.append(
+                f"{NAMED_FAIL_CLOSED_PREFIX}curl option {option.name} is outside curl's option table; "
+                "spell every option out in full"
+            )
+        elif option.name in {"-K", "--config"}:
+            payloads.append(
+                f"{NAMED_FAIL_CLOSED_PREFIX}curl reads more options from a config file "
+                f"{option.value or '(missing)'} the gate cannot see"
+            )
         if option.value is None or option.name not in _CURL_BODY_FLAGS:
             continue
         if option.name in CURL_UPLOAD_FLAGS or option.reads_a_file():
