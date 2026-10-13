@@ -117,6 +117,7 @@ _LEADER_PUBLISH_SUBSTRINGS: Final[tuple[tuple[str, str], ...]] = (
     ("git", "git commit -F"),
     ("git", "git commit --file"),
     ("curl", "chat.postMessage"),
+    ("curl", "files.upload"),
 )
 
 # Forge-tool markers detected as a WORD within any token, so a forge call
