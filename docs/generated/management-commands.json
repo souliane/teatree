@@ -1272,6 +1272,10 @@
           "name": "bulk-close"
         },
         {
+          "help": "",
+          "name": "return-gaps"
+        },
+        {
           "help": "Prove a host body still carries the folded member's substance (#4344)",
           "name": "fold-check"
         },

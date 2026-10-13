@@ -58,6 +58,7 @@ _ENVIRONMENTAL_ADDED = {
     FailureKind.HEAD_SUPERSEDED,
     # A base that moved under the plan is not a fault in the work either (#5030).
     FailureKind.PLAN_STALE,
+    FailureKind.RESUME_REFUSED,
 }
 
 

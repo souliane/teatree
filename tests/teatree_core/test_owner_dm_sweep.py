@@ -99,6 +99,30 @@ class TestSubjectClosedLocally(TestCase):
         assert subject_closed_locally(f"Should I rebase {_PR_URL}?") is False
 
 
+class TestFragmentQualifiedSubject(TestCase):
+    def test_open_member_under_merged_umbrella_stays_open(self) -> None:
+        base = "https://github.com/o/r/issues/56"
+        Ticket.objects.create(issue_url=base, state=Ticket.State.MERGED)
+        member = Ticket.objects.create(issue_url=f"{base}#dream-gap=abc", state=Ticket.State.WORK_STARTED)
+        assert subject_closed_locally(f"Repair {member.issue_url}:") is False
+        member.state = Ticket.State.MERGED
+        member.save()
+        assert subject_closed_locally(f"Repair `{member.issue_url}`:") is True
+
+    def test_gitlab_note_anchor_resolves_its_parent_alias(self) -> None:
+        issue = "https://gitlab.com/acme/backend/-/issues/42"
+        Ticket.objects.create(issue_url=issue, state=Ticket.State.MERGED)
+        note = "https://gitlab.com/acme/backend/-/work_items/42/#note_123"
+        assert subject_closed_locally(note) is True
+
+    def test_comment_and_pr_anchors_keep_parent_resolution(self) -> None:
+        issue = "https://github.com/o/r/issues/56"
+        ticket = Ticket.objects.create(issue_url=issue, state=Ticket.State.MERGED)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        assert subject_closed_locally(f"{issue}#issuecomment-1") is True
+        assert subject_closed_locally(f"{_PR_URL}#discussion_r1") is True
+
+
 class TestDuplicateThreads(TestCase):
     def test_the_newer_duplicate_is_retired_and_the_oldest_kept(self) -> None:
         oldest = _thread("Ship it?", age=timedelta(hours=3), ts="1779990001.000001")

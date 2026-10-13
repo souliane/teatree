@@ -31,10 +31,11 @@ import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
+from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.question_text import question_fingerprint
 from teatree.loop.inbound_reading import InboundReading
-from teatree.url_classify import find_forge_urls
+from teatree.url_classify import find_forge_refs
 from teatree.utils.url_slug import slack_conversation_anchor
 
 logger = logging.getLogger(__name__)
@@ -259,12 +260,12 @@ def _subject_coverage(*, text: str, overlay: str) -> Coverage | None:
     a ticket between phases is still someone's work, and dispatching alongside it
     is exactly the rival lane this function exists to prevent.
     """
-    urls = find_forge_urls(text)
+    urls = find_forge_refs(text)
     if not urls:
         return None
     for url in urls:
         ticket = (
-            Ticket.objects.filter(overlay=overlay, issue_url=url)
+            Ticket.objects.filter(reference_issue_q(url), overlay=overlay)
             .exclude(state__in=Ticket._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
             .order_by("-pk")
             .first()

@@ -546,6 +546,9 @@ def _check_environmental_fingerprint_drop_is_narrower_than_the_display_axis() ->
     defect = "landing_unverified: coder yielded with no commit"
     return (
         not _stalls("outage_death: unable to connect to api")
+        and not _stalls(
+            "result_error: context_exhausted — subtype=success — the resumed conversation ended without taking a turn"
+        )
         and _stalls(defect)
         and is_environmental(classify_failure(defect))
     )

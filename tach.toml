@@ -286,6 +286,7 @@ depends_on = [
   # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
   # → managers.
   "teatree.core.managers",
+  "teatree.core.managers_issue_match",
   "teatree.core.managers_overlay",
   "teatree.core.loop_lease_manager",
   # the hand-off service refuses a self-addressed hand-off with the manager's own
@@ -1074,6 +1075,7 @@ depends_on = [
 path = "teatree.loop.slack_answer"
 layer = "domain"
 depends_on = [
+  "teatree.core.managers_issue_match",
   "teatree.loop.inbound_reading",
   "teatree.loop.inbound_classifier",
   "teatree.loop.question_binding",

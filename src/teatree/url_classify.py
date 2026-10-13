@@ -27,6 +27,9 @@ _PR_URL_RE = re.compile(r"https?://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 #: ``Ticket.issue_url``. Non-greedy so a run-on sentence yields one URL per
 #: reference rather than one URL swallowing the tail.
 _FORGE_URL_RE = re.compile(r"https?://\S*?/(?:merge_requests|pull|pulls|issues)/\d+")
+_FORGE_REF_RE = re.compile(
+    r"https?://\S*?/(?:merge_requests|pull|pulls|issues|work_items)/\d+/?(?:#[^\s:|>)\]`'\"?]+)?"
+)
 
 
 class Forge(StrEnum):
@@ -94,6 +97,10 @@ def find_forge_urls(text: str) -> list[str]:
     return _FORGE_URL_RE.findall(text)
 
 
+def find_forge_refs(text: str) -> list[str]:
+    return [match.rstrip(".,;") for match in _FORGE_REF_RE.findall(text)]
+
+
 def first_pr_url(text: str) -> str:
     """The first PR/MR URL in *text* (trailing slash and ``#`` fragment stripped), or ``""``."""
     match = _PR_URL_RE.search(text)
@@ -105,6 +112,7 @@ def first_pr_url(text: str) -> str:
 __all__ = [
     "Forge",
     "PrRef",
+    "find_forge_refs",
     "find_forge_urls",
     "find_pr_urls",
     "first_pr_url",
