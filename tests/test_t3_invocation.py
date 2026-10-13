@@ -185,12 +185,17 @@ class TestVenueFault:
         assert t3_invocation.venue_fault(returncode, "deploy/t3: whatever") is None
 
     def test_it_names_the_launchers_own_first_line(self) -> None:
-        stderr = "\ndeploy/t3: refusing to run — the teatree stack is not available on this host.\n  more\n"
+        stderr = (
+            "t3: WARNING dangling interpreter alias: /tmp/uv -> missing\n"
+            "deploy/t3: refusing to run — the teatree stack is not available on this host.\n"
+            "  more\n"
+        )
         with patch.object(t3_invocation, "unreachable_reason", return_value=None):
             fault = t3_invocation.venue_fault(69, stderr)
         assert fault is not None
         assert "deploy/t3: refusing to run — the teatree stack is not available on this host." in fault
         assert "not a verdict" in fault
+        assert "dangling interpreter alias" not in fault
         assert "more" not in fault
 
     def test_it_adds_why_the_hook_could_not_declare_its_checkout(self) -> None:

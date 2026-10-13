@@ -228,13 +228,16 @@ VENUE_UNAVAILABLE_EXIT = 69
 def venue_fault(returncode: int, stderr: str | None, *, cwd: str | Path | None = None) -> str | None:
     """Why the launcher could not run here, or ``None`` when *returncode* is not its venue fault.
 
-    The cause is the launcher's own first line, plus the prover's reason when the hook
+    The cause is the launcher's refusal line, plus the prover's reason when the hook
     could not declare the directory it ran from — a refusal names a fact someone can fix.
     """
     if returncode != VENUE_UNAVAILABLE_EXIT:
         return None
-    lines = (line.strip() for line in (stderr or "").splitlines())
-    cause = next((line for line in lines if line), "the launcher printed no reason")
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    cause = next(
+        (line for line in lines if line.startswith("deploy/t3:") or "refusing to run" in line),
+        lines[0] if lines else "the launcher printed no reason",
+    )
     directory = Path(cwd) if cwd is not None else hook_checkout_root()
     if directory is not None and (undeclared := unreachable_reason(directory)):
         cause = f"{cause} The hook could not declare {directory} to the container: {undeclared}."
