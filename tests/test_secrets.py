@@ -1,6 +1,7 @@
 """Tests for ``teatree.utils.secrets`` — the ``pass`` password-store readers and writers."""
 
 import subprocess
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -10,17 +11,26 @@ from teatree.utils.run import CommandFailedError
 from teatree.utils.secrets import (
     KEYRING_READ_TIMEOUT_ENV_VAR,
     KEYRING_READ_TIMEOUT_SECONDS,
+    PassStore,
     SecretNotFoundError,
     SecretStoreError,
     keyring_read_timeout_seconds,
     read_pass,
     read_pass_required,
     remove_pass,
+    use_store,
     write_pass,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+@pytest.fixture(autouse=True)
+def _pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
+
 
 _PASS_ABSENT_RC = 1
 _GPG_FAILED_RC = 2

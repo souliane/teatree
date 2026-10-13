@@ -51,6 +51,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
+  "cryptography>=50,<51",
   "django>=6.1,<6.2",
   "django-fsm-2>=4,<5",
   # Bounded below the next major because teatree.core shadows its

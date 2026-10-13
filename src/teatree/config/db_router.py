@@ -47,6 +47,7 @@ CONFIG_DB_ALIAS = "canonical_config"
 #: ``ConfigSetting._meta.label_lower`` — matched as a string so this platform-layer
 #: module never imports the domain-layer model (a backwards tach edge).
 CONFIG_MODEL_LABEL = "core.configsetting"
+PINNED_MODEL_LABELS = frozenset({CONFIG_MODEL_LABEL, "core.sealedsecret"})
 
 
 def pinned_config_db(
@@ -88,7 +89,7 @@ class ConfigSettingRouter:
     """
 
     def _pinned_alias(self, model: type[Model]) -> str | None:  # noqa: PLR6301 — Django router contract: instance method
-        if model._meta.label_lower != CONFIG_MODEL_LABEL:  # noqa: SLF001 — Django's documented Model._meta API
+        if model._meta.label_lower not in PINNED_MODEL_LABELS:  # noqa: SLF001 — Django's documented Model._meta API
             return None
         return CONFIG_DB_ALIAS if CONFIG_DB_ALIAS in connections.databases else None
 

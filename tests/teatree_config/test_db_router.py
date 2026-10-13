@@ -25,7 +25,7 @@ from django.test import override_settings
 
 from teatree.config.db_router import CONFIG_DB_ALIAS, CONFIG_MODEL_LABEL, ConfigSettingRouter, pinned_config_db
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
-from teatree.core.models import ConfigSetting, Ticket
+from teatree.core.models import ConfigSetting, SealedSecret, Ticket
 from tests.db_alias import register_sqlite_alias, teardown_sqlite_alias
 
 _KEY = "provision_ram_ceiling_percent"
@@ -113,6 +113,8 @@ class TestConfigSettingRouter:
         router = ConfigSettingRouter()
         assert router.db_for_write(ConfigSetting) == CONFIG_DB_ALIAS
         assert router.db_for_read(ConfigSetting) == CONFIG_DB_ALIAS
+        assert router.db_for_write(SealedSecret) == CONFIG_DB_ALIAS
+        assert router.db_for_read(SealedSecret) == CONFIG_DB_ALIAS
         assert router.db_for_write(Ticket) is None
         assert router.db_for_read(Ticket) is None
 

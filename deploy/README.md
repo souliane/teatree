@@ -276,6 +276,13 @@ starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
 For direct `docker compose` or `deploy/t3` calls, export the value or put it in
 `deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
 
+The staged sealed store keeps its master key in the `teatree_control_db`
+named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
+and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
+a different key file during bootstrap. The current deployment still reads
+`pass` through the default store slot; `t3 secrets import-pass --plan` only
+inventories candidate entries and does not migrate or delete credentials.
+
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
 `PASSWORD_STORE_DIR`/`GNUPGHOME` point at these canonical host paths, so a future

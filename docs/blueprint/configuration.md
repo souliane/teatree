@@ -133,6 +133,18 @@ postures, not which one is the default. The env var `T3_MODE` overrides the stor
 DB-home value. Unknown values raise `ValueError` — typos never silently downgrade to
 a less-safe mode.
 
+### 10.1.0 Staged sealed credential store
+
+The `teatree.utils.secrets` facade now has one swappable `SecretStore` slot.
+`PassStore` remains the production default while the migration is staged; tests
+install `MemoryStore` so they cannot read an operator's `pass` store. The new
+`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
+DB, with the installation master key in a mode-0600 file beside that database.
+`T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
+it is never a `ConfigSetting` row. `t3 secrets status`, `ls`, and `import-pass
+--plan` provide read-only inventory and key-health diagnostics. Import and
+production cutover require a later change after the plan has been reviewed.
+
 ### 10.1.1 Per-Overlay Setting Overrides
 
 **Setting-home partition ([#1775](https://github.com/souliane/teatree/issues/1775)).**

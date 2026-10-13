@@ -1,10 +1,6 @@
-"""``pass`` password store helpers — write_pass.
+"""The password-store facade and its pass-backed adapter."""
 
-Note: ``read_pass`` is globally patched by the autouse ``_clear_backend_caches``
-fixture in ``tests/conftest.py`` (to block real ``gpg``/``pass`` calls), so we
-only exercise ``write_pass`` here, which is what's currently uncovered.
-"""
-
+from collections.abc import Iterator
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -15,7 +11,13 @@ from teatree.utils import secrets
 from teatree.utils.run import CommandFailedError
 
 # conftest patches the module attribute; this binding keeps the real lister.
-from teatree.utils.secrets import pass_entry_names
+from teatree.utils.secrets import PassStore, pass_entry_names, use_store
+
+
+@pytest.fixture(autouse=True)
+def _pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
 
 
 class TestWritePass:

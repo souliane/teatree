@@ -2,9 +2,12 @@
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, override
 
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
 
@@ -146,41 +149,26 @@ def _pass_show(key: str) -> str | None:
 type SecretReader = Callable[[str], str]
 
 
+def _first_line(value: str | None) -> str:
+    lines = value.strip().splitlines() if value is not None else []
+    return lines[0] if lines else ""
+
+
 def read_pass(key: str) -> str:
-    """Read a secret from the ``pass`` password store.
-
-    Returns the first line of the stored value, or an empty string when the key
-    is not in the store or ``pass`` is not installed. A read that FAILED — a
-    wedged gpg agent, an undecryptable entry — raises :class:`SecretStoreError`
-    instead: an unknown value is not an absent one, and a caller that cannot tell
-    them apart posts with no token and reports success.
-
-    This reader cannot distinguish an absent secret from an empty one — both are
-    ``""``. When the caller cannot function without the value, use
-    :func:`read_pass_required`; for a genuinely-optional secret with a fallback,
-    use :func:`read_pass_or_default`.
-    """
     try:
-        return _pass_show(key) or ""
+        return _first_line(_store().read(key))
     except FileNotFoundError:
         return ""
 
 
 def read_pass_required(key: str) -> str:
-    """Read a required secret, raising :class:`SecretNotFoundError` when absent.
-
-    The fail-loud variant of :func:`read_pass`. Distinguishes the operator's fix
-    in the raised message: a missing ``pass`` binary (``FileNotFoundError`` →
-    install it) from an absent or empty entry (→ ``pass insert <key>``). A read
-    that FAILED propagates as :class:`SecretStoreError` — naming a wedged keyring
-    as such rather than as a missing entry.
-    """
     try:
-        value = _pass_show(key)
+        raw = _store().read(key)
     except FileNotFoundError as exc:
         raise SecretNotFoundError.tool_missing(key) from exc
-    if value is None:
+    if raw is None:
         raise SecretNotFoundError.absent(key)
+    value = _first_line(raw)
     if not value:
         raise SecretNotFoundError.empty(key)
     return value
@@ -202,6 +190,10 @@ def read_pass_or_default(key: str, default: str) -> str:
 
 
 def write_pass(key: str, value: str) -> bool:
+    return _store().write(key, value)
+
+
+def _pass_write(key: str, value: str) -> bool:
     """Store *value* under *key* in the ``pass`` password store.
 
     Uses ``pass insert --multiline --force`` so the secret is read from
@@ -247,6 +239,10 @@ def _back_up_existing(key: str, *, echo: Callable[[str], object]) -> str:
 
 
 def remove_pass(key: str) -> bool:
+    return _store().remove(key)
+
+
+def _pass_remove(key: str) -> bool:
     """Remove *key* from the ``pass`` password store.
 
     Uses ``pass rm --force`` so the entry is deleted without prompting.
@@ -265,6 +261,10 @@ def remove_pass(key: str) -> bool:
 
 
 def pass_entry_names(prefix: str) -> frozenset[str]:
+    return _store().names(prefix)
+
+
+def _pass_names(prefix: str) -> frozenset[str]:
     """The entry names directly under *prefix*, read from the store directory without decrypting anything."""
     root = Path(os.environ.get("PASSWORD_STORE_DIR") or Path.home() / ".password-store") / prefix
     try:
@@ -281,3 +281,59 @@ def pass_entry_names(prefix: str) -> frozenset[str]:
 def pass_entry_exists(key: str) -> bool:
     """Return ``True`` when *key* resolves to a non-empty entry in ``pass``."""
     return bool(read_pass(key))
+
+
+class SecretStore(Protocol):
+    def read(self, key: str) -> str | None: ...
+
+    def write(self, key: str, value: str) -> bool: ...
+
+    def remove(self, key: str) -> bool: ...
+
+    def names(self, prefix: str) -> frozenset[str]: ...
+
+
+class PassStore(SecretStore):
+    @override
+    def read(self, key: str) -> str | None:
+        return _pass_show(key)
+
+    @override
+    def write(self, key: str, value: str) -> bool:
+        return _pass_write(key, value)
+
+    @override
+    def remove(self, key: str) -> bool:
+        return _pass_remove(key)
+
+    @override
+    def names(self, prefix: str) -> frozenset[str]:
+        return _pass_names(prefix)
+
+
+@dataclass(slots=True)
+class _StoreSlot:
+    active: SecretStore
+
+    def install(self, store: SecretStore) -> None:
+        self.active = store
+
+
+_store_slot = _StoreSlot(PassStore())
+
+
+def _store() -> SecretStore:
+    return _store_slot.active
+
+
+install_store = _store_slot.install
+
+
+@contextmanager
+def use_store(store: SecretStore) -> Iterator[SecretStore]:
+    previous = _store()
+    install_store(store)
+    try:
+        yield store
+    finally:
+        install_store(previous)

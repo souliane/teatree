@@ -1045,6 +1045,24 @@
       "subcommands": []
     },
     {
+      "help": "",
+      "name": "secrets",
+      "subcommands": [
+        {
+          "help": "Report key health without disclosing stored values",
+          "name": "status"
+        },
+        {
+          "help": "List sealed row names without decrypting values",
+          "name": "ls"
+        },
+        {
+          "help": "Classify password-store names without copying their values",
+          "name": "import-pass"
+        }
+      ]
+    },
+    {
       "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
       "subcommands": []

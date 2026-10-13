@@ -114,6 +114,7 @@ from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
+from teatree.core.models.sealed_secret import KeyHealth, SealedSecret
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.send_audit import SendAudit
@@ -230,6 +231,7 @@ __all__ = [
     "InteractiveDispatchManager",
     "InvalidTransitionError",
     "InvariantOutcome",
+    "KeyHealth",
     "KnownIssue",
     "KnownIssueManager",
     "LandscapeArtifact",
@@ -317,6 +319,7 @@ __all__ = [
     "ScannedFailedE2E",
     "ScenarioPassRate",
     "ScenarioRegression",
+    "SealedSecret",
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "SendAudit",
