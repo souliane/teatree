@@ -392,7 +392,7 @@ def _git(repo: str, args: tuple[str, ...] | list[str], *, env: dict[str, str] | 
     try:
         return run_bounded_group(cmd, timeout=_GIT_TIMEOUT_SECONDS, expected_codes=None, env=env)
     except TimeoutExpired as exc:
-        shown = " ".join(args).split(" -m ", 1)[0]
+        shown = " ".join(args[: args.index("-m")] if "-m" in args else args)
         msg = f"`git {shown}` in {repo} did not finish within {_GIT_TIMEOUT_SECONDS:.0f}s"
         raise FleetClaimUnavailableError(msg) from exc
 
@@ -478,9 +478,7 @@ def _remote_default_root(scope: _Scope) -> str:
 
 
 def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
-    # commit-tree, written into the scope's ephemeral object dir. Per the module contract any
-    # failure surfaces as FleetClaimUnavailableError, so the wire's fail-safe catch handles a
-    # corrupt local repo uniformly with remote-unreachable.
+    # Any failure is a FleetClaimUnavailableError, the only error the wire's fail-safe catch handles.
     root = _remote_default_root(scope)
     message = json.dumps(meta, sort_keys=True)
     # The root's own tree makes the commit's patch empty: it carries nothing but its record.

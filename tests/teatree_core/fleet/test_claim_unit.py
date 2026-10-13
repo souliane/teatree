@@ -545,8 +545,10 @@ class TestErrorPaths:
         monkeypatch.setattr(fleet_claim, "_GIT_TIMEOUT_SECONDS", 2.0)
         stalled = rf"`git [^`]*\b{re.escape(subcommand)}\b[^`]*` in \S+ did not finish within 2s"
 
-        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match=stalled):
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match=stalled) as refused:
             _claim_and_read_the_tip(never_fetched)
+
+        assert '"work_key"' not in str(refused.value)
 
     def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_and_ends_the_hook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
