@@ -203,8 +203,8 @@ looking at:
   integrations, and skills. The agent does the creative work; teatree does
   the mechanical work.
 - **Not a stable, polished product.** It is in motion, expected to break,
-  expected to change shape. The author dogfoods it daily on real client
-  work; bugs surface fast because every broken edge stops a real ticket.
+  expected to change shape. The author dogfoods it daily on real work;
+  bugs surface fast because every broken edge stops a real ticket.
 
 ## Core concepts
 
@@ -830,7 +830,7 @@ provisioning steps, runtime metadata, and project-specific service hooks. See
 [docs/overlay-api.md](docs/overlay-api.md) for the full API.
 
 Overlays can live anywhere; they do not need to be vendored into this repo.
-The author dogfoods this on a private client-codebase overlay; the same
+The author dogfoods this on real work; the same
 extension point is what any other consumer would use.
 
 ## Configuration
@@ -1050,7 +1050,7 @@ teatree/
 ## Where it is headed
 
 Teatree stays a single-author tool for now. The plan is to keep dogfooding it
-on real client work, let the rough edges surface through daily use, and only
+on real work, let the rough edges surface through daily use, and only
 broaden adoption once the patterns it relies on have been pushed through
 enough sessions to be trustworthy. The public repo is a side effect of that
 workflow — the code lives somewhere reachable in case any of the patterns
