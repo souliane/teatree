@@ -157,10 +157,13 @@ def test_home_is_kept_when_persist_fails(fake: FakeExecutor) -> None:
     assert json.loads((home / "auth.json").read_text(encoding="utf-8"))["last_refresh"] == "2026-10-12T09:00:00Z"
 
 
-def _stale_home(fake: FakeExecutor, name: str, last_refresh: str, account: str = EXECUTOR_ACCOUNT) -> Path:
+def _stale_home(
+    fake: FakeExecutor, name: str, last_refresh: str, account: str = EXECUTOR_ACCOUNT, refresh_token: str | None = None
+) -> Path:
     home = Path(f"{fake.fs}{EXECUTOR_HOME_ROOT}/codex-{name}")
     home.mkdir(parents=True)
-    login = {"tokens": {"account_id": account, "refresh_token": name}, "last_refresh": last_refresh}
+    tokens = {"account_id": account, "refresh_token": name if refresh_token is None else refresh_token}
+    login = {"tokens": tokens, "last_refresh": last_refresh}
     (home / "auth.json").write_text(json.dumps(login), encoding="utf-8")
     return home
 
@@ -400,8 +403,11 @@ def test_a_rotated_login_that_is_not_the_executors_is_never_persisted(fake: Fake
     assert CODEX_AUTH_PASS_ENTRY not in str(refused.value)
 
 
-def test_a_stale_home_with_another_account_is_deleted_without_recovery(fake: FakeExecutor) -> None:
-    swapped = _stale_home(fake, "swapped", "2099-01-01T00:00:00Z", account="acct-other")
+@pytest.mark.parametrize(("account", "refresh_token"), [("acct-other", None), (EXECUTOR_ACCOUNT, "")])
+def test_a_newer_stale_login_that_is_not_a_complete_executor_login_is_deleted_without_recovery(
+    fake: FakeExecutor, account: str, refresh_token: str | None
+) -> None:
+    swapped = _stale_home(fake, "swapped", "2099-01-01T00:00:00Z", account=account, refresh_token=refresh_token)
 
     assert asyncio.run(_turn()) == "OK"
 
