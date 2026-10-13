@@ -64,7 +64,7 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         if str(previous.get("summary", "")).startswith(CHECKOUT_PARKED_PREFIX)
         else None
     )
-    attempt = TaskAttempt.objects.create(
+    attempt = TaskAttempt.objects.create(  # no-usage: checkout refused before a harness turn was billed
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
