@@ -45,8 +45,11 @@ from teatree.hooks._body_file_resolution import (
     unredirected_heredoc_bodies,
     walk_body_file_flags,
 )
-from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
+from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args, curl_groups
 from teatree.hooks._forge_write_detection import (
+    _curl_urls,
+    _is_forge_host,
+    _url_host,
     command_has_forge_free_text_publish,
     graphql_document_is_read,
     segment_is_forge_cli_write,
@@ -432,7 +435,12 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         if segment_is_forge_cli_write(words):
             walk_forge_free_text(words, raws, payloads, ctx, first)
     if first == "curl":
-        _walk_curl_args(words, payloads, raws=raws, base=ctx.base)
+        forge_groups = {
+            index
+            for index, (_, positions) in enumerate(curl_groups(words[1:]))
+            if any(_is_forge_host(_url_host(url)) for url in _curl_urls(positions))
+        }
+        _walk_curl_args(words, payloads, raws=raws, base=ctx.base, forge_groups=forge_groups)
     # Gated on the ACTUAL classification (write verb + forge URL), not merely
     # the python leader: ``extract_bash_payload`` also backs
     # ``extract_secret_scan_text``, which runs on EVERY Bash command

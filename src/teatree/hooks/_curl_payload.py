@@ -111,10 +111,15 @@ def _short_cluster(word: str, raw: str, following: tuple[str, str] | None) -> tu
 def curl_argv(words: list[str], raws: list[str] | None = None) -> Iterator[CurlOption | str]:
     spans = raws or words
     i = 0
+    options_ended = False
     while i < len(words):
         word, raw = words[i], spans[i]
         following = (words[i + 1], spans[i + 1]) if i + 1 < len(words) else None
-        if word.startswith("--") and len(word) > len("--"):
+        if word == "--" and not options_ended:
+            options_ended = True
+        elif options_ended:
+            yield word
+        elif word.startswith("--") and len(word) > len("--"):
             option, consumed = _long_option(word, raw, following)
             yield option
             i += consumed
@@ -134,9 +139,9 @@ def curl_options(words: list[str], raws: list[str] | None = None) -> Iterator[Cu
             yield item
 
 
-def curl_groups(words: list[str]) -> list[tuple[list[CurlOption], list[str]]]:
+def curl_groups(words: list[str], raws: list[str] | None = None) -> list[tuple[list[CurlOption], list[str]]]:
     groups: list[tuple[list[CurlOption], list[str]]] = [([], [])]
-    for item in curl_argv(words):
+    for item in curl_argv(words, raws):
         if isinstance(item, CurlOption):
             if not item.unknown and item.name in {"--next", "-:"}:
                 groups.append(([], []))
@@ -205,29 +210,37 @@ def _record_curl_form(field: str, raw: str, payloads: list[str], base: Path | No
 
 
 def _walk_curl_args(
-    words: list[str], payloads: list[str], *, raws: list[str] | None = None, base: Path | None = None
+    words: list[str],
+    payloads: list[str],
+    *,
+    raws: list[str] | None = None,
+    base: Path | None = None,
+    forge_groups: set[int] | None = None,
 ) -> None:
     """Extract every body a curl argv publishes: data values, form fields and uploaded files.
 
     Each value resolves like an inline body (``$(cat <path>)``, a whole ``$VAR``,
     a live substitution failing closed) against its source span in ``raws``.
     """
-    for option in curl_options(words, raws):
-        if option.unknown:
-            payloads.append(
-                f"{NAMED_FAIL_CLOSED_PREFIX}curl option {option.name} is outside curl's option table; "
-                "spell every option out in full"
-            )
-        elif option.name in {"-K", "--config"}:
-            payloads.append(
-                f"{NAMED_FAIL_CLOSED_PREFIX}curl reads more options from a config file "
-                f"{option.value or '(missing)'} the gate cannot see"
-            )
-        if option.value is None or option.name not in _CURL_BODY_FLAGS:
-            continue
-        if option.name in CURL_UPLOAD_FLAGS or option.reads_a_file():
-            payloads.append(FAIL_CLOSED_SENTINEL)
-        elif option.name in CURL_FORM_FLAGS:
-            _record_curl_form(option.value, option.raw, payloads, base)
-        else:
-            _scan_curl_payload(option.resolved(base), payloads)
+    for group_index, (options, _) in enumerate(curl_groups(words, raws)):
+        for option in options:
+            forge_bound = forge_groups is None or group_index in forge_groups
+            if option.unknown and forge_bound:
+                payloads.append(
+                    f"{NAMED_FAIL_CLOSED_PREFIX}curl option {option.name} is outside curl's option table; "
+                    "spell every option out in full"
+                )
+            elif option.name in {"-K", "--config"} and forge_bound:
+                payloads.append(
+                    f"{NAMED_FAIL_CLOSED_PREFIX}curl reads more options from a config file "
+                    f"{option.value or '(missing)'} the gate cannot see"
+                )
+            if option.value is None or option.name not in _CURL_BODY_FLAGS:
+                continue
+            if option.name in CURL_UPLOAD_FLAGS or option.reads_a_file():
+                if forge_bound:
+                    payloads.append(FAIL_CLOSED_SENTINEL)
+            elif option.name in CURL_FORM_FLAGS:
+                _record_curl_form(option.value, option.raw, payloads, base)
+            else:
+                _scan_curl_payload(option.resolved(base), payloads)

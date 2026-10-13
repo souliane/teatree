@@ -243,7 +243,7 @@ def _segment_is_curl_forge_write(words: list[str]) -> bool:
     ]
     return bool(forge_groups) and (
         any(curl_method(options) not in _READ_METHODS for options in forge_groups)
-        or any(option.unknown or option.name in {"-K", "--config"} for options, _ in groups for option in options)
+        or any(option.unknown or option.name in {"-K", "--config"} for options in forge_groups for option in options)
     )
 
 

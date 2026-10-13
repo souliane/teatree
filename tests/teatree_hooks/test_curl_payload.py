@@ -85,6 +85,9 @@ class TestCurlOptionGrammar:
     def test_unknown_abbreviation_is_flagged(self) -> None:
         assert next(curl_options(["--data-asc", "body=acmecorp"])).unknown is True
 
+    def test_double_dash_ends_option_parsing(self) -> None:
+        assert list(curl_options(["-sS", "--", "--frobnicate", "-K", "/tmp/x"])) == list(curl_options(["-sS"]))
+
     def test_methods_are_per_next_group_and_last_request_wins(self) -> None:
         groups = curl_groups(["-X", "POST", "-d", "x", "https://example.com", "--next", "-X", "GET"])
         assert [curl_method(options) for options, _ in groups] == ["POST", "GET"]

@@ -391,6 +391,35 @@ class TestEveryCurlSpellingOfABodyIsScanned:
 
 class TestCurlOptionBoundaries:
     @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh pr create {_PUB} -t routine -b routine && curl -sS -- http://127.0.0.1:8000/health",
+            f"gh pr create {_PUB} -t routine -b routine && curl --anyauth -u a:b http://127.0.0.1:8000/x",
+            f"gh pr create {_PUB} -t routine -b routine && curl -K /tmp/fixture.cfg http://127.0.0.1:8000/x",
+            f"gh pr create {_PUB} -t routine -b routine && curl -T /tmp/fixture.txt http://127.0.0.1:8000/x",
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_nonforge_curl_reason_does_not_block_clean_post(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_double_dash_keeps_forge_read_as_read(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "curl -sS -- https://api.github.com/repos/souliane/teatree"
+        assert is_publish_command(command) is False
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unknown_short_option_on_forge_is_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f"curl -@ {_GH_COMMENTS}"
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "-@" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize(
         ("command", "reason"),
         [
             (f"curl -K /tmp/fixture.cfg {_GH_COMMENTS}", "config file"),
