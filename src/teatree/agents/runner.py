@@ -51,7 +51,7 @@ from teatree.agents.runner_heartbeat import (
     drive_with_heartbeat,
     renew_lease_closing_connection,
 )
-from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_occupancy_deferred
+from teatree.agents.runner_interruption import CeilingSalvage, _record_failure
 from teatree.agents.runner_outcomes import UNROUTED as _UNROUTED  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_outcomes import Transport as _Transport
 from teatree.agents.runner_outcomes import outcome_failure as _outcome_failure  # noqa: F401 — compatibility re-export
@@ -92,12 +92,8 @@ from teatree.config import AgentHarnessProvider
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.worktree.occupancy import (
-    WorktreeOccupiedError,
-    occupy_ticket_checkout,
-    task_holder_id,
-    terminal_holder_task_pk,
-)
+from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
@@ -315,18 +311,15 @@ def run_agent(
     run occupancy admitted. Collapsing either one re-opens the bug the other closes.
     """
     try:
-        with (
-            occupy_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session),
-            drive_claim(task),
-            delivered_phase_handoff(task) as handoff,
-        ):
-            return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
-    except WorktreeOccupiedError as exc:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        if exc.holder is not None and terminal_holder_task_pk(exc.holder.holder) is not None:
-            # A terminal holder unwinds on its own — a TOCTOU winner or a kept third-party-fail claim (#4867, #4872).
-            return _record_occupancy_deferred(task, error=str(exc))
-        return _record_failure(task, error=str(exc))  # no-usage: refused before the harness opened — no turn billed
+        with occupy_ticket_checkout(
+            task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session
+        ) as path:
+            verify_task_checkout(task, path)
+            with drive_claim(task), delivered_phase_handoff(task) as handoff:
+                return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
+    except (WorktreeOccupiedError, CheckoutFenceError) as exc:
+        logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
+        return park_task_checkout(task, reason=str(exc))
 
 
 def _run_agent(

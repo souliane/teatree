@@ -42,9 +42,14 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.models import Worktree
+from django.db import transaction
+
+from teatree.core.claim_liveness import RELEASED_CLAIM
+from teatree.core.cleanup.process_table import read_process_table
+from teatree.core.models import Task, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import (
     OccupancyHolder,
@@ -60,6 +65,8 @@ from teatree.core.models.worktree_occupancy import (
     terminal_holder_task_pk,
     terminal_task_pk,
 )
+from teatree.core.worktree.checkout_fence import writes_checkout
+from teatree.core.worktree.checkout_state import checkout_state
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -96,7 +103,50 @@ def _release_if_finished_task(worktree: Worktree) -> None:
     current = occupancy_holder(worktree)
     if current is None or terminal_task_pk(current.holder) is None:
         return
+    if worktree.get_extra().get("attested_state"):
+        table = read_process_table()
+        if not table.usable or table.holds(Path(worktree.worktree_path)):
+            return
     release(worktree, holder=current.holder, holder_session=current.holder_session)
+
+
+def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> bool:
+    task_pk = terminal_holder_task_pk(holder)
+    if task_pk is None:
+        return False
+    task = Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).first()
+    if task is None:
+        return False
+    table = read_process_table()
+    path = Path(worktree.worktree_path)
+    if not table.usable or table.holds(path):
+        logger.warning(
+            "Keeping checkout %s occupied after task %s: process evidence is incomplete or live", path, task_pk
+        )
+        return True
+    state = None
+    if writes_checkout(task):
+        try:
+            state = checkout_state(path)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Keeping checkout %s occupied after task %s: state could not be attested", path, task_pk)
+            return True
+    with transaction.atomic():
+        row = Worktree.objects.select_for_update().get(pk=worktree.pk)
+        if row.occupied_by != holder or row.occupied_by_session != holder_session:
+            return True
+        extra = dict(row.extra or {})
+        if state is not None:
+            extra["attested_state"] = state.digest
+        Worktree.objects.filter(pk=row.pk, occupied_by=holder, occupied_by_session=holder_session).update(
+            extra=extra,
+            occupied_by="",
+            occupied_by_session="",
+            occupied_at=None,
+            occupancy_expires_at=None,
+        )
+        Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).update(**RELEASED_CLAIM)
+    return True
 
 
 @contextmanager
@@ -128,7 +178,8 @@ def occupy_ticket_checkout(
     try:
         yield path
     finally:
-        release(worktree, holder=holder, holder_session=holder_session)
+        if not _finish_task_checkout(worktree, holder=holder, holder_session=holder_session):
+            release(worktree, holder=holder, holder_session=holder_session)
 
 
 def renew_ticket_checkout(

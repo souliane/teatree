@@ -21,7 +21,9 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.models import Worktree
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -53,6 +55,33 @@ class OccupancyCommands(TyperCommand):
             return
         for worktree, holder in held:
             self.stdout.write(f"  {worktree.worktree_path or '<unprovisioned>'} — {holder.describe()}")
+
+    @command()
+    def attest(self, path: str) -> None:
+        """Record the present checkout state after the owner has inspected it."""
+        worktree = _worktree_for_path(path)
+        matching = [
+            row
+            for row in Worktree.objects.filter(ticket=worktree.ticket)
+            if row.worktree_path and paths_match(Path(row.worktree_path), Path(path).expanduser())
+        ]
+        if len(matching) != 1 or occupancy_holder(worktree) is not None:
+            self.stderr.write(f"  Refused: {path} needs one unoccupied Worktree row to attest.")
+            raise SystemExit(1)
+        table = read_process_table()
+        if not table.usable or table.holds(Path(worktree.worktree_path)):
+            self.stderr.write(f"  Refused: {path} has live or unverifiable processes: {table.refuse_reason()}")
+            raise SystemExit(1)
+        try:
+            state = checkout_state(Path(worktree.worktree_path))
+            worktree.merge_extra(set_keys={"attested_state": state.digest})
+            if checkout_state(Path(worktree.worktree_path)).digest != state.digest:
+                self.stderr.write(f"  Refused: {path} changed while attesting.")
+                raise SystemExit(1)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.stderr.write(f"  Refused: {path} state could not be read: {exc}")
+            raise SystemExit(1) from exc
+        self.stdout.write(f"  attested {worktree.worktree_path} at {state.digest}")
 
     @command(name="claim-occupancy")
     def claim_occupancy(

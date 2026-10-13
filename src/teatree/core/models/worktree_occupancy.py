@@ -240,7 +240,20 @@ def release_task_occupancy(task: Task) -> bool:
     worktree = _worktree_at(task.ticket, path) if path else None
     if worktree is None:
         return False
+    if task_occupancy_release_deferred(task):
+        return False
     return release(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+
+def task_occupancy_release_deferred(task: Task) -> bool:
+    path = dispatch_worktree_path(task.ticket)
+    worktree = _worktree_at(task.ticket, path) if path else None
+    return bool(
+        worktree is not None
+        and worktree.occupied_by == task_holder_id(task)
+        and worktree.occupied_by_session == task.claimed_by_session
+        and Task.objects.filter(pk=task.pk, owner_driving_since__isnull=False).exists()
+    )
 
 
 def _worktree_at(ticket: "Ticket", path: str) -> Worktree | None:

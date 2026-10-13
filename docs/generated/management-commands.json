@@ -1492,6 +1492,10 @@
           "name": "occupancy"
         },
         {
+          "help": "Record the present checkout state after the owner has inspected it",
+          "name": "attest"
+        },
+        {
           "help": "Register an existing on-disk checkout as a ``Worktree`` row",
           "name": "adopt"
         },
