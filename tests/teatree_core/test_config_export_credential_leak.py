@@ -17,12 +17,16 @@ from django.test import TestCase
 
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.config_interchange.migration import export_db_to_toml
-from teatree.core.config_interchange.secret_guard import redaction_reason
+from teatree.core.config_interchange.secret_guard import ExportPrivacy, redaction_reason
 from teatree.core.models import ConfigSetting, Mode
+from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from tests._send_gate import TEST_TERM_REGISTRY
 
 #: A credential COORDINATE — it names where a secret lives; obviously fake, like every value here.
 _SYNTHETIC_COORDINATE = "fake-store/not-a-real-entry"
+_LEAK = TEST_TERM_REGISTRY["leak"][0]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,7 +57,7 @@ class TestOneWithholdRuleServesBothDirections(TestCase):
         assert redaction_reason("mode", "auto", ()) is None
 
     def test_a_value_carrying_a_scanned_term_is_withheld_whatever_the_key(self) -> None:
-        assert redaction_reason("mode", "acme-internal", ("acme-internal",)) == "banned-term:acme-internal"
+        assert redaction_reason("mode", _LEAK, (_LEAK,)) == "banned-term"
 
 
 class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
@@ -89,7 +93,7 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         # The personal-backup escape hatch is unchanged: --include-private keeps the keys.
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["synthetic/oauth-entry"])
         ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
-        result = export_db_to_toml(include_private=True, scan_terms=())
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=())
         teatree = _teatree(result.toml)
         assert teatree["anthropic_oauth_pass_paths"] == ["synthetic/oauth-entry"]
         assert teatree["slack_user_id"] == "synthetic-user-ref"
@@ -123,6 +127,12 @@ class TestTheGuardReachesInsideAValueNotJustItsKey(TestCase):
     def _export(self) -> object:
         return export_db_to_toml(scan_terms=())
 
+    def _tune_shipped_mode(self, **fields: object) -> str:
+        seed_default_presets_and_schedules()
+        name = min(shipped_seed_table("modes"))
+        Mode.objects.filter(name=name).update(**fields)
+        return name
+
     def test_a_coordinate_inside_the_overlays_registry_never_reaches_the_dump(self) -> None:
         ConfigSetting.objects.set_value("overlays", {"box": {"gitlab_token_pass_key": _SYNTHETIC_COORDINATE}})
         result = self._export()
@@ -130,33 +140,29 @@ class TestTheGuardReachesInsideAValueNotJustItsKey(TestCase):
         assert any(row.reason == "credential-coordinate" for row in result.redacted)
 
     def test_a_coordinate_inside_a_preset_entry_never_reaches_the_dump(self) -> None:
-        Mode.objects.create(name="withheld-probe", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
+        name = self._tune_shipped_mode(entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
         result = self._export()
         assert _SYNTHETIC_COORDINATE not in result.toml
-        assert ("modes.withheld-probe", "entries", "credential-coordinate") in [
+        assert (f"modes.{name}", "entries", "credential-coordinate") in [
             (row.scope, row.key, row.reason) for row in result.redacted
         ]
 
     def test_the_withheld_seed_field_is_dropped_whole_so_an_import_never_deletes_the_rest(self) -> None:
-        Mode.objects.create(
-            name="withheld-probe",
-            description="a preset the guard trims",
-            entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE},
+        name = self._tune_shipped_mode(
+            description="a preset the guard trims", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE}
         )
-        emitted = tomllib.loads(self._export().toml)["modes"]["withheld-probe"]
+        emitted = tomllib.loads(self._export().toml)["modes"][name]
         assert "entries" not in emitted
         assert emitted["description"] == "a preset the guard trims"
 
     def test_include_private_still_carries_the_seed_field(self) -> None:
-        Mode.objects.create(name="withheld-probe", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
-        result = export_db_to_toml(include_private=True, scan_terms=())
-        assert tomllib.loads(result.toml)["modes"]["withheld-probe"]["entries"] == {
-            "gitlab_token_pass_key": _SYNTHETIC_COORDINATE
-        }
+        name = self._tune_shipped_mode(entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=())
+        assert tomllib.loads(result.toml)["modes"][name]["entries"] == {"gitlab_token_pass_key": _SYNTHETIC_COORDINATE}
         assert result.redacted == ()
 
     def test_a_preset_carrying_no_coordinate_still_exports_its_entries(self) -> None:
-        Mode.objects.create(name="ordinary-probe", entries={"merge_wip": True})
+        name = self._tune_shipped_mode(entries={"merge_wip": True})
         result = self._export()
-        assert tomllib.loads(result.toml)["modes"]["ordinary-probe"]["entries"] == {"merge_wip": True}
+        assert tomllib.loads(result.toml)["modes"][name]["entries"] == {"merge_wip": True}
         assert result.redacted == ()

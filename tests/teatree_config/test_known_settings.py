@@ -1,6 +1,7 @@
 """The unified known-key set unites all four config-key registries."""
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.known_settings import config_key_hint
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.core.management.commands.config_setting import _ALLOWED_SETTINGS
 
@@ -25,3 +26,16 @@ class TestAllKnownConfigSettings:
 
     def test_cli_command_consults_the_shared_set(self) -> None:
         assert _ALLOWED_SETTINGS is ALL_KNOWN_CONFIG_SETTINGS
+
+
+class TestEveryUnknownKeySaysWhy:
+    def test_a_renamed_key_names_its_successor(self) -> None:
+        assert config_key_hint("speed") == "renamed to wip"
+
+    def test_a_retired_key_names_why_and_its_issue(self) -> None:
+        hint = config_key_hint("branch_prefix")
+        assert hint.startswith("retired:")
+        assert "#2731" in hint
+
+    def test_any_other_key_is_named_undeclared(self) -> None:
+        assert config_key_hint("not_a_setting_probe") == "not a declared setting"

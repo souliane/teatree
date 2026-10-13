@@ -12,10 +12,12 @@ import pathlib
 import re
 import socket
 import threading
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 
@@ -40,8 +42,15 @@ from teatree.core.settings.settings_compare_sync import SEED, SETTING, SYNC_RULE
 from teatree.core.settings.settings_compat import COMPAT_SIGNALS, Severity, build_compat_report
 from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, peer_snapshots, snapshot_url
 from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, build_snapshot, canonical_json
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
+        yield
 
 
 def _row(*cells: Cell, **kwargs: Any) -> CompareRow:

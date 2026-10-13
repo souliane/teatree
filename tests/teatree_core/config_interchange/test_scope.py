@@ -15,7 +15,7 @@ from teatree.config.seed_defaults import SEED_TABLES
 from teatree.core.config_interchange.document_layout import E2E_REPOS_TABLE, OVERLAYS_TABLE, TEATREE_TABLE
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS, section_for_row
-from teatree.core.config_interchange.secret_guard import PRIVATE_BACKUP_TABLE
+from teatree.core.config_interchange.secret_guard import PRIVATE_BACKUP_TABLE, ExportPrivacy
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 
 _DOCUMENTED = frozenset(section.table for section in EXPORT_SECTIONS)
@@ -32,7 +32,8 @@ def _diverge_every_family() -> None:
 
 
 def _emitted_tables(*, include_private: bool = False) -> set[str]:
-    dump = export_db_to_toml(include_private=include_private, scan_terms=()).toml
+    privacy = ExportPrivacy.PRIVATE if include_private else ExportPrivacy.SHARED
+    dump = export_db_to_toml(privacy=privacy, scan_terms=()).toml
     return set(tomllib.loads(dump))
 
 

@@ -12,14 +12,24 @@ different questions about the same coordinates. A substring locator cannot tell 
 apart and resolves to two elements; the exact one names which panel is meant.
 """
 
+import json
 import re
+from io import StringIO
+from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
+from e2e.dash.pom import TermScan
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.settings_snapshot import build_snapshot
 from teatree.dash.settings_editor import SettingsSection, build_settings_sections
+from tests.placeholder_terms import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
+
+_SCAN = TermScan(tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms))
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 
 #: The section a browser assertion navigates to — a leaf several levels down, so the pane
 #: swap is exercised against real nesting rather than a top-level group.
@@ -160,3 +170,19 @@ def test_a_configured_secret_never_reaches_the_browser(live_server: LiveServer, 
     page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
     expect(page.locator("#setting-banned_term_registry")).to_contain_text("***")
     expect(page.locator("body")).not_to_contain_text("sentinel-marker-xyz")
+
+
+@pytest.mark.usefixtures("seeded_board")
+def test_the_compare_page_notes_a_withheld_row_by_class_never_by_the_term(
+    live_server: LiveServer, page: Page, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
+    record = tmp_path / "recorded.json"
+    record.write_text(json.dumps(build_snapshot("recorded-box")), encoding="utf-8")
+    call_command("config_setting", "set", "issue_implementer_label", json.dumps(_CARRIER), stdout=StringIO())
+    page.goto(f"{live_server.url}/dash/settings/compare/")
+    page.get_by_label("snapshot files to compare against").set_input_files(record)
+    page.get_by_role("button", name="Compare against these").click()
+    row = page.locator("td.setting-name", has=page.locator(".row-key", has_text="issue_implementer_label"))
+    expect(row.locator(".row-note")).to_have_attribute("title", re.compile(r"banned-term"))
+    _SCAN.raise_if_carried(page.content())

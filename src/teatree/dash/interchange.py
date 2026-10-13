@@ -35,7 +35,6 @@ def export_text(*, default_keys_only: bool = False, include_defaults: bool = Fal
     shape: a complete, drop-in replacement for the shipped file.
     """
     return export_db_to_toml(
-        include_private=False,
         default_keys_only=default_keys_only,
         include_defaults=include_defaults,
     ).toml

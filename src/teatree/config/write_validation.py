@@ -15,7 +15,7 @@ this helper covers only the shared coercion, raising a single
 """
 
 from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
-from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, config_key_hint
 from teatree.config.settings import WRITE_CONCURRENCY_PER_CORE_MAX, WRITE_CONCURRENCY_PER_CORE_MIN
 
 # A canonical, JSON/TOML-storable config value — the shape every registry parser
@@ -52,7 +52,7 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
         raise ConfigWriteError(UNLISTED_HEADER_REFUSAL)
     parser = ALL_KNOWN_CONFIG_SETTINGS.get(key)
     if parser is None:
-        msg = f"unknown config key: {key}"
+        msg = f"unknown config key: {key}; {config_key_hint(key)}"
         raise ConfigWriteError(msg)
     try:
         value = parser(raw)

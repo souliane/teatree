@@ -19,7 +19,6 @@ SECRET / PERSONAL rows are never emitted (their empty code default stays in the 
 overlay-scope rows and stale/retired keys are reported, never emitted.
 """
 
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -128,10 +127,9 @@ _HEADER = """\
 # shipped definition needs a typed `stop-<name>` naming what stops.
 """
 
-# The scan takes the `"<key> <json-value>"` text and returns the first matched
-# banned term (or None). Injected so `config` never imports `hooks` (the layer
-# above it); the command binds it to `hooks.term_match.matched_term`.
-BannedScan = Callable[[str], str | None]
+# Whether a key and its value carry a banned term. Injected so `config` never imports the
+# layers above it; the command binds it to the export guard's own scan.
+BannedScan = Callable[[str, SettingValue], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,9 +273,8 @@ def _decide(
         coerced = ALL_KNOWN_CONFIG_SETTINGS[key](live)
     except Exception:  # noqa: BLE001 — a malformed live row is declined, never fatal
         return DeclinedChange(key, "uncoercible")
-    hit = banned_scan(f"{key} {json.dumps(coerced, default=str)}")
-    if hit is not None:
-        return DeclinedChange(key, f"banned-term:{hit}")
+    if banned_scan(key, coerced):
+        return DeclinedChange(key, "banned-term")
     if coerced == shipped:
         return None
     return SnapshotChange(key=key, shipped=shipped, proposed=coerced, scope="global")
@@ -295,7 +292,7 @@ def plan_snapshot(
     *shipped* is the file as it stands — the base this plan edits. *live_global* is every
     GLOBAL-scope ``ConfigSetting`` row (any category); *overlay_scope_rows* is
     ``(scope, key)`` for every non-global row (reported, never emitted). *banned_scan*
-    returns the first banned term hit in a ``"<key> <value>"`` text.
+    answers whether a key and its value carry a banned term.
     """
     reported = _Reported()
     _classify_non_default(live_global, reported)

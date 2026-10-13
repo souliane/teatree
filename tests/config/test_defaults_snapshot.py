@@ -41,8 +41,8 @@ def _emitted(text: str) -> dict[str, Any]:
     return flatten_settings_table(tomllib.loads(text)["teatree"])
 
 
-def _never_banned(_text: str) -> str | None:
-    return None
+def _never_banned(_key: str, _value: object) -> bool:
+    return False
 
 
 def _plan(live_global: dict[str, Any], *, shipped=None, banned_scan=_never_banned, overlay_rows=None, base=None):
@@ -165,10 +165,10 @@ class TestNeverMovedThroughThisPath:
     def test_a_banned_value_is_declined_and_never_reaches_the_file(self) -> None:
         plan = _plan(
             {"colleague_repo_url_pattern": "brandx-corp/*"},
-            banned_scan=lambda text: "brandx" if "brandx" in text else None,
+            banned_scan=lambda _key, value: "brandx" in str(value),
         )
         assert plan.changes == ()
-        assert {d.key: d.reason for d in plan.declined}["colleague_repo_url_pattern"] == "banned-term:brandx"
+        assert {d.key: d.reason for d in plan.declined}["colleague_repo_url_pattern"] == "banned-term"
 
     def test_a_malformed_live_value_is_declined_never_fatal(self) -> None:
         plan = _plan({"issue_implementer_max_concurrent": []})
