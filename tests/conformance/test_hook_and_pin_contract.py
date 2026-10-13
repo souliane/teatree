@@ -14,9 +14,18 @@ def _matchers(event: str) -> set[str]:
     return {entry["matcher"] for entry in manifest["hooks"][event] if entry.get("matcher") != "*"}
 
 
-def test_task_list_tools_reach_post_tool_hook() -> None:
+def test_task_list_tools_are_registered_in_post_tool_matcher() -> None:
     matchers = _matchers("PostToolUse")
     assert any({"TaskCreate", "TaskUpdate"} <= set(matcher.split("|")) for matcher in matchers)
+
+
+def test_codex_matchers_forward_all_tools_to_shared_router() -> None:
+    manifest = json.loads((ROOT / "hooks/codex.json").read_text(encoding="utf-8"))
+    for event in ("PreToolUse", "PostToolUse"):
+        entries = manifest["hooks"][event]
+        assert len(entries) == 1
+        assert entries[0]["matcher"] == "*"
+        assert f"codex_hook_adapter.py --event {event}" in entries[0]["hooks"][0]["command"]
 
 
 def test_documented_pre_tool_matchers_equal_shipped_matchers() -> None:
