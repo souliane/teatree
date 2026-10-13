@@ -112,6 +112,7 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "gate", "cron-loop-shell", "disable"),
     ("t3", OVERLAY, "gate", "standing-grant-ask", "disable"),
     ("t3", OVERLAY, "gate", "main-clone", "disable"),
+    ("t3", OVERLAY, "gate", "worktree-containment", "disable"),
     ("t3", OVERLAY, "gate", "plan", "disable"),
     ("t3", OVERLAY, "gate", "visible-plan", "disable"),
     ("t3", OVERLAY, "gate", "add-all", "disable"),

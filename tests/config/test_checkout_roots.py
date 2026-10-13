@@ -1,5 +1,9 @@
 import json
+import os
 import sqlite3
+import subprocess
+import sys
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +11,29 @@ from django.test import TestCase
 
 from teatree.config.checkout_roots import checkout_roots
 from teatree.core.models import ConfigSetting
+
+
+def test_cold_hook_resolves_base_without_django(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = """
+import importlib.abc
+import sys
+from pathlib import Path
+
+class BlockDjango(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "django" or fullname.startswith("django."):
+            raise ModuleNotFoundError(name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockDjango())
+from teatree.config.checkout_roots import checkout_roots
+print(checkout_roots().durable[0])
+"""
+    env = dict(os.environ, PYTHONPATH=str(root / "src"), HOME=str(tmp_path / "home"))
+    result = subprocess.run([sys.executable, "-c", script], env=env, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(tmp_path / "home" / "workspace" / "t3-workspaces")
 
 
 def test_allowed_checkout_roots_resolve_symlinks_and_include_stored_roots(tmp_path: Path) -> None:
@@ -63,7 +90,7 @@ def test_unreadable_store_falls_back_to_base_and_reports_it(tmp_path: Path) -> N
 
 def test_all_stored_scopes_are_allowed_when_the_store_is_readable(tmp_path: Path) -> None:
     db = tmp_path / "settings.sqlite3"
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn, conn:
         conn.execute("CREATE TABLE teatree_config_setting (scope TEXT, key TEXT, value TEXT)")
         for scope, root in (("", tmp_path / "global"), ("other", tmp_path / "other")):
             conn.execute(

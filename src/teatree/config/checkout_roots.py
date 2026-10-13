@@ -1,12 +1,11 @@
 """The allowed destinations for linked worktrees of a managed clone."""
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
-
-from django.conf import settings
-from django.db import DatabaseError, connection
 
 from teatree.config import cold_db
 from teatree.config.loader import clone_root
@@ -41,13 +40,19 @@ class CheckoutRoots:
 
 
 def _stored_workspace_dirs() -> tuple[tuple[str, ...], str]:
-    if settings.configured:
+    try:
+        django_conf = import_module("django.conf")
+        django_db = import_module("django.db")
+    except ImportError:
+        django_conf = None
+        django_db = None
+    if django_conf is not None and django_db is not None and django_conf.settings.configured:
         try:
-            with connection.cursor() as cursor:
+            with django_db.connection.cursor() as cursor:
                 cursor.execute("SELECT value FROM teatree_config_setting WHERE key=%s", ["workspace_dir"])
                 rows = cursor.fetchall()
             return tuple(value for (raw,) in rows if isinstance((value := json.loads(raw)), str)), ""
-        except (DatabaseError, RuntimeError, ValueError, TypeError):
+        except (django_db.DatabaseError, RuntimeError, ValueError, TypeError):
             pass
     db = cold_db.canonical_config_db()
     if db.exists():
@@ -85,7 +90,14 @@ def checkout_roots(
     disposable: tuple[Path, ...] | None = None,
 ) -> CheckoutRoots:
     home_root = (home or Path.home()).expanduser().resolve()
-    clone = (clone_dir or clone_root()).expanduser().resolve()
+    if clone_dir is None:
+        try:
+            clone_dir = clone_root()
+        except ModuleNotFoundError as exc:
+            if exc.name is None or not exc.name.startswith("django"):
+                raise
+            clone_dir = Path(os.environ.get("T3_WORKSPACE_DIR", str(home_root / "workspace")))
+    clone = clone_dir.expanduser().resolve()
     temporary = tuple(root.resolve() for root in (disposable if disposable is not None else disposable_roots()))
     base = (home_root / "workspace" / "t3-workspaces").resolve()
     read_error = ""
