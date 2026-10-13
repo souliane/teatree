@@ -7,7 +7,7 @@ hello hook and the inbox job bind the catch-up to the same recorder and wake.
 """
 
 from dataclasses import dataclass, field
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import django.test
 from django.tasks import TaskResultStatus
@@ -178,7 +178,7 @@ class TestCatchUpWiring:
             catch_up_on_connect("demo", 5.0)
 
         run.assert_called_once_with(
-            "demo", alive_at=5.0, record=record_slack_dm, wake=timer_reconciler.wake_slack_answer.enqueue
+            "demo", alive_at=5.0, seen=ANY, record=record_slack_dm, wake=timer_reconciler.wake_slack_answer.enqueue
         )
 
     def test_the_inbox_job_binds_the_recorder_and_the_wake(self) -> None:
