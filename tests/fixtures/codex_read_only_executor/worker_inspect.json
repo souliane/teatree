@@ -1,0 +1,183 @@
+{
+  "CheckoutEnv": [
+    "TEATREE_DEPLOY_CHECKOUT=/home/<user>/teatree-deploy"
+  ],
+  "Id": "container-05",
+  "Mounts": [
+    {
+      "Destination": "$CONTAINER_HOME/.claude",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_claude_home",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_claude_home/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.local/share/teatree",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.local/share/teatree",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.password-store",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.password-store",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/var/lib/teatree/host-bin",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.local/bin",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.claude/projects",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.claude/projects",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/var/run/docker.sock",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/var/run/docker.sock",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/home/<user>/teatree-deploy",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/teatree-deploy",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/opt/teatree/uv",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_uv",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_uv/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "/home/<user>/.local/share/uv/python",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.local/share/uv/python",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.agents",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_agents_home",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_agents_home/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "/host-tmp",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/tmp",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.gnupg",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.gnupg",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/host-proc",
+      "Mode": "ro",
+      "Propagation": "rprivate",
+      "RW": false,
+      "Source": "/proc",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/workspace/t3-workspaces",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/workspace/t3-workspaces",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/workspace",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_clones",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_clones/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/teatree",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_src",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_src/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "/var/lib/teatree/control-db",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_control_db",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_control_db/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.codex",
+      "Driver": "local",
+      "Mode": "rw",
+      "Name": "example_codex_home",
+      "Propagation": "",
+      "RW": true,
+      "Source": "/var/lib/docker/volumes/example_codex_home/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.local/share/teatree-worktrees",
+      "Mode": "rw",
+      "Propagation": "rprivate",
+      "RW": true,
+      "Source": "/home/<user>/.local/share/teatree-worktrees",
+      "Type": "bind"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/.gnupg-run",
+      "Mode": "",
+      "Propagation": "",
+      "RW": true,
+      "Source": "",
+      "Type": "tmpfs"
+    }
+  ],
+  "Project": "teatree"
+}

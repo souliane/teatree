@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.gates.privacy_gate import _db_banned_terms
+from teatree.core.gates.privacy_gate import _db_allowlist, _db_banned_terms
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +18,13 @@ def test_unreadable_store_fails_closed(tmp_path: Path, monkeypatch: pytest.Monke
     corrupt.write_bytes(b"this is not a sqlite database")
     monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
     assert _db_banned_terms() is None
+
+
+def test_unreadable_store_exempts_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    corrupt = tmp_path / "corrupt.sqlite3"
+    corrupt.write_bytes(b"this is not a sqlite database")
+    monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+    assert _db_allowlist() == ()
 
 
 def test_absent_store_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

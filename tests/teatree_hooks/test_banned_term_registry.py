@@ -65,6 +65,14 @@ def test_legacy_rows_do_not_supply_a_fallback(tmp_path: Path) -> None:
     with pytest.raises(BannedTermsUnsetError):
         terms_for_gate("tree", db_path=db)
     assert terms_for_gate("overlay", db_path=db) == ()
+    with pytest.raises(BannedTermsUnsetError, match="refusing"):
+        export_scan_terms(db_path=db)
+
+
+def test_only_allow_terms_do_not_make_export_scannable(tmp_path: Path) -> None:
+    db = _seed(tmp_path, banned_term_registry={"allow": ["safe"]})
+    with pytest.raises(BannedTermsUnsetError, match="refusing to scan as empty"):
+        export_scan_terms(db_path=db)
 
 
 def test_registry_secret_wins_over_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

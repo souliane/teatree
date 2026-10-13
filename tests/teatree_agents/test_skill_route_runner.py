@@ -298,12 +298,12 @@ class TestSkillRouteRuntimeFallback(TestCase):
         config = AgentConfig(
             skill_models={
                 "code": (AgentRouteCandidate("codex_like", "codex"),),
-                "review": (AgentRouteCandidate("claude_like", "opus"),),
+                "test": (AgentRouteCandidate("claude_like", "opus"),),
             }
         )
 
-        attempt = self._run(config, skills=["code", "review"])
+        attempt = self._run(config, skills=["code", "test"])
 
         assert attempt.exit_code == 1
-        assert "multiple loaded skills own an ordered agent route: code, review" in attempt.error
+        assert "multiple loaded skills own an ordered agent route: code, test" in attempt.error
         assert TaskAttempt.objects.filter(task=attempt.task).count() == 1

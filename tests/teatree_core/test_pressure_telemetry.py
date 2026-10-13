@@ -192,7 +192,7 @@ def test_detector_clusters_repeated_denials_by_cause(tmp_path, now: dt.datetime)
     reports = detector.detect()
     assert len(reports) == 1
     assert reports[0].dedup_key.endswith("load")
-    assert reports[0].payload["observations"] == 3
+    assert reports[0].payload["count"] == 3
     assert reports[0].requested_rung == ActionRung.STATUSLINE
     assert reports[0].max_rung == ActionRung.STATUSLINE
     initial_hash = reports[0].state_hash
@@ -209,6 +209,36 @@ def test_detector_clusters_repeated_denials_by_cause(tmp_path, now: dt.datetime)
     assert detector.detect()[0].requested_rung == ActionRung.TICKET
     assert detector.detect()[0].max_rung == ActionRung.TICKET
     provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("cause", "band", "admit"),
+    [
+        ("5h-quota", "shed", True),
+        ("weekly-quota", "shed", True),
+        ("weekly-pace", "halt", False),
+        ("accounts-exhausted", "halt", False),
+    ],
+)
+def test_quota_pressure_incident_stays_at_log(
+    tmp_path: Path, now: dt.datetime, cause: str, band: str, *, admit: bool
+) -> None:
+    row = {
+        "epoch": int(now.timestamp()),
+        "cause": cause,
+        "pressure": 0.926,
+        "band": band,
+        "admit": admit,
+        "reason": "admitting up to 2 — signals healthy",
+        "lane": "loop",
+    }
+    (tmp_path / f"admission-{now.date().isoformat()}.jsonl").write_text((json.dumps(row) + "\n") * 64)
+
+    report = next(report for report in _detector(tmp_path, now=now).detect() if report.payload.get("cause") == cause)
+
+    assert report.max_rung == report.requested_rung == ActionRung.LOG
+    assert report.payload["kind"] == "pressure_incident"
+    assert report.payload["count"] == 64
 
 
 def test_stale_spans_do_not_make_a_live_incident(tmp_path, now: dt.datetime) -> None:

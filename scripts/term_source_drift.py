@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare the CI registry secret against committed term fingerprints.
 
-The tree and overlay gates consume classes from one ``TEATREE_TERM_REGISTRY``
+The tree, overlay and allow gates consume classes from one ``TEATREE_TERM_REGISTRY``
 JSON secret. Reports contain only counts and whole-list digests.
 """
 
@@ -114,6 +114,7 @@ class GateSource:
 GATES: Final[tuple[GateSource, ...]] = (
     GateSource("tree", "TEATREE_TERM_REGISTRY", "leak"),
     GateSource("overlay", "TEATREE_TERM_REGISTRY", "overlay"),
+    GateSource("allow", "TEATREE_TERM_REGISTRY", "allow"),
 )
 
 

@@ -15,9 +15,11 @@ from teatree import forge_credentials
 from teatree.agents._runner_env import XDIST_WORKERS_VAR, DispatchCredential
 from teatree.agents.codex_app_server import CodexAppServerHarness
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
+from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.runner import _resolve_child_env_or_failure
 from teatree.core.models import Session, Task
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV, ForgeCredentialRequest, ForgeTokenResolution, ForgeTokenState
+from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 from tests.factories import planned_ticket
 from tests.teatree_agents.test_codex_shared_app_server import _SERVER, FakeCache
 
@@ -68,6 +70,7 @@ class TestCodexForgeCredential(TestCase):
         assert credential.env["GH_TOKEN"] == "ghp-routed"
         assert credential.env[ROUTED_GH_KEY_ENV] == _PASS_KEY
         assert int(credential.env[XDIST_WORKERS_VAR]) >= 1
+        assert credential.env[DISPATCHED_AGENT_ENV] == "1"
 
     def test_an_unresolved_route_yields_no_token_but_keeps_the_cap(self) -> None:
         credential = _resolve_child_env_or_failure(self._task("other"), self._harness(), None)
@@ -102,5 +105,19 @@ class TestCodexForgeCredential(TestCase):
         assert child["GH_TOKEN"] == "ghp-routed"
         assert child[ROUTED_GH_KEY_ENV] == _PASS_KEY
         assert XDIST_WORKERS_VAR in child
+        assert child[DISPATCHED_AGENT_ENV] == "1"
         assert not {key for key in _AMBIENT_SECRETS if key != "GH_TOKEN"} & child.keys()
         assert not {"ambient-gh-secret", "gitlab-secret", "anthropic-secret"} & set(child.values())
+
+
+class TestClaudeDispatchMarker(TestCase):
+    def test_the_claude_child_env_marks_the_dispatched_agent(self) -> None:
+        ticket = planned_ticket(overlay="other")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with patch("teatree.agents.runner.shutil.which", return_value="/usr/bin/claude"):
+            credential = _resolve_child_env_or_failure(task, ClaudeSdkHarness(), None)
+
+        assert isinstance(credential, DispatchCredential)
+        assert credential.env is not None
+        assert credential.env[DISPATCHED_AGENT_ENV] == "1"

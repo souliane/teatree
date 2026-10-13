@@ -72,6 +72,8 @@ class HarnessCapabilities:
     *   ``metered_lane`` — the transport FIXES the run to the metered Layer-2 lane (the OpenAI-compatible backend
         BYOK or the native Anthropic key), unlike the ``claude_sdk`` subscription lane whose
         attribution is resolved from the explicit provider pin.
+    *   ``read_only_venue`` — the run happens where every checkout is read-only and teatree's CLI is
+        absent, so the brief carries its facts inline. It shapes the brief only; it never admits a phase.
     """
 
     hooks: bool = False
@@ -82,6 +84,7 @@ class HarnessCapabilities:
     spawns_cli_child: bool = False
     metered_lane: bool = False
     managed_lane: bool = False
+    read_only_venue: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +124,9 @@ class HarnessSpec:
     *unavailable_reason* is the side-effect-free availability probe: ``None`` when the
     backend can open for the context, otherwise why it cannot. It must answer the same
     within one dispatch, because the transport and its Layer-2 provider each consult it.
+    *read_only_executor_refusal* is a managed-lane backend's live answer for a phase that bars write
+    tools: ``None`` once its read-only executor passed a probe, otherwise why not. Without it such a
+    phase is refused outright.
     """
 
     name: str
@@ -129,6 +135,7 @@ class HarnessSpec:
     valid_providers: frozenset[str] = frozenset()
     allows_provider: bool = True
     unavailable_reason: "Callable[[HarnessBuildContext], str | None]" = _always_available
+    read_only_executor_refusal: "Callable[[HarnessBuildContext], str | None] | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +254,9 @@ def _barred_reason(spec: HarnessSpec, context: HarnessBuildContext) -> str | Non
     if context.task is not None and (context.task.ticket.extra or {}).get("claude_only"):
         return "ticket is claude_only"
     if context.phase and spec.capabilities.managed_lane and phase_bars_write_tools(context.phase):
-        return f"phase {context.phase!r} bars write tools, which a managed-lane harness cannot enforce"
+        if spec.read_only_executor_refusal is None:
+            return f"phase {context.phase!r} bars write tools, which a managed-lane harness cannot enforce"
+        return spec.read_only_executor_refusal(context)
     return None
 
 
@@ -255,7 +264,8 @@ def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) ->
     """The first registered, available candidate, with every rejection before it in order.
 
     A candidate other than claude_sdk is also rejected for a ``claude_only`` ticket and — when it
-    rides the managed lane — for a phase barring write tools.
+    rides the managed lane — for a phase barring write tools, unless its read-only executor passes a
+    live probe on this selection.
 
     Raises :class:`NoAvailableHarnessError` naming each rejection when none qualifies.
     """

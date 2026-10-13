@@ -19,6 +19,7 @@ from teatree.core.management.commands.learnings import Command as LearningsComma
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
 from teatree.core.management.commands.loop_preset import Command as LoopPresetCommand
 from teatree.core.management.commands.notify import Command as NotifyCommand
+from teatree.core.management.commands.pr import Command as PrCommand
 from teatree.core.management.commands.questions import Command as QuestionsCommand
 from teatree.core.management.commands.run import Command as RunCommand
 from teatree.core.management.commands.worktree import Command as WorktreeCommand
@@ -147,6 +148,12 @@ def test_honesty_group_dispatches_to_core() -> None:
 def test_honesty_subcommands_map_to_real_command_methods() -> None:
     for name in _honesty_subcommands():
         assert hasattr(HonestyCommand, name.replace("-", "_")), name
+
+
+def test_pr_group_exposes_the_merge_void_on_the_core_command() -> None:
+    assert "void-merge" in _pr_subcommands()
+    assert DJANGO_GROUPS["pr"].dispatches_to_core("void-merge") is True
+    assert hasattr(PrCommand, "void_merge")
 
 
 def test_loop_preset_group_exposes_every_management_subcommand() -> None:

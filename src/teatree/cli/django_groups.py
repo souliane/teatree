@@ -149,6 +149,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("merge", "[Removed] Refuses with a redirect to the §17.4 keystone (`ticket clear` + `ticket merge`)."),
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
+            ("void-merge", "Void a merge whose content never reached the default branch (a human at a terminal)."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),

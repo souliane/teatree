@@ -48,7 +48,7 @@ class TestNoRedundantModelBase:
 
 class TestStatusFacetCohesionSplit:
     def test_status_facet_holds_only_direct_write_flags(self) -> None:
-        assert _own_public_members(TicketStatusModel) == {"mark_remote_missing", "unignore"}
+        assert _own_public_members(TicketStatusModel) == {"mark_remote_missing", "unignore", "void_merge"}
 
     def test_introspection_facet_holds_the_read_only_surface(self) -> None:
         assert _own_public_members(TicketIntrospectionModel) == {
