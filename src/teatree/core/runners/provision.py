@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import clone_root, cold_reader, get_effective_settings, worktree_root
+from teatree.config.checkout_roots import checkout_roots
 from teatree.core.gates.single_branch_repo_guard import (
     GATE_KEY,
     check_branch_admitted,
@@ -363,6 +364,26 @@ class WorktreeProvisioner(RunnerBase):
         except TicketWorkspaceDivergenceError as exc:
             logger.exception("Ticket workspace is already split")
             return RunnerResult(ok=False, detail=str(exc))
+        for repo_name in repos:
+            if repo_name in adopt:
+                continue
+            existing = Worktree.objects.filter(ticket=ticket, repo_path=repo_name).first()
+            if (
+                existing
+                and (recorded := existing.worktree_path)
+                and _recorded_checkout_is_live(recorded, clone=find_clone_path(clone_root_path, repo_name))
+            ):
+                continue
+            if reason := checkout_roots().refusal(ticket_dir, durable=True):
+                return RunnerResult(
+                    ok=False,
+                    detail=(
+                        f"outside_allowed_roots: {reason} Run "
+                        f"`t3 {ticket.overlay or '<overlay>'} workspace relocate` "
+                        "for a dead recorded row outside the roots."
+                    ),
+                )
+            break
         preflight = [
             self._preflight(clone_root_path, repo_name, branches.get(repo_name, branch), adopt.get(repo_name, ""))
             for repo_name in repos

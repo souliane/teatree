@@ -14,6 +14,13 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup.unshipped_restore import restore_bundle
+from teatree.core.cleanup.unshipped_work import (
+    UNCOMMITTED_SUFFIX,
+    bundle_path,
+    capture_unshipped_work,
+    probe_unshipped_work,
+)
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dirs
 from teatree.core.worktree.ticket_workspace_repair import repair_split_workspace
@@ -26,8 +33,18 @@ class TestRepairSplitWorkspace(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        home = tmp_path / "home"
+        self.home_patch = patch("pathlib.Path.home", return_value=home)
+        self.home_patch.start()
+        self.addCleanup(self.home_patch.stop)
+        self.artifact_patch = patch(
+            "teatree.core.worktree.ticket_workspace_repair.get_data_dir", return_value=tmp_path / "artifacts"
+        )
+        self.artifact_patch.start()
+        self.addCleanup(self.artifact_patch.stop)
+        (tmp_path / "artifacts").mkdir()
+        self.workspace = home / "workspace" / "t3-workspaces"
+        self.workspace.mkdir(parents=True)
 
     def _clone(self, repo: str) -> Path:
         # A real, PUSHED origin: unpushed-work detection asks whether a commit is
@@ -51,6 +68,168 @@ class TestRepairSplitWorkspace(TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(path)])
         return path
+
+    def _split_ticket(self, *, dirty: bool = True) -> tuple[Ticket, Path, Path]:
+        backend = self._add_worktree(self._clone("backend"), self.workspace / _BRANCH / "backend", _BRANCH)
+        frontend = self._add_worktree(self._clone("frontend"), self.tmp / "foreign" / "frontend", _BRANCH)
+        if dirty:
+            (frontend / "work.txt").write_text("original\n", encoding="utf-8")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url=f"https://example.com/issues/{self.id()}",
+            repos=["backend", "frontend"],
+            extra={"branch": _BRANCH},
+        )
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="backend", branch=_BRANCH, extra={"worktree_path": str(backend)}
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="frontend",
+            branch=_BRANCH,
+            extra={"worktree_path": str(frontend)},
+        )
+        return ticket, backend, frontend
+
+    def test_refuses_disallowed_canonical_root_before_any_write(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        outside = self.tmp / "outside"
+        with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=outside):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert "outside allowed" in outcome.render()
+        assert not outside.exists()
+        assert frontend.is_dir()
+
+    def test_refuses_recorded_branch_mismatch_before_remove(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        Worktree.objects.filter(ticket=ticket, repo_path="frontend").update(branch="wrong-branch")
+        with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert "recorded branch" in outcome.render()
+        assert frontend.is_dir()
+
+    def test_refuses_incomplete_bundle_before_remove(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", return_value=None),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_refuses_partial_bundle_before_remove(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+
+        def partial_capture(checkout: Path, *, branch: str, overlay: str, artifact_root: Path) -> object:
+            record = capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=artifact_root)
+            assert record is not None
+            bundle_path(record.artifact_prefix, UNCOMMITTED_SUFFIX).write_text("partial", encoding="utf-8")
+            return record
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", side_effect=partial_capture),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_refuses_bundle_from_earlier_capture(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        old_root = self.tmp / "older-artifacts"
+        record = capture_unshipped_work(frontend, branch=_BRANCH, overlay="test", artifact_root=old_root)
+        assert record is not None
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", return_value=record),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_refuses_same_length_edit_between_reads(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+
+        def edited_capture(checkout: Path, *, branch: str, overlay: str, artifact_root: Path) -> object:
+            (checkout / "work.txt").write_text("modified\n", encoding="utf-8")
+            return capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=artifact_root)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", side_effect=edited_capture),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_refuses_work_added_after_clean_first_read(self) -> None:
+        ticket, _, frontend = self._split_ticket(dirty=False)
+        calls = 0
+
+        def late_file(checkout: Path) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                (checkout / "late.txt").write_text("late\n", encoding="utf-8")
+            return probe_unshipped_work(checkout)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.probe_unshipped_work", side_effect=late_file),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_moves_clean_checkout_without_bundle(self) -> None:
+        ticket, _, frontend = self._split_ticket(dirty=False)
+        with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace):
+            outcome = repair_split_workspace(ticket)
+        assert outcome.ok, outcome.render()
+        assert not frontend.exists()
+        assert (self.workspace / _BRANCH / "frontend").is_dir()
+        assert list((self.tmp / "artifacts").iterdir()) == []
+
+    def test_refuses_unwritable_bundle_root(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.get_data_dir", side_effect=OSError("read only")),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert "nothing moved" in outcome.render()
+        assert "restore" not in outcome.render()
+        assert frontend.is_dir()
+
+    def test_failed_reapply_names_fresh_restore_even_after_prior_capture(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        prior = capture_unshipped_work(frontend, branch=_BRANCH, overlay="test", artifact_root=self.tmp / "older")
+        assert prior is not None
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch(
+                "teatree.core.worktree.ticket_workspace_repair._apply_uncommitted_delta",
+                return_value="apply failed",
+            ),
+        ):
+            outcome = repair_split_workspace(ticket)
+        moved = self.workspace / _BRANCH / "frontend"
+        assert not outcome.ok
+        assert "previous salvage" in outcome.render()
+        prefix = outcome.render().split("workspace restore ", 1)[1].split(" --into", 1)[0]
+        assert prefix != prior.artifact_prefix
+        assert restore_bundle(prefix, moved).ok
+        assert (moved / "work.txt").read_text(encoding="utf-8") == "original\n"
 
     def test_repairs_a_split_unfinished_ticket_preserving_unpushed_and_uncommitted_work(self) -> None:
         backend_clone = self._clone("backend")

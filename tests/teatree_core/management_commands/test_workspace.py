@@ -643,6 +643,18 @@ class TestFinalizeTicketProvision(TestCase):
         assert Ticket.objects.filter(pk=ticket.pk).exists()
         assert any("Provisioning failed" in line for line in errs)
 
+    def test_placement_refusal_keeps_new_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-keep"})
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=False, detail="outside_allowed_roots: fix workspace_dir")
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
+
+        assert rc == 0
+        assert Ticket.objects.filter(pk=ticket.pk).exists()
+        assert any("outside_allowed_roots" in line for line in errs)
+
 
 class TestWorkspaceTicket(TestCase):
     def setUp(self) -> None:
@@ -659,6 +671,11 @@ class TestWorkspaceTicket(TestCase):
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend", "api", "web"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    def _allowed_root(self, temp: Path) -> Path:
+        home = temp / "home"
+        self.enterContext(patch.object(Path, "home", return_value=home))
+        return home / "workspace" / "t3-workspaces"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -901,8 +918,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
 
             # Create git repos
             for repo_name in ("backend", "frontend"):
@@ -1000,8 +1017,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend" / ".git").mkdir(parents=True)
             (workspace / "frontend").mkdir()
 
@@ -1028,8 +1045,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1063,8 +1080,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1129,8 +1146,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
 
@@ -1170,8 +1187,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1216,7 +1233,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
+            workspace = self._allowed_root(tmp_path)
             (workspace / "org" / "backend").mkdir(parents=True)
             (workspace / "org" / "backend" / ".git").mkdir()
             (workspace / "org" / "frontend").mkdir(parents=True)
@@ -1267,7 +1284,7 @@ class TestWorkspaceTicket(TestCase):
     def test_core_issue_provisions_only_teatree_core_repo(self) -> None:
         """#727: a teatree-core issue URL provisions the core repo, not product repos."""
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
+            workspace = self._allowed_root(Path(tmp))
             core = workspace / "souliane" / "teatree"
             (core / ".git").mkdir(parents=True)
 
@@ -1294,7 +1311,7 @@ class TestWorkspaceTicket(TestCase):
     def test_product_issue_still_provisions_product_repos(self) -> None:
         """#727 regression guard: a product-repo issue keeps the product repo set."""
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
+            workspace = self._allowed_root(Path(tmp))
             core = workspace / "souliane" / "teatree"
             (core / ".git").mkdir(parents=True)
             for repo in ("backend", "frontend"):

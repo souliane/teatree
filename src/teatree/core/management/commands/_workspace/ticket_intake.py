@@ -423,6 +423,10 @@ def finalize_ticket_provision(
     # worktrees already in place. Single source of truth: the runner.
     result = WorktreeProvisioner(ticket).run()
     if not result.ok and not ticket.worktrees.exists():
+        if result.detail.startswith("outside_allowed_roots:"):
+            write_err(f"  Provisioning refused: {result.detail}")
+            write_err(f"  Ticket #{ticket.pk} kept; fix workspace_dir and retry.")
+            return 0
         if result.retryable:
             write_err(f"  Provisioning deferred: {result.detail}")
             write_err(f"  Ticket #{ticket.pk} kept: the worker retries provisioning, then asks the owner.")

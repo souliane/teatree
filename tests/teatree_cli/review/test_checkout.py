@@ -16,11 +16,17 @@ from typer.testing import CliRunner
 
 from teatree.cli.review import review_app
 from teatree.cli.review.checkout import head_ref_for
+from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.git import head_sha
 from tests._git_repo import make_git_repo, run_git
 
 PR_URL = "https://github.com/souliane/teatree/pull/42"
 MR_URL = "https://gitlab.com/org/proj/-/merge_requests/42"
+
+
+@pytest.fixture(autouse=True)
+def _review_temp_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(DISPOSABLE_ROOTS_ENV, str(tmp_path))
 
 
 @pytest.fixture
@@ -59,6 +65,23 @@ class TestHeadRefForForge:
 
 
 class TestReviewCheckoutSucceeds:
+    def test_refuses_a_base_dir_outside_allowed_roots_before_fetch(
+        self, clone_with_pushed_head: tuple[Path, str], tmp_path: Path
+    ) -> None:
+        clone, pushed_head = clone_with_pushed_head
+        outside = tmp_path.parent / "outside-review-root"
+        before = run_git(clone, "worktree", "list", "--porcelain")
+
+        result = CliRunner().invoke(
+            review_app,
+            ["checkout", PR_URL, "--sha", pushed_head, "--repo", str(clone), "--base-dir", str(outside)],
+        )
+
+        assert result.exit_code == 2
+        assert json.loads(result.output)["error"] == "outside_allowed_roots"
+        assert not outside.exists()
+        assert run_git(clone, "worktree", "list", "--porcelain") == before
+
     def test_materialises_the_exact_reviewed_head_and_prints_its_path(
         self, clone_with_pushed_head: tuple[Path, str], tmp_path: Path
     ) -> None:
