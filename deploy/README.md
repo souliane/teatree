@@ -449,6 +449,9 @@ every translatable root, an unreachable Docker daemon, a stack never built here 
 wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
+Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
+and AI-signature gates refuse with the cause, while the coverage gate allows and
+names the cause.
 
 ### Worker sizing: derived from the host
 
@@ -1273,6 +1276,10 @@ re-run `t3 setup` — when a piece is missing. The launcher check runs inside
 the container through the host bin mount. Override the preferred service with
 `TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
 `TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
+On the host, `TEATREE_COMPOSE_PROJECT` selects the production compose project for
+`deploy/t3` and the hooks' CLI-container probes; it wins over
+`COMPOSE_PROJECT_NAME`, and an empty value falls through to that variable or
+`teatree`. Set it when a shell inherits a worktree's `COMPOSE_PROJECT_NAME`.
 
 **The host hook tool env follows the checkout (#4988).** The plugin hooks run on the host under
 `${UV_TOOL_DIR:-~/.local/share/uv/tools}/teatree/bin/python`, which the container cannot reach, so once
