@@ -42,7 +42,18 @@ _LAUNCHER_REFUSAL = subprocess.CompletedProcess(
     args=[],
     returncode=t3_invocation.VENUE_UNAVAILABLE_EXIT,
     stdout="",
-    stderr="deploy/t3: refusing to run — this checkout is not visible inside the container.\n           cwd: /x\n",
+    stderr=(
+        "deploy/t3: refusing to run — this checkout is not visible inside the container.\n"
+        "           cwd:      /x\n"
+        "           checkout: /x\n"
+        "           The container carries its OWN copy of the teatree source (a Docker\n"
+        "           volume, a separate tree from this one), so dispatching from here would\n"
+        "           silently operate on that copy instead of the checkout you are in.\n"
+        "           A working directory must sit under one of these host roots:\n"
+        "           Fix: work from a checkout under one of them — `t3 <overlay> workspace\n"
+        "           ticket <id>` creates one — or export TEATREE_INVOCATION_CWD to the\n"
+        "           container-side path when you know this tree is reachable there.\n"
+    ),
 )
 
 
@@ -138,13 +149,19 @@ class TestDefaultOverlayValidation:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         with (
             patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
-            patch.object(t3_invocation, "unreachable_reason", return_value=None),
+            patch.object(
+                t3_invocation,
+                "unreachable_reason",
+                return_value="compose project 'teatree' has 2 running teatree-worker containers",
+            ),
         ):
             assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is True
         reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
         assert reason.startswith("Cannot validate MR title/description")
         assert "venue fault" in reason
         assert "this checkout is not visible inside the container" in reason
+        assert "2 running teatree-worker containers" in reason
+        assert "export TEATREE_INVOCATION_CWD" not in reason
         assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1" in reason
 
     def test_the_broken_env_opt_in_also_lets_a_venue_fault_through_and_says_so(self, monkeypatch, capsys):
