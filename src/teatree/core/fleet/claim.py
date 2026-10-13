@@ -21,8 +21,9 @@ lives at ``refs/teatree/claims/<slug>`` on the forge remote:
 The commit the ref points at is the CAS token: its sha changes on every heartbeat
 and every steal, so a re-point lands only against the value its writer observed.
 Every claim commit's only parent is the root of the default branch ``origin``
-advertises, read from the tip ``origin`` holds, and its tree is that root's tree,
-so it adds nothing ``origin`` lacks beyond its record (the message).
+advertises, read from the tip ``origin`` holds with replace refs ignored, and its
+tree is that root's tree, so it adds nothing ``origin`` lacks beyond its record
+(the message).
 Each claim tenure carries a random ``lineage`` that :func:`acquire` or
 :func:`steal_if_expired` mints and every :func:`heartbeat` writes forward. WHO
 holds the claim is the (``instance_id``, ``lineage``) pair in the tip's claim
@@ -62,19 +63,14 @@ from typing import NotRequired, TypedDict, cast
 
 from teatree.instance_id import instance_id
 from teatree.utils.git_run import git_env_non_interactive
-from teatree.utils.run import (
-    CommandFailedError,
-    CompletedProcess,
-    TimeoutExpired,
-    redact_secrets,
-    run_bounded_group,
-    run_checked,
-)
+from teatree.utils.run import CompletedProcess, TimeoutExpired, redact_secrets, run_bounded_group
 
 _REF_PREFIX = "refs/teatree/claims"
 _READ_ATTEMPTS = 2
 #: Above the privacy gate's own 120 s remote listing, so only a stuck hook or a stalled remote reaches it.
 _GIT_TIMEOUT_SECONDS = 300.0
+#: Every fetch lands in the throwaway object dir, so none may write a ref (FETCH_HEAD, a tracking ref or a tag).
+_FETCH_INTO_SCOPE = ("-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", "--no-tags", "--refmap=")
 #: ``wire.resolve_claim_repo`` only hands out a clone whose origin hosts the work item.
 _ORIGIN = "origin"
 
@@ -364,8 +360,7 @@ def read_tip(work_key: str, *, repo: str = ".", extra_env: Mapping[str, str] = _
 
 def _fetch_record(repo: str, ref: str, sha: str, extra_env: Mapping[str, str]) -> tuple[bool, str | None]:
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
-        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", _ORIGIN, ref]
-        if _git(repo, fetch, env=scope.env).returncode != 0:
+        if _git(repo, [*_FETCH_INTO_SCOPE, _ORIGIN, ref], env=scope.env).returncode != 0:
             return False, None
         read = _git(repo, ["log", "-1", "--format=%B", sha], env=scope.env)
     return True, read.stdout if read.returncode == 0 else None
@@ -390,14 +385,15 @@ def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float, *, li
 
 
 def _git(repo: str, args: tuple[str, ...] | list[str], *, env: dict[str, str] | None = None) -> CompletedProcess[str]:
-    # Every remote/read op tolerates a non-zero exit (the caller inspects the
-    # returncode); the local claim-commit writes use run_checked directly.
+    # Every claim git call runs here and tolerates a non-zero exit (the caller inspects the returncode).
     cmd = ["git", "-C", repo, *args]
-    env = env or git_env_non_interactive()
+    # A replace ref would let a local rewrite stand in for the history origin holds, push hooks included.
+    env = (env or git_env_non_interactive()) | {"GIT_NO_REPLACE_OBJECTS": "1"}
     try:
         return run_bounded_group(cmd, timeout=_GIT_TIMEOUT_SECONDS, expected_codes=None, env=env)
     except TimeoutExpired as exc:
-        msg = f"`git {' '.join(args)}` in {repo} did not finish within {_GIT_TIMEOUT_SECONDS:.0f}s"
+        shown = " ".join(args).split(" -m ", 1)[0]
+        msg = f"`git {shown}` in {repo} did not finish within {_GIT_TIMEOUT_SECONDS:.0f}s"
         raise FleetClaimUnavailableError(msg) from exc
 
 
@@ -473,9 +469,7 @@ def _remote_default_root(scope: _Scope) -> str:
     branch, tip = _remote_default_head(scope)
     roots = _roots(scope, tip)
     if not roots:
-        # An empty --refmap keeps fetch from pointing a tracking ref at an object in the throwaway dir.
-        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", "--refmap=", scope.remote, branch]
-        _git(scope.repo, fetch, env=scope.env)
+        _git(scope.repo, [*_FETCH_INTO_SCOPE, scope.remote, branch], env=scope.env)
         roots = _roots(scope, tip)
     if not roots:
         msg = f"cannot read the root of {scope.remote}'s {branch} at {tip}: the clone lacks it and fetching it failed"
@@ -484,19 +478,18 @@ def _remote_default_root(scope: _Scope) -> str:
 
 
 def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
-    # commit-tree, written into the scope's ephemeral object dir. Per the
-    # module contract any inability to build a claim commit surfaces as
-    # FleetClaimUnavailableError (never a bare CommandFailedError), so the wire's
-    # fail-safe catch handles a corrupt local repo uniformly with remote-unreachable.
+    # commit-tree, written into the scope's ephemeral object dir. Per the module contract any
+    # failure surfaces as FleetClaimUnavailableError, so the wire's fail-safe catch handles a
+    # corrupt local repo uniformly with remote-unreachable.
     root = _remote_default_root(scope)
     message = json.dumps(meta, sort_keys=True)
     # The root's own tree makes the commit's patch empty: it carries nothing but its record.
-    args = ["git", "-C", scope.repo, *_CLAIM_IDENTITY, "commit-tree", f"{root}^{{tree}}", "-p", root, "-m", message]
-    try:
-        return run_checked(args, env=scope.env).stdout.strip()
-    except CommandFailedError as exc:
+    args = [*_CLAIM_IDENTITY, "commit-tree", f"{root}^{{tree}}", "-p", root, "-m", message]
+    written = _git(scope.repo, args, env=scope.env)
+    if written.returncode != 0:
         msg = f"cannot write the claim commit in {scope.repo} (local git failure)"
-        raise FleetClaimUnavailableError(msg) from exc
+        raise FleetClaimUnavailableError(msg)
+    return written.stdout.strip()
 
 
 def _try_create(scope: _Scope, sha: str, ref: str) -> CompletedProcess[str]:

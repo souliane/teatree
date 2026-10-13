@@ -21,7 +21,7 @@ from pathlib import Path
 from teatree.core.fleet import claim as fleet_claim
 from teatree.utils.git_run import git_env_without_overrides
 
-from ._git_origin import git, init_bare, init_client, init_with_origin, ref_sha
+from ._git_origin import FIXTURE_IDENTITY, git, init_bare, init_client, init_with_origin, ref_sha
 
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _TTL = 100.0
@@ -105,6 +105,30 @@ def test_a_clone_lacking_origins_default_branch_fetches_it_without_touching_its_
 
     assert git(clone, "for-each-ref", "--format=%(refname) %(objectname)") == refs
     assert {path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()} == objects
+    assert not (clone / ".git" / "FETCH_HEAD").exists()
+
+
+def test_no_claim_fetch_writes_a_ref_whatever_the_clones_fetch_configuration(tmp_path: Path, subtests) -> None:
+    bare = init_bare(tmp_path / "origin.git")
+    git(bare, *FIXTURE_IDENTITY, "tag", "-a", "v1", "-m", "release", "main")
+    never_fetched = init_with_origin(tmp_path / "never-fetched", f"file://{bare}")
+    git(never_fetched, "config", "remote.origin.tagOpt", "--tags")
+    tags_not_fetched = init_with_origin(tmp_path / "tags-not-fetched", f"file://{bare}")
+    git(tags_not_fetched, "fetch", "-q", "--no-tags", "origin")
+    git(tags_not_fetched, "config", "remote.origin.tagOpt", "--tags")
+    mirror = init_client(tmp_path / "mirror", bare)
+    git(mirror, "config", "--replace-all", "remote.origin.fetch", "+refs/*:refs/*")
+    holder = init_client(tmp_path / "holder", bare)
+    cases = (("tagOpt, default branch", never_fetched, never_fetched), ("tagOpt", tags_not_fetched, tags_not_fetched))
+    for name, claimant, reader in (*cases, ("mirror", holder, mirror)):
+        with subtests.test(clone=name):
+            work_key = f"{_WORK_KEY}#{reader.name}"
+            refs = git(reader, "for-each-ref", "--format=%(refname) %(objectname)")
+
+            assert fleet_claim.acquire(work_key, repo=str(claimant), ttl_seconds=_TTL, now=0.0) is not None
+            assert fleet_claim.read_tip(work_key, repo=str(reader)) is not None
+
+            assert git(reader, "for-each-ref", "--format=%(refname) %(objectname)") == refs
 
 
 def test_the_expiry_probe_leaves_no_ref_behind_in_the_clone(tmp_path: Path) -> None:

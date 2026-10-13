@@ -6,8 +6,12 @@ exercise the remaining branches — ``release``, the fail-safe error paths, the
 metadata parser, and the Django-side wiring — directly.
 """
 
+import os
+import re
+import shutil
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -48,6 +52,20 @@ def _main_with_a_root_and_a_child(tmp_path: Path, bare: Path) -> str:
     return root
 
 
+def _rewritten_away_history(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "rewritten-away"
+    git(tmp_path, "init", "-q", "-b", "main", repo.name)
+    (repo / "ONLY_IN_THE_OLD_HISTORY").write_text("old\n", encoding="utf-8")
+    git(repo, "add", "ONLY_IN_THE_OLD_HISTORY")
+    git(repo, *FIXTURE_IDENTITY, "commit", "-q", "-m", "old root")
+    return repo, git(repo, "rev-parse", "HEAD")
+
+
+def _with_the_old_history_fetched(holder: Path, rewritten_away: Path) -> Path:
+    git(holder, "fetch", "-q", "--no-tags", str(rewritten_away), "main:refs/heads/old-history")
+    return holder
+
+
 class TestClaimCommitShape:
     def test_each_claim_commit_has_the_default_branch_root_as_its_only_parent_and_its_tree(
         self, tmp_path, subtests
@@ -75,12 +93,7 @@ class TestClaimCommitShape:
         self, tmp_path: Path
     ) -> None:
         bare = init_bare(tmp_path / "o.git")
-        rewritten_away = tmp_path / "rewritten-away"
-        git(tmp_path, "init", "-q", "-b", "main", rewritten_away.name)
-        (rewritten_away / "ONLY_IN_THE_OLD_HISTORY").write_text("old\n", encoding="utf-8")
-        git(rewritten_away, "add", "ONLY_IN_THE_OLD_HISTORY")
-        git(rewritten_away, *FIXTURE_IDENTITY, "commit", "-q", "-m", "old root")
-        old_root = git(rewritten_away, "rev-parse", "HEAD")
+        rewritten_away, old_root = _rewritten_away_history(tmp_path)
         holder = init_client(tmp_path / "holder", rewritten_away)
         git(holder, "remote", "set-url", "origin", f"file://{bare}")
 
@@ -90,6 +103,35 @@ class TestClaimCommitShape:
         assert git(bare, "rev-list", "--parents", "-n", "1", claim.sha).split()[1:] == [git(bare, "rev-parse", "main")]
         with pytest.raises(subprocess.CalledProcessError):
             git(bare, "cat-file", "-e", old_root)
+
+    def test_a_replace_graft_in_the_clone_never_becomes_the_claim_commits_parent(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        published_root = git(bare, "rev-parse", "main")
+        rewritten_away, old_root = _rewritten_away_history(tmp_path)
+        holder = _with_the_old_history_fetched(init_client(tmp_path / "holder", bare), rewritten_away)
+        git(holder, "replace", "--graft", published_root, old_root)
+
+        claim = fleet_claim.acquire(_KEY, repo=str(holder))
+
+        assert claim is not None
+        assert git(bare, "rev-list", "--parents", "-n", "1", claim.sha).split()[1:] == [published_root]
+        with pytest.raises(subprocess.CalledProcessError):
+            git(bare, "cat-file", "-e", old_root)
+
+    def test_a_replace_ref_for_the_root_never_lends_the_claim_commit_its_tree(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        published_root = git(bare, "rev-parse", "main")
+        rewritten_away, old_root = _rewritten_away_history(tmp_path)
+        old_tree = git(rewritten_away, "rev-parse", "HEAD^{tree}")
+        holder = _with_the_old_history_fetched(init_client(tmp_path / "holder", bare), rewritten_away)
+        git(holder, "replace", published_root, old_root)
+
+        claim = fleet_claim.acquire(_KEY, repo=str(holder))
+
+        assert claim is not None
+        assert git(bare, "rev-parse", f"{claim.sha}^{{tree}}") == git(bare, "rev-parse", f"{published_root}^{{tree}}")
+        with pytest.raises(subprocess.CalledProcessError):
+            git(bare, "cat-file", "-e", old_tree)
 
     def test_a_clone_that_never_fetched_claims_on_the_root_origin_holds(self, tmp_path: Path) -> None:
         bare = init_bare(tmp_path / "o.git")
@@ -199,6 +241,24 @@ class TestReleaseAndFence:
 
         assert isinstance(beat, fleet_claim.Claim)
         assert beat.sha == ref_sha(bare, claim.ref) == unrecorded.sha
+
+    def test_heartbeat_does_not_adopt_a_tip_another_instance_wrote_under_this_lineage(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        holder = init_client(tmp_path / "holder", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(holder))
+        assert claim is not None
+        with as_other_instance(tmp_path / "rival-data"):
+            rival = fleet_claim.heartbeat(
+                replace(claim, instance_id=instance_id()), repo=str(init_client(tmp_path / "rival", bare))
+            )
+        assert isinstance(rival, fleet_claim.Claim)
+        assert rival.lineage == claim.lineage
+        assert rival.instance_id != claim.instance_id
+
+        lost = fleet_claim.heartbeat(claim, repo=str(holder))
+
+        assert isinstance(lost, fleet_claim.ClaimLost)
+        assert lost.observed_sha == rival.sha
 
     def test_heartbeat_does_not_adopt_a_twin_tip(self, tmp_path: Path) -> None:
         bare = init_bare(tmp_path / "o.git")
@@ -346,6 +406,20 @@ class TestLineage:
         assert stolen.lineage not in {"", acquired.lineage}
 
 
+def _stalling_git_on_path(tmp_path: Path, subcommand: str) -> str:
+    shim = tmp_path / "git-shim" / "git"
+    shim.parent.mkdir()
+    stall = f'for arg; do [ "$arg" = "{subcommand}" ] && exec sleep 20; done'
+    shim.write_text(f'#!/bin/sh\n{stall}\nexec "{shutil.which("git")}" "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    return str(shim.parent)
+
+
+def _claim_and_read_the_tip(repo: Path) -> None:
+    fleet_claim.acquire(_KEY, repo=str(repo))
+    fleet_claim.read_tip(_KEY, repo=str(repo))
+
+
 def _running(pid: int) -> bool:
     try:
         state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()[0]
@@ -442,6 +516,22 @@ class TestErrorPaths:
             fleet_claim.heartbeat(claim, repo=str(client))
 
         assert ref_sha(bare, claim.ref) == claim.sha
+
+    @pytest.mark.parametrize(
+        "subcommand", ["rev-parse", "ls-remote", "rev-list", "fetch", "commit-tree", "push", "log"]
+    )
+    def test_every_claim_git_call_fails_safe_at_the_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subcommand: str
+    ) -> None:
+        never_fetched = init_with_origin(tmp_path / "c", f"file://{init_bare(tmp_path / 'o.git')}")
+        if subcommand == "log":
+            assert fleet_claim.acquire(_KEY, repo=str(never_fetched)) is not None
+        monkeypatch.setenv("PATH", f"{_stalling_git_on_path(tmp_path, subcommand)}:{os.environ['PATH']}")
+        monkeypatch.setattr(fleet_claim, "_GIT_TIMEOUT_SECONDS", 2.0)
+        stalled = rf"`git [^`]*\b{re.escape(subcommand)}\b[^`]*` in \S+ did not finish within 2s"
+
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match=stalled):
+            _claim_and_read_the_tip(never_fetched)
 
     def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_and_ends_the_hook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
