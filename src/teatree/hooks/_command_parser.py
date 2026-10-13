@@ -53,7 +53,7 @@ from teatree.hooks._forge_write_detection import (
     segment_reads_stdin_content,
     walk_forge_free_text,
 )
-from teatree.hooks._inline_body_resolution import resolve_inline_body_value
+from teatree.hooks._inline_body_resolution import resolve_inline_body_value, resolve_short_cluster
 from teatree.hooks._publish_detection import (
     command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
@@ -236,11 +236,8 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if attached_handled:
             i += 1
             continue
-        if word in short_flags and i + 1 < n:
-            payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
-            i += 2
-            continue
-        i += 1
+        payloads.extend(resolve_short_cluster(words[i:], raws[i:], short_flags, base))
+        i += 2 if word in short_flags and i + 1 < n else 1
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:

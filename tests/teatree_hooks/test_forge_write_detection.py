@@ -360,3 +360,49 @@ class TestEveryCurlSpellingOfABodyIsScanned:
         assert is_publish_command(command) is False
         assert handle_banned_terms_pretool(_bash(command)) is False
         assert capsys.readouterr().out == ""
+
+
+_CLUSTERED_FREE_TEXT = [
+    f"gh pr create {_PUB} -dt '{{text}}' --body 'clean body'",
+    f"gh pr create {_PUB} -dt'{{text}}' --body 'clean body'",
+    f"gh pr create {_PUB} -t 'clean title' -db '{{text}}'",
+    f"gh pr review 5 {_PUB} -ab '{{text}}'",
+    f"gh pr merge 5 {_PUB} -sb '{{text}}'",
+    f"gh release create v9.9.9 {_PUB} -dn '{{text}}'",
+    f"glab mr create {_GL_PUB} -t 'clean title' -yd '{{text}}'",
+    "git tag -am '{text}' v9.9.9",
+]
+
+
+class TestClusteredShortFlagsCarryFreeText:
+    @pytest.mark.parametrize("spelling", _CLUSTERED_FREE_TEXT)
+    @pytest.mark.usefixtures("public_gate")
+    def test_the_clustered_value_is_denied_and_named(self, spelling: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_banned_terms_pretool(_bash(spelling.format(text=_TERM))) is True
+        assert _TERM in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize("spelling", _CLUSTERED_FREE_TEXT)
+    @pytest.mark.usefixtures("public_gate")
+    def test_the_clean_twin_is_allowed(self, spelling: str, capsys: pytest.CaptureFixture[str]) -> None:
+        command = spelling.format(text="routine update")
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_a_cluster_of_switches_alone_is_not_a_publish(self) -> None:
+        assert is_publish_command(f"gh pr merge 5 {_PUB} -sd") is False
+
+    def test_an_attached_field_value_is_no_cluster(self, files: tuple[Path, Path]) -> None:
+        payload = _payload(f'gh api repos/souliane/teatree/issues -X POST -fbody="$(cat {files[0]})"') or ""
+        assert _TERM in payload
+        assert not is_fail_closed_sentinel(payload)
+
+    def test_a_value_ending_in_a_flag_letter_takes_no_next_word(self) -> None:
+        payload = _payload("gh api repos/souliane/teatree/issues -X POST -f'body=routine sum' \"$T3_ABSENT_VAR\"") or ""
+        assert "routine sum" in payload
+        assert not is_fail_closed_sentinel(payload)
+
+    @pytest.mark.parametrize("command", [f"git commit -am '{_TERM}'", f"git commit -m'{_TERM}'"])
+    def test_a_clustered_or_attached_commit_message_is_extracted(self, command: str) -> None:
+        assert is_publish_command(command) is True
+        assert _TERM in (_payload(command) or "")

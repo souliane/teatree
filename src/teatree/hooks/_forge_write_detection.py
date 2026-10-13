@@ -15,7 +15,11 @@ from typing import Final
 
 from teatree.hooks._body_file_resolution import BODY_FILE_FLAG_NAMES, STDIN_DASH, BodyFileContext, append_file_payload
 from teatree.hooks._curl_payload import CURL_DATA_FLAGS, CURL_FORM_FLAGS, CURL_UPLOAD_FLAGS, curl_options
-from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
+from teatree.hooks._inline_body_resolution import (
+    resolve_attached_value,
+    resolve_inline_body_value,
+    resolve_short_cluster,
+)
 from teatree.hooks._parser_primitives import (
     BODY_LONG_OPTION_FIELDS,
     BODY_SHORT_FLAGS,
@@ -23,6 +27,7 @@ from teatree.hooks._parser_primitives import (
     attached_api_field,
     canonical_leader,
     read_file_arg,
+    short_cluster_values,
     strip_wrapper_prefix,
 )
 from teatree.hooks._publish_detection import segment_word_lists
@@ -106,18 +111,15 @@ def _forge_call(words: list[str]) -> _ForgeCall | None:
 
 
 def _attached_free_text(word: str, long_flags: frozenset[str]) -> tuple[str, str] | None:
-    """Return ``(prefix, value)`` of an attached ``--long=value`` / ``-sVALUE`` free-text flag."""
-    if word.startswith("--"):
-        flag, sep, value = word.partition("=")
-        return (f"{flag}=", value) if sep and flag in long_flags else None
-    prefix = word[:_SHORT_FLAG_LEN]
-    if len(word) > _SHORT_FLAG_LEN and prefix in _FREE_TEXT_SHORT:
-        return prefix, word[_SHORT_FLAG_LEN:].removeprefix("=")
-    return None
+    """Return ``(prefix, value)`` of an attached ``--long=value`` free-text flag."""
+    flag, sep, value = word.partition("=")
+    return (f"{flag}=", value) if word.startswith("--") and sep and flag in long_flags else None
 
 
 def _token_carries_free_text(word: str, nxt: str) -> bool:
     if word in _FREE_TEXT_FLAGS or _attached_free_text(word, _DETECTED_LONG) is not None:
+        return True
+    if any(attached or nxt for _, attached in short_cluster_values(word, _FREE_TEXT_SHORT)):
         return True
     if word in _FIELD_FLAGS:
         return word == "-F" or "=" in nxt
@@ -184,6 +186,8 @@ def walk_forge_free_text(
         elif (attached := _attached_free_text(word, _WALKED_LONG)) is not None:
             prefix, value = attached
             payloads.append(resolve_attached_value(value, ctx.base, raws[i], prefix))
+        elif len(word) > _SHORT_FLAG_LEN:
+            payloads.extend(resolve_short_cluster(words[i:], raws[i:], _FREE_TEXT_SHORT - generic_short, ctx.base))
     for operand in _content_operands(words):
         append_file_payload(operand, payloads, ctx, fail_closed=ctx.fail_closed_body_file, leader=leader)
 

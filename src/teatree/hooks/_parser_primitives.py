@@ -148,6 +148,19 @@ def attached_value(token: str, prefix: str) -> str | None:
     return None
 
 
+def short_cluster_values(token: str, flags: frozenset[str]) -> list[tuple[str, str]]:
+    """Each ``(prefix, attached)`` a ``-xyz`` cluster can give one of *flags*; ``""`` means the next word.
+
+    getopt and pflag give the rest of the token, or the next word, to the first letter that takes a value. Which letters
+    are switches depends on the verb, so every letter in *flags* is a candidate: the scan reads a superset, never less.
+    """
+    if token.startswith("--") or not token.startswith("-"):
+        return []
+    return [
+        (token[: at + 1], token[at + 1 :].removeprefix("=")) for at in range(1, len(token)) if f"-{token[at]}" in flags
+    ]
+
+
 # THE catalogue of body-bearing names, in the snake_case spelling a ``gh``/``glab
 # api`` field assignment uses. A name belongs here when the forge renders its
 # value back to readers as free prose the author typed: GitHub spells an

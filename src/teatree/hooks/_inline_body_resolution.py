@@ -23,7 +23,12 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL, read_file_arg
+from teatree.hooks._parser_primitives import (
+    FAIL_CLOSED_SENTINEL,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    read_file_arg,
+    short_cluster_values,
+)
 from teatree.hooks._shell_lexer import raw_substitution_sees_live
 
 # A body value that IS exactly a ``$(cat <path>)`` command substitution. Agents
@@ -206,3 +211,20 @@ def resolve_attached_value(value: str, base: Path | None, raw: str, prefix: str)
         return resolve_inline_body_value(value, base)
     separator = 1 if raw[len(prefix) :].startswith("=") and not prefix.endswith("=") else 0
     return resolve_inline_body_value(value, base, raw, len(prefix) + separator)
+
+
+def resolve_short_cluster(words: list[str], raws: list[str], flags: frozenset[str], base: Path | None) -> list[str]:
+    """The value each *flags* letter of the ``words[0]`` cluster could take, resolved like an inline body.
+
+    Past the first letter, an attached value counts only where a quote opens right after the letter (``-dt'x'``),
+    and the next word only after a cluster of bare letters (``-dt x``): anything else is a value, not a cluster.
+    """
+    token, raw = words[0], raws[0]
+    values: list[str] = []
+    for prefix, attached in short_cluster_values(token, flags):
+        first = len(prefix) == len("-x")
+        if attached and (first or raw.startswith((f"{prefix}'", f'{prefix}"'))):
+            values.append(resolve_attached_value(attached, base, raw, prefix))
+        elif not attached and (first or token[1:].isalpha()) and len(words) > 1:
+            values.append(resolve_inline_body_value(words[1], base, raws[1]))
+    return values
