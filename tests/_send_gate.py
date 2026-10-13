@@ -1,14 +1,8 @@
-"""Neutral, classed term registry for tests that exercise real outbound gates."""
+"""Outbound-gate test helpers, re-exporting the placeholder term registry for their importers."""
 
-import json
+from tests.placeholder_terms import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
-TEST_TERM_REGISTRY = {
-    "leak": ["quartzbridge-bank"],
-    "prose_collider": ["meridian-ledger"],
-    "overlay": ["quartzbridge-overlay"],
-    "allow": ["quartzbridge-bank-engineering"],
-}
-TEST_TERM_REGISTRY_JSON = json.dumps(TEST_TERM_REGISTRY)
+__all__ = ["TEST_TERM_REGISTRY", "TEST_TERM_REGISTRY_JSON", "allow_forge_repos", "allow_slack_channels"]
 
 
 def allow_forge_repos(*repos: str) -> None:

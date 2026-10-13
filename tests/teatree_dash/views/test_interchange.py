@@ -6,20 +6,38 @@ what they reach: every documented section named up front, and a preview counted 
 """
 
 import io
+import json
+import os
+from collections.abc import Iterator
+from unittest import mock
 
+import pytest
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils.html import escape
 
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS
+from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.interchange import MAX_IMPORT_BYTES
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 _TUNED_LOOP = "housekeeping"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
+        yield
 
 
 def _upload(text: str, name: str = "config.toml") -> io.BytesIO:
@@ -62,6 +80,14 @@ class TestThePageStatesItsScope(TestCase):
 
 
 class TestExport(TestCase):
+    def test_missing_term_source_refuses_download(self) -> None:
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            response = self.client.get(reverse("dash:interchange_export"), **_LOOPBACK)
+        assert response.status_code == 503
+        assert "Export refused" in response.content.decode()
+        assert "banned_term_registry" in response.content.decode()
+        assert "Content-Disposition" not in response.headers
+
     def test_export_downloads_a_dump_withholding_secrets(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
@@ -99,6 +125,39 @@ class TestImport(TestCase):
 
     def _post(self, text: str, **extra: str):
         return self.client.post(reverse("dash:interchange_import"), {"toml_file": _upload(text), **extra}, **_LOOPBACK)
+
+    def test_missing_term_source_previews_unscanned_with_every_value_withheld(self) -> None:
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            response = self._post("[teatree]\nmerge_wip = 4\n")
+        body = _import_block(response.content.decode())
+        assert response.status_code == 200
+        assert "not content-scanned" in body
+        assert "banned_term_registry" in body
+        assert escape("merge_wip = <withheld: private>") in body
+        assert "rejected" not in body
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_banned_term_row_is_named_by_key_and_class_never_by_the_term(self) -> None:
+        response = self._post(f'[teatree]\nissue_implementer_label = "{_CARRIER}"\n')
+        body = response.content.decode()
+        assert response.status_code == 200
+        assert "issue_implementer_label [global] — secret (banned-term)" in body
+        assert not line_matches(body, _SCAN)
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_mask_refusal_never_quotes_a_loop_named_after_a_term(self) -> None:
+        call_command("seed_loops", stdout=io.StringIO())
+        loops = sorted(Loop.objects.values_list("name", flat=True))
+        text = f"[modes.{min(shipped_seed_table('modes'))}.entries]\n" + "".join(f'"{n}" = false\n' for n in loops[1:])
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": [loops[0]]})}):
+            body = _import_block(self._post(text).content.decode())
+        assert "invalid mask (banned-term; message withheld)" in body
+        assert not line_matches(body, (loops[0],))
+
+    def test_a_scanned_preview_carries_no_unscanned_banner(self) -> None:
+        body = _import_block(self._post("[teatree]\nmerge_wip = 4\n").content.decode())
+        assert "not content-scanned" not in body
+        assert "merge_wip = 4" in body
 
     def test_the_page_offers_a_file_input_not_a_textarea(self) -> None:
         body = self.client.get(reverse("dash:interchange"), **_LOOPBACK).content.decode()
@@ -173,7 +232,7 @@ class TestImport(TestCase):
         # The page cannot restore private rows, so a refusal that only listed per-key secret
         # rejections would leave the operator with a file and no next step (#4156).
         ConfigSetting.objects.set_value("slack_user_id", "<the-operator>")
-        body = self._post(export_db_to_toml(include_private=True, scan_terms=()).toml).content.decode()
+        body = self._post(export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=()).toml).content.decode()
         assert "--restore-private" in _import_block(body)
 
     def test_an_ordinary_rejected_upload_is_not(self) -> None:

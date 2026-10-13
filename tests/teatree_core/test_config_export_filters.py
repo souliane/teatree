@@ -27,9 +27,14 @@ from teatree.config.setting_groups import setting_comment
 from teatree.config.setting_help import setting_help
 from teatree.core.config_interchange import migration as config_migration
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY
 
 _SHIPPED_TEXT = DEFAULTS_TOML.read_text(encoding="utf-8")
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 
 
 def _teatree(text: str) -> dict[str, object]:
@@ -95,7 +100,7 @@ class TestFilterOneRestrictsTheEligibleKeys(TestCase):
     def test_a_secret_row_is_out_of_scope_even_with_include_private(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
-        dump = export_db_to_toml(include_private=True, scan_terms=(), default_keys_only=True).toml
+        dump = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=(), default_keys_only=True).toml
         assert "banned_term_registry" not in _teatree(dump)
         assert _teatree(dump)["mode"] == "auto"
 
@@ -128,14 +133,16 @@ class TestFilterTwoEmitsTheUnchangedKeysToo(TestCase):
     def test_the_filter_alone_keeps_the_wider_eligible_key_set(self) -> None:
         # Without filter 1 the eligible set is every ``[teatree]``-emittable key, so a
         # Secret key carrying a row still rides along under ``include_private``.
-        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
-        emitted = set(_teatree(export_db_to_toml(include_private=True, scan_terms=(), include_defaults=True).toml))
-        assert emitted == set(default_category_keys()) | {"banned_term_registry"}
+        ConfigSetting.objects.set_value("private_repos", ["probe-org/probe-repo"])
+        export = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=(), include_defaults=True)
+        emitted = set(_teatree(export.toml))
+        assert emitted == set(default_category_keys()) | {"private_repos"}
 
     def test_a_key_no_persisted_tier_reaches_is_left_out_never_invented(self) -> None:
         # A Secret/Personal key with no row and no shipped value has only an in-code
         # dataclass default, which is not in stored form and was never in this table.
-        emitted = set(_teatree(export_db_to_toml(include_private=True, scan_terms=(), include_defaults=True).toml))
+        export = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=(), include_defaults=True)
+        emitted = set(_teatree(export.toml))
         assert "handover_mirror_path" not in emitted
 
     def test_a_process_env_override_is_never_baked_into_the_file(self) -> None:
@@ -215,3 +222,25 @@ class TestOneEmitterForBothWriters(TestCase):
         shipped = flatten_settings_table(tomllib.loads(_SHIPPED_TEXT)["teatree"])
         exported = export_db_to_toml(scan_terms=(), default_keys_only=True, include_defaults=True).toml
         assert exported == defaults_snapshot.render_toml(shipped, base_text=_SHIPPED_TEXT)
+
+    def test_private_defaults_shape_is_marked_and_restorable(self) -> None:
+        export = export_db_to_toml(
+            scan_terms=_SCAN,
+            default_keys_only=True,
+            include_defaults=True,
+            privacy=ExportPrivacy.PRIVATE,
+        )
+        assert export.private_backup is True
+        assert tomllib.loads(export.toml)["backup"]["include_private"] is True
+        restored = import_toml_to_db(export.toml, scan_terms=_SCAN, restore_private=True)
+        assert restored.rejected == ()
+
+    def test_a_private_export_withholds_the_term_row_and_keeps_the_rest(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", _CARRIER)
+        ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
+        export = export_db_to_toml(scan_terms=_SCAN, privacy=ExportPrivacy.PRIVATE)
+        assert [(row.key, row.reason) for row in export.redacted] == [("issue_implementer_label", "banned-term")]
+        assert not line_matches(export.toml, _SCAN)
+        assert _teatree(export.toml)["slack_user_id"] == "synthetic-user-ref"
+        carried = export_db_to_toml(scan_terms=_SCAN, privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES)
+        assert _teatree(carried.toml)["issue_implementer_label"] == _CARRIER

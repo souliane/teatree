@@ -22,6 +22,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from teatree.core.config_interchange.migration import import_toml_to_db
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS, ExportSection
+from teatree.core.config_interchange.secret_guard import ScanTermsUnavailableError
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.dash import audit
 from teatree.dash.interchange import SectionChange, changed_sections, export_text, import_preview
@@ -70,11 +71,15 @@ def interchange_export(request: "HttpRequest") -> "HttpResponse":
 
     ``default_keys_only`` + ``include_defaults`` are the page's checkboxes, both unticked by
     default. Ticking both downloads the ``defaults.toml`` shape, so the file the operator
-    gets is a drop-in replacement for the shipped one rather than a fragment of it.
+    gets is a drop-in replacement for the shipped one rather than a fragment of it. A box
+    with no ban-class term cannot classify a row, so the download is refused there.
     """
     default_keys_only = request.GET.get("default_keys_only") == "1"
     include_defaults = request.GET.get("include_defaults") == "1"
-    text = export_text(default_keys_only=default_keys_only, include_defaults=include_defaults)
+    try:
+        text = export_text(default_keys_only=default_keys_only, include_defaults=include_defaults)
+    except ScanTermsUnavailableError as exc:
+        return _refused(request, f"Export refused: {exc}", status=503)
     filename = "defaults.toml" if default_keys_only and include_defaults else "teatree-config.toml"
     response = HttpResponse(text, content_type="text/plain; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
@@ -99,10 +104,10 @@ def _uploaded_toml(request: "HttpRequest") -> tuple[str, str]:
         return "", "that file is not UTF-8 text — export a TOML dump and upload that"
 
 
-def _refused(request: "HttpRequest", reason: str) -> "HttpResponse":
+def _refused(request: "HttpRequest", reason: str, *, status: int = 400) -> "HttpResponse":
     context = _page_context()
     context["import_error"] = reason
-    return render(request, "dash/interchange.html", context, status=400)
+    return render(request, "dash/interchange.html", context, status=status)
 
 
 @require_loopback_or_staff
