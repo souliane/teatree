@@ -1302,6 +1302,14 @@ class TestAShippedEntryNamedAfterATerm(_TermGuardCase):
         assert "rejected not_a_field  [under a name that carries a banned term]  (unknown field)" in err
         assert _carries_no_term(out, err, terms=(self.mode,))
 
+    def test_an_unmarked_file_is_still_refused_without_the_name_under_the_restore_flag(self) -> None:
+        self._arrange()
+        code, out, err = self._restore('description = "another preset"\n', marked=False)
+        assert code == 2
+        assert "rejected 1 row(s)  [under a name that carries a banned term]  (secret (banned-term))" in err
+        assert Preset.objects.get(name=self.mode).description == "a tuned preset"
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
 
 class TestAMaskRefusalNeverQuotesATerm(_TermGuardCase):
     def setUp(self) -> None:
