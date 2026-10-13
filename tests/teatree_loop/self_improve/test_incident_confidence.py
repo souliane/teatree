@@ -9,11 +9,14 @@ from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.models import MergeClear, SelfImproveFiring
+from teatree.core.models import MergeClear, SelfImproveFiring, Task, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.telemetry import admission as telemetry
+from teatree.core.telemetry.admission import PressureSpanExporter, checked_factory_observations
 from teatree.loop.loop_cadences import self_improve_cadence_seconds
 from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.budget import BudgetVerdict
@@ -66,6 +69,71 @@ class IncidentConfidenceTests(TestCase):
         assert SelfImproveFiring.objects.get(pk=otel_firing.pk).resolved_at is None
         assert SelfImproveFiring.objects.get(pk=db_firing.pk).resolved_at is not None
         assert result.degraded_scans == [("lifecycle_incident", "otel_missing")]
+
+    def test_quota_incident_records_log_and_count_without_followup(self) -> None:
+        now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
+        row = {
+            "epoch": int(now.timestamp()),
+            "cause": "5h-quota",
+            "pressure": 0.926,
+            "band": "shed",
+            "admit": True,
+            "reason": "admitting up to 2 — signals healthy",
+            "lane": "loop",
+        }
+        initial_tickets = Ticket.objects.count()
+        initial_tasks = Task.objects.count()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / f"admission-{now.date().isoformat()}.jsonl").write_text((json.dumps(row) + "\n") * 64)
+            provider = TracerProvider()
+            provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=root)))
+            detector = PressureIncidentDetector(
+                directory=root,
+                now=lambda: now,
+                read_resources=lambda: ResourceReading(disk_free_gb=100.0, ram_avail_gb=20.0),
+            )
+            with (
+                patch.object(pressure_mod, "cgroup_memory_probe_inert", return_value=False),
+                patch.object(telemetry, "_provider", return_value=provider),
+            ):
+                result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+            factory_rows = checked_factory_observations(directory=root).rows
+            provider.shutdown()
+
+        firing = SelfImproveFiring.objects.get(dedup_key="pressure_incident::5h-quota")
+        assert [action.rung for action in result.actions] == [ActionRung.LOG]
+        assert firing.last_action == ActionRung.LOG
+        assert Ticket.objects.count() == initial_tickets
+        assert Task.objects.count() == initial_tasks
+        assert [(row["kind"], row["count"]) for row in factory_rows] == [("pressure_incident", 64)]
+
+    def test_load_incident_still_creates_repair_ticket(self) -> None:
+        now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
+        row = {
+            "epoch": int(now.timestamp()),
+            "cause": "load",
+            "pressure": 1.1,
+            "band": "halt",
+            "admit": False,
+            "reason": "load 10 at/over the 50 watermark on 10 core(s)",
+            "lane": "headless",
+        }
+        initial_tickets = Ticket.objects.count()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / f"admission-{now.date().isoformat()}.jsonl").write_text((json.dumps(row) + "\n") * 30)
+            detector = PressureIncidentDetector(
+                directory=root,
+                now=lambda: now,
+                read_resources=lambda: ResourceReading(disk_free_gb=100.0, ram_avail_gb=20.0),
+            )
+            with patch.object(pressure_mod, "cgroup_memory_probe_inert", return_value=False):
+                result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert [action.rung for action in result.actions] == [ActionRung.TICKET]
+        assert Ticket.objects.count() == initial_tickets + 1
+        assert SelfImproveFiring.objects.get(dedup_key="pressure_incident::load").ticket_id is not None
 
     def test_missing_pressure_file_preserves_otel_incident(self) -> None:
         firing = _firing("pressure_incident", "swap")
