@@ -364,9 +364,9 @@ class TestParityWithTheLauncher:
         docker_table([_FOREIGN_WORKER], {})
         with patch.object(container_visibility, "_docker", wraps=container_visibility._docker) as docker:
             reason = container_visibility.unreachable_reason(Path("/srv/host/teatree-deploy")) or ""
+        assert not any(call.args[0] == "inspect" and "scratch1" in call.args for call in docker.call_args_list)
         assert "compose project 'teatree'" in reason
         assert "scratch" not in reason
-        assert not any(call.args[0] == "inspect" and "scratch1" in call.args for call in docker.call_args_list)
 
     def test_a_foreign_worker_listed_first_does_not_hide_the_checkout(self, docker_table, tmp_path: Path) -> None:
         checkout = (tmp_path / "checkout").resolve()
