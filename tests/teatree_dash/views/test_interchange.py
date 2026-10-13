@@ -6,15 +6,18 @@ what they reach: every documented section named up front, and a preview counted 
 """
 
 import io
+import json
 import os
 from collections.abc import Iterator
 from unittest import mock
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils.html import escape
 
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS
 from teatree.core.config_interchange.secret_guard import ExportPrivacy
@@ -141,6 +144,15 @@ class TestImport(TestCase):
         assert "issue_implementer_label [global] — secret (banned-term)" in body
         assert not line_matches(body, _SCAN)
         assert ConfigSetting.objects.count() == 0
+
+    def test_a_mask_refusal_never_quotes_a_loop_named_after_a_term(self) -> None:
+        call_command("seed_loops", stdout=io.StringIO())
+        loops = sorted(Loop.objects.values_list("name", flat=True))
+        text = f"[modes.{min(shipped_seed_table('modes'))}.entries]\n" + "".join(f'"{n}" = false\n' for n in loops[1:])
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": [loops[0]]})}):
+            body = _import_block(self._post(text).content.decode())
+        assert "refused (reason withheld: quotes a banned term)" in body
+        assert not line_matches(body, (loops[0],))
 
     def test_a_scanned_preview_carries_no_unscanned_banner(self) -> None:
         body = _import_block(self._post("[teatree]\nmerge_wip = 4\n").content.decode())

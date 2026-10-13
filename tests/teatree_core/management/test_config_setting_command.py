@@ -29,7 +29,7 @@ from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.config.setting_taxonomy import taxonomy
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.secret_guard import is_private_backup
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Loop
 from teatree.core.models import Mode as Preset
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.term_match import line_matches
@@ -1275,13 +1275,72 @@ class TestAShippedEntryNamedAfterATerm(_TermGuardCase):
         assert 'imported description = "a tuned preset"  [under a name that carries a banned term]' in out
         assert _carries_no_term(out, err, terms=(self.mode,))
 
+    def _restore(self, body: str, *, marked: bool = True) -> tuple[int, str, str]:
+        head = "[backup]\ninclude_private = true\n" if marked else ""
+        path = self._file("r.toml", f"{head}[modes.{self.mode}]\n{body}")
+        return self._run("import", "--input", str(path), "--restore-private")
+
     def test_a_restore_refusing_it_drops_the_reason_with_the_name(self) -> None:
         self._arrange()
-        text = f"[backup]\ninclude_private = true\n[modes.{self.mode}]\nentries = {{}}\n"
-        code, out, err = self._run("import", "--input", str(self._file("f.toml", text)), "--restore-private")
+        code, out, err = self._restore("entries = {}\n")
         assert code == 2
         assert "rejected entries  [under a name that carries a banned term]  (refused (reason withheld" in err
         assert _carries_no_term(out, err, terms=(self.mode,))
+
+    def test_a_restore_onto_an_unseeded_box_refuses_it_without_the_name(self) -> None:
+        self._arrange()
+        Preset.objects.filter(name=self.mode).delete()
+        code, out, err = self._restore('description = "a tuned preset"\n')
+        assert code == 2
+        assert "rejected description  [under a name that carries a banned term]  (no modes row yet" in err
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
+    def test_a_restore_with_an_unknown_field_refuses_it_without_the_name(self) -> None:
+        self._arrange()
+        code, out, err = self._restore("not_a_field = 1\n")
+        assert code == 2
+        assert "rejected not_a_field  [under a name that carries a banned term]  (unknown field)" in err
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
+
+class TestAMaskRefusalNeverQuotesATerm(_TermGuardCase):
+    def setUp(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
+        self.mode = min(shipped_seed_table("modes"))
+        self.loops = sorted(Loop.objects.values_list("name", flat=True))
+
+    def _import_mask(self, entries: dict[str, bool], *flags: str, marked: bool = False) -> tuple[int, str, str]:
+        rows = "".join(f'"{loop}" = {str(on).lower()}\n' for loop, on in entries.items())
+        head = "[backup]\ninclude_private = true\n" if marked else ""
+        path = self._file("m.toml", f"{head}[modes.{self.mode}.entries]\n{rows}")
+        return self._run("import", "--input", str(path), *flags)
+
+    def test_a_restored_mask_keyed_by_a_term_is_refused_without_it(self) -> None:
+        entries = {**dict.fromkeys(self.loops, False), f"{LEAK}-loop": True}
+        code, out, err = self._import_mask(entries, "--restore-private", marked=True)
+        assert code == 2
+        assert "(refused (reason withheld: quotes a banned term))" in err
+        assert _carries_no_term(out, err)
+
+    def test_a_mask_leaving_out_a_loop_named_after_a_term_is_refused_without_it(self) -> None:
+        term = self.loops[0]
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [term]}))
+        code, out, err = self._import_mask(dict.fromkeys(self.loops[1:], False))
+        assert code == 2
+        assert "(refused (reason withheld: quotes a banned term))" in err
+        assert _carries_no_term(out, err, terms=(term,))
+
+    def test_an_unscanned_mask_refusal_withholds_the_keys_it_quotes(self) -> None:
+        self._no_terms()
+        code, _, err = self._import_mask({**dict.fromkeys(self.loops, False), "stale-probe-loop": True}, "--dry-run")
+        assert code == 2
+        assert "(refused (reason withheld: not content-scanned))" in err
+        assert "stale-probe-loop" not in err
+
+    def test_a_clean_mask_refusal_still_names_what_is_wrong(self) -> None:
+        code, _, err = self._import_mask(dict.fromkeys(self.loops[1:], False))
+        assert code == 2
+        assert f"no opinion on {self.loops[0]}" in err
 
 
 class TestTheTermValuesBackupNamesOnlyWhatAScanClears(_TermGuardCase):

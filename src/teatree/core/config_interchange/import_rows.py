@@ -27,6 +27,8 @@ from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.hooks.term_match import line_matches
 
 _NAME_REFUSAL = f"secret ({BANNED_TERM})"
+_REASON_QUOTES_A_TERM = "refused (reason withheld: quotes a banned term)"
+_UNSCANNED_MASK_REFUSAL = "refused (reason withheld: not content-scanned)"
 
 
 @dataclass(frozen=True)
@@ -206,10 +208,9 @@ def seed_row(entry: SeedFieldDisposition, policy: ImportPolicy) -> ImportedRow:
 
 
 def _seed_rejection(entry: SeedFieldDisposition, reason: str, policy: ImportPolicy) -> RejectedRow:
-    # A mask refusal quotes the entry name, so a withheld name takes the reason with it.
-    if policy.withholds_name(entry.name):
-        return RejectedRow(WITHHELD_NAME_SCOPE, entry.field, "refused (reason withheld with the name)")
-    return RejectedRow(entry.scope, entry.field, reason)
+    scope = WITHHELD_NAME_SCOPE if policy.withholds_name(entry.name) else entry.scope
+    shown = _REASON_QUOTES_A_TERM if line_matches(reason, policy.terms or ()) else reason
+    return RejectedRow(scope, entry.field, shown)
 
 
 def file_seed_dispositions(
@@ -225,7 +226,8 @@ def file_seed_dispositions(
     A field the guard withholds is refused unless a personal backup is being restored, and
     an entry whose NAME carries a term is refused without the name on the same terms — both
     before the mask and seeding checks, so neither can echo what was refused. A restored one
-    is reported under the withheld-name label, its refusals included.
+    is reported under the withheld-name label, its refusals included, and a refusal reason
+    quoting a term is withheld wherever it appears.
 
     An entry the shipped file carries can still have no DB row on a box that never ran the
     install seed, so a write onto a missing row is rejected rather than left to raise
@@ -249,8 +251,9 @@ def file_seed_dispositions(
             writes.append(entry)
     rejected.extend(name_refusals(withheld_names))
     unseeded = unseeded_entries(writes)
+    # A mask refusal quotes the file's mask keys and the box's loop names.
     rejected.extend(
-        _seed_rejection(entry, reason, policy)
+        _seed_rejection(entry, _UNSCANNED_MASK_REFUSAL if policy.unscanned else reason, policy)
         for entry, reason in mask_refusals(writes)
         if (entry.table, entry.name) not in unseeded
     )
