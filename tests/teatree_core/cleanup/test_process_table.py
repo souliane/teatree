@@ -187,6 +187,39 @@ class TestSourceSelection:
 
 
 class TestPartialVisibility:
+    @pytest.mark.parametrize(
+        ("name", "state", "threads", "expected_refusal"),
+        [
+            ("python", "S", "1", "pid 2 is unreadable by this uid"),
+            ("ssh-agent", "S", "1", ""),
+            ("python", "Z", "1", ""),
+            ("python", "Z", "2", "pid 2 is unreadable by this uid"),
+        ],
+    )
+    def test_eviction_only_tolerates_known_unreadable_processes(
+        self, tmp_path: Path, name: str, state: str, threads: str, expected_refusal: str
+    ) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"1": tmp_path / "elsewhere"})
+        pid = host / "2"
+        pid.mkdir()
+        (pid / "comm").write_text(f"{name}\n", encoding="utf-8")
+        (pid / "status").write_text(f"State:\t{state}\nThreads:\t{threads}\n", encoding="utf-8")
+        hidden = pid / "fd" / "0"
+        hidden.parent.mkdir()
+        hidden.symlink_to(tmp_path / "unknown")
+        readlink = Path.readlink
+
+        def _readlink(path: Path) -> Path:
+            if path == hidden:
+                raise PermissionError
+            return readlink(path)
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host), patch.object(Path, "readlink", _readlink):
+            table = read_process_table()
+
+        assert table.refuse_reason() == ""
+        assert table.eviction_refuse_reason() == expected_refusal
+
     def test_a_table_no_process_answers_is_unusable(self, tmp_path: Path) -> None:
         """Listed-but-mute is the blind case, and it must not read as "nobody is inside"."""
         host = tmp_path / "host-proc"

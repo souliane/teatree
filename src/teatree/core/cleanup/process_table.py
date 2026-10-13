@@ -73,6 +73,7 @@ _OWN_PROC_ROOT = Path("/proc")
 #: Present iff this process runs inside a container, so ``/proc`` shows a
 #: namespace that is not the host's.
 _CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
+_NON_DUMPABLE_AGENTS = frozenset({"gpg-agent", "sshd-session", "ssh-agent", "scdaemon", "keyboxd", "dirmngr"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,7 @@ class ProcessTable:
     paths: frozenset[Path]
     source: str
     gaps: tuple[str, ...] = ()
+    eviction_gaps: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -97,6 +99,9 @@ class ProcessTable:
         if self.usable:
             return ""
         return "; ".join(self.gaps) or "the process table could not be read"
+
+    def eviction_refuse_reason(self) -> str:
+        return self.refuse_reason() or "; ".join(self.eviction_gaps)
 
     def holds(self, directory: Path) -> bool:
         """True iff a live process is working in *directory* or running from inside it."""
@@ -185,10 +190,16 @@ def read_process_table() -> ProcessTable:
     if not view.answered_pids:
         return ProcessTable(frozenset(), "", (view.unknowable_reason,))
     paths = {Path(normalized_spelling(path)) for path in view.held}
-    executables, executable_gaps = _executables([pid for pid in _pid_dirs(root) if pid.name != own_pid])
+    executables, executable_gaps, unreadable_executables = _executables(
+        [pid for pid in _pid_dirs(root) if pid.name != own_pid]
+    )
     paths.update(executables)
     partial_gaps = (view.unknowable_reason,) if view.unknowable_reason else ()
-    return ProcessTable(frozenset(paths), str(root), (*partial_gaps, *executable_gaps))
+    unreadable_pids = {pid for pid, _cause in view.unknowable_details} | set(unreadable_executables)
+    eviction_gaps = tuple(
+        f"pid {pid} is unreadable by this uid" for pid in sorted(unreadable_pids) if _same_user_untolerated(root / pid)
+    )
+    return ProcessTable(frozenset(paths), str(root), (*partial_gaps, *executable_gaps), eviction_gaps)
 
 
 def _own_pid_in(root: Path) -> str | None:
@@ -199,9 +210,26 @@ def _own_pid_in(root: Path) -> str | None:
         return None
 
 
-def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...]]:
+def _same_user_untolerated(pid: Path) -> bool:
+    try:
+        if pid.stat().st_uid != os.geteuid():
+            return False
+        name = (pid / "comm").read_text(encoding="utf-8").strip()
+        if name in _NON_DUMPABLE_AGENTS:
+            return False
+        status = (pid / "status").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return pid.exists()
+    except OSError:
+        return True
+    lines = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    return not (lines.get("State", "").strip().startswith("Z") and lines.get("Threads", "").strip() == "1")
+
+
+def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...], tuple[str, ...]]:
     executables: set[Path] = set()
     gaps: list[str] = []
+    unreadable: list[str] = []
     for pid in pids:
         try:
             executable = (pid / "exe").readlink()
@@ -209,9 +237,10 @@ def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...]]:
             continue
         except OSError as exc:
             gaps.append(f"pid {pid.name} executable could not be read ({exc.strerror or exc})")
+            unreadable.append(pid.name)
             continue
         executables.add(Path(normalized_spelling(str(executable))))
-    return executables, tuple(gaps)
+    return executables, tuple(gaps), tuple(unreadable)
 
 
 __all__ = [
