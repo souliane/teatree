@@ -13,12 +13,14 @@ when the budget is exhausted — so a stuck ticket is drained or surfaced, never
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree.agents import runner
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
@@ -47,6 +49,7 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.utils.git_run import run_strict
 from tests._pr_open_state_stub import pr_open_state
 from tests.factories import record_test_plan
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
 _REAL_DEFECT = "the review found a real defect in the diff"
@@ -1028,6 +1031,45 @@ class TestOperatorCancelledTickets(TestCase):
 
 
 class TestCompletedReviewNoCoding(TestCase):
+    def test_incident_replay_guards_the_mint_then_parks_a_forced_dispatch(self) -> None:
+        with TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=3)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+            ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay=ticket.overlay,
+                repo_path="test/repo",
+                branch="feature",
+                extra={"worktree_path": str(checkout)},
+            )
+            coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
+            coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
+            review = _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED)
+            review.attempts.update(result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": head}})
+
+            assert redispatch_stuck_tickets() == 0
+            with patch.object(Ticket, "has_merge_safe_self_review_after_plan", return_value=False):
+                assert redispatch_stuck_tickets() == 0
+            with patch.object(Ticket, "newest_phase_task_was_cancelled", return_value=False):
+                assert redispatch_stuck_tickets() == 0
+            with (
+                patch.object(Ticket, "newest_phase_task_was_cancelled", return_value=False),
+                patch.object(Ticket, "has_merge_safe_self_review_after_plan", return_value=False),
+            ):
+                assert redispatch_stuck_tickets() == 1
+
+            task = ticket.tasks.get(phase="coding", status=Task.Status.PENDING)
+            task.claim(claimed_by="factory")
+            driver = mock.Mock()
+            with mock.patch.object(runner, "_run_agent", driver):
+                attempt = runner.run_agent(task, phase="coding", overlay_skill_metadata=mock.Mock())
+            driver.assert_not_called()
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING
+            assert attempt.exit_code == 0
+
     def test_merge_safe_at_head_after_plan_blocks_generic_coding(self) -> None:
         with TemporaryDirectory() as checkout:
             repo = Path(checkout)

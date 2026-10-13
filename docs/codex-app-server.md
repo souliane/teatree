@@ -74,6 +74,13 @@ and releases the file lease. An unchanged cache causes no pass write. A new task
 starts a new process and revalidates/hydrates the pass entry; a task arriving
 during the idle grace reuses the existing process.
 
+The spawned process carries `T3_DISPATCHED_AGENT=1`, the same marker as the
+Claude child, so a cancelled run can identify its marked checkout processes.
+The shared App Server is never a cancellation stop target: a direct owner
+cancel may signal only runner descendants with a writable checkout file
+descriptor after a pidfd re-check. Marked orphans can keep a checkout held but
+cannot be stopped by that rule.
+
 This process-start lease is the boot preflight too: Teatree validates and
 hydrates before each new Codex process, including the first run after a worker
 recreation. It does not copy the credential during container entrypoint startup,

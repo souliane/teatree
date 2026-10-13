@@ -12,6 +12,7 @@ from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
+from teatree.core.management.commands.task_cancel_auth import direct_owner_cancel
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -151,7 +152,7 @@ class Command(TyperCommand):
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=cancel_reason,
-                result={"cancel_reason": cancel_reason},
+                result={"cancel_reason": cancel_reason, "cancel_source": "owner" if direct_owner_cancel() else "agent"},
             )
             task.fail(reason=cancel_reason, by_holder=False)
         self.stdout.write(f"Task {task_id} cancelled.")
@@ -340,7 +341,9 @@ class Command(TyperCommand):
         # souliane/teatree#657: an in-session sub-agent runs inside the user's
         # own Claude Code session — always the Max subscription seat, never
         # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
-        usage = AttemptUsage(agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        usage = AttemptUsage(
+            agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION, recording_source="hand"
+        )
         attempt = record_result_envelope(task, result, usage=usage)
         task.refresh_from_db()
         self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")

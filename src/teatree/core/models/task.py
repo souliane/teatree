@@ -320,6 +320,10 @@ class Task(models.Model):
         last_attempt = self.attempts.order_by("-pk").first()
         return bool(last_attempt and (last_attempt.result or {}).get("review_skipped"))
 
+    def recorded_by_hand(self) -> bool:
+        last_attempt = self.attempts.order_by("-pk").first()
+        return bool(last_attempt and (last_attempt.result or {}).get("recording_source") == "hand")
+
     def _needs_user_input_followup_pending(self) -> bool:
         """True iff this task was *held* for human input (#927).
 
@@ -435,7 +439,7 @@ class Task(models.Model):
                 and (ticket.state == Ticket.State.WORK_STARTED or has_plan_decision(ticket))
             ):
                 ticket.walk_to_work_started()
-                ticket.plan(parent_task=self)
+                ticket.plan(parent_task=self, schedule_followup=not self.recorded_by_hand())
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True, parent_task=self)

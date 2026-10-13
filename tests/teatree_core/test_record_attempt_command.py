@@ -10,8 +10,11 @@ guard before reaching the behaviour it names.
 """
 
 import json
+import tempfile
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
@@ -20,10 +23,97 @@ from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.task_claim import claim_generation
-from tests.factories import planned_ticket
+from teatree.utils.git import run_strict
+from tests.factories import WorktreeFactory, planned_ticket
+from tests.teatree_core._self_review_helpers import author_ticket, self_review_result
+from tests.teatree_core.conftest import record_maker_review_for_test
+from tests.teatree_core.models._shared import _init_repo_with_branch
+
+_HAND_PLAN = {
+    "plan_text": "Implement the checkout fence and prove its refusal.",
+    "base_sha": "a" * 40,
+    "adequacy": {
+        "design": {"content": "fence before the harness opens"},
+        "integration_seams": {"content": ["src/teatree/agents/runner.py"]},
+        "edge_cases": {"none_reason": "the refusal parks without changing the checkout"},
+        "test_strategy": {"content": "run a claimed coding task through the real fence"},
+        "acceptance_criteria": {"content": ["a foreign checkout state parks the task"]},
+    },
+}
 
 
 class TestRecordAttemptCommand(TestCase):
+    def test_hand_plan_advances_without_a_writing_task_even_on_replay(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        task.claim(claimed_by="loop-slot")
+
+        call_command(
+            "tasks",
+            "record-attempt",
+            str(task.pk),
+            json.dumps(_HAND_PLAN),
+            claim_token=claim_generation(task),
+            stdout=StringIO(),
+        )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert task.attempts.latest("pk").result.get("recording_source") == "hand"
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists(), "minted immediately"
+        assert task._apply_phase_transition() is False
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists(), "minted on replay"
+
+    def test_hand_review_advances_without_shipping_or_page_even_on_replay(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="loop-slot")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+            WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            record_maker_review_for_test(ticket, head)
+            with patch.object(Ticket, "has_shippable_diff", return_value=True):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
+                    claim_token=claim_generation(task),
+                    stdout=StringIO(),
+                )
+                task.refresh_from_db()
+                ticket.refresh_from_db()
+                assert task.status == Task.Status.COMPLETED, task.attempts.latest("pk").error
+                assert ticket.state == Ticket.State.SELF_REVIEWED
+                task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
+
+    def test_hand_review_hold_mints_no_rework_or_page_even_on_replay(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="loop-slot")
+
+        call_command(
+            "tasks",
+            "record-attempt",
+            str(task.pk),
+            json.dumps(self_review_result("hold")),
+            claim_token=claim_generation(task),
+            stdout=StringIO(),
+        )
+        task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
+
     def _claimed_task(self, *, phase: str = "coding") -> Task:
         ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)

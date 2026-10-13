@@ -74,20 +74,27 @@ length of its run, and a second requester is refused with the holder named
 instead of being handed the same tree.
 
 The claim is advisory: it refuses a second requester and never evicts the
-first. Nothing deletes, reaps or kills a checkout on the strength of it, and a
-lapsed lease grants the next requester without touching the previous holder's
-process, files or branch.
+first. Nothing deletes, reaps or kills a checkout on the strength of it. A
+lapsed lease does not authorize a writing factory run while the checkout's
+process or state fence still refuses it.
 
 ```bash
 t3 <overlay> worktree occupancy                     # who holds what right now
 t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
 t3 <overlay> worktree release-occupancy <path>      # hand it back, naming whose claim was freed
+t3 <overlay> worktree attest <path>                  # accept a clear checkout's current state
 ```
 
 A dispatched agent needs none of these — `run_headless` takes and releases the
 claim around the run. Use them when you work a branch OUTSIDE the lifecycle
 (raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
 than walking into it.
+
+A writing factory task also requires exactly one worktree row for its path, no
+live process there, and a checkout matching the last attested state. A hand
+record does not update that state. After hand work, inspect the checkout and
+use `worktree attest` only when no process is still working there; a refused
+factory task parks and leaves the work intact.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete

@@ -60,6 +60,7 @@ class AttemptUsage:
     """
 
     agent_session_id: str = ""
+    recording_source: str = ""
     model: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -221,11 +222,14 @@ def record_result_envelope(
 
     try:
         with transaction.atomic():
+            recorded_result = with_transport_records(result, usage)
+            if usage.recording_source:
+                recorded_result["recording_source"] = usage.recording_source
             attempt = TaskAttempt.objects.create(
                 task=task,
                 ended_at=timezone.now(),
                 exit_code=0,
-                result=with_transport_records(result, usage),
+                result=recorded_result,
                 **usage_fields(usage),
             )
             task.complete(result_artifact_path="")

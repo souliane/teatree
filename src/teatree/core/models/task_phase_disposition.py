@@ -136,9 +136,10 @@ def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
         escalate_unmatched_phase_transition(task, phase="reviewing", ticket=ticket)
         return False
     if (review := SelfReview.of_task(task)) is not None and review.is_hold:
-        queue_self_review_rework(ticket, review)
+        if not task.recorded_by_hand():
+            queue_self_review_rework(ticket, review)
         return False
-    ticket.review(parent_task=task)
+    ticket.review(parent_task=task, schedule_followup=not task.recorded_by_hand())
     ticket.save()
     dispose_unshippable_review(ticket)
     return True
@@ -252,6 +253,7 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
             normalize_phase(phase) == "planning"
             and ticket.state not in Ticket.merged_states()
             and not ticket.tasks.filter(pk__gt=task.pk).exists()
+            and not task.recorded_by_hand()
         ):
             _queue_planned_work_or_refuse(task, ticket)
         return

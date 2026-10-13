@@ -23,6 +23,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("occupancy", "Show every checkout a live agent currently holds."),
             ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
             ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
+            ("attest", "Record the checkout state after the owner has inspected it."),
             ("adopt", "Register an existing on-disk checkout as a Worktree row."),
         ],
     ),

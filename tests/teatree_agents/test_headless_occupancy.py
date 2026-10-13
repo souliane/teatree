@@ -113,6 +113,18 @@ class CheckoutFenceDispatchTests(_DispatchCase):
 
 
 class HeldForTheRunTests(_DispatchCase):
+    def test_process_settlement_runs_before_checkout_release(self) -> None:
+        seen: list[bool] = []
+
+        def settle(*_: object, **__: object) -> None:
+            seen.append(occupancy_holder(self.fresh()) is not None)
+
+        with mock.patch.object(runner, "settle_cancelled_checkout", side_effect=settle) as called:
+            self.dispatch()
+
+        called.assert_called_once()
+        assert seen == [True]
+
     def test_the_checkout_is_held_while_the_agent_runs(self) -> None:
         seen: list[str] = []
 

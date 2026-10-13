@@ -44,6 +44,7 @@ from teatree.agents.harness_registry import (
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
+from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_heartbeat import (
     HeartbeatRuntime,
@@ -97,6 +98,7 @@ from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
+from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +318,11 @@ def run_agent(
         ) as path:
             verify_task_checkout(task, path)
             with drive_claim(task), delivered_phase_handoff(task) as handoff:
-                return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
+                try:
+                    return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
+                finally:
+                    if path:
+                        settle_cancelled_checkout(task, Path(path), beat_seconds=_HEARTBEAT_INTERVAL)
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
         return park_task_checkout(task, reason=str(exc))
@@ -554,9 +560,9 @@ def _resolve_child_env_or_failure(
     return replace(resolved, env=_capped_forge_env(task, resolved.env))
 
 
-def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str] | None:
+def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str]:
     capped = with_test_worker_cap(env, active_agents=_active_agent_count())
-    return with_routed_github_token(capped, overlay=_overlay_scope(task))
+    return {**(with_routed_github_token(capped, overlay=_overlay_scope(task)) or {}), **dispatched_agent_env()}
 
 
 def _active_agent_count() -> int:

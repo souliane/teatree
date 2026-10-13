@@ -28,6 +28,7 @@ def test_the_routed_token_and_the_worker_cap_are_the_only_dispatch_keys_taken(tm
 
     assert env["GH_TOKEN"] == "ghp-routed"
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+    assert env["T3_DISPATCHED_AGENT"] == "1"
     assert not {key for key in _SECRETS if key != "GH_TOKEN"} & env.keys()
     assert "ghp-routed" not in {value for key, value in env.items() if key != "GH_TOKEN"}
     assert not {"ambient-gh-secret", "ambient-github-secret"} & set(env.values())

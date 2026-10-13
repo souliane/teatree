@@ -67,6 +67,7 @@ from teatree.core.models.worktree_occupancy import (
 )
 from teatree.core.worktree.checkout_fence import writes_checkout
 from teatree.core.worktree.checkout_state import checkout_state
+from teatree.core.worktree.survivor_notice import page_surviving_checkout
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -123,6 +124,10 @@ def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: st
         logger.warning(
             "Keeping checkout %s occupied after task %s: process evidence is incomplete or live", path, task_pk
         )
+        try:
+            page_surviving_checkout(task, path, holder_session=holder_session)
+        except Exception:
+            logger.exception("Could not page owner for surviving checkout process on task %s", task_pk)
         return True
     state = None
     if writes_checkout(task):

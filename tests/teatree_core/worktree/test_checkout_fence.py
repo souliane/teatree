@@ -90,6 +90,7 @@ class CheckoutFenceTests(TestCase):
             verify_task_checkout(self.task, str(self.checkout))
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
             patch(
                 "teatree.core.worktree.occupancy.read_process_table",
                 return_value=ProcessTable(frozenset({self.checkout}), "/proc"),
@@ -101,6 +102,8 @@ class CheckoutFenceTests(TestCase):
         ):
             (self.checkout / "new.txt").write_text("run output")
             self.task.complete()
+
+        page.assert_called_once()
 
         finished = Worktree.objects.get(pk=self.worktree.pk)
         held = occupancy_holder(finished)
