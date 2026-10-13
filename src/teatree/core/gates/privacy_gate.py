@@ -25,6 +25,9 @@ from django.core.exceptions import ImproperlyConfigured
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.hooks import term_match
+from teatree.hooks.banned_term_registry import allowlist_terms
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.utils.exact_carve_out import mask_exempt
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,17 @@ def scan_for_publication(
     is_public = target_repo in public_repos
     if not is_public:
         return PrivacyGateResult(target_repo=target_repo, is_public=is_public)
+    return PrivacyGateResult(
+        target_repo=target_repo,
+        is_public=True,
+        matches=_publication_matches(text, text, redact_terms, block_patterns),
+    )
+
+
+def _publication_matches(
+    text: str, term_text: str, redact_terms: list[str] | None, block_patterns: list[str] | None
+) -> tuple[PrivacyMatch, ...]:
+    """Redact terms are matched in *term_text*, which may carve out allowed identifiers; patterns see *text*."""
     matches: list[PrivacyMatch] = []
     for term in redact_terms or []:
         if not term:
@@ -97,7 +111,7 @@ def scan_for_publication(
         # so a short redact term no longer surfaces inside a longer word
         # (``op`` inside ``cooperative``) while a camelCase/snake split token
         # still matches.
-        for matched_text, position in term_match.iter_term_matches(text, term):
+        for matched_text, position in term_match.iter_term_matches(term_text, term):
             matches.append(
                 PrivacyMatch(
                     pattern_name=f"redact:{term}",
@@ -130,11 +144,7 @@ def scan_for_publication(
                     position=match.start(),
                 ),
             )
-    return PrivacyGateResult(
-        target_repo=target_repo,
-        is_public=True,
-        matches=tuple(matches),
-    )
+    return tuple(matches)
 
 
 def format_refusal(result: PrivacyGateResult) -> str:
@@ -271,7 +281,6 @@ def _db_banned_terms() -> tuple[str, ...] | None:
     The pre-commit scanner also refuses an unset registry, so the two gates agree.
     """
     from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415 — deferred hooks edge
-    from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError  # noqa: PLC0415 — deferred hooks edge
 
     try:
         return resolve_banned_terms()
@@ -290,7 +299,7 @@ def _db_banned_terms() -> tuple[str, ...] | None:
 def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> PrivacyGateResult:
     """Scan outbound *text* bound for *target_repo* against the publication rules.
 
-    The egress-chokepoint wrapper of :func:`scan_for_publication`. Public-ness is
+    The egress-chokepoint sibling of :func:`scan_for_publication`. Public-ness is
     derived from the bash gates' visibility axis (:func:`_target_is_public`), NOT
     from a per-overlay ``public_repos`` list, so the gate actually fires on a real
     public repo. A provably-private repo is a clean pass; an unknown repo fails
@@ -314,8 +323,8 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     the destination, and unioning can only refuse MORE, never leak more (#1295). The
     banned-terms list is where the customer codenames actually live, so scanning only
     overlay terms let a banned codename leak to a public forge. All three feed the
-    same whole-token :mod:`teatree.hooks.term_match` matcher via
-    :func:`scan_for_publication`.
+    same whole-token :mod:`teatree.hooks.term_match` matcher, with exact occurrences
+    of the registry ``allow`` class carved out (:func:`_db_allowlist`).
 
     Two fail-CLOSED refusals guard a public target: when the owning overlay's privacy
     rules cannot be resolved (:func:`overlay_privacy_rules` returns ``None``) the
@@ -364,13 +373,24 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         )
     redact_terms, block_patterns = rules
     union_redact, union_block = union
-    return scan_for_publication(
-        text=text,
+    return PrivacyGateResult(
         target_repo=target_repo,
-        public_repos=[target_repo],
-        redact_terms=list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
-        block_patterns=list(dict.fromkeys([*block_patterns, *union_block])),
+        is_public=True,
+        matches=_publication_matches(
+            text,
+            mask_exempt(text, _db_allowlist()),
+            list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
+            list(dict.fromkeys([*block_patterns, *union_block])),
+        ),
     )
+
+
+def _db_allowlist() -> tuple[str, ...]:
+    """The registry ``allow`` class; an unreadable one exempts nothing, so the scan only grows stricter."""
+    try:
+        return allowlist_terms()
+    except BannedTermsUnsetError:
+        return ()
 
 
 #: Mask token substituted for a leak-gate match when redacting text for LOCAL display.
