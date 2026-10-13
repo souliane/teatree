@@ -241,6 +241,48 @@ def _check_occupied_checkouts() -> bool:
     return True
 
 
+def _read_only_git_lines(checkout: Path, args: list[str], env: dict[str, str]) -> list[str]:
+    from teatree.utils.run import run_checked  # noqa: PLC0415 — deferred with the doctor check
+
+    output = run_checked(["git", "-C", str(checkout), *args], env=env).stdout
+    return [line for line in output.splitlines() if line]
+
+
+def _check_linked_worktree_placement() -> bool:
+    from teatree.config.checkout_roots import checkout_roots  # noqa: PLC0415 — deferred with the doctor check
+    from teatree.config.loader import clone_root  # noqa: PLC0415 — deferred with the doctor check
+    from teatree.core.cleanup.checkout_registry import (  # noqa: PLC0415 — deferred with the doctor check
+        candidate_clones,
+        raw_worktree_paths,
+    )
+    from teatree.utils.git_run import git_env_without_overrides  # noqa: PLC0415 — deferred with the doctor check
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred with the doctor check
+
+    env = git_env_without_overrides() | {"GIT_OPTIONAL_LOCKS": "0"}
+    for clone in sorted(candidate_clones(clone_root())):
+        try:
+            linked = raw_worktree_paths(clone)
+        except CommandFailedError as exc:
+            typer.echo(f"WARN  Linked worktrees of {clone} UNVERIFIED: could not list clone ({exc}).")
+            continue
+        roots = checkout_roots(source_clone=Path(clone))
+        for raw in sorted(linked):
+            checkout = Path(raw)
+            if roots.allows(checkout):
+                continue
+            try:
+                dirty = _read_only_git_lines(checkout, ["status", "--porcelain", "--untracked-files=all"], env)
+                unpushed = _read_only_git_lines(checkout, ["log", "HEAD", "--not", "--remotes", "--oneline"], env)
+            except CommandFailedError as exc:
+                typer.echo(f"WARN  Linked worktree {checkout} outside allowed roots: UNVERIFIED work ({exc}).")
+                continue
+            typer.echo(
+                f"WARN  Linked worktree {checkout} outside allowed roots: {len(dirty)} uncommitted path(s), "
+                f"{len(unpushed)} commit(s) on no remote."
+            )
+    return True
+
+
 def check_worktree_health() -> bool:
     """Every worktree-health check, each evaluated so none masks the others.
 
@@ -255,6 +297,7 @@ def check_worktree_health() -> bool:
                 _check_registered_worktrees_have_a_checkout(),
                 _check_one_worktree_root(),
                 _check_occupied_checkouts(),
+                _check_linked_worktree_placement(),
             )
         )
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run

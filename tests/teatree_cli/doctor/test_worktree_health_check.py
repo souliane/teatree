@@ -21,8 +21,10 @@ from teatree.cli.doctor.checks_worktree_health import (
     _check_registered_worktrees_have_a_checkout,
     check_worktree_health,
 )
+from teatree.config.checkout_roots import CheckoutRoots
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.occupancy import acquire
+from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -281,6 +283,62 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
 
         assert ok is True
         assert "UNVERIFIED" in out
+
+
+class LinkedCheckoutPlacementTest(_TmpTestCase):
+    def _clone(self) -> tuple[Path, Path, Path]:
+        clone = make_git_repo(self.tmp / "clone")
+        initial = run_git(clone, "rev-parse", "HEAD")
+        run_git(clone, "update-ref", "refs/remotes/origin/main", initial)
+        outside = self.tmp / "stray"
+        inside = self.tmp / "allowed" / "inside"
+        inside.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "add", "-b", "stray", str(outside))
+        run_git(clone, "worktree", "add", "-b", "inside", str(inside))
+        return clone, outside, inside
+
+    def _report(self, clone: Path) -> tuple[bool, str]:
+        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(), harness=())
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.config.checkout_roots.checkout_roots", return_value=roots),
+        ):
+            return _echoes(check_worktree_health)
+
+    def test_reports_each_stray_with_work_counts_without_changing_it(self) -> None:
+        clone, outside, inside = self._clone()
+        (outside / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+        run_git(outside, "commit", "--allow-empty", "-m", "local")
+        before = run_git(outside, "status", "--porcelain")
+        head = run_git(outside, "rev-parse", "HEAD")
+        index_lock = Path(run_git(outside, "rev-parse", "--git-path", "index.lock"))
+
+        ok, out = self._report(clone)
+
+        assert ok is True
+        assert f"{outside}" in out
+        assert "1 uncommitted path" in out
+        assert "1 commit" in out
+        assert "no remote" in out
+        assert str(inside) not in out
+        assert run_git(outside, "status", "--porcelain") == before
+        assert run_git(outside, "rev-parse", "HEAD") == head
+        assert not index_lock.exists()
+
+    def test_unreadable_clone_is_unverified(self) -> None:
+        clone = make_git_repo(self.tmp / "clone")
+        failure = CommandFailedError(["git", "worktree", "list"], 128, "", "cannot read registry")
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.core.cleanup.checkout_registry.raw_worktree_paths", side_effect=failure),
+        ):
+            ok, out = _echoes(check_worktree_health)
+
+        assert ok is True
+        assert "UNVERIFIED" in out
+        assert str(clone) in out
 
 
 class VanishedCheckoutCheckTest(_TmpTestCase):
