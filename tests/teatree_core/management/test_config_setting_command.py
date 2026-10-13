@@ -937,6 +937,13 @@ class TestRefusalsNameTheClassNeverTheValue(_TermGuardCase):
         control = self._file("g.toml", f'{backup}mode = "not-a-mode"\n')
         assert "not-a-mode" in self._run("import", "--input", str(control), "--restore-private")[2]
 
+    def test_an_invalid_message_quoting_a_term_is_withheld(self) -> None:
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [Mode.AUTO.value]}))
+        code, out, err = self._run("import", "--input", str(self._file("f.toml", '[teatree]\nmode = "not-a-mode"\n')))
+        assert code == 2
+        assert "rejected mode  [global]  (invalid (banned-term; message withheld))" in err
+        assert _carries_no_term(out, err, terms=(Mode.AUTO.value,))
+
     def test_a_non_ascii_term_is_withheld_by_class_on_export(self) -> None:
         self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [NON_ASCII_TERM]}))
         self._set("issue_implementer_label", f"{NON_ASCII_TERM} desk")
@@ -1284,7 +1291,7 @@ class TestAShippedEntryNamedAfterATerm(_TermGuardCase):
         self._arrange()
         code, out, err = self._restore("entries = {}\n")
         assert code == 2
-        assert "rejected entries  [under a name that carries a banned term]  (refused (reason withheld" in err
+        assert "rejected entries  [under a name that carries a banned term]  (invalid mask (banned-term; message" in err
         assert _carries_no_term(out, err, terms=(self.mode,))
 
     def test_a_restore_onto_an_unseeded_box_refuses_it_without_the_name(self) -> None:
@@ -1323,26 +1330,28 @@ class TestAMaskRefusalNeverQuotesATerm(_TermGuardCase):
         path = self._file("m.toml", f"{head}[modes.{self.mode}.entries]\n{rows}")
         return self._run("import", "--input", str(path), *flags)
 
-    def test_a_restored_mask_keyed_by_a_term_is_refused_without_it(self) -> None:
-        entries = {**dict.fromkeys(self.loops, False), f"{LEAK}-loop": True}
-        code, out, err = self._import_mask(entries, "--restore-private", marked=True)
-        assert code == 2
-        assert "(refused (reason withheld: quotes a banned term))" in err
-        assert _carries_no_term(out, err)
+    def test_a_restored_mask_keyed_by_a_term_of_any_class_is_refused_without_it(self) -> None:
+        for term in (LEAK, OV):
+            with self.subTest(term=term):
+                entries = {**dict.fromkeys(self.loops, False), f"{term}-loop": True}
+                code, out, err = self._import_mask(entries, "--restore-private", marked=True)
+                assert code == 2
+                assert "(invalid mask (banned-term; message withheld))" in err
+                assert _carries_no_term(out, err)
 
     def test_a_mask_leaving_out_a_loop_named_after_a_term_is_refused_without_it(self) -> None:
         term = self.loops[0]
         self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [term]}))
         code, out, err = self._import_mask(dict.fromkeys(self.loops[1:], False))
         assert code == 2
-        assert "(refused (reason withheld: quotes a banned term))" in err
+        assert "(invalid mask (banned-term; message withheld))" in err
         assert _carries_no_term(out, err, terms=(term,))
 
     def test_an_unscanned_mask_refusal_withholds_the_keys_it_quotes(self) -> None:
         self._no_terms()
         code, _, err = self._import_mask({**dict.fromkeys(self.loops, False), "stale-probe-loop": True}, "--dry-run")
         assert code == 2
-        assert "(refused (reason withheld: not content-scanned))" in err
+        assert "(invalid mask (not content-scanned; message withheld))" in err
         assert "stale-probe-loop" not in err
 
     def test_a_clean_mask_refusal_still_names_what_is_wrong(self) -> None:

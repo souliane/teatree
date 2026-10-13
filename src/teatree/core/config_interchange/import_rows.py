@@ -27,8 +27,6 @@ from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.hooks.term_match import line_matches
 
 _NAME_REFUSAL = f"secret ({BANNED_TERM})"
-_REASON_QUOTES_A_TERM = "refused (reason withheld: quotes a banned term)"
-_UNSCANNED_MASK_REFUSAL = "refused (reason withheld: not content-scanned)"
 
 
 @dataclass(frozen=True)
@@ -77,6 +75,18 @@ class ImportPolicy:
     def seed_refusal(self, field: str, value: ConfigValue) -> str | None:
         return None if self.allow_private else self.seed_reason(field, value)
 
+    def refusal(self, verdict: str, message: str, *, value_class: str | None = None) -> str:
+        """*verdict* with the *message* it quotes, unless that message may carry a private value or a term."""
+        if value_class is not None:
+            withheld = f"{value_class} value"
+        elif self.terms is None:
+            withheld = "not content-scanned"
+        elif line_matches(message, self.terms):
+            withheld = BANNED_TERM
+        else:
+            return f"{verdict}: {message}"
+        return f"{verdict} ({withheld}; message withheld)"
+
 
 def _unstorable_reason(key: str, value: ConfigValue, policy: ImportPolicy) -> str | None:
     """Why this row has no home in the store at all, else None.
@@ -93,15 +103,6 @@ def _unstorable_reason(key: str, value: ConfigValue, policy: ImportPolicy) -> st
     if (secret := policy.secret_reason(key, value)) is not None:
         return f"secret ({secret})"
     return None
-
-
-def _invalid_reason(key: str, value: ConfigValue, error: Exception, policy: ImportPolicy) -> str:
-    """The parser message quotes the value, so it is dropped wherever the value is private."""
-    if policy.unscanned:
-        return "invalid (message withheld)"
-    if (secret := policy.secret_reason(key, value)) is not None:
-        return f"invalid ({secret} value; message withheld)"
-    return f"invalid: {error}"
 
 
 def classify_import_row(
@@ -142,7 +143,7 @@ def classify_import_row(
             validate_pass_key_entry(candidate) if pass_key is not None else validate_config_write(key, candidate)
         )
     except (ConfigWriteError, ValueError) as exc:
-        return ("reject", _invalid_reason(key, candidate, exc, policy))
+        return ("reject", policy.refusal("invalid", str(exc), value_class=policy.secret_reason(key, candidate)))
     if pass_key is None and canonical == effective_default(key):
         return ("skip", canonical)
     if canonical == stored:
@@ -208,9 +209,7 @@ def seed_row(entry: SeedFieldDisposition, policy: ImportPolicy) -> ImportedRow:
 
 
 def _seed_rejection(entry: SeedFieldDisposition, reason: str, policy: ImportPolicy) -> RejectedRow:
-    scope = WITHHELD_NAME_SCOPE if policy.withholds_name(entry.name) else entry.scope
-    shown = _REASON_QUOTES_A_TERM if line_matches(reason, policy.terms or ()) else reason
-    return RejectedRow(scope, entry.field, shown)
+    return RejectedRow(WITHHELD_NAME_SCOPE if policy.withholds_name(entry.name) else entry.scope, entry.field, reason)
 
 
 def file_seed_dispositions(
@@ -226,8 +225,8 @@ def file_seed_dispositions(
     A field the guard withholds is refused unless a personal backup is being restored, and
     an entry whose NAME carries a term is refused without the name on the same terms — both
     before the mask and seeding checks, so neither can echo what was refused. A restored one
-    is reported under the withheld-name label, its refusals included, and a refusal reason
-    quoting a term is withheld wherever it appears.
+    is reported under the withheld-name label, its refusals included. A mask refusal quotes
+    the file's keys and the box's loop names, so it goes through :meth:`ImportPolicy.refusal`.
 
     An entry the shipped file carries can still have no DB row on a box that never ran the
     install seed, so a write onto a missing row is rejected rather than left to raise
@@ -251,9 +250,8 @@ def file_seed_dispositions(
             writes.append(entry)
     rejected.extend(name_refusals(withheld_names))
     unseeded = unseeded_entries(writes)
-    # A mask refusal quotes the file's mask keys and the box's loop names.
     rejected.extend(
-        _seed_rejection(entry, _UNSCANNED_MASK_REFUSAL if policy.unscanned else reason, policy)
+        _seed_rejection(entry, policy.refusal("invalid mask", reason), policy)
         for entry, reason in mask_refusals(writes)
         if (entry.table, entry.name) not in unseeded
     )

@@ -151,7 +151,7 @@ class TestImport(TestCase):
         text = f"[modes.{min(shipped_seed_table('modes'))}.entries]\n" + "".join(f'"{n}" = false\n' for n in loops[1:])
         with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": [loops[0]]})}):
             body = _import_block(self._post(text).content.decode())
-        assert "refused (reason withheld: quotes a banned term)" in body
+        assert "invalid mask (banned-term; message withheld)" in body
         assert not line_matches(body, (loops[0],))
 
     def test_a_scanned_preview_carries_no_unscanned_banner(self) -> None:

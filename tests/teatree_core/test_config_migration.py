@@ -252,7 +252,7 @@ class TestAStoreWithNoScanTerm(TestCase):
     def test_an_unscanned_invalid_value_withholds_the_parser_message(self) -> None:
         with mock.patch.dict(os.environ, self._without_registry(), clear=True):
             result = import_toml_to_db('[teatree]\nmode = "not-a-mode"\n')
-        assert [row.reason for row in result.rejected] == ["invalid (message withheld)"]
+        assert [row.reason for row in result.rejected] == ["invalid (not content-scanned; message withheld)"]
 
 
 class TestExportScanTermsRoutesThroughRegistry:
