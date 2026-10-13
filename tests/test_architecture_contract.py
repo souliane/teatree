@@ -25,6 +25,8 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TACH_TOML = _REPO_ROOT / "tach.toml"
+#: Fenced by visibility, which layered mode would bypass (any downward import needs no edge).
+_FENCED_UNLAYERED = frozenset({"teatree.slack_catchup"})
 
 
 def _run_tach_check(cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -52,8 +54,14 @@ class TestArchitectureContract:
     def test_every_module_carries_a_layer(self) -> None:
         config = tomllib.loads(_TACH_TOML.read_text(encoding="utf-8"))
         declared_layers = set(config["layers"])
-        unlayered = [m["path"] for m in config["modules"] if m.get("layer") not in declared_layers]
-        assert not unlayered, f"modules missing a valid layer tag: {unlayered}"
+        modules = {m["path"]: m for m in config["modules"]}
+        unlayered = {path for path, module in modules.items() if module.get("layer") not in declared_layers}
+        assert unlayered == _FENCED_UNLAYERED, f"modules missing a valid layer tag: {sorted(unlayered)}"
+        rank = {layer: index for index, layer in enumerate(config["layers"])}
+        for path in unlayered:
+            assert modules[path].get("visibility"), f"{path} is unlayered without a visibility fence"
+            for dependency in modules[path]["depends_on"]:
+                assert rank[modules[dependency]["layer"]] >= rank["domain"], f"{path} reaches up to {dependency}"
 
     def test_layers_reject_a_backwards_cross_layer_import(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"

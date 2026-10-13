@@ -13,6 +13,7 @@ question, applies it, and reacts ✅; the answer is then readable on demand.
 
 import io
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,8 +24,8 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
-from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own_loop
+from teatree.loops.slack_inbound import catch_up_on_connect
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own_loop, serve_history
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -41,6 +42,7 @@ class TestAskUserQuestionRoundtrip:
     def test_record_then_reply_then_apply(
         self,
         transport: FakeSlackTransport,
+        overlay_backend: SlackBotBackend,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -67,11 +69,8 @@ class TestAskUserQuestionRoundtrip:
         assert question.slack_ts != "", "the first-post drain did not deliver the question"
         assert question.slack_channel == "D-USER"
 
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [{"ts": "1700000000.0050", "user": "U_HUMAN", "channel": "D-USER", "text": "1"}],
-        }
-        SlackDmInboundScanner(backend=backend, overlay="").scan()
+        serve_history(transport, [{"ts": f"{time.time() - 30:.6f}", "user": "U_HUMAN", "text": "1"}])
+        catch_up_on_connect("", time.time() - 120)
 
         with patch.object(SlackBotBackend, "_is_self_dm", return_value=True):
             AskUserQuestionReplyScanner(backend=backend, overlay="").scan()

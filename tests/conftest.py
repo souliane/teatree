@@ -21,7 +21,6 @@ from teatree.agents.codex_shared_app_server import reset_shared_codex_app_server
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
-from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
@@ -36,6 +35,7 @@ from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
+from teatree.loops.slack_inbound import reset_dm_recorders
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -483,7 +483,7 @@ def _reset_work_tree_cwd_cache() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_slack_dm_recorders() -> Iterator[None]:
-    """Drop the listener's per-overlay DM recorders around every test.
+    """Drop the per-overlay Slack DM recorders around every test.
 
     Each recorder holds the backend ``messaging_from_overlay`` resolved and the bot
     identity probed through it, so it survives the ``_clear_backend_caches`` reset it

@@ -19,7 +19,7 @@ import slack_sdk.socket_mode
 import slack_sdk.web
 
 from teatree.backends.slack.listener_heartbeat import ConnectionLiveness, read_heartbeat
-from teatree.backends.slack.receiver import QueuePaths, _run_single_overlay, run_listener
+from teatree.backends.slack.receiver import DeliveredEvents, QueuePaths, _run_single_overlay, run_listener
 
 _TICK = 0.01
 
@@ -112,7 +112,7 @@ def test_no_stamp_before_the_current_session_greets(tmp_path: Path) -> None:
         assert _wait_for(lambda: _stamp(beat) is not None)
 
 
-def test_no_prior_heartbeat_owes_nothing(tmp_path: Path) -> None:
+def test_no_prior_heartbeat_owes_the_full_catch_up_window(tmp_path: Path) -> None:
     beat = tmp_path / "beat.json"
     socket = FakeSocket()
     on_connect = MagicMock()
@@ -121,7 +121,8 @@ def test_no_prior_heartbeat_owes_nothing(tmp_path: Path) -> None:
         socket.hello()
         assert _wait_for(lambda: _stamp(beat) is not None)
 
-    on_connect.assert_not_called()
+    assert on_connect.call_args.args[:2] == ("ov", 0.0)
+    assert isinstance(on_connect.call_args.args[2], DeliveredEvents)
 
 
 def test_a_hello_message_reaches_greet(tmp_path: Path) -> None:
@@ -133,7 +134,8 @@ def test_a_hello_message_reaches_greet(tmp_path: Path) -> None:
         socket.hello()
         assert _wait_for(lambda: on_connect.call_count == 1)
 
-    on_connect.assert_called_once_with("ov", 1000.0)
+    assert on_connect.call_args.args[:2] == ("ov", 1000.0)
+    assert isinstance(on_connect.call_args.args[2], DeliveredEvents)
 
 
 def test_a_routine_refresh_stops_stamping_until_the_new_hello(tmp_path: Path) -> None:
@@ -153,7 +155,7 @@ def test_a_routine_refresh_stops_stamping_until_the_new_hello(tmp_path: Path) ->
         assert _wait_for(lambda: on_connect.call_count == 1)
         assert _wait_for(lambda: (_stamp(beat) or 0) > (last or 0))
 
-    on_connect.assert_called_once_with("ov", last)
+    assert on_connect.call_args.args[:2] == ("ov", last)
 
 
 def test_a_failing_catch_up_is_retried_and_withholds_the_stamp(tmp_path: Path) -> None:
@@ -162,7 +164,7 @@ def test_a_failing_catch_up_is_retried_and_withholds_the_stamp(tmp_path: Path) -
     outcomes = iter([RuntimeError("slack down"), None])
     calls: list[float] = []
 
-    def on_connect(_overlay: str, alive_at: float) -> None:
+    def on_connect(_overlay: str, alive_at: float, _seen: DeliveredEvents) -> None:
         calls.append(alive_at)
         if (outcome := next(outcomes)) is not None:
             raise outcome
@@ -204,7 +206,7 @@ def test_first_hello_owes_the_pre_restart_stamp_after_a_sibling_overlay_stamped(
         run_listener(
             [("sib", "xapp-sib", "xoxb"), ("ov", "xapp-ov", "xoxb")],
             paths=QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl", heartbeat=beat),
-            on_connect=lambda overlay, alive_at: calls.append((overlay, alive_at)),
+            on_connect=lambda overlay, alive_at, _seen: calls.append((overlay, alive_at)),
         )
         trigger.join(timeout=5.0)
 

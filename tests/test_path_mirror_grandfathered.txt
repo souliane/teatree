@@ -121,8 +121,6 @@ tests/teatree_loop/test_scanning_news_scanner.py
 tests/teatree_loop/test_slack_broadcasts_classify.py
 tests/teatree_loop/test_slack_broadcasts_multichannel.py
 tests/teatree_loop/test_slack_broadcasts_scanner.py
-tests/teatree_loop/test_slack_dm_inbound.py
-tests/teatree_loop/test_slack_dm_inbound_self_filter.py
 tests/teatree_loop/test_slack_review_intent.py
 tests/teatree_loop/test_slack_self_audio_strip.py
 tests/teatree_loop/test_stale_tickets.py

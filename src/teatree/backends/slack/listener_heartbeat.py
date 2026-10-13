@@ -14,8 +14,12 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from teatree.paths import DATA_DIR
+
+if TYPE_CHECKING:
+    from teatree.backends.slack.receiver import DeliveredEvents
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +32,7 @@ RETRY_BACKOFF_SECONDS = (5.0, 15.0, 45.0, 120.0)
 _write_lock = threading.Lock()
 
 #: Called with ``(overlay_name, alive_at)`` while a hello's catch-up is owed; raising retries it.
-type OnConnect = Callable[[str, float], None]
+type OnConnect = Callable[[str, float, DeliveredEvents], None]
 
 
 def heartbeat_path() -> Path:
@@ -126,6 +130,8 @@ class ConnectionLiveness:
     def greet(self, session_id: str | None) -> None:
         with self._lock:
             candidate = self.last_stamped_at if self._greeted else self.seed
+            if candidate is None and self.on_connect is not None:
+                candidate = 0.0
             self._greeted = True
             self._greeted_during_pass = True
             self.greeted_session = session_id

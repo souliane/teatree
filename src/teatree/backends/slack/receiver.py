@@ -25,8 +25,8 @@ import os
 import signal
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -59,6 +59,66 @@ type OnEvent = Callable[[str, dict], None]
 type OnAction = Callable[[str, dict], None]
 
 _TAP_PAYLOAD_TYPE = "block_actions"
+
+
+@dataclass(slots=True)
+class DeliveredEvents:
+    events: dict[str, float] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    @staticmethod
+    def _key(event: dict) -> tuple[str, float] | None:
+        kind = event.get("type")
+        if kind == "reaction_added":
+            item = event.get("item")
+            if isinstance(item, dict):
+                channel, stamp = item.get("channel"), item.get("ts")
+                reaction, user = event.get("reaction"), event.get("user")
+                if all(isinstance(value, str) and value for value in (channel, stamp, reaction, user)):
+                    return f"reaction:{channel}:{stamp}:{reaction}:{user}", _event_seconds(stamp)
+            return None
+        if kind not in {"message", "app_mention"}:
+            return None
+        channel, stamp = event.get("channel"), event.get("ts")
+        if not isinstance(channel, str) or not channel or not isinstance(stamp, str) or not stamp:
+            return None
+        return f"{kind}:{channel}:{stamp}", _event_seconds(stamp)
+
+    def deliver_once(self, event: dict, deliver: Callable[[], bool]) -> bool:
+        pair = self._key(event)
+        if pair is None:
+            return deliver()
+        key, stamp = pair
+        with self._lock:
+            if key in self.events:
+                return False
+            delivered = deliver()
+            if delivered:
+                self.events[key] = stamp
+            return delivered
+
+    def prune(self, *, before: float) -> None:
+        with self._lock:
+            self.events = {key: stamp for key, stamp in self.events.items() if stamp >= before}
+
+    def update(self, values: Mapping[str, float]) -> None:
+        with self._lock:
+            self.events.update(values)
+
+    def as_mapping(self) -> dict[str, float]:
+        with self._lock:
+            return dict(self.events)
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, float]) -> "DeliveredEvents":
+        return cls(events=dict(values))
+
+
+def _event_seconds(value: str) -> float:
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
 
 
 def _data_dir() -> Path:
@@ -96,6 +156,14 @@ class QueuePaths:
         if event_type == "reaction_added":
             return self.reactions
         return self.events
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryContext:
+    queues: QueuePaths
+    identity: OwnSlackIdentity | None
+    on_event: OnEvent | None
+    seen: DeliveredEvents
 
 
 def _enqueue(path: Path, overlay: str, event: dict) -> None:
@@ -206,9 +274,7 @@ def deliver_event(
     overlay: str,
     event: dict,
     *,
-    queues: QueuePaths,
-    identity: OwnSlackIdentity | None,
-    on_event: OnEvent | None,
+    context: DeliveryContext,
 ) -> bool:
     """Queue one Slack event and fire *on_event* for it — the live and the replayed path alike.
 
@@ -220,12 +286,18 @@ def deliver_event(
     subtype = event.get("subtype", "")
     if subtype in {"bot_message", "message_changed", "message_deleted"}:
         return False
-    target = queues.for_event_type(event_type)
-    _enqueue(target, overlay, event)
-    logger.info("[%s] Queued %s event (ts=%s)", overlay, event_type, event.get("ts", "?"))
-    if on_event is None:
+
+    def enqueue() -> bool:
+        target = context.queues.for_event_type(event_type)
+        _enqueue(target, overlay, event)
         return True
-    if is_self_originated(event, identity):
+
+    if not context.seen.deliver_once(event, enqueue):
+        return False
+    logger.info("[%s] Queued %s event (ts=%s)", overlay, event_type, event.get("ts", "?"))
+    if context.on_event is None:
+        return True
+    if is_self_originated(event, context.identity):
         logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay, event.get("ts", "?"))
         return True
     # Best-effort event-driven record-then-wake so the answer cycle finds the
@@ -233,7 +305,7 @@ def deliver_event(
     # is the durable buffer, so a raising callback only costs latency — the
     # inbox drain still records the event.
     try:
-        on_event(overlay, event)
+        context.on_event(overlay, event)
     except Exception:
         logger.warning("[%s] slack-answer wake signal failed", overlay, exc_info=True)
     return True
@@ -245,10 +317,12 @@ class _LiveSocket(Protocol):
     def session_id(self) -> str | None: ...
 
 
-def _catch_up_once(overlay: str, alive_at: float, on_connect: OnConnect, liveness: ConnectionLiveness) -> None:
+def _catch_up_once(
+    overlay: str, alive_at: float, on_connect: OnConnect, liveness: ConnectionLiveness, seen: DeliveredEvents
+) -> None:
     started_at = time.time()
     try:
-        on_connect(overlay, alive_at)
+        on_connect(overlay, alive_at, seen)
     except Exception:
         logger.warning("[%s] Slack catch-up failed; retrying with backoff", overlay, exc_info=True)
         liveness.failed(time.time())
@@ -262,6 +336,7 @@ def _serve_until_stopped(
     stop_event: threading.Event,
     client: _LiveSocket,
     liveness: ConnectionLiveness,
+    seen: DeliveredEvents | None = None,
 ) -> None:
     """Idle until shutdown: run the catch-up a hello owes, then restamp the heartbeat on its cadence.
 
@@ -269,10 +344,11 @@ def _serve_until_stopped(
     live socket rather than to a process that is merely still running.
     """
     next_beat = 0.0
+    seen = seen or DeliveredEvents()
     while True:
         on_connect = liveness.on_connect
         if on_connect is not None and (alive_at := liveness.catch_up_due(time.time())) is not None:
-            _catch_up_once(overlay, alive_at, on_connect, liveness)
+            _catch_up_once(overlay, alive_at, on_connect, liveness, seen)
         if time.monotonic() >= next_beat and client.is_connected() and liveness.may_stamp(client.session_id()):
             liveness.stamped(write_heartbeat(overlay, liveness.heartbeat_path))
             next_beat = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
@@ -336,6 +412,7 @@ def _run_single_overlay(
     overlay_name, app_token, bot_token = overlay
     callbacks = callbacks or ListenerCallbacks()
     liveness = liveness or ConnectionLiveness()
+    seen = DeliveredEvents()
     try:
         from slack_sdk.socket_mode import SocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
         from slack_sdk.socket_mode.client import BaseSocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep
@@ -359,7 +436,11 @@ def _run_single_overlay(
         if req.type != "events_api":
             return
         event = (req.payload or {}).get("event", {})
-        deliver_event(overlay_name, event, queues=queues, identity=identity, on_event=callbacks.on_event)
+        deliver_event(
+            overlay_name,
+            event,
+            context=DeliveryContext(queues=queues, identity=identity, on_event=callbacks.on_event, seen=seen),
+        )
 
     def _on_message(_sm_client: BaseSocketModeClient, message: dict, _raw_message: str | None) -> None:
         if message.get("type") == "hello":
@@ -370,7 +451,7 @@ def _run_single_overlay(
     client.connect()
     logger.info("[%s] Socket Mode connected", overlay_name)
 
-    _serve_until_stopped(overlay=overlay_name, stop_event=stop_event, client=client, liveness=liveness)
+    _serve_until_stopped(overlay=overlay_name, stop_event=stop_event, client=client, liveness=liveness, seen=seen)
 
     client.close()
     logger.info("[%s] Socket Mode disconnected", overlay_name)

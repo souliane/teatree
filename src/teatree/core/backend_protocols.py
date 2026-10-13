@@ -612,14 +612,12 @@ class CIService(Protocol):
 class MessagingBackend(Protocol):
     """Messaging — mentions, DMs, posts, reactions, user lookup.
 
-    The single Protocol covers both inbound (fetch_mentions, fetch_dms) and
+    The single Protocol covers both inbound (fetch_mentions, fetch_reactions) and
     outbound (post_message, post_reply, react) concerns plus user-id
     resolution for routing.
     """
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 

@@ -452,8 +452,12 @@ graph TD
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
     teatree.loops --> teatree.loop.preset_resolution
+    teatree.loops --> teatree.loops.slack_catchup_job
     teatree.loops --> teatree.messaging
     teatree.loops --> teatree.utils
+    teatree.loops.slack_catchup_job --> teatree.slack_catchup
+    teatree.slack_catchup --> teatree.backends.slack
+    teatree.slack_catchup --> teatree.types
     teatree.overlay_sdk --> teatree.types
     teatree.overlay_sdk --> teatree.core
     teatree.overlay_sdk --> teatree.config
