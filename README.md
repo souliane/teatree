@@ -457,11 +457,14 @@ Simultaneously running Claude and Codex tasks on the same TeaTree worker and tic
 can exchange targeted messages through the `agent_mailbox_*` tools. TeaTree assigns
 each task its address and private Unix-socket identity; agents cannot join rooms or
 declare their own harness. `agent_mailbox_self` shows the task's address,
-`agent_mailbox_peers` discovers live peers, and `agent_mailbox_send` sends to one
-peer with an idempotency key. `agent_mailbox_inbox` and `agent_mailbox_wait` read
-messages in order. Delivery is live-only: there is no database queue, parked-task
-delivery, cross-worker delivery, or automatic idle-session wake-up. The MCP tools
-are absent outside TeaTree-managed tasks.
+`agent_mailbox_peers` discovers live peers, and `agent_mailbox_send` waits for
+one peer's MCP mailbox client to read and acknowledge a message. A send that is
+not acknowledged within 20 seconds fails explicitly; retrying the same key keeps
+the original message. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages
+in order. Acknowledgment means the destination mailbox client read the message,
+not that the model followed it. Delivery is live-only: there is no database queue,
+parked-task delivery, cross-worker delivery, or automatic idle-session wake-up.
+The MCP tools are absent outside TeaTree-managed tasks.
 
 #### Live control
 

@@ -250,8 +250,9 @@ def test_live_codex_threads_keep_distinct_mailbox_config_and_can_exchange(tmp_pa
             await asyncio.gather(*(session.start() for session in sessions))
             first = MailboxClient(identities[0].socket_path, identities[0].token)
             second = MailboxClient(identities[1].socket_path, identities[1].token)
-            await first.send(identities[1].address, "please review", "review-once")
-            inbox = await second.inbox()
+            sending = asyncio.create_task(first.send(identities[1].address, "please review", "review-once"))
+            inbox = await second.wait(timeout_seconds=2)
+            await sending
             assert inbox["messages"][0]["text"] == "please review"
             await asyncio.gather(*(session.close() for session in sessions))
             return sessions[0].model, sessions[1].model

@@ -22,7 +22,7 @@ TOOL_SEAMS = {"agent_mailbox_send": "LiveMailboxBroker._send — authenticated, 
 INSTRUCTIONS = (
     "- agent_mailbox_self(): your TeaTree-assigned address and harness.\n"
     "- agent_mailbox_peers(): other currently live TeaTree tasks on this ticket.\n"
-    "- agent_mailbox_send(to, text, key): send a targeted message; reuse key for a safe retry.\n"
+    "- agent_mailbox_send(to, text, key): wait for peer mailbox acceptance; reuse key for a safe retry.\n"
     "- agent_mailbox_inbox(after_id, limit): read your messages in order and advance the cursor.\n"
     "- agent_mailbox_wait(after_id, timeout_seconds): wait at most 20 seconds; idle sessions are not woken."
 )
@@ -79,18 +79,23 @@ class MailboxClient:
         """List currently live TeaTree tasks on this ticket."""
         return cast("list[dict[str, str]]", await self._request("peers"))
 
-    async def send(self, to: str, text: str, key: str) -> SendReceipt:
-        """Send one idempotent message to a live peer on this ticket."""
-        return cast("SendReceipt", await self._request("send", to=to, text=text, key=key))
+    async def send(self, to: str, text: str, key: str, *, timeout_seconds: float = 20) -> SendReceipt:
+        return cast(
+            "SendReceipt",
+            await self._request("send", to=to, text=text, key=key, timeout_seconds=timeout_seconds),
+        )
+
+    async def _read_and_ack(self, method: str, **arguments: object) -> InboxPage:
+        page = cast("InboxPage", await self._request(method, **arguments))
+        if page["messages"]:
+            await self._request("ack", ids=[row["id"] for row in page["messages"]])
+        return page
 
     async def inbox(self, *, after_id: int = 0, limit: int = 50) -> InboxPage:
-        """Read messages addressed to this task and retain next_cursor."""
-        return cast("InboxPage", await self._request("inbox", after_id=after_id, limit=limit))
+        return await self._read_and_ack("inbox", after_id=after_id, limit=limit)
 
     async def wait(self, *, after_id: int = 0, timeout_seconds: float = 20) -> InboxPage:
-        """Wait briefly for mail without waking an idle or parked task."""
-        result = await self._request("wait", after_id=after_id, timeout_seconds=timeout_seconds)
-        return cast("InboxPage", result)
+        return await self._read_and_ack("wait", after_id=after_id, timeout_seconds=timeout_seconds)
 
 
 def register(server: MCPServer) -> bool:

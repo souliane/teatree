@@ -17,7 +17,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_mailbox import LiveMailboxBroker, bound_task_mailbox, reset_shared_brokers, shared_broker
-from teatree.mcp.agent_mailbox import InboxPage, MailboxClient
+from teatree.mcp.agent_mailbox import InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
 from tests.teatree_mcp._call_tool_result import structured
 
@@ -53,8 +53,13 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
 
     peers = invoke(first_client, "peers")
     assert {peer["address"] for peer in peers} == {second.address}
-    sent = invoke(first_client, "send", to=second.address, text="Review this", key="review-1")
-    inbox = invoke(second_client, "inbox", after_id=0)
+
+    async def exchange() -> tuple[SendReceipt, InboxPage]:
+        sending = asyncio.create_task(first_client.send(second.address, "Review this", "review-1"))
+        inbox = await second_client.wait(timeout_seconds=2)
+        return await sending, inbox
+
+    sent, inbox = asyncio.run(exchange())
 
     assert inbox["messages"] == [
         {
@@ -66,6 +71,67 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
         }
     ]
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
+
+
+def test_send_is_acknowledged_only_after_the_recipient_reads(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+    recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+
+    async def exchange() -> tuple[bool, SendReceipt]:
+        delivery = asyncio.create_task(sender_client.send(recipient.address, "review", "ack-1"))
+        await asyncio.sleep(0.05)
+        before_read = delivery.done()
+        await recipient_client.inbox()
+        receipt = await asyncio.wait_for(delivery, timeout=1)
+        return before_read, receipt
+
+    before_read, receipt = asyncio.run(exchange())
+    assert before_read is False
+    assert receipt["accepted"] is True
+
+
+def test_send_times_out_explicitly_without_a_recipient_read(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    with pytest.raises(ToolError, match="not accepted in time"):
+        asyncio.run(client.send(recipient.address, "review", "ack-timeout", timeout_seconds=0.05))
+
+
+def test_timed_out_send_can_retry_without_a_second_message(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+    recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+
+    async def exchange() -> tuple[SendReceipt, InboxPage]:
+        with pytest.raises(ToolError, match="not accepted in time"):
+            await sender_client.send(recipient.address, "review", "once", timeout_seconds=0.05)
+        retry = asyncio.create_task(sender_client.send(recipient.address, "review", "once", timeout_seconds=1))
+        page = await recipient_client.inbox()
+        return await retry, page
+
+    receipt, page = asyncio.run(exchange())
+    assert [row["id"] for row in page["messages"]] == [receipt["id"]]
+    assert receipt["accepted"] is True
+
+
+def test_recipient_disconnect_refuses_a_pending_send(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+
+    async def exchange() -> None:
+        sending = asyncio.create_task(sender_client.send(recipient.address, "review", "disconnect", timeout_seconds=1))
+        await asyncio.sleep(0.05)
+        broker.unregister(recipient.address)
+        with pytest.raises(ToolError, match="recipient disconnected"):
+            await sending
+
+    asyncio.run(exchange())
 
 
 def test_identity_and_room_are_owned_by_runner(broker: LiveMailboxBroker) -> None:
@@ -85,7 +151,12 @@ def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
     recipient = broker.register(room="ticket", harness="codex", label="coder")
     client = MailboxClient(sender.socket_path, sender.token)
 
-    first = invoke(client, "send", to=recipient.address, text="ping", key="once")
+    async def exchange() -> SendReceipt:
+        sending = asyncio.create_task(client.send(recipient.address, "ping", "once"))
+        await MailboxClient(recipient.socket_path, recipient.token).wait(timeout_seconds=2)
+        return await sending
+
+    first = asyncio.run(exchange())
     assert invoke(client, "send", to=recipient.address, text="ping", key="once") == first
     with pytest.raises(ToolError, match="already used"):
         invoke(client, "send", to=recipient.address, text="changed", key="once")
@@ -123,7 +194,7 @@ def test_revoked_sender_cannot_send_after_token_lookup(broker: LiveMailboxBroker
     broker.unregister(sender.address)
 
     with pytest.raises(ValueError, match="Invalid mailbox identity"):
-        broker._send(captured, {"to": recipient.address, "text": "late", "key": "late"})
+        asyncio.run(broker._send(captured, {"to": recipient.address, "text": "late", "key": "late"}))
 
 
 def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBroker) -> None:
@@ -179,10 +250,16 @@ def test_interleaved_room_mail_does_not_report_false_truncation(broker: LiveMail
     first = broker.register(room="ticket", harness="codex", label="first")
     second = broker.register(room="ticket", harness="codex", label="second")
     client = MailboxClient(sender.socket_path, sender.token)
-    invoke(client, "send", to=first.address, text="one", key="one")
-    invoke(client, "send", to=second.address, text="two", key="two")
 
-    inbox = invoke(MailboxClient(second.socket_path, second.token), "inbox", after_id=0)
+    async def exchange() -> InboxPage:
+        one = asyncio.create_task(client.send(first.address, "one", "one"))
+        two = asyncio.create_task(client.send(second.address, "two", "two"))
+        await MailboxClient(first.socket_path, first.token).wait(timeout_seconds=2)
+        inbox = await MailboxClient(second.socket_path, second.token).wait(timeout_seconds=2)
+        await asyncio.gather(one, two)
+        return inbox
+
+    inbox = asyncio.run(exchange())
 
     assert inbox["messages"][0]["text"] == "two"
     assert inbox["truncated"] is False
@@ -194,10 +271,19 @@ def test_inbox_can_return_a_page_of_large_but_valid_messages(broker: LiveMailbox
     sender_client = MailboxClient(sender.socket_path, sender.token)
     recipient_client = MailboxClient(recipient.socket_path, recipient.token)
     body = "x" * 16_000
-    for index in range(5):
-        invoke(sender_client, "send", to=recipient.address, text=body, key=f"large-{index}")
 
-    inbox = invoke(recipient_client, "inbox")
+    async def exchange() -> InboxPage:
+        sends = [
+            asyncio.create_task(sender_client.send(recipient.address, body, f"large-{index}")) for index in range(5)
+        ]
+        cursor = 0
+        while cursor < 5:
+            page = await recipient_client.wait(after_id=cursor, timeout_seconds=2)
+            cursor = page["next_cursor"]
+        await asyncio.gather(*sends)
+        return await recipient_client.inbox()
+
+    inbox = asyncio.run(exchange())
     assert len(inbox["messages"]) == 5
     assert all(message["text"] == body for message in inbox["messages"])
 
@@ -209,9 +295,13 @@ def test_escaped_body_within_byte_limit_is_delivered(broker: LiveMailboxBroker) 
     recipient_client = MailboxClient(recipient.socket_path, recipient.token)
     body = "\x00" * 16_384
 
-    invoke(sender_client, "send", to=recipient.address, text=body, key="escaped")
+    async def exchange() -> InboxPage:
+        sending = asyncio.create_task(sender_client.send(recipient.address, body, "escaped"))
+        page = await recipient_client.wait(timeout_seconds=2)
+        await sending
+        return page
 
-    assert invoke(recipient_client, "inbox")["messages"][0]["text"] == body
+    assert asyncio.run(exchange())["messages"][0]["text"] == body
 
 
 def test_escaped_mailbox_pages_stay_within_transport_limit(broker: LiveMailboxBroker) -> None:
@@ -222,15 +312,17 @@ def test_escaped_mailbox_pages_stay_within_transport_limit(broker: LiveMailboxBr
     body = "\x00" * 16_384
 
     async def exchange() -> list[str]:
-        for index in range(100):
-            await sender_client.send(recipient.address, body, f"escaped-{index}")
+        sends = [
+            asyncio.create_task(sender_client.send(recipient.address, body, f"escaped-{index}")) for index in range(100)
+        ]
         texts: list[str] = []
         cursor = 0
         while len(texts) < 100:
-            page = await recipient_client.inbox(after_id=cursor, limit=100)
+            page = await recipient_client.wait(after_id=cursor, timeout_seconds=2)
             assert page["messages"]
             texts.extend(message["text"] for message in page["messages"])
             cursor = page["next_cursor"]
+        await asyncio.gather(*sends)
         return texts
 
     assert asyncio.run(exchange()) == [body] * 100
@@ -258,11 +350,13 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
             ClientSession(codex_read, codex_write) as codex_session,
         ):
             await asyncio.gather(claude_session.initialize(), codex_session.initialize())
-            sent = await claude_session.call_tool(
-                "agent_mailbox_send",
-                {"to": codex.address, "text": "please review", "key": "stdio-once"},
+            sent, inbox = await asyncio.gather(
+                claude_session.call_tool(
+                    "agent_mailbox_send",
+                    {"to": codex.address, "text": "please review", "key": "stdio-once"},
+                ),
+                codex_session.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 2}),
             )
-            inbox = await codex_session.call_tool("agent_mailbox_inbox", {"after_id": 0})
             return cast("dict[str, Any]", structured(sent)), cast("dict[str, Any]", structured(inbox))
 
     sent, inbox = asyncio.run(exchange())

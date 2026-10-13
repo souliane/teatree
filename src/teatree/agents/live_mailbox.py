@@ -54,10 +54,25 @@ class InboxPage(TypedDict):
 class SendReceipt(TypedDict):
     id: int
     to: str
+    accepted: bool
 
 
 def _reject(message: str) -> NoReturn:
     raise ValueError(message)
+
+
+def _send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:
+    to, body, key = request.get("to"), request.get("text"), request.get("key")
+    timeout = request.get("timeout_seconds", _MAX_WAIT_SECONDS)
+    if not isinstance(to, str) or not isinstance(body, str) or not isinstance(key, str):
+        _reject("Mailbox send requires to, text, and key strings")
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= _MAX_WAIT_SECONDS:
+        _reject("Mailbox acceptance timeout must be between 0 and 20 seconds")
+    if not key or len(key.encode()) > _MAX_KEY_BYTES:
+        _reject("Mailbox key must be 1-128 bytes")
+    if not body or len(body.encode()) > _MAX_BODY_BYTES:
+        _reject("Mailbox text must be 1-16384 bytes")
+    return to, body, key, float(timeout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +128,7 @@ class LiveMailboxBroker:
         self._by_token: dict[str, _Participant] = {}
         self._by_address: dict[str, _Participant] = {}
         self._next_message_id = 0
+        self._delivery: dict[int, asyncio.Future[str]] = {}
 
     @property
     def socket_path(self) -> Path:
@@ -154,6 +170,7 @@ class LiveMailboxBroker:
         with self._lock:
             self._by_token.clear()
             self._by_address.clear()
+            self._delivery.clear()
         self._thread = None
         self._loop = None
         self._stop = None
@@ -178,8 +195,26 @@ class LiveMailboxBroker:
     def unregister(self, address: str) -> None:
         with self._lock:
             participant = self._by_address.pop(address, None)
-            if participant is not None:
-                self._by_token.pop(participant.token, None)
+            if participant is None:
+                return
+            self._by_token.pop(participant.token, None)
+            recipient_ids = [row["id"] for row in participant.inbox]
+            sender_ids = [record[2] for record in participant.sent.values()]
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._settle_many, recipient_ids, "recipient disconnected")
+            loop.call_soon_threadsafe(self._retire_sender, sender_ids)
+
+    def _settle_many(self, ids: list[int], outcome: str) -> None:
+        for message_id in ids:
+            future = self._delivery.get(message_id)
+            if future is not None and not future.done():
+                future.set_result(outcome)
+
+    def _retire_sender(self, ids: list[int]) -> None:
+        self._settle_many(ids, "sender disconnected")
+        for message_id in ids:
+            self._delivery.pop(message_id, None)
 
     def _run(self) -> None:
         try:
@@ -241,7 +276,9 @@ class LiveMailboxBroker:
         if method == "peers":
             return self._peers(participant)
         if method == "send":
-            return self._send(participant, request)
+            return await self._send(participant, request)
+        if method == "ack":
+            return self._ack(participant, request)
         if method == "inbox":
             return self._inbox(participant, request)
         if method == "wait":
@@ -269,43 +306,66 @@ class LiveMailboxBroker:
                 if peer.room == participant.room and peer.address != participant.address
             ]
 
-    def _send(self, participant: _Participant, request: MailboxRequest) -> SendReceipt:
-        to, body, key = request.get("to"), request.get("text"), request.get("key")
-        if not isinstance(to, str) or not isinstance(body, str) or not isinstance(key, str):
-            _reject("Mailbox send requires to, text, and key strings")
-        if not key or len(key.encode()) > _MAX_KEY_BYTES:
-            _reject("Mailbox key must be 1-128 bytes")
-        if not body or len(body.encode()) > _MAX_BODY_BYTES:
-            _reject("Mailbox text must be 1-16384 bytes")
+    async def _send(self, participant: _Participant, request: MailboxRequest) -> SendReceipt:
+        to, body, key, timeout = _send_fields(request)
         with self._lock:
             self._require_active(participant)
             prior = participant.sent.get(key)
             if prior is not None:
                 if prior[:2] != (to, body):
                     _reject("Mailbox key already used for another message")
-                return {"id": prior[2], "to": to}
-            if len(participant.sent) >= _MAX_SENT_KEYS:
-                _reject("Mailbox send limit reached for this task")
-            recipient = self._by_address.get(to)
-            if recipient is None:
-                _reject("Mailbox recipient is not active")
-            if recipient.room != participant.room:
-                _reject("Mailbox recipient is outside this room")
-            self._next_message_id += 1
-            message_id = self._next_message_id
-            if len(recipient.inbox) == _MAX_INBOX_MESSAGES:
-                recipient.dropped_before = recipient.inbox[0]["id"]
-            recipient.inbox.append(
-                {
-                    "id": message_id,
-                    "from": participant.address,
-                    "from_harness": participant.harness,
-                    "from_label": participant.label,
-                    "text": body,
-                }
+                message_id = prior[2]
+                future = self._delivery[message_id]
+            else:
+                if len(participant.sent) >= _MAX_SENT_KEYS:
+                    _reject("Mailbox send limit reached for this task")
+                recipient = self._by_address.get(to)
+                if recipient is None:
+                    _reject("Mailbox recipient is not active")
+                if recipient.room != participant.room:
+                    _reject("Mailbox recipient is outside this room")
+                self._next_message_id += 1
+                message_id = self._next_message_id
+                if len(recipient.inbox) == _MAX_INBOX_MESSAGES:
+                    self._settle_many([recipient.inbox[0]["id"]], "dropped before read")
+                    recipient.dropped_before = recipient.inbox[0]["id"]
+                recipient.inbox.append(
+                    {
+                        "id": message_id,
+                        "from": participant.address,
+                        "from_harness": participant.harness,
+                        "from_label": participant.label,
+                        "text": body,
+                    }
+                )
+                participant.sent[key] = (to, body, message_id)
+                future = asyncio.get_running_loop().create_future()
+                self._delivery[message_id] = future
+        try:
+            outcome = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except TimeoutError:
+            _reject("Mailbox message was not accepted in time")
+        if outcome != "accepted":
+            _reject(f"Mailbox message was not accepted: {outcome}")
+        return {"id": message_id, "to": to, "accepted": True}
+
+    def _ack(self, participant: _Participant, request: MailboxRequest) -> bool:
+        ids = request.get("ids")
+        if (
+            not isinstance(ids, list)
+            or len(ids) > _MAX_PAGE_SIZE
+            or any(
+                not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0 for message_id in ids
             )
-            participant.sent[key] = (to, body, message_id)
-            return {"id": message_id, "to": to}
+        ):
+            _reject("Mailbox acknowledgement needs up to 100 positive message IDs")
+        with self._lock:
+            self._require_active(participant)
+            owned = {row["id"] for row in participant.inbox}
+            if not set(ids) <= owned:
+                _reject("Mailbox acknowledgement is outside this inbox")
+            self._settle_many(ids, "accepted")
+        return True
 
     def _inbox(self, participant: _Participant, request: MailboxRequest) -> InboxPage:
         after_id, limit = request.get("after_id", 0), request.get("limit", 50)

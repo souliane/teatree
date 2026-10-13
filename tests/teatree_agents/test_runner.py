@@ -1849,8 +1849,9 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "isolated-config.sqlite3"))
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()
