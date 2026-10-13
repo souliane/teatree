@@ -112,7 +112,7 @@ def _advance_with(ticket: Ticket, make_artifact: "Callable[[], PlanArtifact]") -
         with transaction.atomic():
             artifact = make_artifact()
             if ticket.state == Ticket.State.WORK_STARTED:
-                ticket.plan()
+                ticket.plan(schedule_followup=False)
                 ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
         raise PlanAdvanceError(ticket, str(exc)) from exc
@@ -134,7 +134,7 @@ def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> 
         with transaction.atomic():
             mark_trivial_plan_skip(ticket, reason=reason, by=by)
             if ticket.state == Ticket.State.WORK_STARTED:
-                ticket.plan()
+                ticket.plan(schedule_followup=False)
                 ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
         raise PlanAdvanceError(ticket, str(exc)) from exc
@@ -164,7 +164,7 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
                     plan_text=f"[audited bypass by {authorizer}] {reason}",
                     recorded_by=authorizer,
                 )
-                ticket.plan()
+                ticket.plan(schedule_followup=False)
                 ticket.save()
             log.append(f"  ticket {ticket.pk}: WORK_STARTED → PLAN_RECORDED (bypass recorded)")
             bypassed += 1

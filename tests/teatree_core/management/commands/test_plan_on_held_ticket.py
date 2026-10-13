@@ -16,7 +16,10 @@ from typing import cast
 
 from django.test import TestCase
 
-from teatree.core.management.commands._plan_gate_commands import record_artifact_and_advance
+from teatree.core.management.commands._plan_gate_commands import (
+    record_artifact_and_advance,
+    record_trivial_skip_and_advance,
+)
 from teatree.core.models import Ticket
 from teatree.core.models.plan_artifact import PlanArtifact
 from tests.factories import TEST_ADEQUACY, TicketFactory
@@ -56,3 +59,30 @@ class PlanOnHeldTicket(TestCase):
                 ticket = _record(state)
                 ticket.refresh_from_db()
                 assert ticket.state == state
+
+
+class HandRecordedPlanDoesNotStartAFactoryWriter(TestCase):
+    def test_hand_plan_advances_without_minting_coding(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED, role=Ticket.Role.AUTHOR)
+
+        record_artifact_and_advance(
+            ticket=ticket,
+            plan_text="plan the change",
+            recorded_by="operator",
+            base_sha=_FORTY_HEX,
+            adequacy=TEST_ADEQUACY,
+        )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert PlanArtifact.objects.filter(ticket=ticket).exists()
+        assert not ticket.tasks.filter(phase="coding").exists()
+
+    def test_hand_skip_advances_without_minting_coding(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED, role=Ticket.Role.AUTHOR)
+
+        record_trivial_skip_and_advance(ticket=ticket, reason="one-line edit", by="operator")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert not ticket.tasks.filter(phase="coding").exists()

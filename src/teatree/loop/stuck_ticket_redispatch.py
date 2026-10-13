@@ -177,6 +177,8 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         phase = _implied_phase(ticket)
         if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
             continue
+        if phase == "coding" and ticket.has_merge_safe_self_review_after_plan():
+            continue
         failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))

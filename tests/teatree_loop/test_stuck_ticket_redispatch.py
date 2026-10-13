@@ -11,6 +11,8 @@ when the budget is exhausted — so a stuck ticket is drained or surfaced, never
 """
 
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -28,7 +30,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     REVIEW_UNRECORDABLE_PREFIX,
     FailureKind,
 )
-from teatree.core.models import Mode, PlanArtifact, PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import Mode, PlanArtifact, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -42,6 +44,7 @@ from teatree.loop.stuck_ticket_redispatch import (
     redispatch_stuck_tickets,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
+from teatree.utils.git_run import run_strict
 from tests._pr_open_state_stub import pr_open_state
 from tests.factories import record_test_plan
 
@@ -1022,6 +1025,48 @@ class TestOperatorCancelledTickets(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
+
+class TestCompletedReviewNoCoding(TestCase):
+    def test_merge_safe_at_head_after_plan_blocks_generic_coding(self) -> None:
+        with TemporaryDirectory() as checkout:
+            repo = Path(checkout)
+
+            def git(*args: str) -> str:
+                return run_strict(repo=str(repo), args=list(args))
+
+            git("init", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            (repo / "work.txt").write_text("base\n")
+            git("add", "work.txt")
+            git("commit", "-m", "base")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay=ticket.overlay,
+                repo_path="test/repo",
+                branch="main",
+                extra={"worktree_path": str(repo)},
+            )
+            _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+            for index in range(3):
+                (repo / "work.txt").write_text(f"change {index}\n")
+                git("add", "work.txt")
+                git("commit", "-m", f"change {index}")
+            assert git("rev-list", "--count", "origin/main..HEAD") == "3"
+            review = _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED)
+            review.attempts.update(
+                result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": git("rev-parse", "HEAD")}}
+            )
+
+            assert redispatch_stuck_tickets() == 0
+            assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+            (repo / "work.txt").write_text("change after review\n")
+            git("add", "work.txt")
+            git("commit", "-m", "change after review")
+            assert redispatch_stuck_tickets() == 1
 
 
 class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):
