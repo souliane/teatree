@@ -1246,6 +1246,7 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
                 return_value=("chore: unrelated subject (#298)", "Body."),
             ),
             patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+            patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40),
         ):
             ShipExecutor(ticket).run()
         return host.create_pr.call_args[0][0]
@@ -1264,7 +1265,15 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         assert title == "chore: unrelated subject (#298)"
 
     def test_recorded_visual_qa_is_in_the_shipped_pr_body(self) -> None:
-        ticket = self._ticket_with_extra({"visual_qa": {"report_markdown": "## Visual QA\n\nChecked 12 of 12 pages."}})
+        ticket = self._ticket_with_extra(
+            {
+                "visual_qa": {
+                    "repo_path": "/tmp/repo298",
+                    "head_sha": "a" * 40,
+                    "report_markdown": "## Visual QA\n\nChecked 12 of 12 pages.",
+                }
+            }
+        )
 
         spec = self._capture_pr_spec(ticket)
 

@@ -402,12 +402,19 @@ class TestVisualQAInPrBody(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             state=Ticket.State.SELF_REVIEWED,
-            extra={"visual_qa": {"report_markdown": "## Visual QA\n\nBypass: docs only; head: abc123"}},
+            extra={
+                "visual_qa": {
+                    "repo_path": "/tmp/backend",
+                    "head_sha": "a" * 40,
+                    "report_markdown": "## Visual QA\n\nBypass: docs only; head: abc123",
+                }
+            },
         )
         worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feat")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(_pr_preview.git, "last_commit_message", return_value=("feat: example", "## What\nChange.")),
+            patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40),
         ):
             _, _, description = ship_preview(ticket, worktree)
         assert "## Visual QA\n\nBypass: docs only; head: abc123" in description

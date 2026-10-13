@@ -468,6 +468,9 @@ graph TD
     teatree.visual_qa --> teatree.browser
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
+    teatree.visual_qa --> teatree.visual_qa_server
+    teatree.visual_qa_server --> teatree.types
+    teatree.visual_qa_server --> teatree.utils
     teatree.on_behalf_gate --> teatree.config
     teatree.messaging --> teatree.core
     teatree.messaging --> teatree.core.modelkit

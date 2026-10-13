@@ -142,7 +142,7 @@ def _python_env_ready(repo: Path) -> bool:
     return True
 
 
-def _sync_dependencies_step(repo: Path) -> ProvisionStep:
+def _sync_dependencies_step(repo: Path, *, frozen: bool = False) -> ProvisionStep:
     """The ``uv sync`` step, shared by provisioning and by the test run's prerequisites.
 
     ``subprocess_only`` because it is a pure shellout that touches no ORM, so the
@@ -157,7 +157,7 @@ def _sync_dependencies_step(repo: Path) -> ProvisionStep:
                 venv.unlink()
             else:
                 shutil.rmtree(venv)
-        run_checked(["uv", "sync"], cwd=repo)
+        run_checked(["uv", "sync", *(["--frozen"] if frozen else [])], cwd=repo)
 
     def python_env_ready() -> bool:
         return _python_env_ready(repo)
@@ -176,7 +176,7 @@ class TeatreeRuntime(OverlayRuntime):
     @override
     def visual_qa_server(self, worktree: "Worktree") -> RunCommand:
         return RunCommand(
-            args=["uv", "run", "python", "e2e/dash/serve.py"],
+            args=["uv", "run", "--no-sync", "python", "e2e/dash/serve.py"],
             cwd=Path(worktree.worktree_path or worktree.repo_path),
             env={"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"},
         )
@@ -198,6 +198,8 @@ class TeatreeRuntime(OverlayRuntime):
         if service not in {"tests", "visual_qa"} or not on_disk:
             return []
         repo = Path(on_disk)
+        if service == "visual_qa":
+            return [_sync_dependencies_step(repo, frozen=True)]
         return [] if _python_env_ready(repo) else [_sync_dependencies_step(repo)]
 
     @override

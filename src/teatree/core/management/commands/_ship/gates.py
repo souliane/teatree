@@ -12,6 +12,7 @@ seams keep resolving against ``pr``'s namespace).
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TypedDict
 
 from teatree import visual_qa
@@ -269,26 +270,15 @@ def _visual_qa_verdict(report: visual_qa.VisualQAReport) -> Verdict:
         return Refuse(f"Visual QA found {report.total_errors} blocking finding(s).")
     if report.not_run_reason:
         return Unknown(f"the check could not run ({report.not_run_reason})")
+    if report.server_failure:
+        return Unknown(f"the checkout server failed ({report.server_failure})")
     if report.unchecked:
         return Unknown(", ".join(f"{path}: {reason}" for path, reason in report.unchecked_reasons.items()))
     return Pass()
 
 
 def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str = "") -> VisualQAGateFailure | None:
-    """Run the pre-push browser sanity gate before PR creation.
-
-    Records a JSON summary on ``ticket.extra['visual_qa']`` when pages were
-    checked or the gate blocks, so the result survives in the FSM history.
-    Returns an error dict on findings AND when the check did not run (the
-    diff was unreadable, the browser could not start, the budget ran out),
-    or ``None`` when it passed or was explicitly skipped.
-
-    #776 N1: the worktree is the one the caller already resolved and is about to
-    ship, handed down like every sibling gate takes it, so visual QA scans the
-    invoking workstream's repo. Re-resolving here instead re-read a hint
-    ``resolve_and_reconcile_branch`` may have just invalidated — on a multi-repo
-    ticket that raised out of the ``manage.py`` subprocess as a bare ``rc=1``.
-    """
+    """Judge the invoking worktree and replace its recorded Visual QA result."""
     repo_path = worktree.worktree_path or worktree.repo_path
     overlay = get_overlay()
     result = evaluate_gate(
@@ -309,17 +299,21 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
         judge=_visual_qa_verdict,
     )
     report = result.evidence
-
-    # Only persist when the gate produced a meaningful signal — skipping a
-    # no-op run keeps the FSM history readable.
-    if report is not None and (report.pages or report.has_errors or report.not_run_reason or skip_reason):
-        # #800 N3: canonical locked RMW — concurrent pr_urls (ship
-        # worker) writer no longer clobbers visual_qa.
+    if report is None and skip_reason:
+        cause = result.verdict.cause if isinstance(result.verdict, Unknown) else result.render()
+        report = visual_qa.VisualQAReport(targets=[], not_run_reason=cause, skipped_reason=f"--skip: {skip_reason}")
+    if report is not None:
         summary = report.summary()
+        try:
+            head_sha = git.head_sha(repo=repo_path) or "unavailable"
+        except (CommandFailedError, OSError):
+            head_sha = "unavailable"
+        summary["repo_path"] = str(Path(repo_path).resolve())
+        summary["head_sha"] = head_sha
         if skip_reason:
             summary["bypass"] = {
                 "reason": skip_reason,
-                "head_sha": git.head_sha(repo=repo_path),
+                "head_sha": head_sha,
                 "at": datetime.now(UTC).isoformat(),
             }
             summary["report_markdown"] += (
@@ -327,7 +321,7 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
             )
         ticket.merge_extra(set_keys={"visual_qa": summary})
 
-    if result.passed:
+    if result.passed or skip_reason:
         return None
     return VisualQAGateFailure(
         allowed=False,

@@ -51,5 +51,5 @@ def spawn_detached_worker() -> bool:
     # Truncating open: the parent's handle is closed right after the fork dups it into
     # the child, so the file holds this worker's output alone.
     with SPAWN_LOG_PATH.open("w", encoding="utf-8") as spawn_log:
-        spawn_session_leader([t3_bin, "worker"], streams=(DEVNULL, spawn_log))
+        spawn_session_leader([t3_bin, "worker"], stdout=DEVNULL, stderr=spawn_log)
     return True

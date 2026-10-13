@@ -223,7 +223,7 @@ class BrowserSession:
         shutil.rmtree(self.files.profile, ignore_errors=True)
         with self.files.log.open("ab") as log:
             launcher = [sys.executable, "-m", "teatree.browser.keeper", str(self.files.root)]
-            exit_code = spawn_session_leader(launcher, streams=(log, log)).wait()
+            exit_code = spawn_session_leader(launcher, stdout=log, stderr=log).wait()
         if exit_code != 0:
             msg = f"the browser keeper could not start (exit {exit_code}); see {self.files.log}"
             raise BrowserUnavailableError(msg)

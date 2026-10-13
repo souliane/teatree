@@ -15,8 +15,10 @@ import teatree
 
 def main() -> None:
     repo = Path(__file__).resolve().parents[2]
-    if Path(teatree.__file__).resolve().parent != (repo / "src" / "teatree").resolve():
-        message = "teatree is not imported from the checkout under test"
+    imported = Path(teatree.__file__).resolve().parent
+    expected = (repo / "src" / "teatree").resolve()
+    if imported != expected:
+        message = f"teatree imported from {imported}; expected checkout at {expected}"
         raise SystemExit(message)
     if os.environ.get("DJANGO_SETTINGS_MODULE") != "e2e.dash.settings":
         message = "visual QA requires e2e.dash.settings"

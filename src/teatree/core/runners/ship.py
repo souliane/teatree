@@ -581,7 +581,7 @@ class ShipExecutor(RunnerBase):
             required_sections=overlay.metadata.get_required_description_sections(),
             section_defaults=overlay.metadata.get_description_section_defaults(),
         )
-        description = append_recorded_visual_qa(description, extra.get("visual_qa"))
+        description = append_recorded_visual_qa(description, extra.get("visual_qa"), repo_path=repo_path)
         description = apply_publish_gate(
             description,
             repo=git.remote_slug(repo=repo_path),

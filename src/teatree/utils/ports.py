@@ -125,7 +125,7 @@ def get_service_port(
         cmd.extend(["-f", compose_file])
     cmd.extend(["port", service, str(container_port)])
 
-    result = run_allowed_to_fail(cmd, expected_codes=None)
+    result = run_allowed_to_fail(cmd, expected_codes=None, timeout=5)
     if result.returncode != 0:
         return None
     output = result.stdout.strip() if isinstance(result.stdout, str) else ""

@@ -334,15 +334,15 @@ def spawn_session_leader(
     *,
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
-    stdin: int | IO[str] | None = DEVNULL,
-    streams: tuple[int | IO[bytes] | IO[str] | None, int | IO[bytes] | IO[str] | None] = (None, None),
+    stdout: int | IO[bytes] | IO[str] | None = None,
+    stderr: int | IO[bytes] | IO[str] | None = None,
 ) -> Popen[str]:
     """Spawn a background process that LEADS its own process group.
 
     ``start_new_session=True`` makes the child a session/group leader, so the
     caller can ``os.killpg(os.getpgid(proc.pid), …)`` the WHOLE group (the child
     plus any grandchildren it spawns) on a deadline — an OS-level kill boundary a
-    plain :func:`spawn` cannot give. ``stdin`` defaults to ``DEVNULL`` so a detached
+    plain :func:`spawn` cannot give. ``stdin`` is always ``DEVNULL`` so a detached
     process cannot block on the parent's input. ``env``
     replaces the child's environment when given (pass ``{**os.environ, …}`` to extend).
     """
@@ -350,9 +350,9 @@ def spawn_session_leader(
         list(cmd),
         env=env,
         cwd=str(cwd) if cwd is not None else None,
-        stdin=stdin,
-        stdout=streams[0],
-        stderr=streams[1],
+        stdin=DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
         start_new_session=True,
         text=True,
     )

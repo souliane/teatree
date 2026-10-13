@@ -49,6 +49,16 @@ class TestCheckShippingGate(TestCase):
 
 
 class TestLiveVisualQAUrl(TestCase):
+    def test_an_unrelated_4200_listener_is_not_this_branches_server(self) -> None:
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt", branch="feat")
+        with (
+            patch("teatree.core.management.commands._e2e_resolvers._discover_frontend_port", return_value=4200),
+            patch("teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=None),
+            pytest.raises(RuntimeError, match="no server for this branch"),
+        ):
+            resolve_visual_qa_base_url(worktree)
+
     def test_local_listener_stays_in_the_browser_namespace(self) -> None:
         ticket = Ticket.objects.create()
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt", branch="feat")
@@ -56,8 +66,28 @@ class TestLiveVisualQAUrl(TestCase):
             listener.bind(("127.0.0.1", 0))
             listener.listen()
             port = listener.getsockname()[1]
-            with patch("teatree.core.management.commands._e2e_resolvers._discover_frontend_port", return_value=port):
+            with patch(
+                "teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=port
+            ):
                 assert resolve_visual_qa_base_url(worktree) == f"http://127.0.0.1:{port}"
+
+    def test_ipv6_only_listener_uses_ipv6_url(self) -> None:
+        if not socket.has_ipv6:
+            self.skipTest("no IPv6 support")
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt", branch="feat")
+        try:
+            listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            listener.bind(("::1", 0))
+            listener.listen()
+        except OSError:
+            self.skipTest("no IPv6 loopback")
+        with listener:
+            port = listener.getsockname()[1]
+            with patch(
+                "teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=port
+            ):
+                assert resolve_visual_qa_base_url(worktree) == f"http://[::1]:{port}"
 
     def test_discovers_the_live_port_in_the_browser_venue(self) -> None:
         ticket = Ticket.objects.create()
@@ -65,8 +95,8 @@ class TestLiveVisualQAUrl(TestCase):
             ticket=ticket, repo_path="/tmp/wt", branch="feat", extra={"urls": {"frontend": "http://wrong:8000"}}
         )
         with (
-            patch("teatree.core.management.commands._e2e_resolvers._discover_frontend_port", return_value=4201),
-            patch("teatree.core.management.commands._e2e_resolvers._disc.detect_local_port", return_value=None),
+            patch("teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=4201),
+            patch("teatree.core.management.commands._e2e_resolvers._disc.detect_local_address", return_value=None),
             patch(
                 "teatree.core.management.commands._e2e_resolvers.host_published_port_host",
                 return_value="host.docker.internal",
@@ -78,8 +108,8 @@ class TestLiveVisualQAUrl(TestCase):
         ticket = Ticket.objects.create()
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt", branch="feat")
         with (
-            patch("teatree.core.management.commands._e2e_resolvers._discover_frontend_port", return_value=None),
-            pytest.raises(RuntimeError),
+            patch("teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=None),
+            pytest.raises(RuntimeError, match="no server for this branch"),
         ):
             resolve_visual_qa_base_url(worktree)
 
@@ -101,7 +131,9 @@ def _playwright_unavailable(*_args: object, **_kwargs: object) -> list[visual_qa
 
 class TestRunVisualQAGate(TestCase):
     def setUp(self) -> None:
-        live_port = patch("teatree.core.management.commands._e2e_resolvers._discover_frontend_port", return_value=8000)
+        live_port = patch(
+            "teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=8000
+        )
         host = patch(
             "teatree.core.management.commands._e2e_resolvers.host_published_port_host", return_value="127.0.0.1"
         )
@@ -145,6 +177,42 @@ class TestRunVisualQAGate(TestCase):
         assert result is not None
         assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
         assert "/b" in result["error"]
+
+    def test_a_no_target_rerun_replaces_a_failing_report(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        ticket.merge_extra(set_keys={"visual_qa": {"report_markdown": "## Visual QA\n\n:x: old failure"}})
+        clean = visual_qa.VisualQAReport(targets=[], skipped_reason="no frontend changes")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=clean),
+            patch("teatree.core.management.commands._ship.gates.git.head_sha", return_value="a" * 40),
+        ):
+            assert _run_visual_qa_gate(ticket, worktree) is None
+
+        ticket.refresh_from_db()
+        assert ticket.extra["visual_qa"]["pages_checked"] == 0
+        assert ":x:" not in ticket.extra["visual_qa"]["report_markdown"]
+
+    def test_skip_with_unreadable_head_records_unavailable_head(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=visual_qa.VisualQAReport(targets=[])),
+        ):
+            assert _run_visual_qa_gate(ticket, worktree, skip_reason="reviewed") is None
+
+        ticket.refresh_from_db()
+        assert ticket.extra["visual_qa"]["bypass"]["head_sha"] == "unavailable"
+
+    def test_skip_survives_server_hook_exception(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        overlay = _PageTargetOverlay()
+        overlay.runtime.visual_qa_server = MagicMock(side_effect=ValueError("broken hook"))
+        with patch("teatree.core.management.commands._ship.gates.get_overlay", return_value=overlay):
+            assert _run_visual_qa_gate(ticket, worktree, skip_reason="reviewed") is None
+
+        ticket.refresh_from_db()
+        assert "broken hook" in ticket.extra["visual_qa"]["not_run_reason"]
 
     def test_an_unreadable_diff_refuses_as_did_not_run(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/78")
@@ -241,7 +309,7 @@ class TestRunVisualQAGate(TestCase):
         assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
         assert "server selection failed" in result["error"]
 
-    def test_skipped_run_does_not_pollute_extra(self) -> None:
+    def test_no_target_run_records_current_scope(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
         clean = visual_qa.VisualQAReport(targets=[], skipped_reason="no frontend changes")
         with (
@@ -251,7 +319,22 @@ class TestRunVisualQAGate(TestCase):
             assert _run_visual_qa_gate(ticket, worktree) is None
 
         ticket.refresh_from_db()
-        assert "visual_qa" not in ticket.extra
+        assert ticket.extra["visual_qa"]["pages_checked"] == 0
+        assert ticket.extra["visual_qa"]["repo_path"] == "/tmp/wt"
+        assert ticket.extra["visual_qa"]["head_sha"] == "unavailable"
+
+    def test_no_branch_server_is_did_not_run_at_the_gate(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        with (
+            patch("teatree.core.management.commands._ship.gates.get_overlay", return_value=_PageTargetOverlay()),
+            patch.object(visual_qa, "changed_files", return_value=["a.html"]),
+            patch("teatree.core.management.commands._e2e_resolvers._disc.compose_frontend_port", return_value=None),
+        ):
+            result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
+        assert "no server for this branch" in result["error"]
 
     def test_records_summary_when_pages_checked(self) -> None:
         ticket, worktree = self._ticket_and_worktree()

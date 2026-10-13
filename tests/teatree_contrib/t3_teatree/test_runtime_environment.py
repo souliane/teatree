@@ -16,6 +16,21 @@ def test_empty_project_venv_is_rebuilt_before_tests(tmp_path):
     assert [step.name for step in steps] == ["sync-dependencies"]
 
 
+def test_visual_qa_syncs_frozen_before_start_even_with_a_ready_venv(tmp_path):
+    worktree = SimpleNamespace(worktree_path=str(tmp_path), repo_path=str(tmp_path))
+    runtime = TeatreeRuntime()
+
+    with patch("teatree.contrib.t3_teatree.overlay._python_env_ready", return_value=True):
+        steps = runtime.pre_run_steps(worktree, "visual_qa")
+
+    assert [step.name for step in steps] == ["sync-dependencies"]
+    run_checked = Mock()
+    with patch.dict(steps[0].callable.__globals__, {"run_checked": run_checked}):
+        steps[0].callable()
+    run_checked.assert_called_once_with(["uv", "sync", "--frozen"], cwd=tmp_path)
+    assert runtime.visual_qa_server(worktree).args[:3] == ["uv", "run", "--no-sync"]
+
+
 def test_incompatible_project_python_is_rebuilt_before_tests(tmp_path):
     python = tmp_path / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)

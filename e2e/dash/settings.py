@@ -19,7 +19,6 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": "file:visual_qa?mode=memory&cache=shared" if os.environ.get("T3_VISUAL_QA_PORT") else ":memory:",
-        "OPTIONS": {"uri": True} if os.environ.get("T3_VISUAL_QA_PORT") else {},
     },
 }
 # ``live_server`` serves /static/ from the staticfiles finders directly; WhiteNoise

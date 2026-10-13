@@ -63,6 +63,44 @@ class TestDetectTargets:
 
 
 class TestEvaluate:
+    def test_browser_is_checked_before_checkout_server_preparation(self, tmp_path: Path, monkeypatch) -> None:
+        prepared = MagicMock()
+        spec = visual_qa.ServerSpec(RunCommand(args=["missing"], cwd=tmp_path), str(tmp_path), prepared)
+
+        def missing_browser(targets: list[str], base_url: str) -> list[visual_qa.PageResult]:
+            message = "browser unavailable"
+            raise visual_qa.VisualQAUnavailableError(message)
+
+        monkeypatch.setattr(visual_qa, "run_check", missing_browser)
+        report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=None, base_url="", server=spec)
+
+        assert report.not_run_reason == "browser unavailable"
+        prepared.assert_not_called()
+
+    def test_skip_records_a_missing_docker_cli(self) -> None:
+        def missing_docker() -> str:
+            message = "docker"
+            raise FileNotFoundError(message)
+
+        report = visual_qa.evaluate(
+            read_diff=lambda: ["a.html"], overlay=None, base_url=missing_docker, skip_reason="reviewed"
+        )
+
+        assert report.skipped_reason == "--skip: reviewed"
+        assert "FileNotFoundError" in report.not_run_reason
+
+    def test_over_cap_targets_fail_before_browser_start(self, monkeypatch) -> None:
+        overlay = MagicMock()
+        overlay.review.visual_qa_targets.return_value = [f"/p{i}/" for i in range(visual_qa.MAX_PAGES + 1)]
+        checked = MagicMock()
+        monkeypatch.setattr(visual_qa, "run_check", checked)
+
+        report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=overlay, base_url="http://x")
+
+        assert "too many visual QA targets" in report.not_run_reason
+        assert len(report.targets) == visual_qa.MAX_PAGES + 1
+        checked.assert_not_called()
+
     def test_skip_reason_still_checks_pages(self, monkeypatch) -> None:
         checked: list[str] = []
         monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: checked.extend(targets) or [])
@@ -141,7 +179,8 @@ class TestServedApp:
         with pytest.raises(ProcessLookupError):
             os.killpg(pgid, 0)
 
-    def test_missing_checkout_script_is_did_not_run(self, tmp_path: Path) -> None:
+    def test_missing_checkout_script_is_did_not_run(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: [])
         spec = visual_qa.ServerSpec(
             RunCommand(args=[sys.executable, "missing-serve.py"], cwd=tmp_path), str(tmp_path), lambda: None
         )
@@ -249,6 +288,32 @@ class TestNavigationClassification:
 
 
 class TestVisualQAReport:
+    def test_deadline_covers_the_full_page_budget(self) -> None:
+        assert visual_qa.TOTAL_TIMEOUT_S >= visual_qa.MAX_PAGES * visual_qa.PER_PAGE_TIMEOUT_MS / 1000
+
+    def test_report_has_no_loopback_or_broken_local_screenshot(self) -> None:
+        report = visual_qa.VisualQAReport(
+            targets=["/dash/board/"],
+            pages=[
+                visual_qa.PageResult(url="http://127.0.0.1:1234/dash/board/", screenshot_path=".t3/visual_qa/x.png")
+            ],
+            base_url="http://127.0.0.1:1234",
+        )
+
+        markdown = visual_qa.format_report(report)
+
+        assert "http://127.0.0.1" not in markdown
+        assert "![" not in markdown
+        assert "`/dash/board/`" in markdown
+
+    def test_unchecked_reason_does_not_copy_multiline_browser_banner(self) -> None:
+        report = visual_qa.VisualQAReport(
+            targets=["/a", "/b"], not_run_reason="browser missing\ninstall banner\nmore detail"
+        )
+
+        assert report.unchecked_reasons == {"/a": "unreached", "/b": "unreached"}
+        assert visual_qa.format_report(report).count("install banner") == 1
+
     def test_unreached_connection_is_unknown_even_without_findings(self) -> None:
         report = visual_qa.VisualQAReport(
             targets=["/dash/board/"],
@@ -333,7 +398,7 @@ class TestFormatReport:
         out = visual_qa.format_report(report)
         assert ":white_check_mark:" in out
         assert "0 finding" in out
-        assert ".t3/visual_qa/00-root.png" in out
+        assert ".t3/visual_qa/00-root.png" not in out
 
     def test_findings_render_x_and_kinds(self) -> None:
         page = visual_qa.PageResult(

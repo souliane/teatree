@@ -44,11 +44,11 @@ def resolve_spec_target(resolved_target: str) -> str:
 
 
 def resolve_visual_qa_base_url(worktree: Worktree) -> str:
-    port = _discover_frontend_port(worktree)
+    port = _disc.compose_frontend_port(compose_project(worktree))
     if port is None:
-        message = "no live frontend port for this worktree"
+        message = "no server for this branch"
         raise RuntimeError(message)
-    host = "127.0.0.1" if _disc.detect_local_port(port) is not None else host_published_port_host()
+    host = _disc.detect_local_address(port) or host_published_port_host()
     return f"http://{host}:{port}"
 
 

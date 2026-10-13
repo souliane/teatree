@@ -9,12 +9,14 @@ format in each error.
 """
 
 import re
+from unittest.mock import patch
 
 import pytest
 
 from teatree.core.review.mr_metadata import (
     AUTO_CREATED_MARKER,
     DEFAULT_MR_TITLE_REGEX,
+    append_recorded_visual_qa,
     auto_created_description,
     ensure_standard_body,
     expected_title_format,
@@ -24,6 +26,31 @@ from teatree.core.review.mr_metadata import (
 )
 
 _GOOD_DESC = "feat(ship): add the gate (#1540)\n\n## What\nAdds the gate.\n\n## Why\nThe convention is missed often."
+
+
+@pytest.mark.parametrize(
+    ("recorded_repo", "recorded_head", "expected"),
+    [
+        ("/repo/a", "a" * 40, "append"),
+        ("/repo/b", "a" * 40, "omit"),
+        ("/repo/a", "b" * 40, "omit"),
+        ("", "", "omit"),
+    ],
+)
+def test_visual_qa_evidence_is_appended_only_for_the_same_repo_and_head(
+    recorded_repo: str, recorded_head: str, expected: str
+) -> None:
+    body = "feat: x\n\n## What\nX"
+    evidence = {
+        "repo_path": recorded_repo,
+        "head_sha": recorded_head,
+        "report_markdown": "## Visual QA\n\nChecked 1 of 1 page(s).",
+    }
+
+    with patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40):
+        rendered = append_recorded_visual_qa(body, evidence, repo_path="/repo/a")
+
+    assert ("## Visual QA" in rendered) is (expected == "append")
 
 
 class TestTitleRegex:
