@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from teatree.cli.doctor import checks_readme
 from teatree.cli.doctor.checks_readme import readme_feature_merges_since_update
 from tests._git_repo import make_git_repo, run_git
@@ -16,10 +18,20 @@ def test_feature_merges_since_readme_update_are_counted(tmp_path: Path) -> None:
     run_git(tmp_path, "add", "feature.txt")
     run_git(tmp_path, "commit", "-qm", "feat: one")
     assert readme_feature_merges_since_update(tmp_path) == 1
+    run_git(tmp_path, "commit", "--allow-empty", "-qm", "fix: unrelated")
+    run_git(tmp_path, "commit", "--allow-empty", "-qm", "feat(cli): scoped")
+    assert readme_feature_merges_since_update(tmp_path) == 2
     (tmp_path / "README.md").write_text("refreshed", encoding="utf-8")
     run_git(tmp_path, "add", "README.md")
     run_git(tmp_path, "commit", "-qm", "docs: refresh")
     assert readme_feature_merges_since_update(tmp_path) == 0
+
+
+def test_feature_count_requires_tracked_readme(tmp_path: Path) -> None:
+    make_git_repo(tmp_path)
+    run_git(tmp_path, "commit", "--allow-empty", "-qm", "feat: initial")
+    with pytest.raises(ValueError, match=r"README\.md has no tracked commit"):
+        readme_feature_merges_since_update(tmp_path)
 
 
 def test_doctor_warns_after_five_feature_commits(tmp_path: Path, monkeypatch, capsys) -> None:
