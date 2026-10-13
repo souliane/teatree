@@ -11,7 +11,6 @@ import re
 from teatree.hooks._shell_lexer import Token, split_commands, tokenize
 from teatree.hooks.forge_subcommand import basename, command_substitution_bodies
 
-_SUBCOMMAND = "void-merge"
 _MENTION = re.compile(r"(?<![\w-])void-merge(?![\w-])")
 _QUOTING = re.compile(r"\\\r?\n|['\"\\]")
 _READ_ONLY_FLAGS = frozenset({"--dry-run", "--help"})
@@ -50,7 +49,7 @@ def _is_read_only_call(segment: list[Token]) -> bool:
 
 
 def _flag_is_parsed(tail: list[Token]) -> bool:
-    previous = _SUBCOMMAND
+    previous = ""
     for token in tail:
         if _REWRITTEN.search(token.raw) or token.value == "--":
             return False
@@ -61,4 +60,4 @@ def _flag_is_parsed(tail: list[Token]) -> bool:
 
 
 def _may_take_a_value(word: str) -> bool:
-    return word.startswith("-") and "=" not in word and word not in _READ_ONLY_FLAGS
+    return word.startswith("-") and "=" not in word

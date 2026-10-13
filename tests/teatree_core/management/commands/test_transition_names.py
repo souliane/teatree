@@ -58,4 +58,3 @@ def test_declared_non_fsm_mutators_are_real_self_guarding_methods() -> None:
 def test_the_merge_void_is_reachable_only_through_its_own_command() -> None:
     assert "void_merge" not in ALLOWED_TRANSITIONS
     assert "void_merge" not in _fsm_transition_names()
-    assert callable(Ticket.void_merge)

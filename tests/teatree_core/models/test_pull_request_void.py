@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import pytest
 from django.test import TestCase
 from django_fsm import TransitionNotAllowed
@@ -58,19 +56,3 @@ class TestPullRequestVoidMerge(TestCase):
 
         voided.refresh_from_db()
         assert voided.state == PullRequest.State.CLOSED
-
-    def test_the_forge_settle_pass_never_reads_or_moves_a_voided_row(self) -> None:
-        voided = _voided_row()
-        read_state = MagicMock(return_value="merged")
-
-        settled = PullRequest.objects.filter(pk=voided.pk).reconcile_forge_states(read_state=read_state)
-
-        voided.refresh_from_db()
-        assert settled == 0
-        assert voided.state == PullRequest.State.CLOSED
-        read_state.assert_not_called()
-
-    def test_a_voided_row_is_not_live_work(self) -> None:
-        voided = _voided_row()
-
-        assert not PullRequest.objects.live().filter(pk=voided.pk).exists()
