@@ -49,7 +49,7 @@
 "src/teatree/core/factory/operational_health.py" = 2
 # Fleet-safety Stage 2 mutex (teatree.core.fleet.claim / .wire). The Django-aware
 # wire layer defers `from teatree.core.models import ImplementedIssueMarker` in its
-# three claim-lifecycle functions (ticket_claim_is_lost / heartbeat_inflight_claims
+# three claim-lifecycle functions (ticket_claim_loss / heartbeat_inflight_claims
 # / _heartbeat_one) to keep the sibling claim module Django-free and the wire out
 # of the app-load cycle. Six fault-path imports for health, notify policy, known
 # issue, and user notification also stay call-time: their Django graph is needed
