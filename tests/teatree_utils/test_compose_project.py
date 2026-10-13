@@ -46,6 +46,7 @@ def _launcher_project(env: dict[str, str]) -> str:
         pytest.param({"COMPOSE_PROJECT_NAME": "named"}, "named", id="compose_name"),
         pytest.param({"TEATREE_COMPOSE_PROJECT": "rolled"}, "rolled", id="teatree_project"),
         pytest.param({"TEATREE_COMPOSE_PROJECT": "rolled", "COMPOSE_PROJECT_NAME": "named"}, "rolled", id="both"),
+        pytest.param({"TEATREE_COMPOSE_PROJECT": " ", "COMPOSE_PROJECT_NAME": "named"}, " ", id="whitespace"),
         pytest.param(
             {"TEATREE_COMPOSE_PROJECT": "", "COMPOSE_PROJECT_NAME": "named"}, "named", id="empty_wins_nothing"
         ),
