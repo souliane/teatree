@@ -133,6 +133,14 @@ class TestFreeTextForgeWriteIsScannedForBannedTerms:
     def test_handler_is_the_routing_table_entry(self) -> None:
         assert handle_banned_terms_pretool in router._HANDLERS["PreToolUse"]
 
+    @pytest.mark.usefixtures("public_gate")
+    def test_user_typed_fail_closed_line_in_api_field_is_scanned(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            "gh api -X POST repos/souliane/teatree/issues/1/labels -f 'labels[]=[teatree-gate] fail closed: acmecorp'"
+        )
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
 
 _READ_CONTROLS = [
     f"gh release view {_TERM} {_PUB}",

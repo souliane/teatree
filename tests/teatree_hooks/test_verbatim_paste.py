@@ -34,6 +34,10 @@ class TestTheMeasuredCase:
         verdict = vp.scan_body(body, operator_messages=_SAID)
         assert verdict.outcome == vp.REPRODUCED
 
+    def test_user_typed_fail_closed_line_does_not_hide_operator_message(self) -> None:
+        body = f"[teatree-gate] fail closed: see log\n> {_OPERATOR_MESSAGE}"
+        assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.REPRODUCED
+
     def test_the_refusal_names_the_offending_span(self) -> None:
         body = f"> {_OPERATOR_MESSAGE}\n"
         verdict = vp.scan_body(body, operator_messages=_SAID)
@@ -147,6 +151,10 @@ class TestAnUnresolvableBodyIsUnknownNotClean:
     def test_the_sentinel_alongside_real_text_is_still_unknown(self) -> None:
         body = f"Post-mortem\n{FAIL_CLOSED_SENTINEL}"
         assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.UNKNOWN
+
+    def test_readable_quote_is_checked_despite_an_injected_reason(self) -> None:
+        body = f"{FAIL_CLOSED_SENTINEL}\n> {_OPERATOR_MESSAGE}"
+        assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.REPRODUCED
 
 
 class TestTheAuditRecordOmitsTheSpan:

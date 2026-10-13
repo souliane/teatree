@@ -60,7 +60,12 @@ _STRUCTURAL_LEADERS: Final[frozenset[str]] = frozenset(
 # sentinel is recognised explicitly by :func:`is_fail_closed_sentinel`
 # so a scanner can fail closed on a NAMED reason instead of an
 # accidental content-pattern self-match.
-FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+# A Bash argv cannot contain NUL, so a user-typed body cannot impersonate a
+# parser reason even when it contains the visible sentinel wording.
+_INJECTED_MARKER: Final[str] = "\x00"
+FAIL_CLOSED_SENTINEL: Final[str] = (
+    _INJECTED_MARKER + "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+)
 
 
 # A SECOND fail-closed sentinel for the body sources that are FUNDAMENTALLY
@@ -74,9 +79,9 @@ FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not
 # closed -- only the operator-facing reason differs. It too must not self-match
 # any quote-scanner HIGH pattern.
 UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
-    "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
+    _INJECTED_MARKER + "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
 )
-NAMED_FAIL_CLOSED_PREFIX: Final[str] = "[teatree-gate] fail closed: "
+NAMED_FAIL_CLOSED_PREFIX: Final[str] = _INJECTED_MARKER + "[teatree-gate] fail closed: "
 
 
 def is_fail_closed_sentinel(text: str) -> bool:
@@ -99,7 +104,7 @@ def is_fail_closed_sentinel(text: str) -> bool:
     sentinel on its own line) still fails closed (#1213).
     """
     sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
-    return any(line.strip() in sentinels or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
+    return any(line in sentinels or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
 
 
 def is_unavailable_body_source_sentinel(text: str) -> bool:

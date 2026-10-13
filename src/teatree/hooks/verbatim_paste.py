@@ -150,12 +150,12 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
 
     A ``body`` the command parser could not resolve (a missing ``--body-file``,
     an unexpanded ``$VAR``, a stdin body) carries an injected fail-closed
-    sentinel rather than real content — there is nothing to shingle, so this is
-    :data:`UNKNOWN`, never a scan that happened to find nothing (#4195 review;
-    the sibling quote-scanner and banned-terms gates recognise the same
-    sentinel before content matching, for the same reason).
+    sentinel rather than real content. Readable fragments are still checked;
+    an unresolved fragment makes an otherwise clean result :data:`UNKNOWN`.
     """
-    if _is_fail_closed_sentinel(body):
+    unreadable = _is_fail_closed_sentinel(body)
+    body = "\n".join(line for line in body.split("\n") if not _is_fail_closed_sentinel(line))
+    if not body:
         return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
     if operator_messages is None:
         return Verdict(UNKNOWN, reason="this session's transcript could not be read")
@@ -171,6 +171,8 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
         start, length = _longest_run(words, known)
         if length >= threshold:
             return Verdict(REPRODUCED, span=" ".join(words[start : start + length])[:_SPAN_CHARS], words=length)
+    if unreadable:
+        return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
     return Verdict(CLEAN)
 
 
