@@ -184,17 +184,15 @@ class ChannelReadRefusedError(RuntimeError):
 class RunCommand:
     """Structured run command with explicit working directory.
 
-    Used by ``OverlayBase.runtime.run_commands()`` to describe how each service
-    is launched. Every service comes up via ``docker compose up`` — the
-    overlay supplies argv + cwd metadata that other CLI verbs reuse
-    (``t3 <overlay> run tests``, ``run backend``, ``run build-frontend``).
-    The runner never spawns anything on the host.
+    Used by ``OverlayBase.runtime.run_commands()`` to describe how services
+    launch and by ``visual_qa_server()`` to serve a checkout in the browser's
+    own network namespace. The latter runs the supplied argv in ``cwd`` after
+    pre-run steps, under a sandboxed environment and a process-group boundary.
 
-    ``env`` names extra environment variables for the run; the runners merge it
-    over ``os.environ`` (overlay values win, inherited env preserved) when they
-    exec argv, so an overlay expresses ``FOO=bar sometool`` as structured data
-    instead of a ``sh -lc`` wrap. An empty default keeps every existing
-    ``RunCommand(args=..., cwd=...)`` call site byte-identical.
+    ``env`` names extra environment variables for the run. Service runners merge
+    it over ``os.environ``; visual QA first removes inherited config-DB and
+    settings overrides, then adds its scratch paths and allocated port. An empty
+    default keeps existing ``RunCommand(args=..., cwd=...)`` call sites stable.
     """
 
     args: list[str] = field(default_factory=list)

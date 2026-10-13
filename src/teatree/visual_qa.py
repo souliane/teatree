@@ -4,10 +4,10 @@ Loads the page(s) the diff actually touches in a real browser and reports
 silent-render regressions: page crashes, console errors, raw ``app.*``
 translation keys, blocking asset 404s.
 
-Designed as a fast pre-push gate, not a regression suite.  Hard caps keep
-the gate well under 60 seconds per PR.  When the headless browser cannot
-launch the report records that the check did not run, which the gate refuses;
-only an explicit skip bypasses it.
+Designed as a bounded pre-push check, not a regression suite. The checkout
+server gets up to 90 seconds to start and the browser up to 60 seconds to
+inspect its pages. An unavailable server or browser is a did-not-run verdict;
+only an explicit, recorded skip bypasses it.
 
 The gate is a precondition of PR creation: ``pr create`` calls
 ``_run_visual_qa_gate`` before composing the PR, persists the summary on
@@ -19,15 +19,20 @@ import contextlib
 import fnmatch
 import os
 import re
+import signal
+import socket
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
+from teatree.types import RunCommand
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError, Popen, TimeoutExpired, redact_secrets, spawn_session_leader
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
@@ -50,10 +55,11 @@ DEFAULT_TRIGGER_GLOBS: tuple[str, ...] = (
     "**/static/**",
 )
 
-MAX_PAGES = 5
+MAX_PAGES = 12
 PER_PAGE_TIMEOUT_MS = 10_000
 TOTAL_TIMEOUT_S = 60
 DEFAULT_SCREENSHOT_DIR = ".t3/visual_qa"
+SERVER_START_TIMEOUT_S = 90
 
 # 401/403 are common when an authenticated-only flow is logged out — not a blocker.
 _HTTP_ERROR_THRESHOLD = 400
@@ -64,6 +70,53 @@ _TRANSLATION_KEY_RE = re.compile(r"\bapp\.[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){1,}\b"
 
 class VisualQAUnavailableError(RuntimeError):
     """Raised when Playwright cannot run — the check did not run, so it cannot pass."""
+
+
+@dataclass(slots=True)
+class ServedApp:
+    base_url: str
+    process: Popen[str]
+    pgid: int
+    log_path: Path
+
+    def failure(self) -> str:
+        code = self.process.poll()
+        if code is None:
+            return ""
+        tail = redact_secrets("\n".join(self.log_path.read_text(errors="replace").splitlines()[-12:]))
+        return f"server exited {code}: {tail}" if tail else f"server exited {code}"
+
+    def wait_until_ready(self, port: int) -> None:
+        deadline = time.monotonic() + SERVER_START_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if failure := self.failure():
+                raise VisualQAUnavailableError(failure)
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    return
+            except OSError:
+                time.sleep(0.2)
+        message = f"checkout server did not listen within {SERVER_START_TIMEOUT_S}s"
+        raise VisualQAUnavailableError(message)
+
+    def stop(self) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.pgid, signal.SIGTERM)
+        try:
+            self.process.wait(timeout=5)
+        except TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self.pgid, signal.SIGKILL)
+            self.process.wait(timeout=5)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.pgid, signal.SIGKILL)
+
+
+@dataclass(frozen=True, slots=True)
+class ServerSpec:
+    command: RunCommand
+    repo_path: str
+    prepare: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +131,7 @@ class PageResult:
     url: str
     screenshot_path: str = ""
     errors: list[PageError] = field(default_factory=list)
+    unreached: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,15 +141,32 @@ class VisualQAReport:
     skipped_reason: str = ""
     base_url: str = ""
     not_run_reason: str = ""
+    server_failure: str = ""
 
     @property
     def unchecked(self) -> list[str]:
-        """Targets the total-deadline cut off before the browser reached them.
+        return list(self.unchecked_reasons)
 
-        A page nobody loaded is not a page with no findings, so the gate must not read
-        a truncated run as a clean one.
-        """
-        return [] if self.skipped_reason else self.targets[len(self.pages) :]
+    @property
+    def unchecked_reasons(self) -> dict[str, str]:
+        reasons = {
+            target: f"unreached{f' ({self.server_failure})' if self.server_failure else ''}"
+            for target, page in zip(self.targets, self.pages, strict=False)
+            if page.unreached
+        }
+        reasons.update(
+            {
+                target: (
+                    "page cap"
+                    if index >= MAX_PAGES
+                    else f"unreached ({self.server_failure or self.not_run_reason})"
+                    if self.server_failure or self.not_run_reason
+                    else "deadline"
+                )
+                for index, target in enumerate(self.targets[len(self.pages) :], start=len(self.pages))
+            }
+        )
+        return reasons
 
     @property
     def has_errors(self) -> bool:
@@ -104,6 +175,10 @@ class VisualQAReport:
     @property
     def total_errors(self) -> int:
         return sum(len(page.errors) for page in self.pages)
+
+    @property
+    def pages_checked(self) -> int:
+        return sum(not page.unreached for page in self.pages)
 
     def summary(self) -> "VisualQASummary":
         """Return a JSON-serialisable snapshot for ``Ticket.extra``."""
@@ -125,9 +200,11 @@ class VisualQAReport:
             skipped_reason=self.skipped_reason,
             not_run_reason=self.not_run_reason,
             base_url=self.base_url,
-            pages_checked=len(self.pages),
+            pages_checked=self.pages_checked,
             errors=self.total_errors,
             details=details,
+            unchecked_reasons=self.unchecked_reasons,
+            report_markdown=format_report(self),
         )
 
 
@@ -157,25 +234,8 @@ def detect_targets(diff: list[str], overlay: OverlayBase | None = None) -> list[
     """
     if overlay is not None:
         targets = overlay.review.visual_qa_targets(diff)
-        return list(targets[:MAX_PAGES]) if targets else []
+        return list(targets) if targets else []
     return ["/"] if matches_triggers(diff) else []
-
-
-# ── Bypass ───────────────────────────────────────────────────────────
-
-
-def should_run(*, skip_reason: str = "", env: dict[str, str] | None = None) -> tuple[bool, str]:
-    """Decide whether to run the gate.
-
-    Returns ``(run, reason)``.  When ``run`` is ``False``, ``reason``
-    explains why so the caller can surface it.
-    """
-    env = env if env is not None else dict(os.environ)
-    if skip_reason:
-        return (False, f"--skip: {skip_reason}")
-    if env.get("T3_VISUAL_QA", "").strip().lower() == "disabled":
-        return (False, "T3_VISUAL_QA=disabled")
-    return (True, "")
 
 
 # ── Runner ───────────────────────────────────────────────────────────
@@ -234,10 +294,13 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
     EvidenceRecorder(events.append).attach(page)
 
     navigation_error = ""
+    unreached = False
     try:
         page.goto(url, timeout=PER_PAGE_TIMEOUT_MS, wait_until="networkidle")
     except PlaywrightError as exc:
-        navigation_error = f"navigation failed: {exc}"
+        unreached = _never_connected(str(exc))
+        if not unreached:
+            navigation_error = f"navigation failed: {exc}"
 
     body_text = ""
     with contextlib.suppress(Exception):
@@ -253,14 +316,58 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
         screenshot_path = ""
 
     page.close()
-    errors = [error for event in events if (error := _page_error(url, event)) is not None]
+    errors = [] if unreached else [error for event in events if (error := _page_error(url, event)) is not None]
     if navigation_error:
         errors.append(PageError(url=url, kind="page", message=navigation_error))
     errors.extend(
         PageError(url=url, kind="translation", message=f"raw key in DOM: {match}")
         for match in _TRANSLATION_KEY_RE.findall(body_text)
     )
-    return PageResult(url=url, screenshot_path=screenshot_path, errors=errors)
+    return PageResult(url=url, screenshot_path=screenshot_path, errors=errors, unreached=unreached)
+
+
+def _never_connected(message: str) -> bool:
+    return any(
+        code in message
+        for code in (
+            "net::ERR_CONNECTION_REFUSED",
+            "net::ERR_NAME_NOT_RESOLVED",
+            "net::ERR_ADDRESS_UNREACHABLE",
+            "net::ERR_NETWORK_UNREACHABLE",
+        )
+    )
+
+
+@contextlib.contextmanager
+def _served_app(server: ServerSpec) -> Iterator[ServedApp]:
+    with tempfile.TemporaryDirectory(prefix="teatree-visual-qa-") as scratch:
+        server.prepare()
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        env = dict(os.environ)
+        for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR", "T3_DATA_DIR", "DATABASE_URL", "DJANGO_SETTINGS_MODULE"):
+            env.pop(key, None)
+        env.update(server.command.env)
+        env.update({"XDG_DATA_HOME": scratch, "TMPDIR": scratch, "T3_VISUAL_QA_PORT": str(port)})
+        log_path = Path(scratch) / "server.log"
+        with log_path.open("w+") as log:
+            try:
+                process = spawn_session_leader(
+                    server.command.args,
+                    cwd=server.command.cwd or server.repo_path,
+                    env=env,
+                    streams=(log, log),
+                )
+            except OSError as exc:
+                message = f"checkout server could not start: {exc}"
+                raise VisualQAUnavailableError(message) from exc
+            served = ServedApp(f"http://127.0.0.1:{port}", process, process.pid, log_path)
+            try:
+                served.wait_until_ready(port)
+                yield served
+            finally:
+                served.stop()
 
 
 def _page_error(url: str, event: BrowserEvent) -> PageError | None:
@@ -288,47 +395,80 @@ def evaluate(
     *,
     read_diff: Callable[[], list[str]],
     overlay: OverlayBase | None,
-    base_url: str,
+    base_url: str | Callable[[], str],
     skip_reason: str = "",
-    env: dict[str, str] | None = None,
+    server: ServerSpec | None = None,
 ) -> VisualQAReport:
     """Run the full gate end to end and return the report.
 
-    Single entry point used by the shipping gate.  An explicit bypass returns
-    a skipped report without reading the diff; no frontend change returns a
-    clean one.  Playwright being unavailable sets ``not_run_reason`` and leaves
-    every target unchecked, so the report has errors.
+    Single entry point used by the shipping gate. An explicit bypass still
+    gathers evidence; no frontend change returns a clean report.
     """
-    run, bypass_reason = should_run(skip_reason=skip_reason, env=env)
-    if not run:
-        return VisualQAReport(targets=[], skipped_reason=bypass_reason)
-
-    targets = detect_targets(read_diff(), overlay)
+    try:
+        targets = detect_targets(read_diff(), overlay)
+    except CommandFailedError as exc:
+        return VisualQAReport(
+            targets=[],
+            not_run_reason=str(exc),
+            skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+        )
     if not targets:
         return VisualQAReport(targets=[], skipped_reason="no frontend changes")
 
+    resolved_url = ""
+    server_failure = ""
     try:
-        pages = run_check(targets, base_url)
-    except VisualQAUnavailableError as exc:
-        return VisualQAReport(targets=targets, base_url=base_url, not_run_reason=str(exc))
+        app_context: contextlib.AbstractContextManager[ServedApp | None] = (
+            _served_app(server) if server is not None else contextlib.nullcontext(None)
+        )
+        with app_context as served:
+            if served is not None:
+                resolved_url = served.base_url
+            elif isinstance(base_url, str):
+                resolved_url = base_url
+            else:
+                resolved_url = base_url()
+            pages = run_check(targets, resolved_url)
+            if served is not None:
+                server_failure = served.failure()
+    except (VisualQAUnavailableError, RuntimeError) as exc:
+        return VisualQAReport(
+            targets=targets,
+            base_url=resolved_url,
+            not_run_reason=str(exc),
+            server_failure=str(exc) if server is not None and not resolved_url else "",
+            skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+        )
 
-    return VisualQAReport(targets=targets, pages=pages, base_url=base_url)
+    return VisualQAReport(
+        targets=targets,
+        pages=pages,
+        base_url=resolved_url,
+        server_failure=server_failure,
+        skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+    )
 
 
 # ── Report ───────────────────────────────────────────────────────────
 
 
-def format_report(report: VisualQAReport) -> str:
-    """Render a ``## Visual QA`` markdown section for the PR description."""
+def _report_header(report: VisualQAReport) -> list[str]:
     lines = ["## Visual QA", ""]
-    if report.skipped_reason:
+    if report.skipped_reason == "no frontend changes":
         lines.append(f"_skipped: {report.skipped_reason}_")
-        return "\n".join(lines) + "\n"
+    elif report.skipped_reason:
+        lines.extend((f"_explicit bypass: {report.skipped_reason}_", ""))
     if report.not_run_reason:
         lines.append(f"_did not run: {report.not_run_reason}_")
-        return "\n".join(lines) + "\n"
-    if not report.targets:
+    if not report.targets and not report.skipped_reason and not report.not_run_reason:
         lines.append("_no frontend changes detected_")
+    return lines
+
+
+def format_report(report: VisualQAReport) -> str:
+    """Render a ``## Visual QA`` markdown section for the PR description."""
+    lines = _report_header(report)
+    if not report.targets:
         return "\n".join(lines) + "\n"
 
     base = report.base_url
@@ -336,15 +476,17 @@ def format_report(report: VisualQAReport) -> str:
         lines.extend((f"_base url: {base}_", ""))
     lines.extend(
         (
-            f"Checked {len(report.pages)} of {len(report.targets)} page(s) — {report.total_errors} finding(s).",
+            f"Checked {report.pages_checked} of {len(report.targets)} page(s) — {report.total_errors} finding(s).",
             "",
         ),
     )
     if report.unchecked:
-        lines.extend((f"**Not checked** — the {TOTAL_TIMEOUT_S}s budget ran out: {', '.join(report.unchecked)}", ""))
+        lines.append("**Not checked**")
+        lines.extend(f"- `{path}`: {reason}" for path, reason in report.unchecked_reasons.items())
+        lines.append("")
     for page in report.pages:
         path = page.url.removeprefix(base) or "/" if base else page.url
-        marker = ":x:" if page.errors else ":white_check_mark:"
+        marker = ":x:" if page.errors else ":warning:" if page.unreached else ":white_check_mark:"
         lines.append(f"### {marker} `{path}`")
         if page.screenshot_path:
             lines.append(f"![{path}]({page.screenshot_path})")

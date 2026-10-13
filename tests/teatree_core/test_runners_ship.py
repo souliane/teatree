@@ -16,7 +16,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
@@ -1227,7 +1227,7 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         )
         return ticket
 
-    def _capture_pr_title(self, ticket: Ticket) -> str:
+    def _capture_pr_spec(self, ticket: Ticket) -> PullRequestSpec:
         host = MagicMock()
         host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
         host.current_user.return_value = "souliane"
@@ -1248,7 +1248,10 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
             patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
         ):
             ShipExecutor(ticket).run()
-        return host.create_pr.call_args[0][0].title
+        return host.create_pr.call_args[0][0]
+
+    def _capture_pr_title(self, ticket: Ticket) -> str:
+        return self._capture_pr_spec(ticket).title
 
     def test_pr_title_override_is_the_shipped_title(self) -> None:
         ticket = self._ticket_with_extra({"pr_title_override": "fix(scope): pinned title (#298)"})
@@ -1259,6 +1262,13 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         ticket = self._ticket_with_extra({})
         title = self._capture_pr_title(ticket)
         assert title == "chore: unrelated subject (#298)"
+
+    def test_recorded_visual_qa_is_in_the_shipped_pr_body(self) -> None:
+        ticket = self._ticket_with_extra({"visual_qa": {"report_markdown": "## Visual QA\n\nChecked 12 of 12 pages."}})
+
+        spec = self._capture_pr_spec(ticket)
+
+        assert "## Visual QA\n\nChecked 12 of 12 pages." in spec.description
 
 
 class TestOverlayPrLabels:

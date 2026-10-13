@@ -529,6 +529,9 @@ class OverlayRuntime:
     def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
         return []
 
+    def visual_qa_server(self, worktree: "Worktree") -> RunCommand | None:
+        return None
+
     def test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 

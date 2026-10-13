@@ -167,6 +167,7 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 |--------|---------|---------|
 | `run_commands(worktree)` | `{}` | Named service commands (backend, frontend, build-frontend, …) for `worktree start`. |
 | `pre_run_steps(worktree, service)` | `[]` | Steps to run before starting a specific service (copy config, refresh translations). |
+| `visual_qa_server(worktree)` | `None` | Optional `RunCommand` serving the checkout beside the visual-QA browser; its port is supplied as `T3_VISUAL_QA_PORT`, and its `pre_run_steps(worktree, "visual_qa")` run first. |
 | `test_command(worktree)` | `[]` | The command to run the project test suite; used by `run tests`. |
 | `lint_command(worktree)` | `[]` | The command to lint the worktree; used by `run lint`. When empty, `run lint` exits non-zero so a caller is not told green. |
 | `verify_endpoints(worktree)` | `{}` | Health-check URL paths per service keyed by `worktree.ports` entry; unlisted services fall back to `/`. |

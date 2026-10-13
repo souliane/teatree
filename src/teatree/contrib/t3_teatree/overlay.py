@@ -25,6 +25,7 @@ from teatree.overlay_sdk import (
     reap_compose_project,
     run_checked,
 )
+from teatree.types import RunCommand
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
@@ -173,6 +174,14 @@ def _sync_dependencies_step(repo: Path) -> ProvisionStep:
 
 class TeatreeRuntime(OverlayRuntime):
     @override
+    def visual_qa_server(self, worktree: "Worktree") -> RunCommand:
+        return RunCommand(
+            args=["uv", "run", "python", "e2e/dash/serve.py"],
+            cwd=Path(worktree.worktree_path or worktree.repo_path),
+            env={"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"},
+        )
+
+    @override
     def test_command(self, worktree: "Worktree") -> list[str]:
         return ["uv", "run", "pytest"]
 
@@ -186,7 +195,7 @@ class TeatreeRuntime(OverlayRuntime):
         reported uv's bare ``Failed to spawn: pytest`` (souliane/teatree#4746).
         """
         on_disk = worktree.worktree_path
-        if service != "tests" or not on_disk:
+        if service not in {"tests", "visual_qa"} or not on_disk:
             return []
         repo = Path(on_disk)
         return [] if _python_env_ready(repo) else [_sync_dependencies_step(repo)]
@@ -205,7 +214,22 @@ class TeatreeReview(OverlayReview):
             "src/teatree/core/views/**",
             "src/teatree/core/urls.py",
         )
-        return ["/"] if matches_triggers(changed_files, teatree_globs) else []
+        if not matches_triggers(changed_files, teatree_globs):
+            return []
+        return [
+            "/dash/board/",
+            "/dash/live/",
+            "/dash/cycle-time/",
+            "/dash/health/",
+            "/dash/loops/",
+            "/dash/sessions/",
+            "/dash/presets/",
+            "/dash/settings/",
+            "/dash/skills/",
+            "/dash/import-export/",
+            "/admin/",
+            "/admin/login/",
+        ]
 
     @override
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:

@@ -1,20 +1,22 @@
 """Unit tests for the pre-push browser sanity gate."""
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 
 from teatree import visual_qa
 from teatree.browser.evidence import BrowserEvent
+from teatree.types import RunCommand
 from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 
 def _unreadable_diff() -> list[str]:
-    msg = "the diff must not be read"
-    raise AssertionError(msg)
+    raise CommandFailedError(["git", "diff"], 1, "", "the diff could not be read")
 
 
 class TestMatchesTriggers:
@@ -53,56 +55,42 @@ class TestDetectTargets:
         # Even when default triggers would match, the overlay's empty list wins.
         assert visual_qa.detect_targets(["a.html"], overlay) == []
 
-    def test_overlay_targets_capped_at_max_pages(self) -> None:
+    def test_overlay_targets_past_page_cap_are_reported(self) -> None:
         overlay = MagicMock()
-        overlay.review.visual_qa_targets.return_value = [f"/page-{i}/" for i in range(10)]
+        overlay.review.visual_qa_targets.return_value = [f"/page-{i}/" for i in range(visual_qa.MAX_PAGES + 2)]
         result = visual_qa.detect_targets(["a.html"], overlay)
-        assert len(result) == visual_qa.MAX_PAGES
-
-
-class TestShouldRun:
-    def test_runs_by_default(self) -> None:
-        assert visual_qa.should_run(env={}) == (True, "")
-
-    def test_skip_reason_blocks(self) -> None:
-        run, reason = visual_qa.should_run(skip_reason="ticket comment-only", env={})
-        assert run is False
-        assert "ticket comment-only" in reason
-
-    def test_env_disabled_blocks(self) -> None:
-        run, reason = visual_qa.should_run(env={"T3_VISUAL_QA": "disabled"})
-        assert run is False
-        assert "T3_VISUAL_QA=disabled" in reason
-
-    def test_env_disabled_case_insensitive(self) -> None:
-        run, _ = visual_qa.should_run(env={"T3_VISUAL_QA": "DISABLED"})
-        assert run is False
-
-    def test_env_enabled_runs(self) -> None:
-        assert visual_qa.should_run(env={"T3_VISUAL_QA": "enabled"}) == (True, "")
+        assert len(result) == visual_qa.MAX_PAGES + 2
 
 
 class TestEvaluate:
-    def test_skipped_reason_returned(self) -> None:
+    def test_skip_reason_still_checks_pages(self, monkeypatch) -> None:
+        checked: list[str] = []
+        monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: checked.extend(targets) or [])
         report = visual_qa.evaluate(
-            read_diff=_unreadable_diff, overlay=None, base_url="http://x", skip_reason="not relevant"
+            read_diff=lambda: ["a.html"], overlay=None, base_url="http://x", skip_reason="not relevant"
         )
         assert report.skipped_reason == "--skip: not relevant"
-        assert report.pages == []
+        assert checked == ["/"]
+
+    def test_legacy_env_variable_cannot_disable_the_check(self, monkeypatch) -> None:
+        checked: list[str] = []
+        monkeypatch.setenv("T3_VISUAL_QA", "disabled")
+        monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: checked.extend(targets) or [])
+
+        visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=None, base_url="http://x")
+
+        assert checked == ["/"]
 
     def test_no_targets_skipped(self) -> None:
         report = visual_qa.evaluate(read_diff=lambda: ["a.py"], overlay=None, base_url="http://x")
         assert report.skipped_reason == "no frontend changes"
         assert report.pages == []
 
-    def test_env_disabled_skipped(self) -> None:
+    def test_explicit_skip_records_unreadable_diff(self) -> None:
         report = visual_qa.evaluate(
-            read_diff=_unreadable_diff,
-            overlay=None,
-            base_url="http://x",
-            env={"T3_VISUAL_QA": "disabled"},
+            read_diff=_unreadable_diff, overlay=None, base_url="http://x", skip_reason="reviewed"
         )
-        assert "T3_VISUAL_QA=disabled" in report.skipped_reason
+        assert report.not_run_reason
 
     def test_playwright_unavailable_did_not_run(self, monkeypatch) -> None:
         message = "browser missing"
@@ -128,6 +116,41 @@ class TestRunCheckWithoutPlaywright:
         assert report.not_run_reason.startswith("Playwright is not importable in the environment running `t3`")
         assert "t3 doctor check --repair" in report.not_run_reason
         assert report.has_errors
+
+
+class TestServedApp:
+    def test_server_is_sandboxed_and_process_group_is_reaped(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", "/tmp/live-config.sqlite3")
+        script = (
+            "import os,socket,time;"
+            "print(os.environ.get('T3_CONFIG_DB','absent'),flush=True);"
+            "s=socket.socket();s.bind(('127.0.0.1',int(os.environ['T3_VISUAL_QA_PORT'])));"
+            "s.listen();time.sleep(30)"
+        )
+        spec = visual_qa.ServerSpec(
+            RunCommand(args=[sys.executable, "-c", script], cwd=tmp_path), str(tmp_path), lambda: None
+        )
+
+        with visual_qa._served_app(spec) as app:
+            pgid = app.pgid
+            process = app.process
+            assert "absent" in app.log_path.read_text()
+            assert app.base_url.startswith("http://127.0.0.1:")
+
+        assert process.poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)
+
+    def test_missing_checkout_script_is_did_not_run(self, tmp_path: Path) -> None:
+        spec = visual_qa.ServerSpec(
+            RunCommand(args=[sys.executable, "missing-serve.py"], cwd=tmp_path), str(tmp_path), lambda: None
+        )
+
+        report = visual_qa.evaluate(read_diff=lambda: ["page.html"], overlay=None, base_url="", server=spec)
+
+        assert "server exited" in report.not_run_reason
+        assert "missing-serve.py" in report.not_run_reason
+        assert report.unchecked_reasons["/"].startswith("unreached")
 
 
 class TestChangedFilesReadsTheResolvedBase:
@@ -202,7 +225,50 @@ class TestFindingRules:
         assert visual_qa._page_error("http://h/", event) is None
 
 
+class TestNavigationClassification:
+    @pytest.mark.parametrize(
+        ("failure", "unreached"),
+        [
+            ("net::ERR_CONNECTION_REFUSED", True),
+            ("net::ERR_NAME_NOT_RESOLVED", True),
+            ("net::ERR_ADDRESS_UNREACHABLE", True),
+            ("net::ERR_CONNECTION_RESET", False),
+            ("net::ERR_EMPTY_RESPONSE", False),
+        ],
+    )
+    def test_only_never_connected_errors_are_unreached(self, failure: str, tmp_path: Path, *, unreached: bool) -> None:
+        context = MagicMock()
+        page = context.new_page.return_value
+        page.goto.side_effect = PlaywrightError(f"Page.goto: {failure}")
+        page.locator.return_value.inner_text.return_value = ""
+
+        result = visual_qa._check_one(context, "http://127.0.0.1:9", "/dash/board/", tmp_path, 0)
+
+        assert result.unreached is unreached
+        assert bool(result.errors) is not unreached
+
+
 class TestVisualQAReport:
+    def test_unreached_connection_is_unknown_even_without_findings(self) -> None:
+        report = visual_qa.VisualQAReport(
+            targets=["/dash/board/"],
+            pages=[visual_qa.PageResult(url="http://127.0.0.1:9/dash/board/", unreached=True)],
+        )
+        assert report.unchecked == ["/dash/board/"]
+        assert report.unchecked_reasons["/dash/board/"] == "unreached"
+        assert report.total_errors == 0
+        assert report.pages_checked == 0
+
+    def test_page_cap_is_named_for_every_later_target(self) -> None:
+        targets = [f"/p{i}" for i in range(visual_qa.MAX_PAGES + 2)]
+        report = visual_qa.VisualQAReport(
+            targets=targets, pages=[visual_qa.PageResult(url=p) for p in targets[: visual_qa.MAX_PAGES]]
+        )
+        assert report.unchecked_reasons == {
+            f"/p{visual_qa.MAX_PAGES}": "page cap",
+            f"/p{visual_qa.MAX_PAGES + 1}": "page cap",
+        }
+
     def test_a_report_with_no_targets_has_no_errors(self) -> None:
         report = visual_qa.VisualQAReport(targets=[])
         assert report.has_errors is False
@@ -217,7 +283,7 @@ class TestVisualQAReport:
         assert "Not checked" in visual_qa.format_report(report)
 
     def test_a_skipped_report_is_not_reported_incomplete(self) -> None:
-        report = visual_qa.VisualQAReport(targets=["/a"], skipped_reason="--skip: docs only")
+        report = visual_qa.VisualQAReport(targets=[], skipped_reason="--skip: docs only")
         assert report.unchecked == []
         assert report.has_errors is False
 
@@ -251,10 +317,10 @@ class TestVisualQAReport:
 
 class TestFormatReport:
     def test_skipped_section(self) -> None:
-        report = visual_qa.VisualQAReport(targets=[], skipped_reason="T3_VISUAL_QA=disabled")
+        report = visual_qa.VisualQAReport(targets=[], skipped_reason="--skip: docs only")
         out = visual_qa.format_report(report)
         assert "## Visual QA" in out
-        assert "T3_VISUAL_QA=disabled" in out
+        assert "docs only" in out
 
     def test_no_targets_section(self) -> None:
         report = visual_qa.VisualQAReport(targets=[])

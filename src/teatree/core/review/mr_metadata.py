@@ -32,6 +32,7 @@ __all__ = [
     "AUTO_CREATED_MARKER",
     "DEFAULT_MR_TITLE_REGEX",
     "STANDARD_SECTIONS",
+    "append_recorded_visual_qa",
     "auto_created_description",
     "ensure_standard_body",
     "expected_first_line_format",
@@ -40,6 +41,16 @@ __all__ = [
     "missing_required_sections",
     "validate_mr_metadata",
 ]
+
+
+def append_recorded_visual_qa(description: str, evidence: object) -> str:
+    if not isinstance(evidence, dict) or "## Visual QA" in description:
+        return description
+    markdown = evidence.get("report_markdown")
+    if not isinstance(markdown, str) or not markdown.strip():
+        return description
+    return f"{description.rstrip()}\n\n{markdown.rstrip()}"
+
 
 _WHAT_WHY_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(what|why)\b\s*:?", re.IGNORECASE | re.MULTILINE)
 

@@ -21,11 +21,7 @@ from playwright.sync_api import Page
 
 from e2e.dash.browser_launch import BROWSER_EXECUTABLE_ENV, browser_launch_overrides
 from e2e.dash.pom import ConsoleGuard, SeededBoard
-from teatree.core.models.loop import Loop
-from teatree.core.models.ticket import Ticket
-from tests.factories import PullRequestFactory, TicketFactory, TicketTransitionFactory
-
-State = Ticket.State
+from e2e.dash.seed import seed_board
 
 
 @pytest.fixture(scope="session")
@@ -46,16 +42,7 @@ def seeded_board(request: pytest.FixtureRequest) -> SeededBoard:
     visible to the ``live_server`` thread that serves the browser.
     """
     request.getfixturevalue("transactional_db")
-    board = SeededBoard(
-        backlog=TicketFactory(state=State.NOT_STARTED, short_description="triage the inbox"),
-        building=TicketFactory(state=State.WORK_STARTED, short_description="build the widget"),
-        reviewing=TicketFactory(state=State.REVIEW_REQUESTED, short_description="awaiting cold review"),
-        landed=TicketFactory(state=State.MERGED, short_description="landed the change"),
-    )
-    TicketTransitionFactory(ticket=board.reviewing, from_state=State.WORK_STARTED, to_state=State.CODED)
-    PullRequestFactory(ticket=board.reviewing)
-    Loop.objects.create(name="e2e_loop", script="teatree.loops.review", delay_seconds=60)
-    return board
+    return seed_board()
 
 
 @pytest.fixture

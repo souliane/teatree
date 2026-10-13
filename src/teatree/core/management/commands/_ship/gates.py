@@ -11,6 +11,7 @@ seams keep resolving against ``pr``'s namespace).
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import TypedDict
 
 from teatree import visual_qa
@@ -19,6 +20,7 @@ from teatree.core.backend_protocols import BackendResolutionError, CodeHostBacke
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.e2e_mandatory_gate import evaluate_e2e_mandatory
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.management.commands._e2e_resolvers import resolve_visual_qa_base_url
 from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown, Verdict, evaluate_gate, read_or_refuse
@@ -26,6 +28,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree.branch_currency import require_current_branch
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -253,29 +256,21 @@ def _held_pre_pr_self_review(ticket: Ticket) -> ShippingGateFailure | None:
     )
 
 
-def resolve_base_url(worktree: Worktree) -> str:
-    """Return the frontend URL recorded by ``Worktree.verify()``.
-
-    Prefers ``urls['frontend']`` (what users browse) over ``urls['backend']``.
-    Falls back to ``http://127.0.0.1:8000`` when no URLs are recorded yet.
-    """
-    urls = worktree.get_extra().get("urls", {})
-    return urls.get("frontend") or urls.get("backend") or "http://127.0.0.1:8000"
-
-
 _VISUAL_QA_NOT_RUN_HINT = (
-    "Repair what the error names (a missing browser: `playwright install chromium`; an unreadable diff: "
-    "a fetchable base ref) and retry, or pass --skip-visual-qa '<reason>' to bypass on purpose."
+    "Repair what the error names (browser: `playwright install chromium`; checkout server or stack: start it; "
+    "diff: fetch the base ref) and retry, or pass --skip-visual-qa '<reason>' to bypass on purpose."
 )
 
 
 def _visual_qa_verdict(report: visual_qa.VisualQAReport) -> Verdict:
+    if report.skipped_reason.startswith("--skip:"):
+        return Pass()
     if report.total_errors:
         return Refuse(f"Visual QA found {report.total_errors} blocking finding(s).")
     if report.not_run_reason:
-        return Unknown(f"the browser could not start ({report.not_run_reason})")
+        return Unknown(f"the check could not run ({report.not_run_reason})")
     if report.unchecked:
-        return Unknown(f"the {visual_qa.TOTAL_TIMEOUT_S}s budget ran out before {', '.join(report.unchecked)}")
+        return Unknown(", ".join(f"{path}: {reason}" for path, reason in report.unchecked_reasons.items()))
     return Pass()
 
 
@@ -295,16 +290,21 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
     ticket that raised out of the ``manage.py`` subprocess as a bare ``rc=1``.
     """
     repo_path = worktree.worktree_path or worktree.repo_path
-    base_url = resolve_base_url(worktree)
-
     overlay = get_overlay()
     result = evaluate_gate(
         "visual_qa",
         collect=lambda: visual_qa.evaluate(
             read_diff=lambda: visual_qa.changed_files(repo=repo_path),
             overlay=overlay,
-            base_url=base_url,
+            base_url=lambda: resolve_visual_qa_base_url(worktree),
             skip_reason=skip_reason,
+            server=visual_qa.ServerSpec(
+                server_command,
+                repo_path,
+                lambda: ServiceLauncher(worktree, "visual_qa", overlay=overlay).prepare(strict=True),
+            )
+            if (server_command := overlay.runtime.visual_qa_server(worktree)) is not None
+            else None,
         ),
         judge=_visual_qa_verdict,
     )
@@ -312,10 +312,20 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
 
     # Only persist when the gate produced a meaningful signal — skipping a
     # no-op run keeps the FSM history readable.
-    if report is not None and (report.pages or report.has_errors):
+    if report is not None and (report.pages or report.has_errors or report.not_run_reason or skip_reason):
         # #800 N3: canonical locked RMW — concurrent pr_urls (ship
         # worker) writer no longer clobbers visual_qa.
-        ticket.merge_extra(set_keys={"visual_qa": report.summary()})
+        summary = report.summary()
+        if skip_reason:
+            summary["bypass"] = {
+                "reason": skip_reason,
+                "head_sha": git.head_sha(repo=repo_path),
+                "at": datetime.now(UTC).isoformat(),
+            }
+            summary["report_markdown"] += (
+                f"\nBypass head: `{summary['bypass']['head_sha']}`; at: {summary['bypass']['at']}\n"
+            )
+        ticket.merge_extra(set_keys={"visual_qa": summary})
 
     if result.passed:
         return None

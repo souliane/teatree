@@ -17,7 +17,7 @@ from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
-from teatree.core.review.mr_metadata import ensure_standard_body
+from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
@@ -587,6 +587,7 @@ class ShipExecutor(RunnerBase):
             required_sections=overlay.metadata.get_required_description_sections(),
             section_defaults=overlay.metadata.get_description_section_defaults(),
         )
+        description = append_recorded_visual_qa(description, extra.get("visual_qa"))
         description = apply_publish_gate(
             description,
             repo=git.remote_slug(repo=repo_path),

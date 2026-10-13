@@ -51,6 +51,9 @@ class VisualQASummary(TypedDict, total=False):
     pages_checked: int
     errors: int
     details: list[VisualQAPageDetail]
+    unchecked_reasons: dict[str, str]
+    report_markdown: str
+    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
