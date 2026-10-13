@@ -173,7 +173,7 @@ def _json_body_fields(blob: str) -> list[str]:
     return [str(decoded[key]) for key in _JSON_BODY_KEYS if key in decoded]
 
 
-def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
+def _scan_curl_payload(raw: str, payloads: list[str], *, fail_closed: bool = True) -> None:
     """Append ``raw`` plus every body-bearing JSON field it decodes to.
 
     A non-JSON-decodable body that LOOKS like JSON (starts with ``{`` or
@@ -184,11 +184,13 @@ def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
     json_fields = _json_body_fields(raw)
     if json_fields:
         payloads.extend(json_fields)
-    elif raw.strip().startswith(("{", "[")):
+    elif fail_closed and raw.strip().startswith(("{", "[")):
         payloads.append(FAIL_CLOSED_SENTINEL)
 
 
-def _record_curl_form(field: str, raw: str, payloads: list[str], base: Path | None) -> None:
+def _record_curl_form(
+    field: str, raw: str, payloads: list[str], base: Path | None, *, fail_closed: bool = True
+) -> None:
     """Route a single curl ``-F``/``--form`` ``name=value`` field to the payload list.
 
     The published body fragment is the part AFTER the first ``=``. A value that
@@ -200,7 +202,8 @@ def _record_curl_form(field: str, raw: str, payloads: list[str], base: Path | No
     if not sep:
         return
     if value.startswith(("@", "<")):
-        payloads.append(FAIL_CLOSED_SENTINEL)
+        if fail_closed:
+            payloads.append(FAIL_CLOSED_SENTINEL)
         return
     name_at = raw.find(f"{name}=")
     if name_at < 0:
@@ -215,7 +218,7 @@ def _walk_curl_args(
     *,
     raws: list[str] | None = None,
     base: Path | None = None,
-    forge_groups: set[int] | None = None,
+    group_targets: dict[int, bool] | None = None,
 ) -> None:
     """Extract every body a curl argv publishes: data values, form fields and uploaded files.
 
@@ -224,7 +227,8 @@ def _walk_curl_args(
     """
     for group_index, (options, _) in enumerate(curl_groups(words, raws)):
         for option in options:
-            forge_bound = forge_groups is None or group_index in forge_groups
+            forge_bound = group_targets is None or group_targets.get(group_index, False)
+            publish_bound = group_targets is None or group_index in group_targets
             if option.unknown and forge_bound:
                 payloads.append(
                     f"{NAMED_FAIL_CLOSED_PREFIX}curl option {option.name} is outside curl's option table; "
@@ -238,9 +242,9 @@ def _walk_curl_args(
             if option.value is None or option.name not in _CURL_BODY_FLAGS:
                 continue
             if option.name in CURL_UPLOAD_FLAGS or option.reads_a_file():
-                if forge_bound:
+                if forge_bound if option.name in CURL_UPLOAD_FLAGS else publish_bound:
                     payloads.append(FAIL_CLOSED_SENTINEL)
             elif option.name in CURL_FORM_FLAGS:
-                _record_curl_form(option.value, option.raw, payloads, base)
+                _record_curl_form(option.value, option.raw, payloads, base, fail_closed=publish_bound)
             else:
-                _scan_curl_payload(option.resolved(base), payloads)
+                _scan_curl_payload(option.resolved(base), payloads, fail_closed=publish_bound)

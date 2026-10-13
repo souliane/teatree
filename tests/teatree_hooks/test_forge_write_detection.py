@@ -397,6 +397,9 @@ class TestCurlOptionBoundaries:
             f"gh pr create {_PUB} -t routine -b routine && curl --anyauth -u a:b http://127.0.0.1:8000/x",
             f"gh pr create {_PUB} -t routine -b routine && curl -K /tmp/fixture.cfg http://127.0.0.1:8000/x",
             f"gh pr create {_PUB} -t routine -b routine && curl -T /tmp/fixture.txt http://127.0.0.1:8000/x",
+            f"gh pr create {_PUB} -t routine -b routine && curl -d @/tmp/fixture.txt http://127.0.0.1:8000/x",
+            f"gh pr create {_PUB} -t routine -b routine && curl -F field=@/tmp/fixture.txt http://127.0.0.1:8000/x",
+            f"gh pr create {_PUB} -t routine -b routine && curl -d '{{broken-json' http://127.0.0.1:8000/x",
         ],
     )
     @pytest.mark.usefixtures("public_gate")

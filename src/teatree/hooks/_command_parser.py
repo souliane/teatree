@@ -435,12 +435,19 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         if segment_is_forge_cli_write(words):
             walk_forge_free_text(words, raws, payloads, ctx, first)
     if first == "curl":
+        transfers = curl_groups(words[1:])
         forge_groups = {
             index
-            for index, (_, positions) in enumerate(curl_groups(words[1:]))
+            for index, (_, positions) in enumerate(transfers)
             if any(_is_forge_host(_url_host(url)) for url in _curl_urls(positions))
         }
-        _walk_curl_args(words, payloads, raws=raws, base=ctx.base, forge_groups=forge_groups)
+        publish_groups = forge_groups | {
+            index
+            for index, (_, positions) in enumerate(transfers)
+            if any(segment_is_substring_publish(["curl", url]) for url in _curl_urls(positions))
+        }
+        group_targets = {index: index in forge_groups for index in publish_groups}
+        _walk_curl_args(words, payloads, raws=raws, base=ctx.base, group_targets=group_targets)
     # Gated on the ACTUAL classification (write verb + forge URL), not merely
     # the python leader: ``extract_bash_payload`` also backs
     # ``extract_secret_scan_text``, which runs on EVERY Bash command
