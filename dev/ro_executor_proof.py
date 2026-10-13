@@ -9,7 +9,7 @@ compose project beside a mounts twin (never named teatree-worker or teatree-admi
 service name), on placeholder trees. It also shows that a fresh clone volume refuses the executor until a
 read-write mount has created the worktree mountpoint, which deploy.sh's init provides.
 
-Post-deploy (A10 step c), inside teatree-worker, with the interpreter ``t3`` itself runs on:
+After a deploy, inside teatree-worker, with the interpreter ``t3`` itself runs on:
 
     "$(sed -n '1s/^#!//p' "$(command -v t3)")" <deploy checkout>/dev/ro_executor_proof.py live [--root DIR ...]
 
@@ -106,7 +106,7 @@ def check_verdict(executor: Executor) -> bool:
 
 
 def check_sweep_escape(executor: Executor) -> bool:
-    """The review's escape: an env-cleared, detached child of a Codex-home exec, reparented to PID 1."""
+    """An env-cleared, detached child of a Codex-home exec, reparented to PID 1, must not outlive the sweep."""
     plant = f"({' '.join(['env', '-i', 'setsid', *ESCAPEE])} >/dev/null 2>&1 &)"
     executor.run(plant, env=(("CODEX_HOME", f"{EXECUTOR_HOME_ROOT}/codex-proof"),))
     before = executor.processes()

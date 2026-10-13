@@ -293,15 +293,15 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
   own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Under
   the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
-  every process outside PID 1's session except itself and the worker's own `docker exec` programs: those
-  are the only processes whose parent is outside the container, and one that runs no Codex home is spared.
+  every process outside PID 1's session except the worker's own `docker exec` programs that run no Codex
+  home, the sweep among them; only `docker exec` gives a process a parent outside the container.
   Nothing a process changes about itself moves it out of that set: it cannot join PID 1's session or gain
   a parent outside the container, so clearing its environment and detaching (it is then a child of PID 1
   in a session of its own) does not escape. `tini` and its `sleep` keep the container and its tmpfs up.
   A survivor, or a malformed sweep answer, refuses the run before any home is touched. The server then
   recovers a newer login a stale home still holds (by `last_refresh`, written to pass and verified by
   re-read); a stale home that cannot be read, or whose newer login cannot be persisted, is kept and
-  refuses the run. Only then are both tmpfs mounts emptied and checked empty, so `TMPDIR` never carries
+  refuses the run. Only then are both tmpfs mounts emptied (one that keeps an entry refuses), so `TMPDIR` never carries
   one session's files into the next, the new `/run/t3-ro/codex-*` home is created owner-only
   (`mkdir -m 0700`), and its login is hydrated over exec stdin; the launch never creates a home. A
   rotated login is persisted the same way at every thread close. At stop, still under the lease, the same
