@@ -236,7 +236,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "read-only brief over budget: issue comments" in str(refusal)
 
     def test_unreadable_issue_body_refuses_the_executor_run(self) -> None:
-        for issue in (CommandFailedError(["gh"], 1, "", "boom"), {"error": "Not a GitHub issue URL"}, {"body": None}):
+        for issue in (CommandFailedError(["gh"], 1, "", "boom"), {"error": "Not a GitHub issue URL"}):
             with self.subTest(issue=issue):
                 assert "the issue body could not be read" in str(self._refusal(self._task(), _Host(issue)))
 

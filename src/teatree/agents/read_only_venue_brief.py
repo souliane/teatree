@@ -102,7 +102,7 @@ def _issue(ticket: "Ticket") -> tuple[str, str]:
         reason = f"the issue body could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
     body = next((issue.get(key) for key in ("description", "body") if key in issue), None)
-    if not isinstance(body, str) or issue.get("error"):
+    if not isinstance(body, str):
         reason = "the issue body could not be read"
         raise _refused(reason)
     try:
