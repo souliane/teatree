@@ -49,6 +49,7 @@ class TestBranchClaimedPrRefusesASecondLifecycleClaim(TestCase):
             ref=claim_ref(_ISSUE),
             sha="a" * 40,
             instance_id=as_instance,
+            lineage="f" * 32,
             claimed_at=0.0,
             ttl_seconds=3600.0,
         )

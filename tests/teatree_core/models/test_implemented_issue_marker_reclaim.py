@@ -24,6 +24,7 @@ class TestReclaimAbandonedMarker(TestCase):
             abandoned=True,
             head_sha="deadbeef",
             claim_ref_sha="oldsha",
+            claim_lineage="0" * 32,
             ticket=TicketFactory(),
         )
 
@@ -35,6 +36,7 @@ class TestReclaimAbandonedMarker(TestCase):
         assert reclaimed.claimed_by_instance == instance_id()
         assert reclaimed.head_sha == ""  # stale dispatch artifacts cleared for the fresh attempt
         assert reclaimed.claim_ref_sha == ""
+        assert reclaimed.claim_lineage == ""
         assert reclaimed.ticket_id is None
 
     def test_live_marker_is_not_reclaimed(self) -> None:

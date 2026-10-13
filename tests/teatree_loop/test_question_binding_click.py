@@ -106,6 +106,15 @@ class TestTheTapRoundTrip(TestCase):
         assert row.is_pending
         backend.update_message.assert_not_called()
 
+    def test_a_tap_naming_no_user_binds_nothing_while_the_owner_id_is_unknown(self) -> None:
+        row, backend = _posted_card()
+        backend.user_id = ""
+
+        assert not answer_from_click(_tap(row, user=""), backend=backend)
+
+        row.refresh_from_db()
+        assert row.is_pending
+
     def test_a_tap_with_a_label_that_is_no_longer_the_option_is_stale_and_changes_nothing(self) -> None:
         row, backend = _posted_card()
         payload = _tap(row, 1)
