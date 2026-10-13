@@ -1,0 +1,251 @@
+{
+  "cap_eff": "0000000000000000",
+  "controls": {
+    "/run/t3-ro": "OK",
+    "/run/t3-tmp": "OK"
+  },
+  "env": [
+    "GIT_OPTIONAL_LOCKS",
+    "HOME",
+    "HOSTNAME",
+    "LANG",
+    "PATH",
+    "TMPDIR",
+    "TZ"
+  ],
+  "home": null,
+  "mounts": [
+    {
+      "fstype": "overlay",
+      "options": "ro,relatime",
+      "source": "overlay",
+      "target": "/"
+    },
+    {
+      "fstype": "proc",
+      "options": "rw,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/dev"
+    },
+    {
+      "fstype": "devpts",
+      "options": "rw,nosuid,noexec,relatime",
+      "source": "devpts",
+      "target": "/dev/pts"
+    },
+    {
+      "fstype": "sysfs",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "sysfs",
+      "target": "/sys"
+    },
+    {
+      "fstype": "cgroup2",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "cgroup",
+      "target": "/sys/fs/cgroup"
+    },
+    {
+      "fstype": "mqueue",
+      "options": "rw,nosuid,nodev,noexec,relatime",
+      "source": "mqueue",
+      "target": "/dev/mqueue"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid,nodev,noexec,relatime",
+      "source": "shm",
+      "target": "/dev/shm"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid,nodev,noexec,relatime",
+      "source": "tmpfs",
+      "target": "/run/t3-ro"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid,nodev,noexec,relatime",
+      "source": "tmpfs",
+      "target": "/run/t3-tmp"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "/etc/resolv.conf"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "/etc/hostname"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "/etc/hosts"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "$CONTAINER_HOME/workspace"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "$CONTAINER_HOME/workspace/t3-workspaces"
+    },
+    {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "/home/<user>/teatree-deploy/.git"
+    },
+    {
+      "fstype": "proc",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc/bus"
+    },
+    {
+      "fstype": "proc",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc/fs"
+    },
+    {
+      "fstype": "proc",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc/irq"
+    },
+    {
+      "fstype": "proc",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc/sys"
+    },
+    {
+      "fstype": "proc",
+      "options": "ro,nosuid,nodev,noexec,relatime",
+      "source": "proc",
+      "target": "/proc/sysrq-trigger"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "ro,relatime",
+      "source": "tmpfs",
+      "target": "/proc/acpi"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "ro,relatime",
+      "source": "tmpfs",
+      "target": "/proc/asound"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/proc/interrupts"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/proc/kcore"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/proc/keys"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/proc/latency_stats"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "ro,relatime",
+      "source": "tmpfs",
+      "target": "/proc/scsi"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "rw,nosuid",
+      "source": "tmpfs",
+      "target": "/proc/timer_list"
+    },
+    {
+      "fstype": "tmpfs",
+      "options": "ro,relatime",
+      "source": "tmpfs",
+      "target": "/sys/firmware"
+    }
+  ],
+  "no_new_privs": "1",
+  "pid1_env": [
+    "GIT_OPTIONAL_LOCKS",
+    "HOME",
+    "HOSTNAME",
+    "LANG",
+    "PATH",
+    "TMPDIR",
+    "TZ"
+  ],
+  "roots": {
+    "$CONTAINER_HOME/workspace/t3-workspaces/example/teatree": {
+      "exists": true,
+      "git": "OK",
+      "is_dir": true,
+      "write": "EROFS"
+    }
+  },
+  "scan": {
+    "/": {
+      "owner": 0,
+      "secrets": []
+    },
+    "/home/<user>/teatree-deploy/.git": {
+      "owner": 1001,
+      "secrets": []
+    },
+    "$CONTAINER_HOME/workspace": {
+      "owner": 1001,
+      "secrets": []
+    },
+    "$CONTAINER_HOME/workspace/t3-workspaces": {
+      "owner": 1001,
+      "secrets": []
+    }
+  },
+  "tools": {
+    "docker": false,
+    "gh": false,
+    "pass": false,
+    "t3": false
+  },
+  "uid": 65534,
+  "writes": {
+    "/": "EROFS",
+    "/etc/hostname": "EACCES",
+    "/etc/hosts": "EACCES",
+    "/etc/resolv.conf": "EACCES",
+    "/home/<user>/teatree-deploy/.git": "EROFS",
+    "$CONTAINER_HOME/workspace": "EROFS",
+    "$CONTAINER_HOME/workspace/t3-workspaces": "EROFS"
+  }
+}

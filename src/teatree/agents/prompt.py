@@ -1,6 +1,7 @@
 """Build agent prompts from ticket and task context."""
 
 from bisect import bisect_right
+from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 from typing import cast
@@ -9,7 +10,8 @@ from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_di
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
-from teatree.agents.phase_blocks import embedded_intake_survey_json, phase_specific_lines
+from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
+from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts
 from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
@@ -17,6 +19,7 @@ from teatree.agents.skill_injection import (
     _is_stack_skill,
     _read_skill_contents,
     _read_skill_contents_scoped,
+    read_only_venue_skill_contents,
 )
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -45,6 +48,28 @@ _SKILLS_POINTER = "the full skill — load it with the Skill tool (a harness wit
 _PARENT_POINTER = "the parent task's recorded result"
 _HANDOFF_POINTER = "Complete predecessor result (source of truth): "
 _OWNER_KINDS = ", ".join(OwnerDecision)
+_OWNER_STOP_LINES = (
+    "1. Check what has been done so far (git log, existing code, PR status)",
+    "2. Identify what remains to be done",
+    "3. If you can proceed (code, test, fix) — do it",
+    f"4. If only the owner can decide ({_OWNER_KINDS}; an access or permission grant is credentials),",
+    '   STOP: set "needs_user_input": true, "user_input_kind": "<kind>", "user_input_checked": ["<fact>"]',
+    '   (every fact you checked first), "user_input_reason": "<one question ending in ?>" and a',
+    '   "user_input_card" (see the envelope contract) in your JSON result.',
+    "   Decide everything else yourself: a gate refusal, a red check or a spent budget is yours.",
+)
+_VERIFY_GATES_LINES = (
+    f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
+    "   It runs the commit-stage, push-stage and manual CI-job hooks; a bare `prek run --all-files`",
+    "   SKIPS the push-stage and manual gates CI re-runs. Report the SHA it says it measured TOGETHER",
+    "   WITH its exit code — an exit code alone does not say which tree earned it. To bind the run to",
+    "   a specific head: `t3 tool verify-gates --expect-sha <head>`.",
+)
+_WRAP_UP_LINES = (
+    "When done, run /t3:next to wrap up (retro + the result envelope + a summary).",
+    "/t3:next is a convenience, not the contract: the envelope below is required either way,",
+    "so emit it yourself whenever /t3:next is unavailable or does not run.",
+)
 
 
 def _parent_result_summary(task: Task) -> str:
@@ -129,24 +154,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     lines.extend(_ticket_context_lines(ticket))
 
     lines.extend(
-        (
-            "",
-            "Instructions:",
-            "1. Check what has been done so far (git log, existing code, PR status)",
-            "2. Identify what remains to be done",
-            "3. If you can proceed (code, test, fix) — do it",
-            f"4. If only the owner can decide ({_OWNER_KINDS}; an access or permission grant is credentials),",
-            '   STOP: set "needs_user_input": true, "user_input_kind": "<kind>", "user_input_checked": ["<fact>"]',
-            '   (every fact you checked first), "user_input_reason": "<one question ending in ?>" and a',
-            '   "user_input_card" (see the envelope contract) in your JSON result.',
-            "   Decide everything else yourself: a gate refusal, a red check or a spent budget is yours.",
-            f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
-            "   It runs the commit-stage, push-stage and manual CI-job hooks; a bare `prek run --all-files`",
-            "   SKIPS the push-stage and manual gates CI re-runs. Report the SHA it says it measured TOGETHER",
-            "   WITH its exit code — an exit code alone does not say which tree earned it. To bind the run to",
-            "   a specific head: `t3 tool verify-gates --expect-sha <head>`.",
-            final_output_reminder_line(task.phase),
-        ),
+        ("", "Instructions:", *_OWNER_STOP_LINES, *_VERIFY_GATES_LINES, final_output_reminder_line(task.phase))
     )
 
     if normalize_phase(task.phase) == "coding":
@@ -162,6 +170,34 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
             )
         )
 
+    return "\n".join(lines)
+
+
+def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
+    """The task message for the read-only executor: every fact inline and in full, and no CLI step."""
+    ticket: Ticket = task.ticket
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    lines = _task_header_lines(task, extra)
+    lines.extend(_format_pr_context(extra))
+    lines.extend(("", "Issue body (read from the forge for you):", facts.issue_body or "(empty)"))
+    if facts.issue_comments:
+        lines.extend(("", "Issue comments, oldest first (read from the forge for you):", facts.issue_comments))
+    if facts.ticket_context:
+        lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
+    if facts.handoff:
+        lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
+    if parent_summary := _parent_result_summary(task):
+        lines.extend(("", "Prior task result:", parent_summary))
+    lines.extend(intake_survey_lines(facts.survey))
+    lines.extend(
+        (
+            "",
+            "Instructions:",
+            *_OWNER_STOP_LINES,
+            "5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.",
+            final_output_reminder_line(task.phase),
+        )
+    )
     return "\n".join(lines)
 
 
@@ -221,6 +257,14 @@ def required_skill_delivery(
     return full, explicit | (stack - full)
 
 
+def read_only_required_skills(
+    phase: str, skills: list[str], *, lifecycle_skill: str, stage_skills: list[str]
+) -> set[str]:
+    """What the read-only executor must receive in full: it has neither a Skill tool nor a skill file to read."""
+    full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
+    return full | explicit
+
+
 def _assigned_reviewer_identity(task: Task) -> str:
     """The identity *task*'s envelope example must show, or ``""`` for every other phase.
 
@@ -230,6 +274,24 @@ def _assigned_reviewer_identity(task: Task) -> str:
     if "review_verdict" not in required_evidence_for_phase(task.phase):
         return ""
     return assigned_reviewer_identity_for(task)
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextRequest:
+    task: Task
+    skills: list[str]
+    lifecycle_skill: str
+    stage_skills: list[str] | None
+    read_only_venue: bool = False
+
+
+def build_read_only_system_context(
+    task: Task, *, skills: list[str], lifecycle_skill: str = "", stage_skills: list[str] | None = None
+) -> str:
+    """The system context for the read-only executor: its directive first, no survey and no handoff pointer."""
+    return _render_system_context(
+        _ContextRequest(task, skills, lifecycle_skill, stage_skills, read_only_venue=True), handoff=None
+    )
 
 
 def build_system_context(
@@ -261,43 +323,58 @@ def build_system_context(
     every dispatch. Mirrors the eval lane, which already leads with the stable
     ``SKILL_BUNDLE_FRAMING``.
     """
-    lines = ["You are a TeaTree headless agent executing a task."]
+    return _render_system_context(_ContextRequest(task, skills, lifecycle_skill, stage_skills), handoff=handoff)
 
-    stage_present = stage_skills_present(task, skills, configured=stage_skills)
+
+def _skill_content(request: _ContextRequest, stage_present: list[str], stage_exclude: frozenset[str]) -> str:
+    skills, lifecycle_skill = request.skills, request.lifecycle_skill
+    if not skills:
+        return ""
+    if request.read_only_venue:
+        embedded = read_only_required_skills(
+            request.task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
+        )
+        return read_only_venue_skill_contents(skills, embedded)
+    if not (lifecycle_skill or stage_present):
+        return _read_skill_contents(skills)
+    # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
+    # by reference, so they are primary alongside the lifecycle skill.
+    primary_skills = {lifecycle_skill, *stage_present} - {""}
+    explicit_load_skills: set[str] | None = None
+    suppress_names: set[str] | None = None
+    phase = normalize_phase(request.task.phase)
+    if phase == "reviewing":
+        review_primary, explicit_load_skills = _review_phase_scoping(skills)
+        primary_skills |= review_primary
+    elif phase == "coding":
+        # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
+        # not a companion line the builder would skip.
+        primary_skills |= _CODING_PHASE_ALWAYS_FULL
+        # The directive force-loads the stack + overlay skills (#1368);
+        # drop them from the ignorable summary so it cannot contradict it.
+        # Stage skills are primary/full-embed, so excluded from the block.
+        suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
+    return _read_skill_contents_scoped(
+        skills,
+        primary_skills=primary_skills,
+        explicit_load_skills=explicit_load_skills,
+        suppress_names=suppress_names,
+    )
+
+
+def _render_system_context(request: _ContextRequest, *, handoff: Path | None) -> str:
+    task, skills, read_only_venue = request.task, request.skills, request.read_only_venue
+    lines = [*READ_ONLY_DIRECTIVE, ""] if read_only_venue else []
+    lines.append("You are a TeaTree headless agent executing a task.")
+
+    stage_present = stage_skills_present(task, skills, configured=request.stage_skills)
     stage_exclude = frozenset(_explicit_load_name(s) for s in stage_present)
 
-    skill_content = ""
-    if skills:
-        if lifecycle_skill or stage_present:
-            # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
-            # by reference, so they are primary alongside the lifecycle skill.
-            primary_skills = {lifecycle_skill, *stage_present} - {""}
-            explicit_load_skills: set[str] | None = None
-            suppress_names: set[str] | None = None
-            phase = normalize_phase(task.phase)
-            if phase == "reviewing":
-                review_primary, explicit_load_skills = _review_phase_scoping(skills)
-                primary_skills |= review_primary
-            elif phase == "coding":
-                # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
-                # not a companion line the builder would skip.
-                primary_skills |= _CODING_PHASE_ALWAYS_FULL
-                # The directive force-loads the stack + overlay skills (#1368);
-                # drop them from the ignorable summary so it cannot contradict it.
-                # Stage skills are primary/full-embed, so excluded from the block.
-                suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
-            skill_content = _read_skill_contents_scoped(
-                skills,
-                primary_skills=primary_skills,
-                explicit_load_skills=explicit_load_skills,
-                suppress_names=suppress_names,
-            )
-        else:
-            skill_content = _read_skill_contents(skills)
-        if skill_content:
-            lines.extend(("", "# Loaded Skills", "", skill_content))
-            if stage_present:
-                lines.extend(("", stage_precedence_line(stage_present)))
+    skill_content = _skill_content(request, stage_present, stage_exclude)
+    if skill_content:
+        lines.extend(("", "# Loaded Skills", "", skill_content))
+        if stage_present:
+            lines.extend(("", stage_precedence_line(stage_present)))
 
     lines.extend(
         (
@@ -312,9 +389,11 @@ def build_system_context(
             "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
             "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
             "",
-            "When done, run /t3:next to wrap up (retro + the result envelope + a summary).",
-            "/t3:next is a convenience, not the contract: the envelope below is required either way,",
-            "so emit it yourself whenever /t3:next is unavailable or does not run.",
+            *(
+                ("When done, emit the result envelope below yourself as your final message.",)
+                if read_only_venue
+                else _WRAP_UP_LINES
+            ),
             *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
             "",
             "IMPORTANT: If only the owner can decide, STOP immediately and emit:",
@@ -323,18 +402,20 @@ def build_system_context(
         ),
     )
 
-    lines.extend(phase_specific_lines(task, skills, stage_exclude=stage_exclude))
+    lines.extend(phase_specific_lines(task, skills, stage_exclude=stage_exclude, read_only_venue=read_only_venue))
 
     lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 
-    parent_summary = _parent_result_summary(task)
+    parent_summary = "" if read_only_venue else _parent_result_summary(task)
     if parent_summary:
         lines.extend(("", "# Prior Task Result", "", parent_summary))
+    if read_only_venue:
+        return "\n".join(lines)
     pointer = "" if handoff is None else f"\n\n{_HANDOFF_POINTER}{handoff}"
     # Appended after bounding, so the backstop's tail cut of an unregistered overflow can never drop it.
     bounded = _enforce_context_budget(
         "\n".join(lines),
-        task,
+        survey=embedded_intake_survey_json(task),
         parent_summary=parent_summary,
         skill_content=skill_content,
         max_bytes=MAX_APPEND_BYTES - len(pointer.encode()),
@@ -342,7 +423,7 @@ def build_system_context(
     return bounded + pointer
 
 
-def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str, max_bytes: int) -> str:
+def _enforce_context_budget(text: str, *, survey: str, parent_summary: str, skill_content: str, max_bytes: int) -> str:
     """Bound the assembled append under the context byte budget.
 
     The append reaches the child as a file rather than an argv element (#4301), so this
@@ -361,7 +442,7 @@ def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill
     if len(text.encode()) <= max_bytes:
         return text
     blocks = (
-        (embedded_intake_survey_json(task), _SURVEY_POINTER),
+        (survey, _SURVEY_POINTER),
         (skill_content, _SKILLS_POINTER),
         (parent_summary, _PARENT_POINTER),
     )

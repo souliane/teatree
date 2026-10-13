@@ -56,6 +56,7 @@ from teatree.hooks import (
     safe_kill_detect,
     secret_file_print_detect,
     self_reviewer_assign_detect,
+    void_merge_detect,
 )
 from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
@@ -97,6 +98,10 @@ def _lane_a_raw_merge_denies(command: str) -> bool:
 
 def _lane_a_pid_kill_denies(command: str) -> bool:
     return safe_kill_detect.detect_raw_pid_kill(command).is_raw_pid_kill
+
+
+def _lane_a_void_merge_denies(command: str) -> bool:
+    return void_merge_detect.void_merge_deny_reason(command) is not None
 
 
 def _lane_b_git_bypass_denies(command: str) -> bool:
@@ -459,6 +464,11 @@ class TestBashHardDenyCorpusParity:
             _lane_a_reviewer_denies,
         ),
         ("raw pid kill", "kill -9 4242", _lane_a_pid_kill_denies),
+        (
+            "writing merge void",
+            "t3 teatree pr void-merge https://github.com/example-org/example-repo/pull/41 --reason x --by alice",
+            _lane_a_void_merge_denies,
+        ),
     )
 
     @pytest.mark.parametrize(("label", "command", "lane_a_denies"), _CORPUS, ids=[row[0] for row in _CORPUS])

@@ -30,7 +30,7 @@ from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
-from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
+from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ def closed_issue_transitions(
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    candidates = list(
+    candidates = without_voided(
         scoped(
             Ticket.objects.filter(state__in=Ticket.pre_ship_states())
             .exclude(issue_url="")

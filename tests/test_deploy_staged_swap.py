@@ -33,7 +33,9 @@ pytestmark = pytest.mark.skipif(
     reason="needs bash",
 )
 
+# What a whole-project `compose config --services` lists: the executor sits behind its own profile.
 _SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener teatree-watchdog"
+_EXECUTOR = "teatree-ro-executor"
 
 _DOCKER_STUB = f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
@@ -142,6 +144,9 @@ build)
     printf 'build-context-marker %s\\n' "$(cat "$ctx/marker.txt" 2>/dev/null || echo absent)" >>"$log"
     live="${{STUB_LIVE_ROOT:-/nonexistent}}"
     printf 'live-tree-marker %s\\n' "$(cat "$live/marker.txt" 2>/dev/null || echo absent)" >>"$log"
+    case " $* " in
+    *" teatree-ro-executor "*) exit "${{STUB_EXECUTOR_BUILD_EXIT:-0}}" ;;
+    esac
     exit "${{STUB_BUILD_EXIT:-0}}"
     ;;
 stop)
@@ -156,6 +161,7 @@ up)
     printf 'host-os %s\\n' "${{TEATREE_HOST_OS:-unset}}" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
     case " $* " in
     *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
+    *" teatree-ro-executor "*) exit "${{STUB_EXECUTOR_UP_EXIT:-0}}" ;;
     esac
     exit "${{STUB_UP_EXIT:-0}}"
     ;;
@@ -392,10 +398,74 @@ class TestTheControlPlaneIsNeverWhollyAbsent:
         init_ups = [a for c in calls if _is_up(a := _compose_args(c)) and "teatree-init" in _up_services(a)]
         assert len(init_ups) == 1, f"`up` on an exited one-shot replays the whole init: {init_ups!r}"
 
+    def test_the_read_only_executor_is_recreated_inside_the_drained_window(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        _, calls = _run(checkout, tmp_path)
+        drains = [i for i, call in enumerate(calls) if "worker drain" in " ".join(_compose_args(call))]
+        executor_ups = [
+            i for i, c in enumerate(calls) if _is_up(a := _compose_args(c)) and "teatree-ro-executor" in _up_services(a)
+        ]
+        resume_at = _index_of(calls, lambda a: "worker_quiescing false" in " ".join(a))
+        worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
+        assert len(drains) >= 2, "the staged swap must drain the worker twice"
+        assert len(executor_ups) == 1, f"the executor must be recreated exactly once: {executor_ups!r}"
+        assert drains[1] < executor_ups[0] < worker_at < resume_at, (
+            "the executor must be recreated after the second drain, before the worker swap and resumed admission"
+        )
+
     def test_every_remaining_service_is_still_converged(self, checkout: Path, tmp_path: Path) -> None:
         _, calls = _run(checkout, tmp_path)
         recreated = {s for c in calls if _is_up(a := _compose_args(c)) for s in _up_services(a)}
-        assert set(_SERVICES.split()) <= recreated, f"a declared service was never converged: {recreated!r}"
+        assert {*_SERVICES.split(), _EXECUTOR} <= recreated, f"a declared service was never converged: {recreated!r}"
+
+
+def _executor_ups(calls: list[str]) -> list[int]:
+    return [i for i, c in enumerate(calls) if _is_up(a := _compose_args(c)) and _EXECUTOR in _up_services(a)]
+
+
+def _core_converged(calls: list[str]) -> bool:
+    recreated = {s for c in calls if _is_up(a := _compose_args(c)) for s in _up_services(a)}
+    resumed = _index_of(calls, lambda a: "worker_quiescing false" in " ".join(a)) != -1
+    return set(_SERVICES.split()) <= recreated and resumed
+
+
+class TestTheReadOnlyExecutorConvergesAlone:
+    def test_its_image_is_built_on_its_own_before_the_drain(self, checkout: Path, tmp_path: Path) -> None:
+        _, calls = _run(checkout, tmp_path)
+
+        builds = [args for c in calls if (args := _compose_args(c))[:1] == ["build"]]
+        first_drain = _index_of(calls, lambda a: "worker drain" in " ".join(a))
+        executor_build = _index_of(calls, lambda a: a == ["build", _EXECUTOR])
+        assert builds == [["build"], ["build", _EXECUTOR]]
+        assert executor_build < first_drain
+
+    def test_a_build_failure_deploys_everything_else_and_fails_loudly(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_EXECUTOR_BUILD_EXIT="1")
+
+        assert _core_converged(calls)
+        assert _executor_ups(calls) == []
+        assert proc.returncode != 0
+        assert f"{_EXECUTOR} failed alone (its image did not build" in proc.stderr
+        assert "Everything else deployed" in proc.stderr
+
+    def test_a_start_failure_deploys_everything_else_and_fails_loudly(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_EXECUTOR_UP_EXIT="1")
+
+        assert _core_converged(calls)
+        assert len(_executor_ups(calls)) == 1
+        assert proc.returncode != 0
+        assert f"{_EXECUTOR} failed alone (its container did not start" in proc.stderr
+
+    @pytest.mark.parametrize("failing", ["STUB_DRAIN_FAIL_AFTER", "STUB_DRAIN_EXIT"])
+    def test_a_contained_worker_leaves_the_running_executor_in_place(
+        self, checkout: Path, tmp_path: Path, failing: str
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, **{failing: "1"})
+
+        assert proc.returncode == 0, proc.stderr
+        assert _executor_ups(calls) == []
+        assert f"{_EXECUTOR} keeps its running container" in proc.stderr
 
 
 class TestInFlightWorkSurvivesTheSwap:
@@ -763,7 +833,7 @@ class TestLogsSurviveTheRecreate:
         self, checkout: Path, tmp_path: Path
     ) -> None:
         _, calls = _run(checkout, tmp_path)
-        for service in _SERVICES.split():
+        for service in (*_SERVICES.split(), _EXECUTOR):
             logs_at = _index_of(calls, lambda a, s=service: a[:1] == ["logs"] and s in a)
             up_at = _index_of(calls, lambda a, s=service: _is_up(a) and s in _up_services(a))
             assert logs_at != -1, f"{service}'s log is destroyed by the recreate with no copy kept"

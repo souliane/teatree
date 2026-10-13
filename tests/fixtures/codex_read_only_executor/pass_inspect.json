@@ -1,0 +1,139 @@
+{
+  "HostConfig": {
+    "AutoRemove": false,
+    "Binds": [
+      "example_clones:$CONTAINER_HOME/workspace:ro",
+      "/home/<user>/workspace/t3-workspaces:$CONTAINER_HOME/workspace/t3-workspaces:ro",
+      "/home/<user>/teatree-deploy/.git:/home/<user>/teatree-deploy/.git:ro"
+    ],
+    "BlkioDeviceReadBps": null,
+    "BlkioDeviceReadIOps": null,
+    "BlkioDeviceWriteBps": null,
+    "BlkioDeviceWriteIOps": null,
+    "BlkioWeight": 0,
+    "BlkioWeightDevice": null,
+    "CapAdd": null,
+    "CapDrop": [
+      "ALL"
+    ],
+    "Cgroup": "",
+    "CgroupParent": "",
+    "CgroupnsMode": "private",
+    "ConsoleSize": [
+      0,
+      0
+    ],
+    "ContainerIDFile": "",
+    "CpuCount": 0,
+    "CpuPercent": 0,
+    "CpuPeriod": 0,
+    "CpuQuota": 0,
+    "CpuRealtimePeriod": 0,
+    "CpuRealtimeRuntime": 0,
+    "CpuShares": 0,
+    "CpusetCpus": "",
+    "CpusetMems": "",
+    "DeviceCgroupRules": null,
+    "DeviceRequests": null,
+    "Devices": null,
+    "Dns": null,
+    "DnsOptions": null,
+    "DnsSearch": null,
+    "ExtraHosts": [],
+    "GroupAdd": null,
+    "IOMaximumBandwidth": 0,
+    "IOMaximumIOps": 0,
+    "IpcMode": "private",
+    "Isolation": "",
+    "Links": null,
+    "LogConfig": {
+      "Config": {
+        "max-file": "5",
+        "max-size": "50m"
+      },
+      "Type": "json-file"
+    },
+    "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+    ],
+    "Memory": 4294967296,
+    "MemoryReservation": 0,
+    "MemorySwap": 8589934592,
+    "MemorySwappiness": null,
+    "NanoCpus": 2000000000,
+    "NetworkMode": "teatree_ro-executor",
+    "OomKillDisable": null,
+    "OomScoreAdj": 0,
+    "PidMode": "",
+    "PidsLimit": 512,
+    "PortBindings": {},
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+    ],
+    "ReadonlyRootfs": true,
+    "RestartPolicy": {
+      "MaximumRetryCount": 0,
+      "Name": "unless-stopped"
+    },
+    "Runtime": "runc",
+    "SecurityOpt": [
+      "no-new-privileges:true"
+    ],
+    "ShmSize": 67108864,
+    "Tmpfs": {
+      "/run/t3-ro": "uid=65534,gid=65534,mode=0700,size=512m",
+      "/run/t3-tmp": "uid=65534,gid=65534,mode=0700,size=256m"
+    },
+    "UTSMode": "",
+    "Ulimits": null,
+    "UsernsMode": "",
+    "VolumeDriver": "",
+    "VolumesFrom": null
+  },
+  "Id": "container-01",
+  "Mounts": [
+    {
+      "Destination": "$CONTAINER_HOME/workspace",
+      "Driver": "local",
+      "Mode": "ro",
+      "Name": "example_clones",
+      "Propagation": "",
+      "RW": false,
+      "Source": "/var/lib/docker/volumes/example_clones/_data",
+      "Type": "volume"
+    },
+    {
+      "Destination": "$CONTAINER_HOME/workspace/t3-workspaces",
+      "Mode": "ro",
+      "Propagation": "rprivate",
+      "RW": false,
+      "Source": "/home/<user>/workspace/t3-workspaces",
+      "Type": "bind"
+    },
+    {
+      "Destination": "/home/<user>/teatree-deploy/.git",
+      "Mode": "ro",
+      "Propagation": "rprivate",
+      "RW": false,
+      "Source": "/home/<user>/teatree-deploy/.git",
+      "Type": "bind"
+    }
+  ]
+}

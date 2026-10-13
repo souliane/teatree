@@ -53,3 +53,8 @@ def test_allow_list_adds_only_declared_non_fsm_mutators() -> None:
 def test_declared_non_fsm_mutators_are_real_self_guarding_methods() -> None:
     assert NON_FSM_STATE_MUTATORS.isdisjoint(_fsm_transition_names())
     assert all(callable(getattr(Ticket, name, None)) for name in NON_FSM_STATE_MUTATORS)
+
+
+def test_the_merge_void_is_reachable_only_through_its_own_command() -> None:
+    assert "void_merge" not in ALLOWED_TRANSITIONS
+    assert "void_merge" not in _fsm_transition_names()

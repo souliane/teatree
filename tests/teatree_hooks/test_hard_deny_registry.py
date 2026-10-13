@@ -24,6 +24,11 @@ _DENIED = [
         "unbounded_wait",
         id="unbounded-wait",
     ),
+    pytest.param(
+        "t3 teatree pr void-merge https://github.com/example-org/example-repo/pull/41 --reason x --by alice",
+        "void_merge",
+        id="void-merge",
+    ),
 ]
 
 
@@ -64,4 +69,5 @@ def test_registry_covers_every_named_family() -> None:
         "self_reviewer_assign",
         "raw_pid_kill",
         "unbounded_wait",
+        "void_merge",
     }

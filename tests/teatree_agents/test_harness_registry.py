@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import importlib.metadata
 import inspect
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -28,6 +28,7 @@ from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
     HarnessRejection,
+    HarnessSelection,
     HarnessSpec,
     InvalidHarnessProviderError,
     NoAvailableHarnessError,
@@ -657,3 +658,44 @@ class TestOneSelectionPerDispatch(_CandidateSeam):
         assert dispatch.harness.name == "cand_flip"
         assert dispatch.provider is AgentHarnessProvider.SUBSCRIPTION_OAUTH
         assert self.ledger.probed == ["cand_flip"]
+
+
+def _select_managed(phase: str, hook: Callable[[HarnessBuildContext], str | None] | None) -> HarnessSelection:
+    register_harness(
+        HarnessSpec(
+            name="managed_bar_test",
+            factory=lambda ctx: FakeThirdHarness([]),
+            capabilities=HarnessCapabilities(managed_lane=True),
+            read_only_executor_refusal=hook,
+        )
+    )
+    try:
+        return select_harness(["managed_bar_test"], HarnessBuildContext(phase=phase))
+    finally:
+        harness_registry._REGISTRY.pop("managed_bar_test", None)
+
+
+def test_managed_lane_write_barring_phase_refused_without_executor_hook() -> None:
+    with pytest.raises(NoAvailableHarnessError) as refused:
+        _select_managed("planning", None)
+
+    assert refused.value.rejected == (
+        HarnessRejection(
+            "managed_bar_test", "phase 'planning' bars write tools, which a managed-lane harness cannot enforce"
+        ),
+    )
+
+
+def test_the_executor_hook_decides_a_write_barring_phase() -> None:
+    assert _select_managed("planning", lambda ctx: None).spec.name == "managed_bar_test"
+    with pytest.raises(NoAvailableHarnessError) as refused:
+        _select_managed("planning", lambda ctx: f"probe refused {ctx.phase}")
+
+    assert [rejection.reason for rejection in refused.value.rejected] == ["probe refused planning"]
+
+
+def test_a_write_phase_never_consults_the_executor_hook() -> None:
+    def never(ctx: HarnessBuildContext) -> str | None:
+        raise AssertionError(ctx.phase)
+
+    assert _select_managed("coding", never).spec.name == "managed_bar_test"

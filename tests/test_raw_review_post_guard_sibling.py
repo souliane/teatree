@@ -39,6 +39,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.raw_review_post_guard as rrp
+from hooks.scripts import forge_api_detect
 
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 
@@ -69,9 +70,11 @@ class TestRouterReExportReachable:
 
     def test_shared_method_regexes_have_one_definition_in_the_router(self) -> None:
         """The effective-method regexes are NOT redefined in this gate — re-exported onto the router."""
-        for name in ("_GLAB_GH_API_RE", "_REVIEW_POST_METHOD_RE", "_REVIEW_POST_BODY_FLAG_RE"):
+        for name in ("_REVIEW_POST_METHOD_RE", "_REVIEW_POST_BODY_FLAG_RE"):
             assert hasattr(router, name), name
             assert not hasattr(rrp, name), name
+        assert hasattr(forge_api_detect, "_GLAB_GH_API_RE")
+        assert not hasattr(rrp, "_GLAB_GH_API_RE")
 
     def test_router_handler_denies_a_real_review_write(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Non-vacuous: the router-driven handler denies a raw review POST via the sibling + lazy back-imports."""

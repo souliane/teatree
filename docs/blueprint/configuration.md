@@ -602,7 +602,10 @@ emitted by the loader: bundled T3 skills use their bare manifest names such as
 The lifecycle skill for the active phase owns routing when it has a list. Thus a
 review dispatch that loads both `review` and companion `code` follows the
 `review` route. If no lifecycle skill owns the route and multiple companions do,
-dispatch refuses the ambiguity instead of choosing by load order. The older
+an owner another owner `requires` yields to it (the more specific skill routes,
+so a review loading `code`, which requires `architecture-design`, stays on `code`
+when both own a row); owners with no such relation are an ambiguity dispatch
+refuses instead of choosing by load order. The older
 `factory_phase_harness_candidates` route and a skill-owned route are mutually
 exclusive for the same dispatch.
 

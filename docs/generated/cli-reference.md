@@ -754,8 +754,11 @@ Usage: t3 codex auth import [OPTIONS]
  Store a locally authenticated ``auth.json`` as one base64 pass entry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --from        PATH|-  [default: ~/.codex/auth.json]                          │
-│ --help                Show this message and exit.                            │
+│ --from            PATH|-  Default ~/.codex/auth.json; required with          │
+│                           --executor.                                        │
+│ --executor                Act on the read-only executor's own login; only    │
+│                           teatree-worker reaches it.                         │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -768,7 +771,9 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --executor          Act on the read-only executor's own login; only          │
+│                     teatree-worker reaches it.                               │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10580,6 +10585,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ ensure-pr          Create a PR for an orphan branch (idempotent).            │
 │ discharge-pending  Drop a deferred-PR obligation the drain can never         │
 │                    discharge.                                                │
+│ void-merge         Void a merge whose content never reached the default      │
+│                    branch (a human at a terminal).                           │
 │ check-gates        Check whether session gates allow a phase transition.     │
 │ fetch-issue        Fetch issue details from the configured tracker.          │
 │ detect-tenant      Detect the current tenant variant from the overlay.       │
@@ -10726,6 +10733,26 @@ Usage: t3 teatree pr discharge-pending [OPTIONS] OBLIGATION_ID
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr void-merge`
+
+```
+Usage: t3 teatree pr void-merge [OPTIONS] PR_URL
+
+ Void a merge the forge records but whose content never reached the default
+ branch.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT  Why the recorded merge is void.                       │
+│ --by             TEXT  The human operator voiding it.                        │
+│ --dry-run              Print the forge evidence and planned changes; write   │
+│                        nothing.                                              │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

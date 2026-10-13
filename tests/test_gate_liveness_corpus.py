@@ -1114,6 +1114,19 @@ def _raw_issue_write_allow(_ctx: GateContext) -> dict:
     return _bash("gh issue view 12")
 
 
+# block-void-merge (PreToolUse Bash): a writing `pr void-merge` denies; its read-only `--dry-run` allows.
+
+_VOID_MERGE = "t3 teatree pr void-merge https://github.com/example-org/example-repo/pull/41"
+
+
+def _void_merge_deny(_ctx: GateContext) -> dict:
+    return _bash(f"{_VOID_MERGE} --reason 'history rewrite' --by alice")
+
+
+def _void_merge_allow(_ctx: GateContext) -> dict:
+    return _bash(f"{_VOID_MERGE} --dry-run")
+
+
 # block-raw-pid-kill (PreToolUse Bash): a raw `kill <pid>` of a guessed pid
 # denies; the `kill -0` no-op liveness probe allows.
 
@@ -1505,6 +1518,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_issue_write_deny,
         allow_input=_raw_issue_write_allow,
+    ),
+    GateRow(
+        gate_id="block-void-merge",
+        handler=router.handle_block_void_merge,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_void_merge_deny,
+        allow_input=_void_merge_allow,
     ),
     GateRow(
         gate_id="block-raw-pid-kill",

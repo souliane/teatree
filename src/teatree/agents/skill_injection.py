@@ -145,6 +145,23 @@ def _read_skill_contents_scoped(
     return _with_reach_line([*_stack_load_block(stack_names, dirs), *companion_list, *sections], dirs)
 
 
+def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str:
+    """Each skill in *embedded* in full and every other one by name only: the venue mounts no skill file."""
+    dirs = harness_skills_dirs()
+    sections: list[str] = []
+    absent: list[str] = []
+    for name in skills:
+        skill_md = resolve_skill_md(name, dirs) if _is_primary(name, embedded) else None
+        if skill_md is None:
+            absent.append(bare_skill_name(name))
+        else:
+            sections.append(_skill_section(bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+    reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
+    if absent:
+        reach = f"{reach} Not available here: {', '.join(absent)}."
+    return "\n\n".join((reach, *sections))
+
+
 _SUBAGENT_PREAMBLE_HEADER = (
     "# Required skills (a dispatched sub-agent does not auto-load them)\n"
     "Follow every rule in the skills below as if you had loaded them via the Skill tool,\n"

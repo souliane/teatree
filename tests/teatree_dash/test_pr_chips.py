@@ -11,9 +11,11 @@ and should carry the state as a class so the three read apart at a glance.
 from django.test import TestCase
 from django.urls import reverse
 
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.dash.selectors import build_kanban_columns, pr_chip
+from teatree.dash.ticket_detail import build_ticket_detail
 from tests.factories import PullRequestFactory, TicketFactory
+from tests.void_merge_fixtures import SLUG, landed_ticket, void_pr
 
 State = Ticket.State
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
@@ -33,7 +35,7 @@ class ChipCarriesAHumanStateTestCase(TestCase):
     def test_the_builder_labels_a_row_directly(self) -> None:
         ticket = TicketFactory(state=State.PR_OPENED)
         row = PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="6", state=PullRequest.State.MERGED)
-        chip = pr_chip(row)
+        chip = pr_chip(row, MergeVoid.objects.voided_refs())
         assert (chip.repo, chip.iid, chip.state, chip.label) == ("acme-org/backend", "6", "merged", "Merged")
 
     def test_a_review_requested_chip_reads_as_words_not_a_slug(self) -> None:
@@ -75,3 +77,22 @@ class ChipStatesReadApartOnTheBoardTestCase(TestCase):
         body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
         assert "· review_requested" not in body
         assert "· Review requested" in body
+
+
+class AVoidedMergeReadsAsVoidedTestCase(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.ticket = landed_ticket()
+        void_pr()
+
+    def test_the_board_card_and_the_drawer_both_say_merge_voided(self) -> None:
+        drawer = build_ticket_detail(self.ticket.pk).pr_chips
+
+        for chip in (_chips(self.ticket)[0], drawer[0]):
+            assert (chip.repo, chip.iid, chip.state, chip.label) == (SLUG, "41", "voided", "Merge voided")
+
+    def test_a_chip_for_another_pr_on_the_same_board_is_unchanged(self) -> None:
+        other = TicketFactory(state=State.PR_OPENED)
+        PullRequestFactory(ticket=other, repo=SLUG, iid="42", url=f"https://github.com/{SLUG}/pull/42")
+
+        assert _chips(other)[0].label == "Open"

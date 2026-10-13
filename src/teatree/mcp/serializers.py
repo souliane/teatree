@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
+    from teatree.core.models.merge_void import MergeVoid
     from teatree.core.models.pull_request import PullRequest
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
@@ -101,7 +102,20 @@ def serialize_worktree(worktree: "Worktree") -> dict[str, Any]:
     }
 
 
-def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
+def serialize_merge_void(void: "MergeVoid") -> dict[str, Any]:
+    return {
+        "reason": void.reason,
+        "actor": void.actor,
+        "voided_at": _iso(void.voided_at),
+        "merged_sha": void.merged_sha,
+        "content_head": void.content_head,
+        "default_branch": void.default_branch,
+        "default_tip": void.default_tip,
+        "changed_paths": list(void.changed_paths),
+    }
+
+
+def serialize_pull_request(pull_request: "PullRequest", *, merge_void: "MergeVoid | None" = None) -> dict[str, Any]:
     """Project a :class:`PullRequest` onto its structured-search shape."""
     return {
         "id": pull_request.pk,
@@ -113,6 +127,7 @@ def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
         "state": pull_request.state,
         "slack_url": pull_request.slack_url,
         "review_requested_at": _iso(pull_request.review_requested_at),
+        "merge_void": serialize_merge_void(merge_void) if merge_void is not None else None,
     }
 
 
