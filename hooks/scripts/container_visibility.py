@@ -29,6 +29,7 @@ Cold-import safe: a hook is a bare ``python3`` subprocess with no guarantee
 """
 
 import os
+import shlex
 import shutil
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted local docker CLI
 import sys
@@ -55,8 +56,8 @@ _NO_ANSWER = (
 )
 _NO_ROUTE = "compose project {project!r} runs no {services} container"
 _SEVERAL = (
-    "compose project {project!r} runs {count} {service} containers ({ids}) — scaled or started outside the "
-    "deploy, which never runs two"
+    "compose project {project!r} has {count} running {service} containers ({ids}) — scaled or started outside the "
+    "deploy, which never runs two; check docker compose -p {project_arg} ps {service} (project from {source})"
 )
 _NOT_MOUNTED = (
     "container {container} of compose project {project!r} mounts no host directory at its own path holding "
@@ -136,7 +137,20 @@ def cli_pick() -> CliPick:
             return CliPick(container=containers[0])
         if containers:
             ids = ", ".join(containers)
-            return CliPick(reason=_SEVERAL.format(project=project, count=len(containers), service=service, ids=ids))
+            source = next(
+                (name for name in ("TEATREE_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME") if os.environ.get(name)),
+                "default",
+            )
+            return CliPick(
+                reason=_SEVERAL.format(
+                    project=project,
+                    project_arg=shlex.quote(project),
+                    count=len(containers),
+                    service=service,
+                    ids=ids,
+                    source=source,
+                )
+            )
     return CliPick(reason=_NO_ROUTE.format(project=project, services=" or ".join(services)))
 
 

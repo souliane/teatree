@@ -108,12 +108,18 @@ class TestCliPick:
         assert pick.container == ""
         assert pick.reason == "compose project 'teatree' runs no teatree-worker or teatree-admin container"
 
-    def test_several_containers_of_the_route_declare_nothing_and_say_why(self) -> None:
+    @pytest.mark.parametrize("source", ["TEATREE_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME"])
+    def test_several_containers_of_the_route_declare_nothing_and_say_why(
+        self, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        monkeypatch.setenv(source, "teatree")
         with _docker_answers("wrk111 teatree-worker \nwrk222 teatree-worker \nadm333 teatree-admin \n"):
             pick = container_visibility.cli_pick()
         assert pick.container == ""
-        assert "2 teatree-worker containers (wrk111, wrk222)" in pick.reason
+        assert "2 running teatree-worker containers (wrk111, wrk222)" in pick.reason
         assert "scaled or started outside the deploy" in pick.reason
+        assert "docker compose -p teatree ps teatree-worker" in pick.reason
+        assert f"(project from {source})" in pick.reason
 
     def test_a_daemon_that_will_not_answer_is_named(self) -> None:
         with _docker_answers(None):
@@ -337,9 +343,11 @@ class TestParityWithTheLauncher:
 
     def test_a_foreign_stack_alone_is_named_by_the_production_project_only(self, docker_table) -> None:
         docker_table([_FOREIGN_WORKER], {})
-        reason = container_visibility.unreachable_reason(Path("/srv/host/teatree-deploy")) or ""
+        with patch.object(container_visibility, "_docker", wraps=container_visibility._docker) as docker:
+            reason = container_visibility.unreachable_reason(Path("/srv/host/teatree-deploy")) or ""
         assert "compose project 'teatree'" in reason
         assert "scratch" not in reason
+        assert not any(call.args[0] == "inspect" and "scratch1" in call.args for call in docker.call_args_list)
 
     def test_a_foreign_worker_listed_first_does_not_hide_the_checkout(self, docker_table, tmp_path: Path) -> None:
         checkout = (tmp_path / "checkout").resolve()
