@@ -13,7 +13,6 @@ Reads JSON from stdin. Writes JSON to stdout when blocking (PreToolUse deny).
 Exits 0 silently for passthrough.
 """
 
-import argparse
 import contextlib
 import json
 import os
@@ -175,6 +174,7 @@ from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
+from hooks.scripts.router_args import parse_args as _parse_args
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import handle_block_self_dm_via_mcp
 from hooks.scripts.session_end_work_check import handle_session_end
@@ -230,12 +230,6 @@ def _current_hook_context() -> tuple[str, dict]:
 
 _FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified hook router")
-    parser.add_argument("--event", required=True, help="Hook event name")
-    return parser.parse_args()
 
 
 # Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
