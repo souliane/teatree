@@ -13,10 +13,11 @@ import hashlib
 import logging
 
 from django.db import transaction
-from django.db.models import Case, F, Value, When
+from django.db.models import Case, Exists, F, OuterRef, Value, When
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
+from teatree.core.models.ticket import Ticket
 from teatree.loop.self_improve.detectors.base import DetectorReport, DetectorScan
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,14 @@ def record_firing(
                 last_action=action,
                 payload=report.payload,
                 action_count=F("action_count") + 1,
-                ticket=Case(When(resolved_at__isnull=False, then=Value(None)), default=F("ticket")),
+                ticket=Case(
+                    When(
+                        Exists(Ticket.objects.filter(pk=OuterRef("ticket_id"), state__in=Ticket.finished_states())),
+                        resolved_at__isnull=False,
+                        then=Value(None),
+                    ),
+                    default=F("ticket"),
+                ),
                 resolved_at=None,
             )
             firing.refresh_from_db()
