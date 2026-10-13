@@ -243,6 +243,11 @@ class PeerRelay:
     def clear(self) -> None:
         self._relayed.clear()
 
+    def forget(self, recipient: str) -> list[PeerDelivery]:
+        forgotten = [delivery for delivery in self._relayed.values() if delivery.to == recipient]
+        self._relayed = {entry: delivery for entry, delivery in self._relayed.items() if delivery.to != recipient}
+        return forgotten
+
     async def _send(self, sender: PeerIdentity, request: MailboxRequest) -> SendReceipt:
         to, body, key, wait = send_fields(request)
         if self._broker.identity_of(to) is None:

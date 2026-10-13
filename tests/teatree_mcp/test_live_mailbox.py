@@ -384,6 +384,25 @@ def test_local_and_cross_worker_sends_share_one_key_budget_per_task(tmp_path: Pa
             invoke(client, "send", to=local.address, text="review", key="local", timeout_seconds=0.05)
 
 
+def test_a_recipient_leaving_frees_its_relay_records_for_later_senders(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+        patch("teatree.agents.live_federation.MAX_RELAYED_KEYS", 1),
+    ):
+        sender = first_broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+        client = MailboxClient(sender.socket_path, sender.token)
+        departed = second_broker.register(room="ticket-2", harness="codex_app_server", label="coder")
+        invoke(client, "send", to=departed.address, text="review", key="first", timeout_seconds=0.05)
+        second_broker.unregister(departed.address)
+        successor = second_broker.register(room="ticket-3", harness="codex_app_server", label="coder")
+
+        receipt = invoke(client, "send", to=successor.address, text="review", key="second", timeout_seconds=0.05)
+
+        assert (receipt["outcome"], receipt["code"]) == ("rejected", "not_accepted_in_time")
+        assert list(second_broker._delivery) == [receipt["id"]]
+
+
 def _broker_process(directory: str, link: Connection, room: str, harness: str) -> None:
     with LiveMailboxBroker(runtime_dir=Path(directory)) as broker:
         identity = broker.register(room=room, harness=harness, label="live task")

@@ -181,13 +181,14 @@ class LiveMailboxBroker:
         loop = self._loop
         if loop is not None and not loop.is_closed():
             with suppress(RuntimeError):
-                loop.call_soon_threadsafe(self._recipient_left, received)
+                loop.call_soon_threadsafe(self._recipient_left, address, received)
                 loop.call_soon_threadsafe(self._sender_left, sent)
 
-    def _recipient_left(self, message_ids: list[int]) -> None:
+    def _recipient_left(self, address: str, message_ids: list[int]) -> None:
         for message_id in message_ids:
             if (delivery := self._delivery.get(message_id)) is not None:
                 delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+        self._sender_left([delivery.message_id for delivery in self._relay.forget(address)])
 
     def _sender_left(self, message_ids: list[int]) -> None:
         for message_id in message_ids:
