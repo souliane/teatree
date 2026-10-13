@@ -40,13 +40,8 @@ class PrContentSnapshot:
 class ContentVerdict:
     kind: ContentVerdictKind
     changed: tuple[str, ...] = ()
-    present_at_tip: tuple[str, ...] = ()
-    carried_by_merge: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()
     reason: str = ""
-
-    @property
-    def permits_void(self) -> bool:
-        return self.kind is ContentVerdictKind.ABSENT
 
 
 def classify_content(snapshot: PrContentSnapshot) -> ContentVerdict:
@@ -89,4 +84,5 @@ def _classify_merged(snapshot: PrContentSnapshot) -> ContentVerdict:
         (True, ContentVerdictKind.ABSENT, f"none of {len(changed)} paths reached the default branch"),
     )
     kind, reason = next((kind, reason) for hit, kind, reason in rules if hit)
-    return ContentVerdict(kind, changed=changed, present_at_tip=present, carried_by_merge=carried, reason=reason)
+    absent = tuple(path for path in changed if path not in carried and path not in present)
+    return ContentVerdict(kind, changed=changed, absent=absent, reason=reason)

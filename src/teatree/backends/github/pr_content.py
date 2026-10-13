@@ -5,13 +5,11 @@ Every failure is UNREADABLE, never absent: a GraphQL ``errors`` payload, an HTTP
 """
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 
+from teatree.backends.forge_merge_rpc import Runner
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
-
-GhRun = Callable[[list[str]], tuple[int, str, str]]
 
 _QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -90,7 +88,7 @@ class _Pull:
 
 
 class GhPrContentReader:
-    def __init__(self, run: GhRun) -> None:
+    def __init__(self, run: Runner) -> None:
         self._run = run
 
     def snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot:

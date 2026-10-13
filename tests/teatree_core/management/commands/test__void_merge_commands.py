@@ -69,13 +69,14 @@ class TestVoidMergeCommand(TestCase):
         assert "2 of 2 paths absent" in out
 
     def test_a_dry_run_of_a_refusing_verdict_returns_the_refusal(self) -> None:
-        present = replace(ABSENT, tip_blobs=ABSENT.head_blobs)
+        carried = replace(ABSENT, merge_blobs=ABSENT.head_blobs)
 
-        with stub_forge(present):
+        with stub_forge(carried):
             result, out = _run("--dry-run")
 
-        assert result["error"].startswith("content_on_default")
-        assert "REFUSED content_on_default" in out
+        assert (result["error"].split(":")[0], result["absent_paths"]) == ("content_carried_by_merge", 0)
+        assert "verdict carried_by_merge: 0 of 2 paths absent" in out
+        assert "REFUSED content_carried_by_merge" in out
 
     def test_operator_refusals_come_before_any_forge_read(self) -> None:
         for args, code in (

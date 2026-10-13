@@ -35,7 +35,7 @@ def _result(plan: VoidPlan, *, dry_run: bool) -> VoidMergeResult:
         dry_run=dry_run,
         verdict=str(verdict.kind),
         changed_paths=len(verdict.changed),
-        absent_paths=len(verdict.changed) - len(verdict.present_at_tip),
+        absent_paths=len(verdict.absent),
         merged_sha=plan.snapshot.merge_commit,
         content_head=plan.snapshot.content_head,
         default_tip=plan.snapshot.default_tip,
@@ -49,7 +49,6 @@ def _result(plan: VoidPlan, *, dry_run: bool) -> VoidMergeResult:
 
 
 def _reread(void: MergeVoid) -> list[str]:
-    void.refresh_from_db()
     closed = [close["pull_request_id"] for close in void.evidence["pull_requests"]]
     rows = PullRequest.objects.filter(pk__in=closed).order_by("pk")
     tickets = Ticket.objects.filter(merge_voids=void).order_by("pk")

@@ -137,14 +137,16 @@ class VoidPlan:
 
     def describe(self) -> list[str]:
         snapshot, verdict = self.snapshot, self.verdict
-        absent = len(verdict.changed) - len(verdict.present_at_tip)
         lines = [
             f"Void the merge of {self.pr_url}",
             (
                 f"  merge commit {snapshot.merge_commit[:8] or '?'}, content head {snapshot.content_head[:8] or '?'}, "
                 f"default {snapshot.default_branch or '?'}@{snapshot.default_tip[:8] or '?'}"
             ),
-            f"  verdict {verdict.kind}: {absent} of {len(verdict.changed)} paths absent ({verdict.reason})",
+            (
+                f"  verdict {verdict.kind}: {len(verdict.absent)} of {len(verdict.changed)} paths absent "
+                f"({verdict.reason})"
+            ),
         ]
         lines += [
             f"  pull request row {c['pull_request_id']}: {c['from_state']} -> {c['to_state']}" for c in self.closes

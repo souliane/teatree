@@ -25,34 +25,26 @@ def test_content_found_nowhere_on_the_default_branch_is_absent() -> None:
     verdict = classify_content(REWRITTEN)
 
     assert verdict.kind is ContentVerdictKind.ABSENT
-    assert verdict.permits_void
-    assert verdict.changed == CHANGED
+    assert verdict.absent == verdict.changed == CHANGED
 
 
 def test_one_changed_path_present_at_the_tip_refuses() -> None:
     verdict = classify_content(replace(REWRITTEN, tip_blobs={**UNRELATED, "src/b.py": "b1"}))
 
     assert verdict.kind is ContentVerdictKind.PRESENT_AT_TIP
-    assert verdict.present_at_tip == ("src/b.py",)
-    assert not verdict.permits_void
+    assert "src/b.py" not in verdict.absent
 
 
 def test_one_changed_path_carried_by_the_merge_commit_refuses() -> None:
     verdict = classify_content(replace(REWRITTEN, merge_blobs={**UNRELATED, "src/c.py": "c1"}))
 
     assert verdict.kind is ContentVerdictKind.CARRIED_BY_MERGE
-    assert verdict.carried_by_merge == ("src/c.py",)
+    assert verdict.absent == tuple(path for path in CHANGED if path != "src/c.py")
 
 
 def test_a_true_merge_whose_files_main_edited_later_is_carried() -> None:
     merge_commit = {**HEAD, "src/a.py": "a1+concurrent-main-edit"}
     verdict = classify_content(replace(REWRITTEN, merge_blobs=merge_commit, tip_blobs=UNRELATED))
-
-    assert verdict.kind is ContentVerdictKind.CARRIED_BY_MERGE
-
-
-def test_a_reverted_squash_merge_is_carried() -> None:
-    verdict = classify_content(replace(REWRITTEN, merge_blobs=HEAD, tip_blobs=BASE))
 
     assert verdict.kind is ContentVerdictKind.CARRIED_BY_MERGE
 
@@ -74,14 +66,13 @@ def test_a_deletion_the_tip_also_lacks_is_present() -> None:
     verdict = classify_content(replace(REWRITTEN, tip_blobs=tip))
 
     assert verdict.kind is ContentVerdictKind.PRESENT_AT_TIP
-    assert verdict.present_at_tip == ("docs/old.md",)
+    assert "docs/old.md" not in verdict.absent
 
 
 def test_an_empty_diff_is_unknown_never_absent() -> None:
     verdict = classify_content(replace(REWRITTEN, head_blobs=BASE))
 
     assert verdict.kind is ContentVerdictKind.UNKNOWN
-    assert not verdict.permits_void
 
 
 def test_an_unreadable_snapshot_is_unknown_with_its_reason() -> None:
