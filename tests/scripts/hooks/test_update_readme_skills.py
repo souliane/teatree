@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """README loop inventory follows the shipped seed table."""
 
 from pathlib import Path
