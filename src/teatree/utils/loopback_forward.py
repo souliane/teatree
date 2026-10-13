@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import IO
 
 from teatree.paths import data_dir_root
+from teatree.utils.compose_project import production_compose_project
 from teatree.utils.ports import running_in_container
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail, spawn_byte_pipe
 
@@ -148,6 +149,8 @@ def _running_admin_container() -> str:
             [
                 "docker",
                 "ps",
+                "--filter",
+                f"label=com.docker.compose.project={production_compose_project()}",
                 "--filter",
                 f"label=com.docker.compose.service={_ADMIN_SERVICE}",
                 "--filter",

@@ -1,19 +1,20 @@
-"""Resolve and run the overlay MR-metadata validator subprocess.
+"""The ``validate-mr-metadata`` PreToolUse gate: resolve, run and judge the overlay validator.
 
-The *execution* half of the ``validate-mr-metadata`` PreToolUse gate, split out
-of ``hook_router`` for module health. It resolves the validator command and runs
-it under the shared time allowance, and deliberately holds NO deny authority: the
-verdict mapping and every ``emit_pretooluse_deny`` / ``_fail_open_or_deny`` call
-stay in ``hook_router``, where the never-lockout contract test can see the whole
-deny chain from the handler.
+Split out of ``hook_router`` for module health; the router re-exports
+:func:`handle_validate_mr_metadata` into ``_HANDLERS``, which is what puts this
+module inside the never-lockout contract's call graph. Field extraction stays in the
+router (``_extract_mr_fields``), and every deny goes through the router's
+``emit_pretooluse_deny`` / ``_fail_open_or_deny``, back-imported lazily.
 
-The return type carries the distinction that matters: a ``ValidatorTimedOut``
-marker (too slow to render a verdict — CANNOT_EVALUATE, so warn and allow) is a
-different outcome from a bare ``None`` (no validator exists at all — fail closed).
+The verdict keeps four outcomes apart: a validator too slow or unable to start
+(CANNOT_EVALUATE — warn and allow), one that ran and rejected the content (deny with
+its text), one that does not exist, and a launcher that cannot run in this venue
+(both fail CLOSED, with the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in, the master
+fail-open switch and the self-rescue commands as escapes).
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
-the stdlib-only ``gate_result`` / ``t3_invocation`` siblings.
+stdlib-only siblings.
 """
 
 import json
@@ -21,8 +22,18 @@ import os
 import sys
 from pathlib import Path
 
-from hooks.scripts.gate_result import CompletedRun, GateSkipped, ValidatorTimedOut, run_validator
-from hooks.scripts.t3_invocation import t3_argv
+from hooks.scripts.gate_result import (
+    CompletedRun,
+    GateOutcome,
+    GateSkipped,
+    ValidatorTimedOut,
+    announce_cannot_evaluate,
+    classify_validator_run,
+    run_validator,
+    warn_gate_skipped,
+)
+from hooks.scripts.mr_cli_fields import cli_update_is_title_only, extract_mr_target_repo, mr_deny_reason
+from hooks.scripts.t3_invocation import t3_argv, venue_fault
 
 # Alias the bare and ``hooks.scripts.`` identities so the helpers the router
 # imports and a test patching one here operate on ONE module object.
@@ -78,3 +89,106 @@ def run_mr_validator(
         )
     except OSError as exc:
         return GateSkipped(reason=_EXEC_FAILED_REASON.format(exc=exc))
+
+
+_UNRESOLVABLE = "is not resolvable"
+
+_MR_VALIDATE_BROKEN_ENV_DENY = (
+    "Cannot validate MR title/description — the overlay validator (`t3 tool validate-mr`) {cause}. Refusing to "
+    "create the MR with unvalidated metadata (fail closed). Fix the environment, or set "
+    "T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
+)
+
+_MR_VALIDATE_BROKEN_ENV_SKIP = (
+    "the overlay validator (`t3 tool validate-mr`) {cause} and T3_MR_VALIDATE_ALLOW_BROKEN_ENV is set, so the "
+    "fail-closed deny was deliberately bypassed"
+)
+
+
+def _handle_broken_validate_env(data: dict, cause: str = _UNRESOLVABLE) -> bool:
+    """Decide the gate's action when no validator could render a verdict here.
+
+    The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
+    must never reach GitLab just because the env could not validate it. The
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
+    self-rescue — and taking it is announced, never mute, so an MR that goes out
+    unvalidated says so. The broken-env deny additionally routes through
+    ``_fail_open_or_deny`` so the master ``danger_gate_fail_open`` switch and
+    the always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
+    """
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred back-import
+
+    if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
+        warn_gate_skipped("MR-metadata", _MR_VALIDATE_BROKEN_ENV_SKIP.format(cause=cause))
+        return False
+    return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY.format(cause=cause), gate_id="mr_metadata")
+
+
+def _mr_validator_verdict(data: dict, result: "CompletedRun | ValidatorTimedOut | GateSkipped | None") -> bool:
+    """Map a validator run (or its failure to run) to the gate's block decision."""
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 — deferred back-import
+
+    if isinstance(result, ValidatorTimedOut | GateSkipped):
+        return announce_cannot_evaluate("MR-metadata", result)
+    if result is None:
+        return _handle_broken_validate_env(data)
+    fault = venue_fault(result.returncode, result.stderr)
+    if fault is not None:
+        return _handle_broken_validate_env(data, f"could not run: {fault}")
+
+    outcome = classify_validator_run(result)
+    if outcome is GateOutcome.CANNOT_EVALUATE:
+        # The validator RAN but crashed (a traceback, not a clean verdict).
+        # Crash ≠ deny (#1528): warn loudly and allow — the remote CI
+        # MR-title/description job is the backstop for real non-compliance.
+        sys.stderr.write(
+            "NOTE: the MR-metadata validator crashed (could not evaluate) — "
+            "allowing the MR to proceed (fail-open-with-warn). The remote "
+            "MR-title/description CI job remains the backstop.\n"
+        )
+        return False
+    if outcome is GateOutcome.DENY:
+        return emit_pretooluse_deny(mr_deny_reason(data, result.stderr or result.stdout or ""), gate_id="mr_metadata")
+    return False
+
+
+def handle_validate_mr_metadata(data: dict) -> bool:
+    """Block a non-compliant ``glab mr``/``gh pr`` create/update before it runs.
+
+    Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
+    opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
+    repo is parsed from the command and threaded as ``--repo`` so an MR is graded
+    against the TARGET overlay's rules, not the cwd overlay's weaker ones. A
+    validator that RAN but crashed, and one too SLOW to finish inside its
+    allowance, are both CANNOT_EVALUATE — crash ≠ deny (#1528), and neither is a
+    timeout: each warns and allows, with the remote CI job as backstop. The
+    UNRESOLVABLE validator (no ``t3``, no script) and a launcher that cannot run in
+    this venue (exit 69) FAIL CLOSED; the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV``
+    opt-in restores fail-open there.
+
+    Every outcome in which the gate does NOT actually validate the MR — an
+    unresolvable ``$(…)``/``$VAR`` field, an update setting no governed field,
+    the broken-env opt-in, a crash, a timeout — emits one loud named line. Only
+    "this is not an MR mutation" and a clean PASS are silent, so a mute gate can
+    never be mistaken for one that swallowed the call.
+    """
+    from hooks.scripts.hook_router import _extract_mr_fields  # noqa: PLC0415 — deferred back-import
+
+    fields = _extract_mr_fields(data)
+    if fields is None:
+        return False
+    if isinstance(fields, GateSkipped):
+        return announce_cannot_evaluate("MR-metadata", fields)
+    title, description = fields
+    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    target_repo = extract_mr_target_repo(command) if command else None
+    # Title-only update: no description touched → skip required-section check (#3254).
+    sections_optional = bool(command) and cli_update_is_title_only(command)
+
+    argv = mr_validate_argv()
+    if argv is None:
+        return _handle_broken_validate_env(data)
+
+    return _mr_validator_verdict(
+        data, run_mr_validator(argv, title, description, target_repo, sections_optional=sections_optional)
+    )

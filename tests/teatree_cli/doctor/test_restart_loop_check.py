@@ -108,3 +108,13 @@ class TestReadingTheDaemon:
         with patch.object(checks_runtime, "run_allowed_to_fail", side_effect=[_done("abc\ndef\n"), _done(rows)]) as run:
             assert _inspect_compose_containers() == rows.splitlines()
         assert run.call_args_list[1].args[0][-2:] == ["abc", "def"]
+
+    def test_only_the_production_projects_containers_are_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A scratch stack restarting its own services is not this stack's restart loop."""
+        monkeypatch.setenv("TEATREE_COMPOSE_PROJECT", "rolled")
+        with (
+            patch("teatree.utils.compose_project.running_in_container", return_value=False),
+            patch.object(checks_runtime, "run_allowed_to_fail", return_value=_done("")) as run,
+        ):
+            _inspect_compose_containers()
+        assert "label=com.docker.compose.project=rolled" in run.call_args.args[0]

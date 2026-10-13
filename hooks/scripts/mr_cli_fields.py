@@ -4,9 +4,9 @@ Split out of ``hook_router.py`` by concern (module health): every surface an MR
 title/description can be SET from — the ``glab mr`` CLI inline / file /
 dynamic-value parsing (:func:`extract_cli_mr_fields`), the out-of-band
 ``glab api``/``gh api`` REST field surface (:func:`extract_api_mr_fields`) —
-plus the MR TARGET-repo slug parsing (:func:`extract_mr_target_repo`). Only the
-gate handler (``handle_validate_mr_metadata``) stays in the router, which
-delegates each surface here.
+plus the MR TARGET-repo slug parsing (:func:`extract_mr_target_repo`). The
+gate handler (``handle_validate_mr_metadata``) lives in the ``mr_validator``
+sibling, and the router's ``_extract_mr_fields`` delegates each surface here.
 
 A bare sibling module (like ``unknown_repo_push_gate``): the router puts its own
 dir on ``sys.path`` so ``from mr_cli_fields import …`` resolves both as the live

@@ -239,6 +239,17 @@ class TestItDeclinesInsteadOfBlocking:
         with patch("teatree.utils.loopback_forward.run_allowed_to_fail", side_effect=failure):
             assert _running_admin_container() == ""
 
+    def test_only_the_production_projects_admin_is_reached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A scratch stack's admin would serve another DB, and lend its image to the forwarder."""
+        monkeypatch.setenv("TEATREE_COMPOSE_PROJECT", "rolled")
+        with (
+            patch("teatree.utils.compose_project.running_in_container", return_value=False),
+            patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run,
+        ):
+            run.return_value.stdout = ""
+            _running_admin_container()
+        assert "label=com.docker.compose.project=rolled" in run.call_args.args[0]
+
     def test_only_the_first_container_id_is_taken(self) -> None:
         with patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run:
             run.return_value.stdout = f"{_ADMIN_CONTAINER}\nsecond-one\n"

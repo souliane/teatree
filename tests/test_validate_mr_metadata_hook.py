@@ -38,6 +38,14 @@ def _verdict(command: str) -> list[str] | None:
     return validate_mr_metadata(fields[0], fields[1], DEFAULT_MR_TITLE_REGEX)
 
 
+_LAUNCHER_REFUSAL = subprocess.CompletedProcess(
+    args=[],
+    returncode=t3_invocation.VENUE_UNAVAILABLE_EXIT,
+    stdout="",
+    stderr="deploy/t3: refusing to run — this checkout is not visible inside the container.\n           cwd: /x\n",
+)
+
+
 def _glab_create(title: str, description: str) -> dict:
     return {
         "tool_name": "Bash",
@@ -122,6 +130,35 @@ class TestDefaultOverlayValidation:
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
+
+    def test_a_launcher_that_cannot_run_here_fails_closed_naming_the_venue(self, monkeypatch, capsys):
+        """Exit 69 is ``deploy/t3`` refusing the venue: the title was never read, so it is no verdict on it."""
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        with (
+            patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
+            patch.object(t3_invocation, "unreachable_reason", return_value=None),
+        ):
+            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert reason.startswith("Cannot validate MR title/description")
+        assert "venue fault" in reason
+        assert "this checkout is not visible inside the container" in reason
+        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1" in reason
+
+    def test_the_broken_env_opt_in_also_lets_a_venue_fault_through_and_says_so(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        with (
+            patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
+            patch.object(t3_invocation, "unreachable_reason", return_value=None),
+        ):
+            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
+        err = capsys.readouterr().err
+        assert "venue fault" in err
+        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
 
     def test_missing_title_is_validated_not_skipped(self, monkeypatch, capsys):
         # An MR create with no --title is exactly the bad metadata the gate

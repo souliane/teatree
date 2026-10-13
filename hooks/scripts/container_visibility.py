@@ -10,13 +10,19 @@ table "when you know this tree is reachable there".
 "Know" is the load-bearing word, and this module is what supplies it. A blind
 ``TEATREE_INVOCATION_CWD=$(pwd)`` would assert reachability rather than establish
 it, defeating the guard precisely where it earns its keep. So the answer comes
-from the CLI container's own mount table: a bind mount whose destination equals
-its source carries a path across the boundary unchanged, and nothing else does.
+from the mount table of the container ``deploy/t3`` would exec into: a bind mount
+whose destination equals its source carries a path across the boundary unchanged,
+and nothing else does.
+
+That container is chosen by asking the launcher's own question — its compose
+project, its route order, its probe format — because any other container is
+one the CLI never runs in. A second stack running the same service (a scratch
+review stack) must not stand in for the production one.
 
 Absence of proof is not proof of absence, and here it must not be treated as
-either — every unanswerable case (no docker, no running container, an unreadable
-mount table) yields no roots, so the caller declares nothing and the refusal
-stands.
+either — every unanswerable case (no docker answer, no route container, several
+of them, an unreadable mount table) yields no roots and a named reason, so the
+caller declares nothing, the refusal stands, and the refusal can say why.
 
 Cold-import safe: a hook is a bare ``python3`` subprocess with no guarantee
 ``teatree`` is importable, so this imports only stdlib.
@@ -26,6 +32,7 @@ import os
 import shutil
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted local docker CLI
 import sys
+from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
 
@@ -34,23 +41,37 @@ from pathlib import Path
 sys.modules.setdefault("container_visibility", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.container_visibility", sys.modules[__name__])
 
-#: The compose service ``deploy/t3`` execs the CLI into, so its mounts are the ones
-#: that decide the answer. Read from the same knob the wrapper reads, so an operator
-#: who redirects the CLI cannot leave the two disagreeing about which container counts.
-_CLI_SERVICE = os.environ.get("TEATREE_DOCKER_CLI_SERVICE", "teatree-worker")
-
-#: Compose's marker for an ephemeral ``run --rm`` container. It shares the service
-#: name with the long-lived one, and ``exec`` never lands in it — reading its mounts
-#: would answer about a container the CLI does not run in.
-_ONEOFF_LABEL = "com.docker.compose.oneoff"
-
-_SERVICE_FORMAT = '{{.ID}} {{.Label "' + _ONEOFF_LABEL + '"}}'
+#: ``deploy/t3``'s probe format, byte for byte, so one table answers the launcher and this prover alike.
+PROBE_FORMAT = '{{.ID}} {{.Label "com.docker.compose.service"}} {{.Label "com.docker.compose.oneoff"}}'
 _MOUNT_FORMAT = "{{range .Mounts}}{{.Source}}\t{{.Destination}}\n{{end}}"
 
 #: Ample for a local daemon round-trip (measured ~46ms), and short because this cost
 #: lands BEFORE the gate's own validator allowance starts — a probe that waited would
 #: spend the hook's budget on a question whose unanswered form is already handled.
 _PROBE_TIMEOUT = 1.0
+
+_NO_ANSWER = (
+    "docker gave no answer about {subject} — no docker binary, a daemon that is down, a permission error, or a timeout"
+)
+_NO_ROUTE = "compose project {project!r} runs no {services} container"
+_SEVERAL = (
+    "compose project {project!r} runs {count} {service} containers ({ids}) — scaled or started outside the "
+    "deploy, which never runs two"
+)
+_NOT_MOUNTED = (
+    "container {container} of compose project {project!r} mounts no host directory at its own path holding "
+    "{path} — the hook plugin is installed outside every such mount; install it from a checkout the container "
+    "mounts at that same path"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CliPick:
+    """The one container ``deploy/t3`` would exec into, or why none can be named."""
+
+    container: str = ""
+    reason: str = ""
+    identity_roots: tuple[str, ...] = ()
 
 
 def _docker(*args: str) -> str | None:
@@ -71,43 +92,78 @@ def _docker(*args: str) -> str | None:
     return probe.stdout if probe.returncode == 0 else None
 
 
-def _cli_container() -> str | None:
-    """The running, non-ephemeral container serving the CLI service, or ``None``."""
-    listing = _docker(
+def production_compose_project() -> str:
+    """The compose project ``deploy/t3`` dispatches into, by its own precedence."""
+    return os.environ.get("TEATREE_COMPOSE_PROJECT") or os.environ.get("COMPOSE_PROJECT_NAME") or "teatree"
+
+
+def cli_services() -> tuple[str, ...]:
+    """``deploy/t3``'s route order: the CLI service, then its fallbacks, first mention wins."""
+    preferred = os.environ.get("TEATREE_DOCKER_CLI_SERVICE") or "teatree-worker"
+    fallbacks = os.environ.get("TEATREE_DOCKER_CLI_FALLBACK_SERVICES") or "teatree-admin teatree-worker"
+    return tuple(dict.fromkeys(f"{preferred} {fallbacks}".split()))
+
+
+def _route_containers(table: str) -> list[tuple[str, str]]:
+    """``(container, service)`` per row ``exec`` could land in — a proven one-off never can."""
+    routes = []
+    for line in table.splitlines():
+        container, service, oneoff = [*line.split(maxsplit=2), "", ""][:3]
+        if container and oneoff.strip() != "True":
+            routes.append((container, service))
+    return routes
+
+
+def cli_pick() -> CliPick:
+    """The first route with a container, which must be the only one of its service."""
+    project = production_compose_project()
+    table = _docker(
         "ps",
         "--filter",
-        f"label=com.docker.compose.service={_CLI_SERVICE}",
+        f"label=com.docker.compose.project={project}",
         "--filter",
         "status=running",
         "--format",
-        _SERVICE_FORMAT,
+        PROBE_FORMAT,
     )
-    for line in (listing or "").splitlines():
-        container, _, oneoff = line.partition(" ")
-        if container and oneoff.strip() != "True":
-            return container
-    return None
+    if table is None:
+        return CliPick(reason=_NO_ANSWER.format(subject=f"compose project {project!r}"))
+    routes = _route_containers(table)
+    services = cli_services()
+    for service in services:
+        containers = [container for container, name in routes if name == service]
+        if len(containers) == 1:
+            return CliPick(container=containers[0])
+        if containers:
+            ids = ", ".join(containers)
+            return CliPick(reason=_SEVERAL.format(project=project, count=len(containers), service=service, ids=ids))
+    return CliPick(reason=_NO_ROUTE.format(project=project, services=" or ".join(services)))
 
 
 @cache
-def identity_mount_roots() -> tuple[str, ...]:
-    """Host roots the CLI container mounts at their own path.
+def proved_pick() -> CliPick:
+    """:func:`cli_pick` with the picked container's identity mounts read.
 
     Cached for the life of the hook process: the mount table cannot change under a
     running container, and a hook that shells out repeatedly should pay one probe.
     """
-    container = _cli_container()
-    if container is None:
-        return ()
-    table = _docker("inspect", "--format", _MOUNT_FORMAT, container)
+    pick = cli_pick()
+    if not pick.container:
+        return pick
+    table = _docker("inspect", "--format", _MOUNT_FORMAT, pick.container)
     if table is None:
-        return ()
+        return replace(pick, reason=_NO_ANSWER.format(subject=f"the mounts of container {pick.container}"))
     roots = []
     for line in table.splitlines():
         source, separator, destination = line.partition("\t")
         if separator and source and source == destination:
             roots.append(source)
-    return tuple(roots)
+    return replace(pick, identity_roots=tuple(roots))
+
+
+def identity_mount_roots() -> tuple[str, ...]:
+    """Host roots the CLI container mounts at their own path."""
+    return proved_pick().identity_roots
 
 
 def container_path(path: Path) -> str | None:
@@ -121,3 +177,13 @@ def container_path(path: Path) -> str | None:
         if resolved == root or root in resolved.parents:
             return str(resolved)
     return None
+
+
+def unreachable_reason(path: Path) -> str | None:
+    """Why *path* cannot be declared to the CLI container, or ``None`` when a mount proves it."""
+    pick = proved_pick()
+    if pick.reason:
+        return pick.reason
+    if container_path(path) is not None:
+        return None
+    return _NOT_MOUNTED.format(container=pick.container, project=production_compose_project(), path=path.resolve())
