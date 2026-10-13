@@ -28,10 +28,12 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.live_client import LiveClient, WorkerSessionFacts
 from teatree.agents.live_control import MAX_PENDING_INPUTS, ReceiptPayload
+from teatree.agents.live_delivery import SendReceipt
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task
+from teatree.mcp.agent_mailbox import MailboxClient
 from tests.factories import planned_ticket
 
 _FAKE_CLI = Path(__file__).with_name("fake_claude_cli.py")
@@ -312,3 +314,29 @@ class LiveControlIntegrationTests(TestCase):
         late = asyncio.run(shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1))
         assert replay.as_payload() == accepted
         assert (late.outcome, late.code) == ("rejected", "session_closed")
+
+    def test_a_peer_message_is_pushed_into_the_busy_agents_turn_once_as_peer_information(self) -> None:
+        run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
+        sender = shared_broker().register(room=str(self.ticket.pk), harness="codex_app_server", label="reviewing")
+        mailbox = MailboxClient(sender.socket_path, sender.token)
+
+        def operator() -> SendReceipt:
+            _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            [peer] = asyncio.run(mailbox.peers())
+            sending = _in_background(lambda: asyncio.run(mailbox.send(peer["address"], "schema moved to v2", "p-1")))
+            _until(lambda: self.pending() == 1, "the peer message to be pending")
+            run.release_tool.touch()
+            return sending.result(timeout=_WAIT_LIMIT)
+
+        try:
+            receipt = self.dispatch(run, operator)
+        finally:
+            shared_broker().unregister(sender.address)
+
+        assert (receipt["outcome"], receipt["code"]) == ("accepted_current_turn", None)
+        answers = json.dumps(run.hook_answers("PostToolUse"))
+        assert answers.count(f"[TeaTree peer message id={receipt['id']}]") == 1
+        assert "schema moved to v2" in answers
+        assert "operator input" not in json.dumps(run.hook_answers())
+        assert run.user_turns() == 1
+        assert self.attempt.exit_code == 0

@@ -9,8 +9,8 @@ import secrets
 import threading
 import uuid
 from collections import deque
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -18,8 +18,17 @@ from typing import TYPE_CHECKING, NoReturn, Self, TypedDict, cast
 
 from claude_agent_sdk import ClaudeAgentOptions
 
-from teatree.agents.live_control import MAX_INPUT_BYTES
+from teatree.agents.live_control import (
+    MAX_INPUT_BYTES,
+    ControlOutcome,
+    LiveTask,
+    PeerIdentity,
+    RejectCode,
+    frame_peer_message,
+)
+from teatree.agents.live_delivery import PeerDelivery, SendReceipt
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
+from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 from teatree.paths import control_db_dir
 
 if TYPE_CHECKING:
@@ -36,6 +45,7 @@ _MAX_KEY_BYTES = 128
 _MAX_SENT_KEYS = 1_000
 _MAX_PAGE_SIZE = 100
 _MAX_PAGE_BYTES = 1_800_000
+MAX_WAITING_SENDS = 4
 type MailboxRequest = Mapping[str, object]
 
 
@@ -49,12 +59,6 @@ class InboxPage(TypedDict):
     messages: list[InboxMessage]
     next_cursor: int
     truncated: bool
-
-
-class SendReceipt(TypedDict):
-    id: int
-    to: str
-    accepted: bool
 
 
 def _reject(message: str) -> NoReturn:
@@ -92,9 +96,11 @@ class _Participant:
     room: str
     harness: str
     label: str
+    task: int | None = None
     inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
-    sent: dict[str, tuple[str, str, int]] = field(default_factory=dict)
+    sent: dict[str, PeerDelivery] = field(default_factory=dict)
     dropped_before: int = 0
+    waiting: int = 0
 
 
 def live_dir() -> Path:
@@ -115,9 +121,16 @@ def _publish_path(directory: Path) -> Path:
 class LiveMailboxBroker:
     """Own only sessions currently running in this worker process."""
 
-    def __init__(self, *, runtime_dir: Path | None = None, ingress: OperatorIngress | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_dir: Path | None = None,
+        ingress: OperatorIngress | None = None,
+        registry: Callable[[], LiveSessionRegistry] = shared_registry,
+    ) -> None:
         self._runtime_dir = runtime_dir
-        self._ingress = ingress or OperatorIngress()
+        self._registry = registry
+        self._ingress = ingress or OperatorIngress(registry)
         self._socket_path: Path | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop: asyncio.Event | None = None
@@ -128,7 +141,7 @@ class LiveMailboxBroker:
         self._by_token: dict[str, _Participant] = {}
         self._by_address: dict[str, _Participant] = {}
         self._next_message_id = 0
-        self._delivery: dict[int, asyncio.Future[str]] = {}
+        self._delivery: dict[int, PeerDelivery] = {}
 
     @property
     def socket_path(self) -> Path:
@@ -175,7 +188,7 @@ class LiveMailboxBroker:
         self._loop = None
         self._stop = None
 
-    def register(self, *, room: str, harness: str, label: str) -> MailboxIdentity:
+    def register(self, *, room: str, harness: str, label: str, task: int | None = None) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
@@ -186,6 +199,7 @@ class LiveMailboxBroker:
             room=room,
             harness=harness,
             label=label,
+            task=task,
         )
         with self._lock:
             self._by_token[participant.token] = participant
@@ -198,22 +212,21 @@ class LiveMailboxBroker:
             if participant is None:
                 return
             self._by_token.pop(participant.token, None)
-            recipient_ids = [row["id"] for row in participant.inbox]
-            sender_ids = [record[2] for record in participant.sent.values()]
+            received = [row["id"] for row in participant.inbox]
+            sent = [delivery.message_id for delivery in participant.sent.values()]
         loop = self._loop
         if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(self._settle_many, recipient_ids, "recipient disconnected")
-            loop.call_soon_threadsafe(self._retire_sender, sender_ids)
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._recipient_left, received)
+                loop.call_soon_threadsafe(self._sender_left, sent)
 
-    def _settle_many(self, ids: list[int], outcome: str) -> None:
-        for message_id in ids:
-            future = self._delivery.get(message_id)
-            if future is not None and not future.done():
-                future.set_result(outcome)
+    def _recipient_left(self, message_ids: list[int]) -> None:
+        for message_id in message_ids:
+            if (delivery := self._delivery.get(message_id)) is not None:
+                delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
 
-    def _retire_sender(self, ids: list[int]) -> None:
-        self._settle_many(ids, "sender disconnected")
-        for message_id in ids:
+    def _sender_left(self, message_ids: list[int]) -> None:
+        for message_id in message_ids:
             self._delivery.pop(message_id, None)
 
     def _run(self) -> None:
@@ -286,7 +299,7 @@ class LiveMailboxBroker:
         _reject("Unknown mailbox method")
 
     @staticmethod
-    def _identity(participant: _Participant) -> dict[str, str]:
+    def _identity(participant: _Participant) -> PeerIdentity:
         return {
             "address": participant.address,
             "harness": participant.harness,
@@ -297,7 +310,7 @@ class LiveMailboxBroker:
         if self._by_address.get(participant.address) is not participant:
             _reject("Invalid mailbox identity")
 
-    def _peers(self, participant: _Participant) -> list[dict[str, str]]:
+    def _peers(self, participant: _Participant) -> list[PeerIdentity]:
         with self._lock:
             self._require_active(participant)
             return [
@@ -310,44 +323,70 @@ class LiveMailboxBroker:
         to, body, key, timeout = _send_fields(request)
         with self._lock:
             self._require_active(participant)
-            prior = participant.sent.get(key)
-            if prior is not None:
-                if prior[:2] != (to, body):
-                    _reject("Mailbox key already used for another message")
-                message_id = prior[2]
-                future = self._delivery[message_id]
-            else:
-                if len(participant.sent) >= _MAX_SENT_KEYS:
-                    _reject("Mailbox send limit reached for this task")
-                recipient = self._by_address.get(to)
-                if recipient is None:
-                    _reject("Mailbox recipient is not active")
-                if recipient.room != participant.room:
-                    _reject("Mailbox recipient is outside this room")
-                self._next_message_id += 1
-                message_id = self._next_message_id
-                if len(recipient.inbox) == _MAX_INBOX_MESSAGES:
-                    self._settle_many([recipient.inbox[0]["id"]], "dropped before read")
-                    recipient.dropped_before = recipient.inbox[0]["id"]
-                recipient.inbox.append(
-                    {
-                        "id": message_id,
-                        "from": participant.address,
-                        "from_harness": participant.harness,
-                        "from_label": participant.label,
-                        "text": body,
-                    }
-                )
-                participant.sent[key] = (to, body, message_id)
-                future = asyncio.get_running_loop().create_future()
-                self._delivery[message_id] = future
+            if participant.waiting >= MAX_WAITING_SENDS:
+                _reject(f"Mailbox send refused: {MAX_WAITING_SENDS} sends from this task are waiting for acceptance")
+            delivery = participant.sent.get(key)
+            if delivery is None:
+                delivery = self._enqueue(participant, to, body)
+                participant.sent[key] = delivery
+            elif (delivery.to, delivery.text) != (to, body):
+                _reject("Mailbox key already used for another message")
+            recipient = self._by_address.get(to)
+            participant.waiting += 1
         try:
-            outcome = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
-        except TimeoutError:
-            _reject("Mailbox message was not accepted in time")
-        if outcome != "accepted":
-            _reject(f"Mailbox message was not accepted: {outcome}")
-        return {"id": message_id, "to": to, "accepted": True}
+            return await self._accepted(delivery, recipient.task if recipient else None, timeout)
+        finally:
+            participant.waiting -= 1
+
+    def _enqueue(self, sender: _Participant, to: str, body: str) -> PeerDelivery:
+        if len(sender.sent) >= _MAX_SENT_KEYS:
+            _reject("Mailbox send limit reached for this task")
+        recipient = self._by_address.get(to)
+        if recipient is None:
+            _reject("Mailbox recipient is not active")
+        if recipient.room != sender.room:
+            _reject("Mailbox recipient is outside this room")
+        self._next_message_id += 1
+        message_id = self._next_message_id
+        if len(recipient.inbox) == recipient.inbox.maxlen:
+            evicted = recipient.inbox[0]["id"]
+            if (unread := self._delivery.get(evicted)) is not None:
+                unread.settle(ControlOutcome.REJECTED, RejectCode.DROPPED_UNREAD)
+            recipient.dropped_before = evicted
+        recipient.inbox.append(
+            {
+                "id": message_id,
+                "from": sender.address,
+                "from_harness": sender.harness,
+                "from_label": sender.label,
+                "text": body,
+            }
+        )
+        framed = frame_peer_message(body, message_id=message_id, sender=self._identity(sender))
+        delivery = PeerDelivery(message_id, to, body, framed, asyncio.get_running_loop().create_future())
+        self._delivery[message_id] = delivery
+        return delivery
+
+    async def _accepted(self, delivery: PeerDelivery, task: int | None, wait: float) -> SendReceipt:
+        """Push into the recipient's running turn while its inbox read can still accept first."""
+        if not delivery.settled.done():
+            if task is not None and delivery.push is None:
+                delivery.push = asyncio.create_task(self._push_into_turn(delivery, task, wait))
+            try:
+                await asyncio.wait_for(asyncio.shield(delivery.settled), wait)
+            except TimeoutError:
+                if delivery.push is not None:
+                    await asyncio.wait({delivery.push})
+        return delivery.receipt()
+
+    async def _push_into_turn(self, delivery: PeerDelivery, task: int, wait: float) -> None:
+        command_id = f"peer-{delivery.message_id}"
+        try:
+            receipt = await self._registry().push(task, delivery.framed, command_id=command_id, wait=wait)
+        finally:
+            delivery.push = None
+        if receipt.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN:
+            delivery.settle(ControlOutcome.ACCEPTED_CURRENT_TURN)
 
     def _ack(self, participant: _Participant, request: MailboxRequest) -> bool:
         ids = request.get("ids")
@@ -361,10 +400,9 @@ class LiveMailboxBroker:
             _reject("Mailbox acknowledgement needs up to 100 positive message IDs")
         with self._lock:
             self._require_active(participant)
-            owned = {row["id"] for row in participant.inbox}
-            if not set(ids) <= owned:
-                _reject("Mailbox acknowledgement is outside this inbox")
-            self._settle_many(ids, "accepted")
+            for row in participant.inbox:
+                if row["id"] in ids and (delivery := self._delivery.get(row["id"])) is not None:
+                    delivery.settle(ControlOutcome.ACCEPTED_INBOX_READ)
         return True
 
     def _inbox(self, participant: _Participant, request: MailboxRequest) -> InboxPage:
@@ -423,10 +461,8 @@ def shared_broker() -> LiveMailboxBroker:
 @contextmanager
 def bound_task_mailbox(
     options: ClaudeAgentOptions,
+    task: LiveTask,
     *,
-    room: str,
-    harness: str,
-    label: str,
     broker: LiveMailboxBroker | None = None,
 ) -> Iterator[MailboxIdentity | None]:
     """Bind a running TeaTree task to its own stdio MCP child; revoke it on exit."""
@@ -437,9 +473,10 @@ def bound_task_mailbox(
         yield None
         return
     teatree_stdio = cast("McpStdioServerConfig", teatree)
+    label = f"{task.phase} task {task.pk}"
     try:
         active = broker or shared_broker()
-        identity = active.register(room=room, harness=harness, label=label)
+        identity = active.register(room=str(task.ticket), harness=task.harness, label=label, task=task.pk)
     except Exception:
         logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
         yield None

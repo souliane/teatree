@@ -4,7 +4,8 @@ import asyncio
 import stat
 import sys
 import tempfile
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from unittest.mock import patch
@@ -16,13 +17,25 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.agents import live_mailbox
-from teatree.agents.live_mailbox import LiveMailboxBroker, bound_task_mailbox, reset_shared_brokers, shared_broker
+from teatree.agents.live_control import LiveTask
+from teatree.agents.live_mailbox import (
+    LiveMailboxBroker,
+    MailboxIdentity,
+    bound_task_mailbox,
+    reset_shared_brokers,
+    shared_broker,
+)
+from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.mcp.agent_mailbox import InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
+from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
 from tests.teatree_mcp._call_tool_result import structured
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpStdioServerConfig
+
+
+_TASK = LiveTask(pk=7, ticket=3, phase="coding", harness="claude_sdk", model="m")
 
 
 def invoke(client: MailboxClient, method: str, **kwargs: Any) -> Any:
@@ -73,7 +86,29 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
 
 
-def test_send_is_acknowledged_only_after_the_recipient_reads(broker: LiveMailboxBroker) -> None:
+def _rejected(message_id: int, to: str, code: str, *, queued: bool) -> SendReceipt:
+    return {"id": message_id, "to": to, "outcome": "rejected", "code": code, "queued_in_inbox": queued}
+
+
+def _until(predicate: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 10
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+@pytest.fixture
+def registry() -> LiveSessionRegistry:
+    return LiveSessionRegistry()
+
+
+@pytest.fixture
+def routed_broker(tmp_path: Path, registry: LiveSessionRegistry) -> Iterator[LiveMailboxBroker]:
+    with LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as running:
+        yield running
+
+
+def test_send_is_accepted_only_after_the_recipient_reads(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
     sender_client = MailboxClient(sender.socket_path, sender.token)
@@ -89,49 +124,169 @@ def test_send_is_acknowledged_only_after_the_recipient_reads(broker: LiveMailbox
 
     before_read, receipt = asyncio.run(exchange())
     assert before_read is False
-    assert receipt["accepted"] is True
+    assert receipt == {
+        "id": receipt["id"],
+        "to": recipient.address,
+        "outcome": "accepted_inbox_read",
+        "code": None,
+        "queued_in_inbox": False,
+    }
 
 
-def test_send_times_out_explicitly_without_a_recipient_read(broker: LiveMailboxBroker) -> None:
+def test_a_send_nobody_accepts_in_time_is_rejected_and_stays_queued(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
     client = MailboxClient(sender.socket_path, sender.token)
 
-    with pytest.raises(ToolError, match="not accepted in time"):
-        asyncio.run(client.send(recipient.address, "review", "ack-timeout", timeout_seconds=0.05))
+    receipt = asyncio.run(client.send(recipient.address, "review", "ack-timeout", timeout_seconds=0.05))
+
+    assert receipt == _rejected(receipt["id"], recipient.address, "not_accepted_in_time", queued=True)
+    inbox = invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")
+    assert [row["id"] for row in inbox["messages"]] == [receipt["id"]]
 
 
-def test_timed_out_send_can_retry_without_a_second_message(broker: LiveMailboxBroker) -> None:
+def test_a_timed_out_send_retried_with_its_key_is_accepted_without_a_second_message(
+    broker: LiveMailboxBroker,
+) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
     sender_client = MailboxClient(sender.socket_path, sender.token)
     recipient_client = MailboxClient(recipient.socket_path, recipient.token)
 
-    async def exchange() -> tuple[SendReceipt, InboxPage]:
-        with pytest.raises(ToolError, match="not accepted in time"):
-            await sender_client.send(recipient.address, "review", "once", timeout_seconds=0.05)
+    async def exchange() -> tuple[SendReceipt, SendReceipt, InboxPage]:
+        first = await sender_client.send(recipient.address, "review", "once", timeout_seconds=0.05)
         retry = asyncio.create_task(sender_client.send(recipient.address, "review", "once", timeout_seconds=1))
         page = await recipient_client.inbox()
-        return await retry, page
+        return first, await retry, page
 
-    receipt, page = asyncio.run(exchange())
-    assert [row["id"] for row in page["messages"]] == [receipt["id"]]
-    assert receipt["accepted"] is True
+    first, retried, page = asyncio.run(exchange())
+    assert (first["outcome"], first["code"]) == ("rejected", "not_accepted_in_time")
+    assert [row["id"] for row in page["messages"]] == [first["id"]]
+    assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
 
 
-def test_recipient_disconnect_refuses_a_pending_send(broker: LiveMailboxBroker) -> None:
+def test_a_recipient_that_exits_before_reading_rejects_the_pending_send(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
     sender_client = MailboxClient(sender.socket_path, sender.token)
 
-    async def exchange() -> None:
+    async def exchange() -> SendReceipt:
         sending = asyncio.create_task(sender_client.send(recipient.address, "review", "disconnect", timeout_seconds=1))
         await asyncio.sleep(0.05)
         broker.unregister(recipient.address)
-        with pytest.raises(ToolError, match="recipient disconnected"):
-            await sending
+        return await asyncio.wait_for(sending, timeout=0.5)
+
+    receipt = asyncio.run(exchange())
+    assert receipt == _rejected(receipt["id"], recipient.address, "session_closed", queued=False)
+
+
+def test_an_unread_message_evicted_from_a_full_inbox_is_rejected_dropped_unread(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    with patch.object(live_mailbox, "_MAX_INBOX_MESSAGES", 2):
+        recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    async def exchange() -> SendReceipt:
+        evicted = asyncio.create_task(client.send(recipient.address, "first", "first", timeout_seconds=5))
+        await asyncio.sleep(0.05)
+        await asyncio.gather(*(client.send(recipient.address, key, key, timeout_seconds=0.05) for key in ("b", "c")))
+        return await asyncio.wait_for(evicted, timeout=1)
+
+    receipt = asyncio.run(exchange())
+    assert receipt == _rejected(receipt["id"], recipient.address, "dropped_unread", queued=False)
+
+
+def test_a_sender_cannot_hold_more_than_its_share_of_waiting_sends(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    async def exchange() -> None:
+        waiting = [
+            asyncio.create_task(client.send(recipient.address, f"m{n}", f"k{n}", timeout_seconds=0.5))
+            for n in range(live_mailbox.MAX_WAITING_SENDS)
+        ]
+        await asyncio.sleep(0.1)
+        with pytest.raises(ToolError, match="waiting for acceptance"):
+            await client.send(recipient.address, "one more", "k-over", timeout_seconds=0.5)
+        await asyncio.gather(*waiting)
 
     asyncio.run(exchange())
+
+
+def test_an_acknowledgement_outside_the_readers_own_inbox_accepts_nothing(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude", label="sender")
+    recipient = broker.register(room="ticket", harness="codex", label="recipient")
+    intruder = MailboxClient(*_credentials(broker.register(room="ticket", harness="codex", label="intruder")))
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    async def exchange() -> SendReceipt:
+        sending = asyncio.create_task(client.send(recipient.address, "private", "p-1", timeout_seconds=0.3))
+        await asyncio.sleep(0.05)
+        await intruder._request("ack", ids=[1, 2, 3])
+        return await sending
+
+    receipt = asyncio.run(exchange())
+    assert (receipt["outcome"], receipt["code"]) == ("rejected", "not_accepted_in_time")
+
+
+def _credentials(identity: MailboxIdentity) -> tuple[Path, str]:
+    return identity.socket_path, identity.token
+
+
+def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="codex_app_server", label="reviewing task 4")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coding task 7", task=_TASK.pk)
+    session = BoundarySession()
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    with OwnerLoop(registry, _TASK, session) as owner:
+
+        async def exchange() -> SendReceipt:
+            sending = asyncio.create_task(client.send(recipient.address, "the schema moved", "s-1"))
+            await asyncio.to_thread(_until, lambda: session.pending == 1)
+            owner.call_soon(session.open_boundary)
+            return await sending
+
+        receipt = asyncio.run(exchange())
+
+    assert receipt == {
+        "id": receipt["id"],
+        "to": recipient.address,
+        "outcome": "accepted_current_turn",
+        "code": None,
+        "queued_in_inbox": False,
+    }
+    [delivered] = session.delivered
+    header = f"[TeaTree peer message id={receipt['id']}] From another TeaTree agent: reviewing task 4"
+    assert delivered.startswith(header)
+    assert "the schema moved" in delivered
+
+
+def test_an_inbox_read_accepts_first_and_withdraws_the_pending_push(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="claude_sdk", label="planner")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coder", task=_TASK.pk)
+    session = BoundarySession()
+    client = MailboxClient(sender.socket_path, sender.token)
+    reader = MailboxClient(recipient.socket_path, recipient.token)
+
+    with OwnerLoop(registry, _TASK, session):
+
+        async def exchange() -> SendReceipt:
+            sending = asyncio.create_task(client.send(recipient.address, "read me", "r-1"))
+            await asyncio.to_thread(_until, lambda: session.pending == 1)
+            await reader.inbox()
+            return await sending
+
+        receipt = asyncio.run(exchange())
+        _until(lambda: session.withdrawn == 1)
+
+    assert (receipt["outcome"], receipt["code"]) == ("accepted_inbox_read", None)
+    assert session.delivered == []
 
 
 def test_identity_and_room_are_owned_by_runner(broker: LiveMailboxBroker) -> None:
@@ -199,8 +354,14 @@ def test_revoked_sender_cannot_send_after_token_lookup(broker: LiveMailboxBroker
 
 def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBroker) -> None:
     options = ClaudeAgentOptions(mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}})
-    with bound_task_mailbox(options, room="ticket-1", harness="codex", label="coder", broker=broker) as identity:
+    with bound_task_mailbox(options, _TASK, broker=broker) as identity:
         assert identity is not None
+        assert broker._identity(broker._by_address[identity.address]) == {
+            "address": identity.address,
+            "harness": "claude_sdk",
+            "label": "coding task 7",
+        }
+        assert (broker._by_address[identity.address].room, broker._by_address[identity.address].task) == ("3", 7)
         assert isinstance(options.mcp_servers, dict)
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
@@ -218,10 +379,23 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
         invoke(MailboxClient(identity.socket_path, identity.token), "peers")
 
 
+def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBroker) -> None:
+    identity = broker.register(room="ticket", harness="claude_sdk", label="coder")
+    with patch.dict("os.environ", identity.mcp_env()):
+        tools = {tool.name: tool.description or "" for tool in asyncio.run(build_server().list_tools())}
+
+    mailbox = {name: text for name, text in tools.items() if name.startswith("agent_mailbox_")}
+    assert len(mailbox) == 5
+    assert all(mailbox.values())
+    assert "accepted_current_turn" in mailbox["agent_mailbox_send"]
+    assert "same key" in mailbox["agent_mailbox_send"]
+    assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
+
+
 def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> None:
     launch = ["mcp", "serve", "--read-only", "--allow-write", "review_request_post"]
     options = ClaudeAgentOptions(mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": launch}})
-    with bound_task_mailbox(options, room="ticket-1", harness="claude", label="reviewer", broker=broker) as identity:
+    with bound_task_mailbox(options, _TASK, broker=broker) as identity:
         assert identity is not None
         assert isinstance(options.mcp_servers, dict)
         assert cast("McpStdioServerConfig", options.mcp_servers["teatree"])["args"] == launch
@@ -231,15 +405,13 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
     """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
 
     class _BrokenBroker(LiveMailboxBroker):
-        def register(self, *, room: str, harness: str, label: str) -> NoReturn:
+        def register(self, *, room: str, harness: str, label: str, task: int | None = None) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)
 
     servers = {"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}}
     options = ClaudeAgentOptions(mcp_servers=servers)
-    with bound_task_mailbox(
-        options, room="ticket-1", harness="codex", label="coder", broker=_BrokenBroker()
-    ) as identity:
+    with bound_task_mailbox(options, _TASK, broker=_BrokenBroker()) as identity:
         assert identity is None
         assert options.mcp_servers == servers
     assert "mailbox" in caplog.text
@@ -272,18 +444,10 @@ def test_inbox_can_return_a_page_of_large_but_valid_messages(broker: LiveMailbox
     recipient_client = MailboxClient(recipient.socket_path, recipient.token)
     body = "x" * 16_000
 
-    async def exchange() -> InboxPage:
-        sends = [
-            asyncio.create_task(sender_client.send(recipient.address, body, f"large-{index}")) for index in range(5)
-        ]
-        cursor = 0
-        while cursor < 5:
-            page = await recipient_client.wait(after_id=cursor, timeout_seconds=2)
-            cursor = page["next_cursor"]
-        await asyncio.gather(*sends)
-        return await recipient_client.inbox()
+    for index in range(5):
+        invoke(sender_client, "send", to=recipient.address, text=body, key=f"large-{index}", timeout_seconds=0.01)
 
-    inbox = asyncio.run(exchange())
+    inbox = invoke(recipient_client, "inbox")
     assert len(inbox["messages"]) == 5
     assert all(message["text"] == body for message in inbox["messages"])
 
@@ -312,17 +476,15 @@ def test_escaped_mailbox_pages_stay_within_transport_limit(broker: LiveMailboxBr
     body = "\x00" * 16_384
 
     async def exchange() -> list[str]:
-        sends = [
-            asyncio.create_task(sender_client.send(recipient.address, body, f"escaped-{index}")) for index in range(100)
-        ]
+        for index in range(100):
+            await sender_client.send(recipient.address, body, f"escaped-{index}", timeout_seconds=0.01)
         texts: list[str] = []
         cursor = 0
         while len(texts) < 100:
-            page = await recipient_client.wait(after_id=cursor, timeout_seconds=2)
+            page = await recipient_client.inbox(after_id=cursor, limit=100)
             assert page["messages"]
             texts.extend(message["text"] for message in page["messages"])
             cursor = page["next_cursor"]
-        await asyncio.gather(*sends)
         return texts
 
     assert asyncio.run(exchange()) == [body] * 100
