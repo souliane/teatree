@@ -39,7 +39,6 @@ def _launcher_project(env: dict[str, str]) -> str:
     return result.stdout
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
 @pytest.mark.parametrize(
     ("env", "expected"),
     [

@@ -291,7 +291,6 @@ _PARITY_TABLES = [
 ]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
 class TestParityWithTheLauncher:
     """The hook and ``deploy/t3``'s own selection functions, one docker table, one answer."""
 
