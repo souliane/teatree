@@ -1,11 +1,11 @@
 """Check the running stack's create-time GPG environment."""
 
+import os
 import subprocess  # noqa: S404 — imported only for the SubprocessError type caught below; shell-outs go through teatree.utils.run
 from collections.abc import Callable, Mapping
 
 import typer
 
-from teatree.utils.compose_project import production_compose_project
 from teatree.utils.run import run_allowed_to_fail
 
 #: Where ``deploy/docker-compose.yml`` bind-mounts the host GPG home. A container path,
@@ -13,6 +13,8 @@ from teatree.utils.run import run_allowed_to_fail
 #: ``TEATREE_HOST_GNUPG_DIR`` of its own, which is itself the pre-fix image's signature.
 HOST_GNUPG_MOUNT = "/home/teatree/.gnupg"
 
+_PROJECT_ENV = "COMPOSE_PROJECT_NAME"
+_PROJECT_DEFAULT = "teatree"
 _HOST_GNUPG_DIR_ENV = "TEATREE_HOST_GNUPG_DIR"
 _DOCKER_TIMEOUT_SECONDS = 20
 
@@ -34,12 +36,13 @@ def _docker_stdout(argv: list[str]) -> str | None:
 
 def _running_stack_environments() -> ContainerEnvironments | None:
     """Each running stack container's create-time environment, or ``None`` if unanswerable."""
+    project = os.environ.get(_PROJECT_ENV, "").strip() or _PROJECT_DEFAULT
     listing = _docker_stdout(
         [
             "docker",
             "ps",
             "--filter",
-            f"label=com.docker.compose.project={production_compose_project()}",
+            f"label=com.docker.compose.project={project}",
             "--filter",
             "status=running",
             "--format",
