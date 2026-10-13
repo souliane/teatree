@@ -23,6 +23,11 @@ context loss and long waits.
 Under the hood it is a Django project with a plugin system (overlays) that adapts
 it to a given set of repos, CI, and services.
 
+Useful pieces include isolated worktrees and databases for a ticket, a worker
+that keeps the ticket moving while no editor is open, and checks that tie tests,
+review evidence, and the final merge to the same change. The README's loop
+inventory and skills catalogue below are generated from shipped definitions.
+
 ```mermaid
 graph TB
   subgraph "t3 CLI"
@@ -515,6 +520,42 @@ local task queue. Findings render to
 `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones: anchors /
 action needed / in flight). The Claude Code statusline hook `cat`s that file in
 <10ms, so live status sits at the top of every session without polling.
+
+The shipped loop inventory below comes from the same seed definitions used by
+`t3 setup`; operators can change which loops run.
+
+<!-- BEGIN LOOPS -->
+| Loop | Purpose |
+|------|---------|
+| `inbox` | Drains inbound Slack mentions, DMs, review-intent and RED-CARD reactions (plus the Notion view) into the DB every 1m and routes them |
+| `idle_stack_reaper` | Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m |
+| `local_stack_queue` | Drains the local-stack acquisition queue, starting the next queued worktree stack whose backoff retry is due; checks every 1m |
+| `resource_pressure` | Auto-frees host disk and RAM when they cross the pressure threshold; checks every 1m on its own ~5m internal cadence |
+| `snapshot_warmer` | Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day so a ticket-critical-path provision never pays the slow restore+migrate path |
+| `dispatch` | Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts owner questions |
+| `tickets` | Scans the local Ticket DB and each code host every 5m — surfacing active and stale tickets, dispositioning issues, and marking completed ones |
+| `review` | Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on |
+| `ship` | Sweeps your own-authored + same-repo open PRs every 5m: folds in approvals/CI, arms the cold review, and executes the keystone merge (consumes the orchestrator's MergeClear) |
+| `issue_disposition` | Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, only for t3-teatree owned repos; bounded per tick |
+| `audit` | Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m |
+| `followup` | Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m |
+| `issue_implementer` | Discovers and claims admitted backlog issues to auto-implement, kicking off the maker pipeline; every 30m |
+| `triage_assessor` | Assesses OPEN needs-triage issues daily and queues keep/close/needs-info recommendations behind an ask-gate; this row IS the cadence, the active preset decides whether it runs, and it never acts without per-item approval |
+| `dm_sweep` | Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner already replied, subject merged/closed, duplicate of an open thread); leaves anything older than a day for the resurfacing side, and says nothing when it resolved nothing |
+| `housekeeping` | Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly |
+| `arch_review` | Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the architectural-review skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries |
+| `dogfood` | Runs the overlay provisioning smoke test once a day to catch broken worktree setup |
+| `eval_local` | Runs the local behavioral eval suite weekly; this row IS the cadence |
+| `db_backup` | Backs up teatree's own control DB at 02:00 and prunes past the keep-last-N-days retention; this row IS the cadence |
+| `backlog_sweep` | Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row plus the active preset are the switch, gated by ask_before_backlog_sweep_closes |
+| `news` | Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas |
+| `dream` | Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, reindex MEMORY.md, decay — off the live tick |
+| `outer_loop` | Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; requires trustworthy score signals |
+| `directive_loop` | Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); the execution arc additionally needs trusted score signals |
+| `ci_eval_heal` | Advances operator-opened CI-eval heal sessions every 5m: dispatch the behavioral eval in CI, poll, and fix confirmed reds within the session budget and anti-cheat gate |
+| `ratchet_repair` | Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair |
+| `memory_skim` | Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week |
+<!-- END LOOPS -->
 
 ```bash
 # Run the worker (the cadence owner). Bare `t3 worker` is the run alias:

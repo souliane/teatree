@@ -61,6 +61,14 @@ Your tool grant is whatever `teatree.core.modelkit.phase_tools.tools_for_phase("
 
 ## What to do
 
+The README is in scope on every pass. Read feature commits since its last edit and
+the `t3 doctor check` README freshness advisory. If capabilities have moved on,
+refresh its human prose in the review PR while keeping generated blocks under
+their generators. Describe what the system does in plain terms: avoid
+"I'm open-sourcing", before/after claims, "this framework enables", and any
+claim that flatters the author over the reader. The pass proposes this change
+through its normal PR; it never writes to the default branch directly.
+
 ### 1. Walk the judgement-tier anti-pattern catalog
 
 `docs/generated/antipattern-catalog.md` (generated from `src/teatree/quality/antipatterns.yaml`) lists every known anti-pattern. Entries marked `detection: greppable` are already caught mechanically by `scripts/hooks/check_antipatterns.py` on every PR — skip those, they are not your job. Entries marked `detection: judgement` need a human-grade (or agent-grade) eye across the whole tree, because there is no reliable regex for them:

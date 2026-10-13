@@ -719,6 +719,7 @@ jobs:
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
             --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
+            --min-rows 1 \
             --out docs/evals/index.md
           cat docs/evals/index.md | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
       # Commit the dashboard ONLY when it changed (an unchanged file is a clean

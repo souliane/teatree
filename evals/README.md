@@ -440,13 +440,13 @@ lane still requires them GREEN; they are listed here as known-flaky under `haiku
 load, deliberately kept OUT of the ceiling table so the ceiling stays the honest
 both-attempt hard core rather than an inflated catch-all.
 
-### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
+### Dream-derived scenarios — the drift → live-eval loop
 
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:
 on every pass it derives an inert eval CANDIDATE from each grounded drift cluster
 (`teatree.loops.dream.eval_proposer`) and then PROMOTES it to a real `under_load` scenario here
-(`teatree.loops.dream.promote`). A promoted candidate lands as a spec appended to
-`evals/scenarios/promoted_drift.yaml` plus its `_{fail,pass}` replay fixtures —
+(`teatree.loops.dream.promote`). A promoted candidate writes a scenario spec and
+its `_{fail,pass}` replay fixtures under `evals/scenarios/` when promotion actually runs —
 the same artifacts a hand-authored scenario ships, so the deterministic replay
 gate (`test_scenarios_anti_vacuous.py`) and the weekly metered lane run it with no
 special-casing.

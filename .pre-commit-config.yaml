@@ -243,11 +243,10 @@ repos:
   # Phase 6b - ac-django testing conventions (ast-grep; grandfathered INLINE via
   # rule-scoped `# ast-grep-ignore: <rule-id>` comments — no baseline file, no
   # count cap. The colon form is used over the bracket form so it coexists with
-  # ruff's ERA001 preview rule.) ast-grep is pinned to 0.42.3 by the hook wrapper
-  # (resolved via `uvx --from ast-grep-cli==0.42.3`). The pyproject hook
+  # ruff's ERA001 preview rule.) The pinned hook wrapper owns the ast-grep version. The pyproject hook
   # grandfathers the three existing complexity-ignore entries via --grandfather.
   - repo: https://github.com/souliane/skills
-    rev: 92d6cfa57e08b44c27573b09183256834df59a8b
+    rev: 84f075fff0187ccbdf187143a6cf3ab91711fddb
     hooks:
       - id: ac-django-no-pytest-django-db
         files: ^tests/.*\.py$
@@ -286,7 +285,7 @@ repos:
       - id: update-readme-skills
         name: Update README skills catalogue
         language: system
-        entry: uv run scripts/hooks/update_readme_skills.py
+        entry: uv run python scripts/hooks/update_readme_skills.py
         pass_filenames: false
         always_run: true
 

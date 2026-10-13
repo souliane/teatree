@@ -9,11 +9,16 @@ import re
 import sys
 from pathlib import Path
 
+from teatree.core.diagrams import inject_between_markers
+from teatree.loops.seed import DEFAULT_LOOPS
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 README_PATH = ROOT_DIR / "README.md"
 
 BEGIN = "<!-- BEGIN SKILLS -->"
 END = "<!-- END SKILLS -->"
+LOOPS_BEGIN = "<!-- BEGIN LOOPS -->"
+LOOPS_END = "<!-- END LOOPS -->"
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.+?)\n---", re.DOTALL)
 
 
@@ -50,6 +55,12 @@ def _build_table() -> str:
     return "\n".join(lines)
 
 
+def _build_loops_table() -> str:
+    rows = ["| Loop | Purpose |", "|------|---------|"]
+    rows.extend(f"| `{spec.name}` | {spec.description.split('. ', 1)[0].rstrip('.')} |" for spec in DEFAULT_LOOPS)
+    return "\n".join(rows)
+
+
 def main() -> int:
     if not README_PATH.exists():
         print(f"Error: {README_PATH} not found", file=sys.stderr)
@@ -57,19 +68,18 @@ def main() -> int:
 
     text = README_PATH.read_text(encoding="utf-8")
 
-    if BEGIN not in text or END not in text:
-        print(f"Error: README.md missing {BEGIN} / {END} markers", file=sys.stderr)
+    try:
+        new_text = inject_between_markers(text, begin=BEGIN, end=END, block=_build_table())
+        new_text = inject_between_markers(new_text, begin=LOOPS_BEGIN, end=LOOPS_END, block=_build_loops_table())
+    except ValueError as exc:
+        print(f"Error: README.md {exc}", file=sys.stderr)
         return 1
-
-    before = text[: text.index(BEGIN) + len(BEGIN)]
-    after = text[text.index(END) :]
-    new_text = before + "\n" + _build_table() + "\n" + after
 
     if text == new_text:
         return 0
 
     README_PATH.write_text(new_text, encoding="utf-8")
-    print("Updated README.md skills catalogue")
+    print("Updated README.md skills catalogue and loop inventory")
     return 1  # signal pre-commit that file was modified
 
 

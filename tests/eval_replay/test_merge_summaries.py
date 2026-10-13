@@ -53,6 +53,10 @@ def _write_shards(tmp_path: Path) -> Path:
 
 
 class TestMergeSummaries:
+    def test_workflow_requires_a_nonempty_dashboard(self) -> None:
+        workflow = (Path(__file__).parents[2] / ".github/workflows/eval.yml").read_text(encoding="utf-8")
+        assert "--min-rows 1" in workflow
+
     def test_incomplete_row_is_counted_in_dashboard(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         shard_dir = tmp_path / "summaries"
         shard_dir.mkdir()
@@ -111,3 +115,18 @@ class TestMergeSummaries:
         out = capsys.readouterr().out
         assert code == 0
         assert "0 passed" in out
+
+    def test_publish_refuses_zero_rows_without_replacing_dashboard(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        dashboard = tmp_path / "index.md"
+        dashboard.write_text("previous dashboard", encoding="utf-8")
+        with pytest.raises(ValueError, match="at least 1 summary row"):
+            main([str(empty), *_META, "--min-rows", "1", "--out", str(dashboard)])
+        assert dashboard.read_text(encoding="utf-8") == "previous dashboard"
+
+    def test_publish_accepts_a_summary_row(self, tmp_path: Path) -> None:
+        shards = _write_shards(tmp_path)
+        dashboard = tmp_path / "index.md"
+        assert main([str(shards), *_META, "--min-rows", "1", "--out", str(dashboard)]) == 0
+        assert "alpha" in dashboard.read_text(encoding="utf-8")

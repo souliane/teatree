@@ -115,5 +115,10 @@ def merge_summaries(
     run_url: str,
     sha: str,
     generated_at: str,
+    min_rows: int = 0,
 ) -> str:
-    return render_dashboard(merge(shard_files(inputs)), run_url=run_url, sha=sha, generated_at=generated_at)
+    rows = merge(shard_files(inputs))
+    if len(rows) < min_rows:
+        msg = f"expected at least {min_rows} summary row(s), found {len(rows)}"
+        raise ValueError(msg)
+    return render_dashboard(rows, run_url=run_url, sha=sha, generated_at=generated_at)

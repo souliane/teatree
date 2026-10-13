@@ -95,7 +95,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite|Agent",
+        "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite|TaskCreate|TaskUpdate|Agent",
         "hooks": [
           {
             "type": "command",

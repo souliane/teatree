@@ -37,6 +37,7 @@ jobs:
       # The generated reference pages are committed; regenerate so a
       # deploy from a slightly stale main still ships current docs.
       - run: uv run python manage.py generate_all_docs
+      - run: uv run python scripts/hooks/update_readme_skills.py
       - run: uv run python scripts/hooks/generate_cli_reference.py
       - run: uv run python scripts/hooks/generate_fsm_diagrams.py
       - run: uv run python scripts/hooks/generate_dashboard_snapshot.py

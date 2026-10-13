@@ -30,12 +30,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--sha", required=True, help="The commit SHA the run measured (injected).")
     parser.add_argument("--generated-at", required=True, help="ISO-8601 timestamp (injected; never computed here).")
     parser.add_argument("--out", default=None, help="Write the dashboard to this path instead of stdout.")
+    parser.add_argument("--min-rows", type=int, default=0, help="Refuse to render fewer summary rows than this.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
-    dashboard = merge_summaries(args.inputs, run_url=args.run_url, sha=args.sha, generated_at=args.generated_at)
+    dashboard = merge_summaries(
+        args.inputs, run_url=args.run_url, sha=args.sha, generated_at=args.generated_at, min_rows=args.min_rows
+    )
     if args.out is not None:
         write_artifact(Path(args.out), dashboard)
     else:

@@ -90,6 +90,7 @@ from teatree.cli.doctor.checks_notion import _check_notion_credentials
 from teatree.cli.doctor.checks_overlay_claims import _check_repos_claimed_by_disagreeing_overlays
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
+from teatree.cli.doctor.checks_readme import _check_readme_staleness
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
@@ -376,6 +377,7 @@ def _run_daily_advisories() -> None:
     _check_compose_output_root_pinned()
     _check_reconciliation_ledger()
     _check_ticket_sweep_trend()
+    _check_readme_staleness()
 
 
 def _run_config_posture_advisories() -> None:
