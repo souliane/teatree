@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import typer
 
-from teatree.backends.slack.receiver import default_queue_path, run_listener
+from teatree.backends.slack.receiver import QueuePaths, default_queue_path, default_reactions_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.utils.django_bootstrap import ensure_django
@@ -160,9 +160,8 @@ def listen_command(
                 raise typer.Exit(code=1)
             for name, _app, _bot in overlays:
                 typer.echo(f"OK    Listening on {name}")
-            run_listener(
-                overlays, queue_path=queue_file, on_event=_record_and_wake_slack_answer, on_action=_answer_click
-            )
+            paths = QueuePaths(events=queue_file or default_queue_path(), reactions=default_reactions_queue_path())
+            run_listener(overlays, paths=paths, on_event=_record_and_wake_slack_answer, on_action=_answer_click)
     except AlreadyRunningError as exc:
         typer.echo(f"WARN  {exc} Stop it before starting another.")
         raise typer.Exit(code=1) from None

@@ -15,6 +15,8 @@ A tap on a Block Kit button arrives as an ``interactive`` envelope; it is acknow
 handed to the ``on_action`` callback, never queued (#4990).
 
 Start with ``t3 slack listen`` (all overlays) or ``t3 slack listen --overlay X``.
+Liveness and the catch-up a ``hello`` owes live in
+:mod:`teatree.backends.slack.listener_heartbeat`.
 """
 
 import json
@@ -28,6 +30,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from teatree.backends.slack.listener_heartbeat import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    ConnectionLiveness,
+    OnConnect,
+    heartbeat_path,
+    read_heartbeat,
+    write_heartbeat,
+)
 from teatree.backends.slack.self_identity import OwnSlackIdentity, identity_from_auth_test, is_self_originated
 
 if TYPE_CHECKING:
@@ -39,11 +49,7 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_FILENAME = "slack-events.jsonl"
 _REACTIONS_QUEUE_FILENAME = "slack-reactions.jsonl"
-_HEARTBEAT_FILENAME = "slack-listener-heartbeat.json"
-#: How often a connected WebSocket loop restamps the heartbeat. Far coarser than the
-#: loop's own 1s wake so N overlay threads do not thrash the shared data mount, and
-#: still four restamps inside the doctor's 120s staleness floor.
-_HEARTBEAT_INTERVAL_SECONDS = 15
+_SERVE_TICK_SECONDS = 1.0
 _HANDLED_EVENT_TYPES = frozenset({"app_mention", "message", "reaction_added"})
 
 #: Called with ``(overlay_name, event)`` right after an event is durably queued.
@@ -69,26 +75,6 @@ def default_reactions_queue_path() -> Path:
     return _data_dir() / _REACTIONS_QUEUE_FILENAME
 
 
-def default_heartbeat_path() -> Path:
-    return _data_dir() / _HEARTBEAT_FILENAME
-
-
-def write_heartbeat(path: Path | None = None) -> None:
-    """Stamp the liveness file ``t3 doctor`` reads from another container.
-
-    Written from inside a CONNECTED overlay's wait loop, so it attests to the one
-    thing that matters — a live WebSocket receiving events — rather than to a
-    sidecar process that could keep polling an inbound path already dead.
-    """
-    path = path or default_heartbeat_path()
-    payload = {"updated_at": int(time.time()), "interval_seconds": _HEARTBEAT_INTERVAL_SECONDS}
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    except OSError:
-        logger.warning("Could not stamp the slack-listener heartbeat at %s", path, exc_info=True)
-
-
 @dataclass(frozen=True, slots=True)
 class QueuePaths:
     """Per-listener JSONL queue file locations.
@@ -96,12 +82,15 @@ class QueuePaths:
     Mentions and messages share one file; reactions get a dedicated file so
     :class:`SlackMentionsScanner` and :class:`SlackReviewIntentScanner` each
     own an atomic-rename drain without racing on a shared inode (#1047).
-    ``heartbeat`` is the liveness file the connected loop restamps.
     """
 
     events: Path
     reactions: Path
     heartbeat: Path | None = None
+
+    @classmethod
+    def default(cls) -> "QueuePaths":
+        return cls(events=default_queue_path(), reactions=default_reactions_queue_path(), heartbeat=heartbeat_path())
 
     def for_event_type(self, event_type: str) -> Path:
         if event_type == "reaction_added":
@@ -213,20 +202,81 @@ def commit_reactions_drain(path: Path | None = None, *, retain: list[dict] | Non
     commit_drain(path or default_reactions_queue_path(), retain=retain)
 
 
+def deliver_event(
+    overlay: str,
+    event: dict,
+    *,
+    queues: QueuePaths,
+    identity: OwnSlackIdentity | None,
+    on_event: OnEvent | None,
+) -> bool:
+    """Queue one Slack event and fire *on_event* for it — the live and the replayed path alike.
+
+    ``False`` when the event type or subtype is not one the receiver handles.
+    """
+    event_type = event.get("type", "")
+    if event_type not in _HANDLED_EVENT_TYPES:
+        return False
+    subtype = event.get("subtype", "")
+    if subtype in {"bot_message", "message_changed", "message_deleted"}:
+        return False
+    target = queues.for_event_type(event_type)
+    _enqueue(target, overlay, event)
+    logger.info("[%s] Queued %s event (ts=%s)", overlay, event_type, event.get("ts", "?"))
+    if on_event is None:
+        return True
+    if is_self_originated(event, identity):
+        logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay, event.get("ts", "?"))
+        return True
+    # Best-effort event-driven record-then-wake so the answer cycle finds the
+    # row it reads instead of waking on an empty queue. The JSONL write above
+    # is the durable buffer, so a raising callback only costs latency — the
+    # inbox drain still records the event.
+    try:
+        on_event(overlay, event)
+    except Exception:
+        logger.warning("[%s] slack-answer wake signal failed", overlay, exc_info=True)
+    return True
+
+
+class _LiveSocket(Protocol):
+    def is_connected(self) -> bool: ...
+
+    def session_id(self) -> str | None: ...
+
+
+def _catch_up_once(overlay: str, alive_at: float, on_connect: OnConnect, liveness: ConnectionLiveness) -> None:
+    started_at = time.time()
+    try:
+        on_connect(overlay, alive_at)
+    except Exception:
+        logger.warning("[%s] Slack catch-up failed; retrying with backoff", overlay, exc_info=True)
+        liveness.failed(time.time())
+        return
+    liveness.succeeded(started_at)
+
+
 def _serve_until_stopped(
-    *, stop_event: threading.Event, heartbeat_path: Path | None, is_connected: Callable[[], bool]
+    *,
+    overlay: str,
+    stop_event: threading.Event,
+    client: _LiveSocket,
+    liveness: ConnectionLiveness,
 ) -> None:
-    """Idle until shutdown, restamping the liveness heartbeat on its cadence.
+    """Idle until shutdown: run the catch-up a hello owes, then restamp the heartbeat on its cadence.
 
     Reached only past ``client.connect()``, which is what lets the stamp attest to a
     live socket rather than to a process that is merely still running.
     """
     next_beat = 0.0
     while True:
-        if time.monotonic() >= next_beat and is_connected():
-            write_heartbeat(heartbeat_path)
-            next_beat = time.monotonic() + _HEARTBEAT_INTERVAL_SECONDS
-        if stop_event.wait(timeout=1.0):
+        on_connect = liveness.on_connect
+        if on_connect is not None and (alive_at := liveness.catch_up_due(time.time())) is not None:
+            _catch_up_once(overlay, alive_at, on_connect, liveness)
+        if time.monotonic() >= next_beat and client.is_connected() and liveness.may_stamp(client.session_id()):
+            liveness.stamped(write_heartbeat(overlay, liveness.heartbeat_path))
+            next_beat = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+        if stop_event.wait(timeout=_SERVE_TICK_SECONDS):
             return
 
 
@@ -269,15 +319,23 @@ def _hand_over_tap(overlay_name: str, payload: dict, on_action: OnAction | None)
         logger.warning("[%s] slack click handler failed", overlay_name, exc_info=True)
 
 
+@dataclass(frozen=True, slots=True)
+class ListenerCallbacks:
+    on_event: OnEvent | None = None
+    on_action: OnAction | None = None
+
+
 def _run_single_overlay(
     *,
     overlay: tuple[str, str, str],
     queues: QueuePaths,
     stop_event: threading.Event,
-    on_event: OnEvent | None = None,
-    on_action: OnAction | None = None,
+    callbacks: ListenerCallbacks | None = None,
+    liveness: ConnectionLiveness | None = None,
 ) -> None:
     overlay_name, app_token, bot_token = overlay
+    callbacks = callbacks or ListenerCallbacks()
+    liveness = liveness or ConnectionLiveness()
     try:
         from slack_sdk.socket_mode import SocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
         from slack_sdk.socket_mode.client import BaseSocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep
@@ -296,43 +354,23 @@ def _run_single_overlay(
     def _handle(_sm_client: BaseSocketModeClient, req: SocketModeRequest) -> None:
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
         if req.type == "interactive":
-            _hand_over_tap(overlay_name, req.payload or {}, on_action)
+            _hand_over_tap(overlay_name, req.payload or {}, callbacks.on_action)
             return
         if req.type != "events_api":
             return
         event = (req.payload or {}).get("event", {})
-        event_type = event.get("type", "")
-        if event_type not in _HANDLED_EVENT_TYPES:
-            return
-        subtype = event.get("subtype", "")
-        if subtype in {"bot_message", "message_changed", "message_deleted"}:
-            return
-        target = queues.for_event_type(event_type)
-        _enqueue(target, overlay_name, event)
-        logger.info("[%s] Queued %s event (ts=%s)", overlay_name, event_type, event.get("ts", "?"))
-        if on_event is None:
-            return
-        if is_self_originated(event, identity):
-            logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay_name, event.get("ts", "?"))
-            return
-        # Best-effort event-driven record-then-wake so the answer cycle finds the
-        # row it reads instead of waking on an empty queue. The JSONL write above
-        # is the durable buffer, so a raising callback only costs latency — the
-        # inbox sweep still recovers the event.
-        try:
-            on_event(overlay_name, event)
-        except Exception:
-            logger.warning("[%s] slack-answer wake signal failed", overlay_name, exc_info=True)
+        deliver_event(overlay_name, event, queues=queues, identity=identity, on_event=callbacks.on_event)
+
+    def _on_message(_sm_client: BaseSocketModeClient, message: dict, _raw_message: str | None) -> None:
+        if message.get("type") == "hello":
+            liveness.greet(client.session_id())
 
     client.socket_mode_request_listeners.append(_handle)
+    client.message_listeners.append(_on_message)
     client.connect()
     logger.info("[%s] Socket Mode connected", overlay_name)
 
-    _serve_until_stopped(
-        stop_event=stop_event,
-        heartbeat_path=queues.heartbeat,
-        is_connected=client.is_connected,
-    )
+    _serve_until_stopped(overlay=overlay_name, stop_event=stop_event, client=client, liveness=liveness)
 
     client.close()
     logger.info("[%s] Socket Mode disconnected", overlay_name)
@@ -341,15 +379,15 @@ def _run_single_overlay(
 def run_listener(
     overlays: list[tuple[str, str, str]],
     *,
-    queue_path: Path | None = None,
-    reactions_queue_path: Path | None = None,
+    paths: QueuePaths | None = None,
     on_event: OnEvent | None = None,
     on_action: OnAction | None = None,
+    on_connect: OnConnect | None = None,
 ) -> None:
-    queues = QueuePaths(
-        events=queue_path or default_queue_path(),
-        reactions=reactions_queue_path or default_reactions_queue_path(),
-    )
+    paths = paths or QueuePaths.default()
+    # Read once, before any overlay thread can restamp the file, so each first hello owes the pre-restart stamp.
+    beat = read_heartbeat(paths.heartbeat)
+    callbacks = ListenerCallbacks(on_event=on_event, on_action=on_action)
     stop = threading.Event()
 
     def _signal_handler(signum: int, frame: object) -> None:
@@ -366,10 +404,14 @@ def run_listener(
             target=_run_single_overlay,
             kwargs={
                 "overlay": overlay,
-                "queues": queues,
+                "queues": paths,
                 "stop_event": stop,
-                "on_event": on_event,
-                "on_action": on_action,
+                "callbacks": callbacks,
+                "liveness": ConnectionLiveness(
+                    seed=beat.stamp_for(overlay[0]) if beat is not None else None,
+                    on_connect=on_connect,
+                    heartbeat_path=paths.heartbeat,
+                ),
             },
             daemon=True,
             name=f"slack-{overlay[0]}",
