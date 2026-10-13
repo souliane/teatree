@@ -514,6 +514,10 @@ fi
 # declares beyond this list is converged last, so a service added later is never
 # orphaned by the staging.
 STAGED_SERVICES="teatree-init teatree-admin teatree-worker teatree-slack-listener"
+# Behind its own compose profile, so no whole-project build or up reaches it: it is built and
+# recreated by the two steps below alone, and its failure never stops the rest of the deploy.
+EXECUTOR_SERVICE="teatree-ro-executor"
+_EXECUTOR_FAILURE=""
 ADMIN_PROBE_URL="${TEATREE_ADMIN_PROBE_URL:-http://127.0.0.1:8000/admin/login/}"
 # The dashboard's own container swap is the ONE window the staging does not remove.
 # Exceeding this bound stops the convergence rather than continuing blind, which is
@@ -649,6 +653,31 @@ drain_worker() {
     contain_worker_for_deploy true
 }
 
+build_ro_executor() {
+    if ! TEATREE_BUILD_CONTEXT="$BUILD_CONTEXT" compose build "$EXECUTOR_SERVICE"; then
+        _EXECUTOR_FAILURE="its image did not build"
+        echo "deploy: $EXECUTOR_SERVICE did not build (the cause is above); deploying everything else and failing at the end." >&2
+    fi
+}
+
+# Only inside the drained window: no read-only phase is mid-run and every executor login is
+# persisted. A contained worker was killed, not drained, so its server may have left a
+# rotated login in the executor's tmpfs; the next server start recovers it, a recreate would
+# wipe it. Only after init, whose read-write clone mount creates the t3-workspaces mountpoint
+# that the executor's read-only one cannot create on a fresh clone volume.
+recreate_ro_executor() {
+    [ -z "$_EXECUTOR_FAILURE" ] || return 0
+    if [ "$_WORKER_CONTAINED" = true ]; then
+        echo "deploy: the worker was contained, not drained, so $EXECUTOR_SERVICE keeps its running container; the next deploy replaces it." >&2
+        return 0
+    fi
+    archive_service_logs "$EXECUTOR_SERVICE"
+    if ! compose up -d --no-deps "$EXECUTOR_SERVICE"; then
+        _EXECUTOR_FAILURE="its container did not start"
+        echo "deploy: $EXECUTOR_SERVICE did not start (the cause is above); deploying everything else and failing at the end." >&2
+    fi
+}
+
 # Only after the old worker is drained or contained: every running container reads this
 # tree, and init needs it at the built commit.
 fast_forward_live_tree() {
@@ -745,6 +774,7 @@ staged_swap() {
     # Build first and recreate nothing: the longest phase of a convergence now runs
     # against a fully live stack, and a build failure costs no availability at all.
     TEATREE_BUILD_CONTEXT="$BUILD_CONTEXT" compose build || return 1
+    build_ro_executor
 
     drain_worker || return 1
     fast_forward_live_tree || return 1
@@ -758,6 +788,7 @@ staged_swap() {
     # this the still-live old worker resumes admission and can claim — then lose —
     # a task in the seconds before it is swapped.
     drain_worker || return 1
+    recreate_ro_executor
 
     if [ "$_WORKER_CONTAINED" = true ]; then
         start_contained_worker_route || return 1
@@ -807,11 +838,15 @@ done
 
 if [ "$admin_up" = true ] && worker_running; then
     echo "deploy: admin + worker are up; stack converged."
+    if [ -n "$_EXECUTOR_FAILURE" ]; then
+        echo "deploy: FATAL — $EXECUTOR_SERVICE failed alone ($_EXECUTOR_FAILURE; the cause is above). Everything else deployed; planning on Codex is refused, so it runs on Claude, until the executor deploys." >&2
+    fi
     # After convergence: it never lengthens the drained window or aborts a half-swapped stack.
     bash "$SCRIPT_DIR/sync-hook-env.sh" "$REPO_ROOT" || {
         echo "deploy: the stack converged; only the host hook tool env re-sync above failed." >&2
         exit 1
     }
+    [ -z "$_EXECUTOR_FAILURE" ] || exit 1
     exit 0
 fi
 

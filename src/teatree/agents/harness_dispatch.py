@@ -34,6 +34,7 @@ from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.overlay_loader import OverlayConfigResolver
 from teatree.llm.credentials import CredentialError
+from teatree.skill_support.index import build_skill_index, harness_skills_dirs
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 if TYPE_CHECKING:
@@ -248,7 +249,11 @@ def _skill_route_selection(
     config = resolve_agent_config(context.overlay)
     primary_skill = SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
     route = resolve_skill_route(
-        config.skill_models, skills, phase_candidates=phase_candidates, primary_skill=primary_skill
+        config.skill_models,
+        skills,
+        phase_candidates=phase_candidates,
+        primary_skill=primary_skill,
+        skill_index=lambda: build_skill_index(harness_skills_dirs()),
     )
     if route is None:
         return None

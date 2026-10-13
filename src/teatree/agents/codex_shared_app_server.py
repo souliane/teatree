@@ -23,6 +23,7 @@ from teatree.agents.codex_app_server_errors import transport_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_auth_cache import CodexAuthCache
 from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
+from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,15 @@ class SharedCodexAppServer:
             model = str(response.get("model") or options.core.model or "codex")
             return thread_id, model
 
+    def attestation_refusal(self, executor: ExecutorAttestation | None) -> CodexAppServerError | None:
+        return None if executor is None else CodexAppServerError.attested_on_local_transport(self.code_home)
+
+    def successor(self, options: CodexAppServerOptions) -> "SharedCodexAppServer":
+        return shared_codex_app_server(self.code_home, options.core.env)
+
     async def open_session(self, options: CodexAppServerOptions, resume: str | None) -> tuple[str, str]:
+        if refusal := self.attestation_refusal(options.executor):
+            raise refusal
         refused_threads: list[str] = []
 
         async def open_on_owner() -> tuple[str, str]:
@@ -349,9 +358,13 @@ class SharedCodexAppServer:
 
     def close(self) -> None:
         loop, stop, thread = self._loop, self._stop, self._thread
-        if loop is not None and not loop.is_closed() and stop is not None and thread is not None and thread.is_alive():
-            loop.call_soon_threadsafe(stop.set)
-            thread.join(timeout=transport_close_seconds())
+        if loop is None or thread is None or not thread.is_alive():
+            return
+        # A closed loop is a thread still unwinding after asyncio.run returned: join it all the same.
+        if not loop.is_closed() and stop is not None:
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(stop.set)
+        thread.join(timeout=transport_close_seconds())
 
     @property
     def failed(self) -> bool:
@@ -386,13 +399,13 @@ class SharedCodexSession(CodexAppServerSession):
     async def start(self, *, open_thread: bool = True) -> None:
         del open_thread
         if self.manager.retiring:
-            self.manager = shared_codex_app_server(self.manager.code_home, self.options.core.env)
+            self.manager = self.manager.successor(self.options)
         try:
             self.thread_id, self.model = await self.manager.open_session(self.options, self.resume)
         except (CodexAppServerError, HarnessFallbackError):
             if not self.manager.retiring:
                 raise
-            self.manager = shared_codex_app_server(self.manager.code_home, self.options.core.env)
+            self.manager = self.manager.successor(self.options)
             self.thread_id, self.model = await self.manager.open_session(self.options, self.resume)
 
     async def _request(self, method: str, params: AppServerPayload) -> AppServerPayload:

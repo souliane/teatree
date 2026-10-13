@@ -16,6 +16,7 @@ process registry, no platform autostart.
 import asyncio
 import logging
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -224,27 +225,18 @@ def _prepare_run(
     )
 
 
-def _credential_or_route_retry(
+def _or_route_retry[T](
+    step: Callable[[], T],
     preflight: "_Preflight",
     route_retry: _RouteRetry,
     route_fallback: _RouteFallback,
-    lane: str,
-) -> DispatchCredential | TaskAttempt:
+) -> T | TaskAttempt:
+    """Run a step before the harness opens; a typed fallback moves to the next route candidate."""
     task = route_retry.task
-    harness = preflight.dispatch.harness
     try:
-        return _admission_park_or_child_env(
-            task,
-            harness,
-            preflight.dispatch.provider,
-            context=_ChildEnvDispatch(
-                lane=lane,
-                phase=route_retry.phase,
-                route_candidate=preflight.dispatch.route_candidate_index is not None,
-            ),
-        )
+        return step()
     except HarnessFallbackError as exc:
-        _restore_unconsumed_resume_thread(harness)
+        _restore_unconsumed_resume_thread(preflight.dispatch.harness)
         retry = _retry_route_exception(
             exc,
             task=task,
@@ -255,7 +247,7 @@ def _credential_or_route_retry(
         if retry is not None:
             return retry
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: credential admission failed before any turn was billed
+        return _record_failure(task, error=str(exc))  # no-usage: refused before any turn was billed
 
 
 def _ready_run_or_failure(
@@ -264,16 +256,24 @@ def _ready_run_or_failure(
     route_fallback: _RouteFallback,
     lane: str,
 ) -> tuple[DispatchCredential, _PreparedRun] | TaskAttempt:
-    credential = _credential_or_route_retry(preflight, route_retry, route_fallback, lane)
+    dispatch = preflight.dispatch
+    child_env = _ChildEnvDispatch(lane, route_retry.phase, dispatch.route_candidate_index is not None)
+    credential = _or_route_retry(
+        lambda: _admission_park_or_child_env(route_retry.task, dispatch.harness, dispatch.provider, context=child_env),
+        preflight,
+        route_retry,
+        route_fallback,
+    )
     if isinstance(credential, TaskAttempt):
         return credential
     try:
-        prepared = _prepare_run(
-            route_retry.task,
+        prepared = _or_route_retry(
+            lambda: _prepare_run(
+                route_retry.task, preflight, phase=route_retry.phase, handoff=route_retry.handoff, credential=credential
+            ),
             preflight,
-            phase=route_retry.phase,
-            handoff=route_retry.handoff,
-            credential=credential,
+            route_retry,
+            route_fallback,
         )
     except SkillDispatchError as exc:
         _restore_unconsumed_resume_thread(preflight.dispatch.harness)
@@ -283,6 +283,8 @@ def _ready_run_or_failure(
         )
         record_skill_assurance_attempt(route_retry.task, attempt)
         return attempt
+    if isinstance(prepared, TaskAttempt):
+        return prepared
     return credential, prepared
 
 

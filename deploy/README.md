@@ -220,7 +220,7 @@ manual run skips the wait.
    [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
 The stack is five services from one image (`deploy/Dockerfile`), selected by
-`TEATREE_ROLE`:
+`TEATREE_ROLE`, plus the read-only executor, which runs its own minimal image:
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
@@ -229,6 +229,7 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
+| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs a phase that bars write tools (planning); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
@@ -1466,6 +1467,66 @@ and a docker-in-docker sidecar needs `privileged` itself *and* cannot see the
 host bind mounts the provisioned worktree stacks are built from. What is bounded
 instead is the blast surface: exactly two services, each declaring its grant in
 one reviewable place, and the worker keeping its non-root UID.
+
+### Security posture: the read-only executor
+
+`teatree-ro-executor` is where the worker runs Codex for a phase that bars write tools.
+Codex's own sandbox cannot start inside a container, so read-only is enforced at the
+mount instead, and the worker never takes the executor's word for it:
+
+- **Minimal image.** The `ro-executor` stage is built from the pinned Ubuntu base, not
+  from `system`: git, python3, tini, node and the pinned Codex package, and no `t3`, `gh`,
+  `docker` or `pass`. Its only image `ENV` is `PATH`; compose adds `TMPDIR`,
+  `GIT_OPTIONAL_LOCKS`, `LANG` and `TZ`.
+- **Read-only mounts.** Of the deploy checkout only its `.git` (path identity), never the
+  directory that holds `deploy/teatree.env`; plus the clone volume and the `t3-workspaces`
+  tree, all `read_only`, over a read-only root filesystem. The only writable paths are two
+  tmpfs mounts, `/run/t3-ro` (Codex homes) and `/run/t3-tmp` (`TMPDIR`), which are never
+  persisted and are emptied at every app server start and stop. It mounts no control DB,
+  data dir, credential store, agent home or docker socket.
+- **Nothing outlives a session.** Under the executor lease, before a server starts and after
+  it stops, a sweep ends every process outside PID 1's session (`tini` and its `sleep`) except
+  the worker's own `docker exec` programs that run no Codex home; only `docker exec` gives a
+  process a parent outside the container. A process cannot clear that by changing its
+  environment or detaching, and a survivor refuses the next session before any home is created.
+- **No privilege.** `cap_drop: [ALL]`, `no-new-privileges`, its own bridge network (never
+  the host's, whose loopback the admin trusts), and it runs as `nobody` (65534), not as
+  `TEATREE_UID`, so it owns none of the trees it reads and an owner-only file there stays
+  unreadable.
+- **No secrets file within reach.** It has no forge or store credential in its
+  environment, and the probe refuses the phase whenever it can read a non-empty env or
+  credential file anywhere under its mounts (`.env`, `*.env`, `.env.*`, `.env-*` and
+  `.env_*` other than templates, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`,
+  `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) or a private
+  key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other than `*.pub`, found
+  by its content marker, so certificates and public keys pass). The secret it does hold is
+  its own Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
+  app server, persists a rotated token of the same account back to pass with a verifying
+  re-read, and deletes the home only after that persist succeeded. Store it once with
+  `t3 codex auth import --executor --from -` and test it with
+  `t3 codex auth check --executor`, both run in `teatree-worker`.
+- **Attested, not declared.** Before every such phase, and again when the session opens,
+  the worker runs a live write probe and secret scan inside the executor and cross-checks
+  `docker inspect` against its own mounts; any writable mount, unexpected mount, readable
+  secret file, owned tree, environment key, tool, capability or malformed answer refuses
+  the phase, which then runs on Claude.
+- **Git data must be readable by others.** It reads git as `nobody`, so a clone whose git
+  files were written owner-only (`packed-refs` 0600, packs 0400, as a umask of 077 leaves
+  them) refuses the phase and names the file. Opening them up is the owner's call:
+  `chmod -R a+rX <clone>/.git` on the deploy checkout and each clone in the clone volume,
+  then `git config core.sharedRepository 0644` there so later writes stay readable.
+
+It sits behind its own compose profile, `ro-executor`, so no whole-project `compose build`
+or `up` reaches it: neither the watchdog's `up -d` nor a generation stack's ever builds or
+starts it. `deploy/deploy.sh` builds its image in a step of its own before the drain, and
+recreates it inside the drained window, when no executor run is in flight and no login is
+waiting in its tmpfs, and after init, whose read-write clone mount creates the
+`t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
+the deploy: the worker and every other service still converge, and the deploy then fails
+with a message naming the executor. Until the executor deploys, planning on Codex is refused and runs on Claude.
+A worker that had to be contained instead of drained leaves the running executor in
+place, because its tmpfs may still hold a rotated login that the next server start
+recovers. The next deploy replaces it.
 
 ### Deploy-awareness (#3732)
 
