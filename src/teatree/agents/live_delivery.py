@@ -1,10 +1,57 @@
 """One peer message on its way to a live session: the first acceptance settles it and becomes its receipt."""
 
 import asyncio
-from dataclasses import dataclass
-from typing import TypedDict
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import NoReturn, TypedDict
 
-from teatree.agents.live_control import ControlOutcome, RejectCode
+from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, RejectCode
+
+MAX_WAIT_SECONDS = 20
+MAX_KEY_BYTES = 128
+MAX_SENT_KEYS = 1_000
+
+type MailboxRequest = Mapping[str, object]
+
+InboxMessage = TypedDict(
+    "InboxMessage",
+    {"id": int, "text": str, "from": str, "from_harness": str, "from_label": str},
+)
+
+
+class InboxPage(TypedDict):
+    messages: list[InboxMessage]
+    next_cursor: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxIdentity:
+    socket_path: Path
+    address: str
+    token: str
+
+    def mcp_env(self) -> dict[str, str]:
+        return {"T3_AGENT_MAILBOX_SOCKET": str(self.socket_path), "T3_AGENT_MAILBOX_TOKEN": self.token}
+
+
+def send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:
+    to, body, key = request.get("to"), request.get("text"), request.get("key")
+    timeout = request.get("timeout_seconds", MAX_WAIT_SECONDS)
+    if not isinstance(to, str) or not isinstance(body, str) or not isinstance(key, str):
+        _reject("Mailbox send requires to, text, and key strings")
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= MAX_WAIT_SECONDS:
+        _reject("Mailbox acceptance timeout must be between 0 and 20 seconds")
+    if not key or len(key.encode()) > MAX_KEY_BYTES:
+        _reject("Mailbox key must be 1-128 bytes")
+    if not body or len(body.encode()) > MAX_INPUT_BYTES:
+        _reject("Mailbox text must be 1-16384 bytes")
+    return to, body, key, float(timeout)
+
+
+def _reject(message: str) -> NoReturn:
+    raise ValueError(message)
 
 
 class SendReceipt(TypedDict):
@@ -13,6 +60,27 @@ class SendReceipt(TypedDict):
     outcome: str
     code: str | None
     queued_in_inbox: bool
+
+
+@dataclass(slots=True)
+class RemoteReceipts:
+    records: dict[str, tuple[str, str, SendReceipt]] = field(default_factory=dict)
+
+    def prior(self, key: str, to: str, text: str) -> SendReceipt | None:
+        record = self.records.get(key)
+        if record is None:
+            return None
+        if record[:2] != (to, text):
+            _reject("Mailbox key already used for another message")
+        return None if record[2]["code"] == RejectCode.NOT_ACCEPTED_IN_TIME.value else record[2]
+
+    def keep(self, key: str, to: str, text: str, receipt: SendReceipt) -> None:
+        record = self.records.get(key)
+        if record is None or record[2]["code"] == RejectCode.NOT_ACCEPTED_IN_TIME.value:
+            self.records[key] = (to, text, receipt)
+
+    def is_full_for(self, key: str, local_count: int) -> bool:
+        return key not in self.records and local_count + len(self.records) >= MAX_SENT_KEYS
 
 
 @dataclass(slots=True)

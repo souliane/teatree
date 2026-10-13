@@ -22,13 +22,17 @@ import asyncio, json, socket, sys
 from pathlib import Path
 from teatree.mcp.agent_mailbox import MailboxClient
 
-socket_path, token = Path(sys.argv[1]), sys.argv[2]
+socket_path, token = Path(sys.argv[1]), sys.stdin.readline().strip()
 peers = asyncio.run(MailboxClient(socket_path, token).peers())
 raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 raw.connect(str(socket_path))
 raw.sendall(json.dumps({"method": "live.list"}).encode() + b"\\n")
 answer = json.loads(raw.makefile().readline())
-print(json.dumps({"peers": peers, "live_list": answer}))
+relay = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+relay.connect(str(socket_path))
+relay.sendall(json.dumps({"method": "relay.peers"}).encode() + b"\\n")
+relay_answer = json.loads(relay.makefile().readline())
+print(json.dumps({"peers": peers, "live_list": answer, "relay_peers": relay_answer}))
 """
 
 
@@ -44,7 +48,8 @@ def test_an_agent_child_is_refused_operator_verbs_but_keeps_its_mailbox(broker: 
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
 
     completed = subprocess.run(
-        [sys.executable, "-c", _AGENT_CHILD, str(agent.socket_path), agent.token],
+        [sys.executable, "-c", _AGENT_CHILD, str(agent.socket_path)],
+        input=agent.token,
         capture_output=True,
         text=True,
         timeout=60,
@@ -56,6 +61,7 @@ def test_an_agent_child_is_refused_operator_verbs_but_keeps_its_mailbox(broker: 
     assert [peer["label"] for peer in answer["peers"]] == ["reviewer"]
     assert answer["live_list"]["code"] == "permission_denied"
     assert "result" not in answer["live_list"]
+    assert answer["relay_peers"]["code"] == "permission_denied"
 
 
 def _proc_tree(root: Path, parents: dict[int, int]) -> Path:

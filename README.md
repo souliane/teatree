@@ -453,23 +453,27 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Live agent mailbox
 
-Simultaneously running Claude and Codex tasks on the same TeaTree worker and ticket
-can exchange targeted messages through the `agent_mailbox_*` tools. TeaTree assigns
-each task its address and private Unix-socket identity; agents cannot join rooms or
-declare their own harness. `agent_mailbox_self` shows the task's address,
-`agent_mailbox_peers` discovers live peers, and `agent_mailbox_send` sends to one
+Simultaneously running Claude and Codex tasks on any ticket on the same host
+can exchange targeted messages through the `agent_mailbox_*` tools. Workers
+find one another through the shared control-DB live directory. TeaTree assigns
+each task its address and private Unix-socket identity; agents cannot register
+themselves or declare their own harness. `agent_mailbox_self` shows the task's address,
+`agent_mailbox_peers` discovers live peers with ticket, phase, harness and
+receive status, and `agent_mailbox_send` sends to one
 peer and waits up to 20 seconds for its session to accept the message. A busy
 steerable peer (`claude_sdk`) takes it into its running turn, framed as a peer's
 information rather than an operator instruction; any peer also accepts it by
 reading its inbox, and whichever comes first wins. The send returns a receipt:
 `accepted_current_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time` (the message stays queued in the peer's inbox),
-`session_closed` or `dropped_unread`. Retrying the same key keeps waiting on the
+`session_closed`, `dropped_unread` or `recipient_cannot_receive` for a pydantic task
+before its mailbox adapter is available. Retrying the same key keeps waiting on the
 original message instead of sending a second copy, and at most four sends per task
 wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
 with the message. Delivery is live-only: there is no database queue, parked-task
-delivery, cross-worker delivery, or idle-session wake-up. The MCP tools are absent
+delivery across hosts, or idle-session wake-up. An unreachable worker is reported
+as an error; it does not make discovery look empty. The MCP tools are absent
 outside TeaTree-managed tasks.
 
 #### Live control

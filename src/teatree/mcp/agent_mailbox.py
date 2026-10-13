@@ -18,11 +18,11 @@ _READ = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _MAX_RESPONSE_BYTES = 2_000_000  # 100 valid 16-KiB messages plus envelope metadata
 
-TOOL_SEAMS = {"agent_mailbox_send": "LiveMailboxBroker._send — authenticated, room-scoped, live-only delivery"}
+TOOL_SEAMS = {"agent_mailbox_send": "LiveMailboxBroker._send — authenticated, addressed, live-only delivery"}
 
 INSTRUCTIONS = (
     "- agent_mailbox_self(): your TeaTree-assigned address and harness.\n"
-    "- agent_mailbox_peers(): other currently live TeaTree tasks on this ticket.\n"
+    "- agent_mailbox_peers(): live TeaTree tasks on this host, with ticket, phase, harness and receive status.\n"
     "- agent_mailbox_send(to, text, key): send and wait up to 20 seconds for the peer's session to accept it; "
     "acceptance is not obedience; retry with the same key, never a new one.\n"
     "- agent_mailbox_inbox(after_id, limit): read your messages in order, acknowledge them, advance the cursor.\n"
@@ -79,11 +79,11 @@ class MailboxClient:
         return cast("dict[str, str]", await self._request("self"))
 
     async def peers(self) -> list[dict[str, str]]:
-        """List currently live TeaTree tasks on this ticket."""
+        """List live TeaTree tasks on this host."""
         return cast("list[dict[str, str]]", await self._request("peers"))
 
     async def send(self, to: str, text: str, key: str, *, timeout_seconds: float = 20) -> SendReceipt:
-        """Send one idempotent message to a live peer on this ticket and wait for its session to accept it.
+        """Send one idempotent message to an addressed live peer and wait for session acceptance.
 
         The receipt's outcome is accepted_current_turn (pushed into the peer's running turn), accepted_inbox_read
         (the peer read its inbox), or rejected with a code: not_accepted_in_time (still queued in the peer's inbox),

@@ -1,11 +1,14 @@
 """Live mailbox contract at the runner-to-MCP Unix-socket boundary."""
 
 import asyncio
+import multiprocessing
+import socket
 import stat
 import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterator
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from unittest.mock import patch
@@ -289,16 +292,203 @@ def test_an_inbox_read_accepts_first_and_withdraws_the_pending_push(
     assert session.delivered == []
 
 
-def test_identity_and_room_are_owned_by_runner(broker: LiveMailboxBroker) -> None:
+def test_authenticated_tasks_discover_and_message_across_tickets(broker: LiveMailboxBroker) -> None:
     first = broker.register(room="ticket-1", harness="claude", label="planner")
     second = broker.register(room="ticket-2", harness="codex", label="coder")
     first_client = MailboxClient(first.socket_path, first.token)
-    assert {peer["address"] for peer in invoke(first_client, "peers")} == set()
+    assert {peer["address"] for peer in invoke(first_client, "peers")} == {second.address}
 
-    with pytest.raises(ToolError, match="outside this room"):
-        invoke(first_client, "send", to=second.address, text="not for you", key="cross-room")
+    async def exchange() -> SendReceipt:
+        sending = asyncio.create_task(first_client.send(second.address, "please review", "cross-ticket"))
+        await MailboxClient(second.socket_path, second.token).wait(timeout_seconds=2)
+        return await sending
+
+    assert asyncio.run(exchange())["outcome"] == "accepted_inbox_read"
     with pytest.raises(ToolError, match="Invalid mailbox identity"):
         invoke(MailboxClient(first.socket_path, "bogus"), "peers")
+
+
+def test_peers_and_receipts_cross_worker_sockets_in_the_shared_live_dir(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+    ):
+        sender = first_broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+        recipient = second_broker.register(room="ticket-2", harness="codex_app_server", label="coder")
+        sender_client = MailboxClient(sender.socket_path, sender.token)
+        recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+
+        assert {peer["address"] for peer in invoke(sender_client, "peers")} == {recipient.address}
+        [peer] = invoke(sender_client, "peers")
+        assert (peer["ticket"], peer["harness"], peer["can_receive"]) == (
+            "ticket-2",
+            "codex_app_server",
+            True,
+        )
+
+        async def exchange() -> tuple[SendReceipt, SendReceipt, InboxPage]:
+            sending = asyncio.create_task(sender_client.send(recipient.address, "review this", "cross-worker"))
+            page = await recipient_client.wait(timeout_seconds=2)
+            first = await sending
+            retry = await sender_client.send(recipient.address, "review this", "cross-worker")
+            return first, retry, page
+
+        first, retry, page = asyncio.run(exchange())
+        assert first["outcome"] == "accepted_inbox_read"
+        assert retry == first
+        assert [row["id"] for row in page["messages"]] == [first["id"]]
+        second_broker.unregister(recipient.address)
+        assert invoke(sender_client, "send", to=recipient.address, text="review this", key="cross-worker") == first
+        with pytest.raises(ToolError, match="already used"):
+            invoke(sender_client, "send", to=recipient.address, text="changed", key="cross-worker")
+
+
+def test_a_cross_worker_send_retried_after_its_timeout_is_accepted_without_a_second_message(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+    ):
+        sender = first_broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+        recipient = second_broker.register(room="ticket-2", harness="codex_app_server", label="coder")
+        sender_client = MailboxClient(sender.socket_path, sender.token)
+        recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+
+        async def exchange() -> tuple[SendReceipt, SendReceipt, InboxPage]:
+            first = await sender_client.send(recipient.address, "review", "once", timeout_seconds=0.05)
+            retry = asyncio.create_task(sender_client.send(recipient.address, "review", "once", timeout_seconds=2))
+            await asyncio.sleep(0.2)
+            page = await recipient_client.inbox()
+            return first, await retry, page
+
+        first, retried, page = asyncio.run(exchange())
+
+    assert (first["outcome"], first["code"]) == ("rejected", "not_accepted_in_time")
+    assert [row["id"] for row in page["messages"]] == [first["id"]]
+    assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
+
+
+def test_local_and_cross_worker_sends_share_one_key_budget_per_task(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+        patch("teatree.agents.live_delivery.MAX_SENT_KEYS", 1),
+    ):
+        sender = first_broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+        local = first_broker.register(room="ticket-1", harness="codex_app_server", label="reviewer")
+        remote = second_broker.register(room="ticket-2", harness="codex_app_server", label="coder")
+        client = MailboxClient(sender.socket_path, sender.token)
+
+        invoke(client, "send", to=remote.address, text="review", key="remote", timeout_seconds=0.05)
+        with pytest.raises(ToolError, match="send limit reached"):
+            invoke(client, "send", to=local.address, text="review", key="local", timeout_seconds=0.05)
+
+
+def _broker_process(directory: str, link: Connection, room: str, harness: str) -> None:
+    with LiveMailboxBroker(runtime_dir=Path(directory)) as broker:
+        identity = broker.register(room=room, harness=harness, label="live task")
+        link.send((str(identity.socket_path), identity.address, identity.token))
+        link.recv()
+
+
+def test_two_worker_processes_exchange_across_tickets(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("fork")
+    first_parent, first_child = context.Pipe()
+    second_parent, second_child = context.Pipe()
+    first = context.Process(target=_broker_process, args=(str(tmp_path), first_child, "ticket-1", "claude_sdk"))
+    second = context.Process(target=_broker_process, args=(str(tmp_path), second_child, "ticket-2", "codex_app_server"))
+    first.start()
+    second.start()
+    try:
+        assert first_parent.poll(10)
+        assert second_parent.poll(10)
+        first_socket, first_address, first_token = first_parent.recv()
+        second_socket, second_address, second_token = second_parent.recv()
+        sender = MailboxClient(Path(first_socket), first_token)
+        recipient = MailboxClient(Path(second_socket), second_token)
+        assert {peer["address"] for peer in invoke(sender, "peers")} == {second_address}
+
+        async def exchange() -> SendReceipt:
+            sending = asyncio.create_task(sender.send(second_address, "review this", "sibling-workers"))
+            await recipient.wait(timeout_seconds=2)
+            return await sending
+
+        assert asyncio.run(exchange())["outcome"] == "accepted_inbox_read"
+        with pytest.raises(ToolError, match="source could not be verified"):
+            asyncio.run(
+                recipient._request(
+                    "relay.send",
+                    action="send",
+                    source_socket=first_socket,
+                    source_address=first_address,
+                    to=second_address,
+                    text="forged",
+                    key="forged",
+                    timeout_seconds=0.05,
+                )
+            )
+        with pytest.raises(ToolError, match="source identity"):
+            asyncio.run(recipient._request("relay.peers", action="peers"))
+    finally:
+        first_parent.send("stop")
+        second_parent.send("stop")
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert first.exitcode == second.exitcode == 0
+
+
+def test_peer_push_crosses_worker_sockets_to_the_recipient_owner_loop(
+    tmp_path: Path, registry: LiveSessionRegistry
+) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as sender_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as receiver_broker,
+    ):
+        sender = sender_broker.register(room="ticket-1", harness="codex_app_server", label="reviewer")
+        recipient = receiver_broker.register(room="ticket-2", harness="claude_sdk", label="coder", task=_TASK.pk)
+        session = BoundarySession()
+        with OwnerLoop(registry, _TASK, session) as owner:
+
+            async def exchange() -> SendReceipt:
+                sending = asyncio.create_task(
+                    MailboxClient(sender.socket_path, sender.token).send(recipient.address, "new schema", "cross-push")
+                )
+                await asyncio.to_thread(_until, lambda: session.pending == 1)
+                owner.call_soon(session.open_boundary)
+                return await sending
+
+            receipt = asyncio.run(exchange())
+
+    assert receipt["outcome"] == "accepted_current_turn"
+    assert len(session.delivered) == 1
+    assert "> new schema" in session.delivered[0]
+    assert "ticket ticket-1" in session.delivered[0]
+
+
+def test_unreachable_worker_is_reported_instead_of_hiding_peers(broker: LiveMailboxBroker, tmp_path: Path) -> None:
+    sender = broker.register(room="ticket", harness="claude_sdk", label="planner")
+    stale = tmp_path / "w-stale.sock"
+    with socket.socket(socket.AF_UNIX) as abandoned:
+        abandoned.bind(str(stale))
+
+    with pytest.raises(ToolError, match=r"w-stale\.sock: connection failed"):
+        invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+
+
+def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exists(
+    broker: LiveMailboxBroker,
+) -> None:
+    sender = broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+    recipient = broker.register(room="ticket-2", harness="pydantic_ai", label="coder", task=7)
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    receipt = invoke(client, "send", to=recipient.address, text="review", key="pydantic", timeout_seconds=0.05)
+
+    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == (
+        "rejected",
+        "recipient_cannot_receive",
+        False,
+    )
+    assert invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")["messages"] == []
 
 
 def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
@@ -360,6 +550,9 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "address": identity.address,
             "harness": "claude_sdk",
             "label": "coding task 7",
+            "ticket": "3",
+            "phase": "coding",
+            "can_receive": True,
         }
         assert (broker._by_address[identity.address].room, broker._by_address[identity.address].task) == ("3", 7)
         assert isinstance(options.mcp_servers, dict)
@@ -405,7 +598,9 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
     """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
 
     class _BrokenBroker(LiveMailboxBroker):
-        def register(self, *, room: str, harness: str, label: str, task: int | None = None) -> NoReturn:
+        def register(
+            self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+        ) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)
 
