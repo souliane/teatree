@@ -303,3 +303,60 @@ class TestFreeTextExtractionEdges:
     def test_boolean_short_flag_does_not_swallow_the_next_free_text_flag(self) -> None:
         payload = _payload(f"gh pr create {_PUB} -d -t '{_TERM}'") or ""
         assert _TERM in payload
+
+
+_CURL_INLINE_SPELLINGS = [
+    f"curl -sd 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -fsSd 'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sd'body={{text}}' {_GH_COMMENTS}",
+    f"curl -sF 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --data-ascii 'body={{text}}' {_GH_COMMENTS}",
+    f"curl --expand-data 'body={{text}}' {_GH_COMMENTS}",
+]
+
+_CURL_FILE_SPELLINGS = [
+    f"curl -T {{path}} {_GH_COMMENTS}",
+    f"curl -sT {{path}} {_GH_COMMENTS}",
+    f"curl --upload-file {{path}} {_GH_COMMENTS}",
+    f"curl --data-urlencode 'body@{{path}}' {_GH_COMMENTS}",
+    f"curl --expand-data 'body={{{{{{{{b}}}}}}}}' --variable 'b@{{path}}' {_GH_COMMENTS}",
+]
+
+_CURL_CLUSTERED_READS = [
+    f"curl -sS https://api.github.com/search/issues?q={_TERM}",
+    f"curl -sG https://api.github.com/search/issues -d q={_TERM}",
+    f"curl -sI https://api.github.com/search/issues?q={_TERM}",
+]
+
+
+class TestEveryCurlSpellingOfABodyIsScanned:
+    @pytest.mark.parametrize("spelling", _CURL_INLINE_SPELLINGS)
+    @pytest.mark.usefixtures("public_gate")
+    def test_an_inline_body_is_denied_and_named(self, spelling: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_banned_terms_pretool(_bash(spelling.format(text=_TERM))) is True
+        assert _TERM in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize("spelling", _CURL_INLINE_SPELLINGS)
+    @pytest.mark.usefixtures("public_gate")
+    def test_the_clean_twin_is_allowed(self, spelling: str, capsys: pytest.CaptureFixture[str]) -> None:
+        command = spelling.format(text="routine update")
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize("spelling", _CURL_FILE_SPELLINGS)
+    @pytest.mark.usefixtures("public_gate")
+    def test_a_body_curl_reads_from_a_file_fails_closed(
+        self, spelling: str, files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        command = spelling.format(path=files[1])
+        assert is_fail_closed_sentinel(_payload(command) or "")
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize("command", _CURL_CLUSTERED_READS)
+    @pytest.mark.usefixtures("public_gate")
+    def test_a_clustered_read_is_not_a_publish(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert is_publish_command(command) is False
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""

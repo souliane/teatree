@@ -14,7 +14,7 @@ from itertools import starmap
 from typing import Final
 
 from teatree.hooks._body_file_resolution import BODY_FILE_FLAG_NAMES, STDIN_DASH, BodyFileContext, append_file_payload
-from teatree.hooks._curl_payload import _CURL_DATA_LONG_FLAGS, _CURL_FORM_FLAGS
+from teatree.hooks._curl_payload import CURL_DATA_FLAGS, CURL_FORM_FLAGS, CURL_UPLOAD_FLAGS, curl_options
 from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
 from teatree.hooks._parser_primitives import (
     BODY_LONG_OPTION_FIELDS,
@@ -68,8 +68,8 @@ _CURL_METHOD_FLAGS: Final[frozenset[str]] = frozenset({"-X", "--request"})
 _CURL_IMPLIED_METHODS: Final[tuple[tuple[str, frozenset[str]], ...]] = (
     ("HEAD", frozenset({"-I", "--head"})),
     ("GET", frozenset({"-G", "--get"})),
-    ("PUT", frozenset({"-T", "--upload-file"})),
-    ("POST", frozenset({"-d", *_CURL_DATA_LONG_FLAGS, *_CURL_FORM_FLAGS})),
+    ("PUT", CURL_UPLOAD_FLAGS),
+    ("POST", CURL_DATA_FLAGS | CURL_FORM_FLAGS),
 )
 _READ_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 _FORGE_HOSTS: Final[tuple[str, ...]] = ("github.com", "gitlab.com")
@@ -203,26 +203,13 @@ def graphql_document_is_read(words: list[str]) -> bool:
     return False
 
 
-def _curl_flag(word: str) -> tuple[str, str | None]:
-    if word.startswith("--"):
-        flag, sep, value = word.partition("=")
-        return flag, value if sep else None
-    if word.startswith("-") and len(word) > _SHORT_FLAG_LEN:
-        return word[:_SHORT_FLAG_LEN], word[_SHORT_FLAG_LEN:]
-    return word, None
-
-
 def _curl_method(args: list[str]) -> str:
-    explicit: str | None = None
-    flags: set[str] = set()
-    for word, nxt in zip(args, [*args[1:], ""], strict=True):
-        flag, attached = _curl_flag(word)
-        if flag in _CURL_METHOD_FLAGS:
-            explicit = attached if attached is not None else nxt
-        flags.add(flag)
+    options = list(curl_options(args))
+    explicit = [option.value for option in options if option.name in _CURL_METHOD_FLAGS and option.value]
     if explicit:
-        return explicit.strip("'\"").upper()
-    return next((method for method, implying in _CURL_IMPLIED_METHODS if flags & implying), "GET")
+        return explicit[-1].strip("'\"").upper()
+    names = {option.name for option in options}
+    return next((method for method, implying in _CURL_IMPLIED_METHODS if names & implying), "GET")
 
 
 def _url_host(url: str) -> str:
