@@ -6,6 +6,7 @@ secrets are assembled at runtime so this file carries no literal token.
 """
 
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -843,6 +844,23 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
 
         assert _failing_gate_verdict(line) is PushFailure.GATE_ABORTED
         assert _failing_gate_verdict(report) is PushFailure.GATE_REFUSED
+
+    def test_a_push_gate_lock_failure_is_an_abort_not_a_refusal(self, tmp_path: Path) -> None:
+        gate_lock = Path(__file__).resolve().parents[2] / "dev" / "lib" / "gate-lock.sh"
+        lock = tmp_path / "absent" / "push-gate.lock"
+        gate = subprocess.run(
+            [
+                shutil.which("bash") or "/bin/bash",
+                "-c",
+                f'. "{gate_lock}"; T3_PUSH_GATE_LOCK="{lock}" acquire_push_gate_lock',
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert gate.returncode == 75, gate.stderr
+        assert _failing_gate_verdict(gate.stderr) is PushFailure.GATE_ABORTED
 
     @pytest.mark.parametrize(
         "quoted",
