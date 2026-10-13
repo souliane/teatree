@@ -1,12 +1,15 @@
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
+from teatree.agents import runner
 from teatree.core.cleanup.process_table import ProcessTable
-from teatree.core.models import Worktree
+from teatree.core.models import TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
 from teatree.core.worktree.occupancy import occupancy_holder, occupy_ticket_checkout, task_holder_id
@@ -110,3 +113,97 @@ class CheckoutFenceTests(TestCase):
         assert held is not None
         assert held.holder == task_holder_id(self.task)
         assert finished.get_extra()["attested_state"] == initial
+
+    def test_deploy_checkpoint_attests_own_edit_for_same_task_resume(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
+            occupy_ticket_checkout(
+                self.ticket, holder=task_holder_id(self.task), holder_session=self.task.claimed_by_session
+            ),
+        ):
+            (self.checkout / "new.txt").write_text("checkpointed run output")
+            TaskAttempt.objects.create(
+                task=self.task,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error="limit_parked: deploy checkpoint: worker quiescing",
+                agent_session_id="0f1e2d3c-4b5a-4968-8776-655443322110",
+            )
+            self.task.park(not_before=timezone.now())
+
+        page.assert_not_called()
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(finished) is None
+        assert finished.get_extra()["attested_state"] != initial
+        self.task.claim(claimed_by="worker-2", claimed_by_session="s2")
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            patch.object(runner, "_run_agent", return_value=Mock(spec=TaskAttempt)) as drive,
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout") as resume_page,
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata={})
+        drive.assert_called_once()
+        resume_page.assert_not_called()
+
+    def test_other_park_does_not_attest_checkout_edit(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(
+                self.ticket, holder=task_holder_id(self.task), holder_session=self.task.claimed_by_session
+            ),
+        ):
+            (self.checkout / "new.txt").write_text("unverified edit")
+            TaskAttempt.objects.create(
+                task=self.task, ended_at=timezone.now(), exit_code=1, error="limit_parked: provider budget"
+            )
+            self.task.park(not_before=timezone.now())
+
+        assert Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"] == initial
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            pytest.raises(CheckoutFenceError, match="attested"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+
+    def test_old_checkpoint_attempt_cannot_attest_a_new_run(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+        TaskAttempt.objects.create(
+            task=self.task,
+            ended_at=timezone.now() - timedelta(seconds=1),
+            exit_code=1,
+            error="limit_parked: deploy checkpoint: earlier run",
+        )
+
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(
+                self.ticket, holder=task_holder_id(self.task), holder_session=self.task.claimed_by_session
+            ),
+        ):
+            (self.checkout / "new.txt").write_text("later run output")
+            self.task.park(not_before=timezone.now())
+
+        assert Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"] == initial
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            pytest.raises(CheckoutFenceError, match="attested"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))

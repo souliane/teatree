@@ -51,6 +51,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.models import Task, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
     OccupancyHolder,
     WorktreeOccupancyLostError,
@@ -111,13 +112,29 @@ def _release_if_finished_task(worktree: Worktree) -> None:
     release(worktree, holder=current.holder, holder_session=current.holder_session)
 
 
+def _checkpointed_task(worktree: Worktree, holder: str) -> Task | None:
+    suffix = holder.removeprefix("task:")
+    if suffix == holder or not suffix.isdigit() or worktree.occupied_at is None:
+        return None
+    task = Task.objects.filter(pk=int(suffix), status=Task.Status.PENDING).first()
+    if task is None:
+        return None
+    attempt = task.attempts.filter(ended_at__gte=worktree.occupied_at).order_by("-pk").first()
+    if attempt is None or not attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}deploy checkpoint:"):
+        return None
+    return task
+
+
 def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> bool:
     task_pk = terminal_holder_task_pk(holder)
-    if task_pk is None:
-        return False
-    task = Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).first()
+    task = (
+        Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).first()
+        if task_pk is not None
+        else _checkpointed_task(worktree, holder)
+    )
     if task is None:
         return False
+    task_pk = task.pk
     table = read_process_table()
     path = Path(worktree.worktree_path)
     if not table.usable or table.holds(path):
