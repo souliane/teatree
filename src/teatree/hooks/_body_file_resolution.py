@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, GIT_MESSAGE_VERBS, attached_value, read_file_arg
+from teatree.hooks._parser_primitives import (
+    FAIL_CLOSED_SENTINEL,
+    GIT_MESSAGE_VERBS,
+    attached_value,
+    read_file_arg,
+    short_cluster_values,
+)
 from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
@@ -391,14 +397,10 @@ def _short_f_body_file(leader: str, words: list[str], i: int, *, fail_closed: bo
     if not (is_git or is_gh_glab):
         return None
     flag_fail_closed = True if is_git else fail_closed
-    if word == "-F" and i + 1 < len(words):
-        nxt = words[i + 1]
-        if is_git or "=" not in nxt:
-            return _ShortFileFlag(path=nxt, consumed=2, fail_closed=flag_fail_closed)
-        return None
-    attached = attached_value(word, "-F")
-    if attached is not None and (is_git or "=" not in attached):
-        return _ShortFileFlag(path=attached, consumed=1, fail_closed=flag_fail_closed)
+    for candidate in short_cluster_values(word, frozenset({"-F"})):
+        path = candidate.value or (words[i + 1] if i + 1 < len(words) else "")
+        if path and (is_git or "=" not in path):
+            return _ShortFileFlag(path=path, consumed=1 if candidate.value else 2, fail_closed=flag_fail_closed)
     return None
 
 

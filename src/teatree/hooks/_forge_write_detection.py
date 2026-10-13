@@ -116,7 +116,9 @@ def _token_carries_free_text(word: str, nxt: str) -> bool:
         return True
     if word in _FIELD_FLAGS:
         return word == "-F" or "=" in nxt
-    return attached_api_field(word) is not None or word.startswith("-F")
+    return attached_api_field(word) is not None or any(
+        candidate.value or nxt for candidate in short_cluster_values(word, frozenset({"-F"}))
+    )
 
 
 def segment_is_forge_cli_write(words: list[str]) -> bool:

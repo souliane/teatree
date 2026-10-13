@@ -484,8 +484,33 @@ _CLUSTERED_FREE_TEXT = [
     f"glab mr create {_GL_PUB} -yd{{text}} -t clean",
 ]
 
+_CLUSTERED_BODY_FILES = [
+    f"gh pr create {_PUB} -t clean -dF {{path}}",
+    f"gh release create v9.9.9 {_PUB} -pF {{path}}",
+    "git commit -aF {path}",
+    "git tag -aF {path} v9.9.9",
+]
+
 
 class TestClusteredShortFlagsCarryFreeText:
+    @pytest.mark.parametrize("command", [*_CLUSTERED_FREE_TEXT, *_CLUSTERED_BODY_FILES])
+    def test_publish_cluster_has_nonempty_payload(self, command: str, files: tuple[Path, Path]) -> None:
+        resolved = command.format(text=_TERM, path=files[0])
+        assert is_publish_command(resolved) is True
+        assert _payload(resolved)
+
+    @pytest.mark.parametrize("command", _CLUSTERED_BODY_FILES)
+    def test_clustered_body_file_is_read(self, command: str, files: tuple[Path, Path]) -> None:
+        assert _TERM in (_payload(command.format(path=files[0])) or "")
+
+    @pytest.mark.parametrize("command", _CLUSTERED_BODY_FILES[:2])
+    @pytest.mark.usefixtures("public_gate")
+    def test_clustered_body_file_is_denied_on_public_forge(
+        self, command: str, files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(command.format(path=files[0]))) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     @pytest.mark.parametrize("spelling", _CLUSTERED_FREE_TEXT)
     @pytest.mark.usefixtures("public_gate")
     def test_the_clustered_value_is_denied_and_named(self, spelling: str, capsys: pytest.CaptureFixture[str]) -> None:
