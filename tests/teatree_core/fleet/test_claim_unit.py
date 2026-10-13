@@ -406,10 +406,10 @@ class TestLineage:
         assert stolen.lineage not in {"", acquired.lineage}
 
 
-def _stalling_git_on_path(tmp_path: Path, subcommand: str) -> str:
+def _git_on_path(tmp_path: Path, subcommand: str, *, then: str) -> str:
     shim = tmp_path / "git-shim" / "git"
     shim.parent.mkdir()
-    stall = f'for arg; do [ "$arg" = "{subcommand}" ] && exec sleep 20; done'
+    stall = f'for arg; do [ "$arg" = "{subcommand}" ] && {then}; done'
     shim.write_text(f'#!/bin/sh\n{stall}\nexec "{shutil.which("git")}" "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     return str(shim.parent)
@@ -517,6 +517,21 @@ class TestErrorPaths:
 
         assert ref_sha(bare, claim.ref) == claim.sha
 
+    def test_a_claim_commit_git_cannot_write_fails_safe_and_leaves_a_rivals_ref(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        with as_other_instance(tmp_path / "rival-data"):
+            rival = fleet_claim.acquire(_KEY, repo=str(init_client(tmp_path / "rival", bare)))
+        assert rival is not None
+        client = init_client(tmp_path / "c", bare)
+        monkeypatch.setenv("PATH", f"{_git_on_path(tmp_path, 'commit-tree', then='exit 1')}:{os.environ['PATH']}")
+
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="cannot write the claim commit"):
+            fleet_claim.acquire(_KEY, repo=str(client))
+
+        assert ref_sha(bare, rival.ref) == rival.sha
+
     @pytest.mark.parametrize(
         "subcommand", ["rev-parse", "ls-remote", "rev-list", "fetch", "commit-tree", "push", "log"]
     )
@@ -526,7 +541,7 @@ class TestErrorPaths:
         never_fetched = init_with_origin(tmp_path / "c", f"file://{init_bare(tmp_path / 'o.git')}")
         if subcommand == "log":
             assert fleet_claim.acquire(_KEY, repo=str(never_fetched)) is not None
-        monkeypatch.setenv("PATH", f"{_stalling_git_on_path(tmp_path, subcommand)}:{os.environ['PATH']}")
+        monkeypatch.setenv("PATH", f"{_git_on_path(tmp_path, subcommand, then='exec sleep 20')}:{os.environ['PATH']}")
         monkeypatch.setattr(fleet_claim, "_GIT_TIMEOUT_SECONDS", 2.0)
         stalled = rf"`git [^`]*\b{re.escape(subcommand)}\b[^`]*` in \S+ did not finish within 2s"
 
