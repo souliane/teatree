@@ -27,12 +27,14 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 import json
 import sys
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, NoReturn
 
+import click
 import typer
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django_typer.management import TyperCommand, command
+from django_typer.management import DTCommand, TyperCommand, command
 
 from teatree.config import (
     ALL_KNOWN_CONFIG_SETTINGS,
@@ -43,11 +45,18 @@ from teatree.config import (
 )
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.feature_flags import render_flags_audit
+from teatree.config.known_settings import config_key_hint
 from teatree.config.setting_groups import group_outline
 from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import (
+    BANNED_TERM,
+    ExportPrivacy,
+    RedactedRow,
+    ScanTermsUnavailableError,
+)
 from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
@@ -65,6 +74,46 @@ _OverlayOption = Annotated[
     str,
     typer.Option("--overlay", help="Overlay name to scope the row to; omit for the global scope (every overlay)."),
 ]
+
+
+_TERM_VALUES_FLAGS = "--include-private --include-banned-term-values --output <file>"
+
+_UNSCANNED_NOTICE = (
+    "  rows were not content-scanned: banned_term_registry is unset or holds no ban-class term — "
+    "configure it (or supply $TEATREE_TERM_REGISTRY); every value below is shown withheld."
+)
+
+
+def _capture_term_values(ctx: click.Context, _param: click.Parameter, value: object) -> None:
+    ctx.meta["include_banned_term_values"] = bool(value)
+
+
+class _ExportCommand(DTCommand):
+    """Expose ``--include-banned-term-values`` without widening the command callback."""
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [
+            *super().get_params(ctx),
+            click.Option(
+                ["--include-banned-term-values"],
+                is_flag=True,
+                callback=_capture_term_values,
+                expose_value=False,
+                help="Also export rows carrying a banned term, the term registry included; needs "
+                "--include-private and --output, and needs no term, so it works on a box with none.",
+            ),
+        ]
+
+
+def _export_privacy(*, include_private: bool, include_banned_term_values: bool) -> ExportPrivacy:
+    if include_banned_term_values:
+        return ExportPrivacy.PRIVATE_WITH_TERM_VALUES
+    return ExportPrivacy.PRIVATE if include_private else ExportPrivacy.SHARED
+
+
+def _withheld_hint(redacted: Sequence[RedactedRow]) -> str:
+    flags = _TERM_VALUES_FLAGS if any(row.reason == BANNED_TERM for row in redacted) else "--include-private"
+    return f"  the rows above were withheld; pass {flags} to include them."
 
 
 def _governance_suffix(key: str) -> str:
@@ -101,7 +150,7 @@ def _stored_row_suffix(key: str) -> str:
 class Command(TyperCommand):
     def _refuse_unknown_key(self, key: str) -> NoReturn:
         """Refuse a key with no live config setting declaration."""
-        self.stderr.write(f"  refusing: {key!r} is not a known config setting")
+        self.stderr.write(f"  refusing: {key!r} is not a known config setting; {config_key_hint(key)}")
         raise SystemExit(2)
 
     def _write_pass_key_resolution(self, key: str, credential: str, overlay: str) -> None:
@@ -321,7 +370,7 @@ class Command(TyperCommand):
         fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_governance_suffix(key)}")
 
-    @command()
+    @command(cls=_ExportCommand)
     def export(
         self,
         *,
@@ -334,7 +383,8 @@ class Command(TyperCommand):
             bool,
             typer.Option(
                 "--include-private",
-                help="Also export private/secret rows (terms/brands, token refs) — PERSONAL backup only, never share.",
+                help="Also export private rows (token refs, personal identifiers) — PERSONAL backup only, never "
+                "share. A row carrying a banned term still needs --include-banned-term-values.",
             ),
         ] = False,
         default_keys_only: Annotated[
@@ -374,13 +424,19 @@ class Command(TyperCommand):
         (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
         SHARED export (auto-configuring a fresh teatree) cannot leak customer data
         even though the private DB store keeps it. Each withheld row is named on
-        stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
-        backup. That file carries the rows an ordinary ``import`` refuses, so it stamps
-        itself a backup and is restored with ``import --restore-private`` (#4156).
+        stderr by key and class, never by the term; ``--include-private`` selects a
+        PERSONAL, never-shared backup that carries the key classes but still withholds
+        every row carrying a banned term. ``--include-banned-term-values`` carries those
+        too: it needs no term, so it is the one export a box with no term can make, and it
+        writes only to ``--output``, never to a terminal. Any private file carries the rows
+        an ordinary ``import`` refuses, so it stamps itself a backup and is restored with
+        ``import --restore-private`` (#4156). A store with no ban-class term refuses every
+        other export before anything is written.
 
         A stored row that is not a SETTING — internal runtime state sharing the store, a
-        key outliving its declaration — is named on stderr and left out whatever the flags
-        say: ``import`` has no home for such a key and refuses the whole file on one.
+        key outliving its declaration — is reported on stderr (by name only where a term scan
+        clears the name) and left out whatever the flags say: ``import`` has no home for such
+        a key and refuses the whole file on one.
 
         Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
         restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
@@ -388,24 +444,36 @@ class Command(TyperCommand):
         resolved effective value. Passing BOTH produces the defaults shape — a complete,
         drop-in replacement for ``config/defaults.toml``, header and seed tables included.
         """
-        result = export_db_to_toml(
-            overlay or None,
-            include_private=include_private,
-            default_keys_only=default_keys_only,
-            include_defaults=include_defaults,
-        )
+        include_banned_term_values = bool(click.get_current_context().meta.get("include_banned_term_values"))
+        if include_banned_term_values and not include_private:
+            self.stderr.write("  refusing: --include-banned-term-values needs --include-private.")
+            raise SystemExit(2)
+        if include_banned_term_values and not output:
+            self.stderr.write(
+                "  refusing: --include-banned-term-values writes term-bearing rows; pass --output <file>."
+            )
+            raise SystemExit(2)
+        try:
+            result = export_db_to_toml(
+                overlay or None,
+                privacy=_export_privacy(
+                    include_private=include_private, include_banned_term_values=include_banned_term_values
+                ),
+                default_keys_only=default_keys_only,
+                include_defaults=include_defaults,
+            )
+        except ScanTermsUnavailableError as exc:
+            self.stderr.write(f"  export refused — cannot classify rows: {exc}")
+            self.stderr.write(f"  a personal backup needing no classification: {_TERM_VALUES_FLAGS}")
+            raise SystemExit(2) from exc
         for row in result.redacted:
             self.stderr.write(f"  withheld {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.redacted:
-            self.stderr.write(
-                f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
-            )
+            self.stderr.write(_withheld_hint(result.redacted))
         for row in result.omitted:
             self.stderr.write(f"  omitted {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.omitted:
-            self.stderr.write(
-                f"  {len(result.omitted)} stored row(s) omitted: not configuration, so import refuses them."
-            )
+            self.stderr.write("  the rows above were omitted: import has no home for them.")
         if result.private_backup:
             self.stderr.write("  this is a PERSONAL BACKUP carrying private rows an ordinary import refuses.")
             self.stderr.write("  never share it; restore it with `config_setting import --restore-private`.")
@@ -456,6 +524,9 @@ class Command(TyperCommand):
         backup, the one file that carries them — so the flag whose purpose is a COMPLETE
         backup produces one that restores (#4156). It grants nothing on any other file: an
         ordinary dump's secret rows are refused under it exactly as without it.
+
+        On a box with no ban-class term nothing can be content-scanned, so the import says so
+        on stderr, shows every value withheld, and proceeds with the key classes alone.
         """
         text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
         try:
@@ -465,6 +536,8 @@ class Command(TyperCommand):
         except tomllib.TOMLDecodeError as exc:
             self.stderr.write(f"  invalid TOML: {exc}")
             raise SystemExit(2) from exc
+        if result.unscanned:
+            self.stderr.write(_UNSCANNED_NOTICE)
         if restore_private and not result.private_backup:
             self.stderr.write("  --restore-private ignored: this file is not an --include-private personal backup.")
         for row in result.rejected:
@@ -479,7 +552,7 @@ class Command(TyperCommand):
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"
         for row in result.written:
-            self.stdout.write(f"  {verb} {row.key} = {row.toml_value}  [{scope_label(row.scope)}]")
+            self.stdout.write(f"  {verb} {row.key} = {row.toml_value}  [{scope_label(row.shown_scope)}]")
         self.stdout.write(
             f"  {verb} {len(result.written)} row(s); {len(result.unchanged)} already at that value; "
             f"{len(result.skipped_default)} equal to the shipped default (no row)."

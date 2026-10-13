@@ -89,14 +89,11 @@ from hooks.scripts.engagement_advisory import session_start_advisory as _session
 from hooks.scripts.foreign_branch_push_gate import handle_block_foreign_branch_push
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
-    _GLAB_GH_API_RE,
     _MERGE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _REVIEW_POST_BODY_FLAG_RE,  # noqa: F401 re-export for test access
     _REVIEW_POST_METHOD_RE,  # noqa: F401 re-export for test access
     _effective_method_is_write,  # noqa: F401 re-export for test access
 )
-from hooks.scripts.forge_api_detect import invokes_raw_merge_subcommand as _invokes_raw_merge_subcommand
-from hooks.scripts.forge_api_detect import is_raw_merge_api_write as _is_raw_merge_api_write
 from hooks.scripts.gate_decision import record_gate_decision as _record_gate_decision
 from hooks.scripts.gate_decision import write_pretooluse_deny as _write_pretooluse_deny
 from hooks.scripts.gate_result import (
@@ -121,11 +118,9 @@ from hooks.scripts.loop_registry_path import OWNER_LOOP as _OWNER_LOOP
 from hooks.scripts.loop_registry_path import loop_registry_path as _loop_registry_path
 from hooks.scripts.loop_registry_path import read_loop_registry as _read_loop_registry
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
-from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
 from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
 from hooks.scripts.managed_repo import is_agent_state_path as _is_agent_state_path
 from hooks.scripts.managed_repo import load_protected_branches as _load_protected_branches
-from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_signals
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
@@ -136,7 +131,6 @@ from hooks.scripts.mr_cli_fields import (
     extract_api_mr_fields,
     extract_cli_mr_fields,
     extract_mr_target_repo,
-    merge_target_managed_state,
     mr_deny_reason,
 )
 from hooks.scripts.mr_validator import mr_validate_argv, run_mr_validator
@@ -146,6 +140,7 @@ from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
+from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
 from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
 from hooks.scripts.owner_prompts import is_live_user_turn, owner_prompted_since
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
@@ -211,6 +206,7 @@ from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste
 from hooks.scripts.visible_plan_gate import handle_enforce_visible_plan_before_tools
+from hooks.scripts.void_merge_guard import handle_block_void_merge
 
 STATE_DIR = hook_state_dir()
 
@@ -3339,82 +3335,6 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
 # ── PostToolUse: track-cron-jobs ──────────────────────────────────────
 
 
-# ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
-#
-# ``gh pr merge`` / ``glab mr merge`` bypass the FSM coherence mechanism
-# (ledger update, MergeClear validation, SHA-binding, privacy/AI-signature
-# scan, mark_merged), so a TEATREE-MANAGED repo must use the keystone
-# transition ``t3 <overlay> ticket merge <clear_id>`` (BLUEPRINT §17.1
-# invariant 8 / §17.4). But the previous static-regex block hard-denied
-# EVERY repo — a lightweight repo with no ticket/overlay FSM had no merge
-# path at all, a permanent lockout (#126).
-#
-# This cwd-aware gate carves out the unmanaged case: a merge is ALLOWED
-# only when the cwd repo is confidently NOT teatree-managed (no overlay
-# claims it). The gate stays STRICT for managed repos AND fail-safe on
-# uncertainty: when the cwd or its slug cannot be resolved, the repo is
-# treated as managed and the merge is BLOCKED — detection failure never
-# weakens the gate.
-
-_OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
-# GitHub GraphQL merge-effecting mutations (all merge the PR / a branch out of band):
-# mergePullRequest, enablePullRequestAutoMerge (native-rules merge), mergeBranch.
-_GRAPHQL_MERGE_MUTATION_RE = re.compile(r"(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\s*\(")
-_OUT_OF_BAND_MERGE_REASON = (
-    "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
-    "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
-    "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
-    "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
-    "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
-    "teatree-managed, name the target explicitly with `--repo <owner>/<repo>` (or "
-    "a full forge URL) so the gate classifies it from the command itself and never "
-    "consults the cwd. kill-switch: `t3 <overlay> gate raw-merge disable`."
-)
-
-
-def handle_block_out_of_band_merge(data: dict) -> bool:
-    """Block a raw/REST-API/graphql merge form aimed at a teatree-managed repo.
-
-    Three bypass vectors. The literal subcommand (``gh pr merge`` / ``glab mr
-    merge``) is matched action-aware by :func:`_invokes_raw_merge_subcommand`
-    (a real invocation, not a heredoc/echo/comment — #2387). The REST-API form
-    (``gh api .../pulls/<n>/merge -X PUT``) is matched by
-    :func:`_is_raw_merge_api_write` (a GET read is NOT denied). A graphql merge
-    mutation (mergePullRequest / enablePullRequestAutoMerge / mergeBranch) has an
-    unresolvable node-id target, so it is blocked (fail-closed).
-
-    Otherwise classification keys on the merge TARGET via a tri-state
-    (:func:`merge_target_managed_state`): a managed target is BLOCKED regardless of
-    cwd; a confidently-unmanaged target is ALLOWED on its own evidence; only when NO
-    target parses does the cwd-keyed fallback (#126) run (#3343).
-    """
-    if data.get("tool_name") != "Bash":
-        return False
-    command = data.get("tool_input", {}).get("command", "")
-    # No command, or the kill-switch (`t3 <overlay> gate raw-merge disable`) is off → nothing to gate.
-    if not command or not _teatree_bool_setting("out_of_band_merge_gate_enabled", default=True):
-        return False
-    # Matches the mutation name in argv only: a query loaded from a file or stdin
-    # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
-    # is NOT inspected — an accepted residual, not a silent miss.
-    if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
-        return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON, gate_id="out_of_band_merge")
-    if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
-        return False
-    # Tri-state target classification (#3343): a managed target → BLOCK regardless
-    # of cwd; a confidently-UNMANAGED target → ALLOW on its own evidence, never
-    # keyed off cwd (the bug: a non-git cwd forced a deny on a classifiable target).
-    # Only a NON-resolvable target (None) consults the cwd fallback (#126), allowing
-    # a confidently-unmanaged cwd (a non-classifiable cwd fails safe to BLOCK).
-    target_state = merge_target_managed_state(command, _overlay_managed_repo_signals()[0])
-    if target_state is None:
-        cwd = _resolve_cwd_repo(data)
-        target_state = not (cwd is not None and _cwd_is_teatree_managed(cwd) is False)
-    if target_state is False:
-        return False
-    return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON, gate_id="out_of_band_merge")
-
-
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 #
 # The row is INTERNAL: only a ``questions record --decision --checked`` re-record reaches the owner.
@@ -3844,6 +3764,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_foreign_branch_push,
         handle_block_raw_review_post,
         handle_block_raw_issue_write,
+        handle_block_void_merge,
         handle_validate_mr_metadata,
         handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,

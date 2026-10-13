@@ -16,6 +16,15 @@ class TicketTransitionQuerySet(models.QuerySet):
         """
         return self.exclude(from_state=models.F("to_state"))
 
+    def merge_entry(self) -> "TicketTransition | None":
+        """The newest edge that brought a ticket INTO merged from a pre-merged state."""
+        return (
+            self.filter(to_state=Ticket.State.MERGED)
+            .exclude(from_state__in=Ticket.merged_states())
+            .order_by("-created_at", "-pk")
+            .first()
+        )
+
     def excluding_each_tickets_boundary(self) -> "TicketTransitionQuerySet":
         """Drop each ticket's earliest and latest transition from the candidate set.
 

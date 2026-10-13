@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import tomlkit
 
 from teatree.core.config_interchange.secret_guard import RedactedRow
-from teatree.core.models.config_setting import ConfigValue
+from teatree.core.models.config_setting import WITHHELD_NAME_SCOPE, ConfigValue
 
 #: What a private row renders as. Says the row exists and why its value is absent, so a
 #: withheld render can never be mistaken for an empty string the store actually holds.
@@ -48,7 +48,7 @@ class RejectedRow:
 
     scope: str
     key: str
-    reason: str  # "unknown key" / "secret (<class>)" / "invalid: <msg>" / "safety-posture"
+    reason: str  # "unknown key" / "secret (<class>)" / "invalid: <msg>" / "invalid (… withheld)" / "safety-posture"
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,12 @@ class ImportedRow:
     value: ConfigValue
     is_safety_posture: bool = False
     is_private: bool = False
+    name_withheld: bool = False
+
+    @property
+    def shown_scope(self) -> str:
+        """The scope a report may print — never a scope name that carries a banned term."""
+        return WITHHELD_NAME_SCOPE if self.name_withheld else self.scope
 
     @property
     def toml_value(self) -> str:
@@ -95,6 +101,9 @@ class ConfigImport:
     ``private_backup`` means the FILE declared itself a ``--include-private`` backup, so a
     caller looking at a refusal can name the restore path instead of reporting a wall of
     per-key secret rejections the operator has no way to act on (#4156).
+
+    ``unscanned`` means this box holds no ban-class term, so no row was content-scanned and
+    every value is shown withheld; each caller must say so rather than imply a scan ran.
     """
 
     written: tuple[ImportedRow, ...]
@@ -103,6 +112,7 @@ class ConfigImport:
     dry_run: bool
     unchanged: tuple[ImportedRow, ...] = ()
     private_backup: bool = False
+    unscanned: bool = False
 
     @property
     def safety_posture_keys(self) -> tuple[str, ...]:

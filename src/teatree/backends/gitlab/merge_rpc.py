@@ -33,6 +33,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
 )
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,12 @@ class GitLabApiMergeRpc:
             return [CHANGED_PATHS_UNAVAILABLE]
         paths = [entry.get("new_path") or entry.get("old_path") for entry in diffs]
         return [path.strip() for path in paths if isinstance(path, str) and path.strip()]
+
+    @staticmethod
+    def fetch_pr_content_snapshot(*, slug: str, pr_id: int) -> PrContentSnapshot:
+        return PrContentSnapshot(
+            unreadable=f"the content probe is not implemented for GitLab merge requests ({slug}!{pr_id})"
+        )
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         """The MR title and description, or ``None`` when the MR could not be read with a title."""

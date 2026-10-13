@@ -152,6 +152,22 @@ class TestScanTextSharedMatcher:
         assert len(hits) == 1
 
 
+class TestScanTextSkipsOnlyWhatNoLineCouldMatch:
+    """The whole-file reach check never drops a hit the per-line pass would report."""
+
+    def test_a_glued_multi_token_term_is_still_found(self) -> None:
+        hits = banned_terms_tree_scan.scan_text("first\nuses acmecorp here\n", ("acme-corp",))
+        assert [(h[0], h[1]) for h in hits] == [(2, "acme-corp")]
+
+    def test_a_multi_token_term_split_across_lines_is_not_a_hit(self) -> None:
+        assert banned_terms_tree_scan.scan_text("acme\ncorp\n", ("acme-corp",)) == []
+
+    def test_each_line_reports_its_first_term_in_scan_order(self) -> None:
+        text = "zeta here\nzeta and alpha-beta there\n"
+        hits = banned_terms_tree_scan.scan_text(text, ("alpha-beta", "absent-term", "zeta"))
+        assert [(h[0], h[1]) for h in hits] == [(1, "zeta"), (2, "alpha-beta")]
+
+
 class TestScanTextScansEmailAddresses:
     """An address is published text, so a brand inside one is a hit (not carved out)."""
 

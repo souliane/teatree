@@ -115,10 +115,12 @@ REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
 # ``config_setting set`` (validated through the parser here) and never touch a file.
 COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent tables & cold reads")
 
+TERM_REGISTRY: str = "banned_term_registry"
+
 COLD_SETTINGS: dict[str, ColdHookSetting] = {
     # The single classed term registry is private to the operator and withheld
     # from shared exports. Gates read its classes through terms_for_gate.
-    "banned_term_registry": ColdHookSetting(_parse_registry_dict, default={}),
+    TERM_REGISTRY: ColdHookSetting(_parse_registry_dict, default={}),
     "private_repos": ColdHookSetting(_parse_private_repos, default=[]),
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
     # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.

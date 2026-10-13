@@ -22,7 +22,7 @@ __all__ = ["FingerprintUnreadableError", "gate_fingerprints", "unverified_gates"
 _DIGEST_DOMAIN: Final = b"teatree-term-source-fingerprint-v1\n"
 
 #: The registry class each CI-fed gate scans; the other classes have no committed fingerprint.
-GATE_CLASSES: Final[dict[str, str]] = {"tree": "leak", "overlay": "overlay"}
+GATE_CLASSES: Final[dict[str, str]] = {"tree": "leak", "overlay": "overlay", "allow": "allow"}
 
 
 class FingerprintUnreadableError(Exception):
@@ -39,7 +39,7 @@ def _digest(terms: tuple[str, ...]) -> str:
 
 
 def gate_fingerprints(registry: Mapping[str, Sequence[str]]) -> dict[str, dict[str, int | str]]:
-    """``{gate: {count, digest}}`` of the lists *registry* holds for the two CI-fed gates."""
+    """``{gate: {count, digest}}`` of the lists *registry* holds for the CI-fed gates."""
     fingerprints: dict[str, dict[str, int | str]] = {}
     for gate, term_class in GATE_CLASSES.items():
         terms = _normalised(registry.get(term_class, ()))
@@ -55,7 +55,7 @@ def _committed_gates(path: Path) -> Mapping[str, object]:
         raise FingerprintUnreadableError(msg) from exc
     gates = document.get("gates") if isinstance(document, dict) else None
     if not isinstance(gates, dict) or not all(isinstance(gates.get(gate), dict) for gate in GATE_CLASSES):
-        msg = f"the committed term-source fingerprint {path.name} does not carry both gates"
+        msg = f"the committed term-source fingerprint {path.name} does not carry every gate"
         raise FingerprintUnreadableError(msg)
     return gates
 

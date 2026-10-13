@@ -478,6 +478,7 @@ def test_codex_process_env_is_private_and_drops_ambient_credentials(tmp_path: Pa
         "T3_CONTROL_DB_DIR": "/control",
         "T3_REPO": "/src/teatree",
         "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
+        "T3_DISPATCHED_AGENT": "1",
         "CODEX_HOME": str(home),
         "HOME": str(home),
     }

@@ -10,7 +10,13 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "term_source_drift.py"
-REGISTRY = {"leak": ["zarquon-corp"], "prose_collider": ["widget"], "overlay": ["wibble-tenant"]}
+REGISTRY = {
+    "leak": ["zarquon-corp"],
+    "prose_collider": ["widget"],
+    "overlay": ["wibble-tenant"],
+    "allow": ["acme-owner"],
+}
+COMMITTED = Path(__file__).resolve().parent.parent / ".github" / "term-source-fingerprint.json"
 
 
 def _seed(tmp_path: Path) -> Path:
@@ -67,3 +73,15 @@ def test_missing_or_malformed_secret_fails_loud(fingerprint: Path) -> None:
     malformed = _run("check-ci", "--fingerprint", str(fingerprint), secret="{broken")
     assert absent.returncode == 2
     assert malformed.returncode == 2
+
+
+def test_allow_class_is_fingerprinted(fingerprint: Path) -> None:
+    assert json.loads(fingerprint.read_text(encoding="utf-8"))["gates"]["allow"]["count"] == 1
+    assert {"count", "digest"} <= set(json.loads(COMMITTED.read_text(encoding="utf-8"))["gates"]["allow"])
+
+    secret = json.dumps({**REGISTRY, "allow": ["acme-owner", "acme-owner-bot"]})
+    result = _run("check-ci", "--fingerprint", str(fingerprint), secret=secret)
+
+    assert result.returncode == 1
+    assert "allow: DRIFT" in result.stdout
+    assert "acme-owner" not in result.stdout

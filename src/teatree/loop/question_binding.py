@@ -68,6 +68,10 @@ def configured_owner_id(backend: object) -> str:
     return str(getattr(backend, "user_id", "") or "")
 
 
+def _is_the_owner(user_id: str, owner_user_id: str) -> bool:
+    return bool(owner_user_id) and user_id == owner_user_id
+
+
 def bind_reply(
     reply: PendingChatInjection, *, reader: InboundReader, owner_user_id: str, text: str = ""
 ) -> BoundAnswer | None:
@@ -76,7 +80,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    if not owner_user_id or reply.user_id != owner_user_id:
+    if not _is_the_owner(reply.user_id, owner_user_id):
         return None
     body = text or reply.text
     addressed = _addressed(body)
@@ -111,7 +115,7 @@ def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None"
 def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
     """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
-    if tap is None or tap.user_id != configured_owner_id(backend):
+    if tap is None or not _is_the_owner(tap.user_id, configured_owner_id(backend)):
         return False
     question = DeferredQuestion.objects.filter(
         slack_channel=tap.channel, slack_ts=tap.root_ts, audience=DeferredQuestion.Audience.OWNER_QUESTION

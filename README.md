@@ -363,6 +363,7 @@ stateDiagram-v2
     review_requested --> closed : mark_closed
     approved --> merged : mark_merged
     approved --> closed : mark_closed
+    merged --> closed : void_merge
 ```
 <!-- END GENERATED: pull-request-fsm -->
 
@@ -1018,7 +1019,10 @@ ls-files`) and scans its content for the registry's leak terms, exiting
 non-zero with the offending `file:line` list. Its matcher is
 underscore-tolerant — `wt_777_<term>` and `<term>_x` are caught where the
 diff gate's word-boundary matcher misses them. An email address is scanned like
-any other content; the registry's `allow` class exempts configured identifiers.
+any other content; the registry's `allow` class exempts exact occurrences of configured
+identifiers. `--classes leak,overlay,allow` checks that no value of those classes appears
+under `src`, `scripts`, `tests`, `docs` or `.github`; there only the repository owner's login
+is exempt.
 The scan reads the `leak` class of the `banned_term_registry` DB setting or the
 `$TEATREE_TERM_REGISTRY` JSON secret. It refuses an absent registry or an empty
 `leak` class, so a missing term source cannot produce a clean result. A CI job

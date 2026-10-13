@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import ClaudeAgentOptions
 
@@ -21,6 +21,7 @@ from teatree.agents.codex_app_server_errors import (
     transport_error,
 )
 from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_lifecycle import chatgpt_authenticated, opened_session, opened_shared_session
 from teatree.agents.codex_app_server_messages import CodexEventTranslator
 from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
@@ -34,8 +35,13 @@ from teatree.agents.codex_app_server_options import (
 from teatree.agents.codex_approval_gate import APPROVAL_METHODS, approval_decision
 from teatree.agents.codex_auth_cache import CodexAuthCache, CodexAuthCacheError, resolve_codex_home
 from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
+from teatree.agents.codex_read_only_executor import (
+    EXECUTOR_PHASES,
+    executor_availability_reason,
+    read_only_executor_refusal,
+)
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
-from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.sdk_tool_map import phase_bars_write_tools, sdk_disallowed_tools_for_phase
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -110,6 +116,8 @@ class CodexAppServerSession:
         self._server_request_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, *, open_thread: bool = True) -> None:
+        if self.options.executor is not None and self.options.executor.container_id not in (self.command or ()):
+            raise CodexAppServerError.attested_on_local_transport(self.code_home)
         command = self.command or codex_command()
         env = dict(self.process_env) if self.process_env is not None else codex_process_env(self.code_home)
         env.update({"CODEX_HOME": str(self.code_home), "HOME": str(self.code_home)})
@@ -144,7 +152,7 @@ class CodexAppServerSession:
         )
         await self._notify("initialized", {})
         account = await self._request("account/read", {"refreshToken": False})
-        if not _chatgpt_authenticated(account):
+        if not chatgpt_authenticated(account):
             raise managed_auth_error()
         if not open_thread:
             return
@@ -431,38 +439,38 @@ class CodexAppServerHarness:
         refusal: str | None,
         code_home: Path | None = None,
         command: Sequence[str] | None = None,
+        read_only_phase: str | None = None,
     ) -> None:
         self.capabilities = codex_capabilities()
+        if read_only_phase is not None:
+            self.capabilities = replace(self.capabilities, read_only_venue=True)
         self.code_home = resolve_codex_home(code_home)
         self.command = command
         self.refusal = refusal
+        self.read_only_phase = read_only_phase
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator["HarnessSession"]:
         if self.refusal:
             raise HarnessFallbackError(self.refusal, kind=HarnessFallbackKind.ACCESS, side_effects_started=False)
+        from teatree.agents import (  # noqa: PLC0415 — late import avoids a transport cycle
+            codex_read_only_server,
+            codex_shared_app_server,
+        )
+
+        if self.read_only_phase is not None:
+            async with codex_read_only_server.executor_session(options, self.read_only_phase) as executor_session:
+                yield executor_session
+            return
         translated = CodexAppServerOptions.from_sdk_options(options)
         if self.command is None:
-            from teatree.agents.codex_shared_app_server import (  # noqa: PLC0415 — late import avoids a transport cycle
-                SharedCodexSession,
-                shared_codex_app_server,
-            )
-
-            session = SharedCodexSession(
+            session = codex_shared_app_server.SharedCodexSession(
                 translated,
-                manager=shared_codex_app_server(self.code_home, translated.core.env),
+                manager=codex_shared_app_server.shared_codex_app_server(self.code_home, translated.core.env),
                 resume=options.resume,
             )
-            try:
-                async with _opened_session(session):
-                    yield session
-            except CodexAuthCacheError as exc:
-                if session.thread_id:
-                    raise auth_persist_error(
-                        side_effects_started=bool(session.turn_id),
-                        agent_session_id=session.thread_id,
-                    ) from exc
-                raise managed_auth_error() from exc
+            async with opened_shared_session(session):
+                yield session
             return
         cache = CodexAuthCache(self.code_home)
         cache_hydrated = False
@@ -477,7 +485,7 @@ class CodexAppServerHarness:
                     command=self.command,
                     process_env=translated.core.env if self.command is not None else None,
                 )
-                async with _opened_session(session):
+                async with opened_session(session):
                     yield session
         except CodexAuthCacheError as exc:
             if cache_hydrated and session is not None:
@@ -488,29 +496,23 @@ class CodexAppServerHarness:
             raise managed_auth_error() from exc
 
 
-class _StartedSession(Protocol):
-    async def start(self) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-@asynccontextmanager
-async def _opened_session(session: _StartedSession) -> AsyncIterator[None]:
-    await session.start()
-    try:
-        yield
-    finally:
-        await session.close()
-
-
 def codex_app_server_spec() -> HarnessSpec:
     return HarnessSpec(
         name="codex_app_server",
-        factory=lambda context: CodexAppServerHarness(refusal=_codex_unavailable_reason(context)),
+        factory=lambda context: CodexAppServerHarness(
+            refusal=_codex_unavailable_reason(context), read_only_phase=_read_only_phase(context)
+        ),
         capabilities=codex_capabilities(),
         allows_provider=False,
         unavailable_reason=_codex_unavailable_reason,
+        read_only_executor_refusal=read_only_executor_refusal,
     )
+
+
+def _read_only_phase(context: "HarnessBuildContext") -> str | None:
+    if context.phase and container_is_the_sandbox() and phase_bars_write_tools(context.phase):
+        return context.phase
+    return None
 
 
 def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
@@ -518,6 +520,14 @@ def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
         return "codex CLI is not installed or not on PATH"
     if reason := codex_container_unavailable_reason():
         return reason
+    if context.phase in EXECUTOR_PHASES and container_is_the_sandbox():
+        return executor_availability_reason(context.phase) or codex_model_unavailable_reason(
+            resolve_codex_home(), context.model
+        )
+    return _worker_unavailable_reason(context)
+
+
+def _worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
     if context.phase and (
         reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
     ):
@@ -549,8 +559,3 @@ def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:
     if options.config:
         params["config"] = options.config
     return params
-
-
-def _chatgpt_authenticated(account: Mapping[str, Any]) -> bool:
-    payload = account.get("account")
-    return isinstance(payload, dict) and payload.get("type") == "chatgpt"

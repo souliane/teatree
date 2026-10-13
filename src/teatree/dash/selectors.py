@@ -17,6 +17,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.models.merge_void import MergeVoid, VoidedRefs
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -26,6 +27,7 @@ from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
+from teatree.url_classify import pr_ref
 
 State = Ticket.State
 
@@ -81,12 +83,14 @@ class PrChip:
     label: str = ""
 
 
-def pr_chip(pr: PullRequest) -> PrChip:
+def pr_chip(pr: PullRequest, voided: VoidedRefs) -> PrChip:
     """The chip for one ``PullRequest`` row — the single builder both surfaces use.
 
     The label falls back to the raw value for a state the choices no longer name,
     so a row written by an older schema renders as itself rather than as blank.
     """
+    if pr_ref(pr.url) in voided:
+        return PrChip(url=pr.url, repo=pr.repo, iid=pr.iid, state="voided", label="Merge voided")
     return PrChip(
         url=pr.url,
         repo=pr.repo,
@@ -354,8 +358,9 @@ def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
 
 def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
     chips: dict[int, list[PrChip]] = {}
+    voided = MergeVoid.objects.voided_refs()
     for pr in PullRequest.objects.filter(ticket_id__in=ticket_ids).order_by("ticket_id", "pk"):
-        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr))
+        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr, voided))
     return {ticket_id: tuple(prs) for ticket_id, prs in chips.items()}
 
 
