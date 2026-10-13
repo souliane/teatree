@@ -30,7 +30,9 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("workers", ["auto", 2])
-def test_xdist_whole_tree_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: str | int) -> None:
+def test_xdist_without_ci_sharding_still_refuses_whole_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: str | int
+) -> None:
     monkeypatch.delenv("CI_NODE_TOTAL", raising=False)
     monkeypatch.delenv("CI_NODE_INDEX", raising=False)
     session = cast(
@@ -44,7 +46,8 @@ def test_xdist_whole_tree_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ),
     )
 
-    shared_conftest.pytest_sessionstart(session)
+    with pytest.raises(pytest.UsageError, match="unsharded whole-tree pytest is refused"):
+        shared_conftest.pytest_sessionstart(session)
 
 
 def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Path) -> None:
