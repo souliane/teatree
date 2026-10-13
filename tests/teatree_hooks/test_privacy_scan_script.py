@@ -764,6 +764,15 @@ class TestVerifyRegistryAgainstTheCommittedFingerprint:
         assert "tree" in result.stderr
         assert "overlay" not in result.stderr
 
+    def test_a_registry_differing_only_in_its_allow_class_does_not_verify(self, tmp_path: Path) -> None:
+        widened = {**self._REAL, "allow": ["acme-owner-extra"]}
+
+        result = self._verify(self._commit(tmp_path, self._REAL), widened)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+        assert result.stderr.rstrip().endswith("for: allow")
+        assert "acme-owner-extra" not in result.stdout + result.stderr
+
     def test_the_report_carries_no_digest_and_no_term(self, tmp_path: Path) -> None:
         fake = {"leak": ["a-term-the-caller-picked"], "overlay": ["another-picked-term"]}
 

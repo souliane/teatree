@@ -545,6 +545,10 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo-root        PATH  Repository root to scan (defaults to the current    │
 │                          directory).                                         │
+│ --classes          TEXT  Comma-separated registry classes whose every value  │
+│                          must be absent from src, scripts, tests, docs,      │
+│                          .github; only the repository owner's login is       │
+│                          exempt.                                             │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

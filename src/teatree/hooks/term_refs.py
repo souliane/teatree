@@ -28,6 +28,15 @@ class TermRefs:
                 for index, term in enumerate(terms):
                     self._register(term, f"{term_class}#{index}")
 
+    @classmethod
+    def of_classes(cls, registry: Mapping[str, tuple[str, ...]], classes: tuple[str, ...]) -> "TermRefs":
+        """Name every value of *classes*, ``allow`` included, for a scan whose findings are those values."""
+        refs = cls(None)
+        for term_class in reversed(classes):
+            for index, term in enumerate(registry[term_class]):
+                refs._register(term, f"{term_class}#{index}")
+        return refs
+
     def _register(self, term: str, ref: str) -> None:
         self._refs[_key(term)] = ref
         self._terms[ref] = term.strip()

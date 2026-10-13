@@ -1540,6 +1540,12 @@ jobs:
         env:
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
         run: uv run t3 banned-terms scan-tree --repo-root .
+      # Every leak, overlay and allow value stays out of src, scripts, tests, docs and .github.
+      - name: Registry values absent from the value-free roots
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run t3 banned-terms scan-tree --repo-root . --classes leak,overlay,allow
 
   # GATE (push + schedule + PR): full-tree overlay-leak scan. The pre-commit
   # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a

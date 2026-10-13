@@ -276,6 +276,8 @@ EXEMPT: dict[str, str] = {
         "baseline is re-read from disk on every load_baseline call — so a test pointing at its own "
         "baseline file still gets a fresh answer and resetting this would only re-walk an identical tree"
     ),
+    "teatree.hooks.term_match:_term_run": "pure tokenization keyed by the term string; it holds no test state",
+    "teatree.utils.exact_carve_out:_entry": "pure parse keyed by the allow-entry string; it holds no test state",
 }
 
 
