@@ -10,7 +10,6 @@ import typer
 from teatree.backends.slack.receiver import default_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
@@ -122,6 +121,7 @@ def _record_and_wake_slack_answer(overlay: str, event: dict) -> None:
 
 def _answer_click(overlay: str, payload: dict) -> None:
     """Record a tapped owner-question option; the receiver has already acknowledged the envelope."""
+    from teatree.core.worktree.survivor_notice import apply_stop_answer  # noqa: PLC0415 — deferred: ORM-backed
     from teatree.loop.question_binding import answer_from_click  # noqa: PLC0415 — deferred: ORM-backed
 
     backend = messaging_from_overlay(overlay or None)
