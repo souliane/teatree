@@ -14,8 +14,8 @@ from django.db import transaction
 
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.evidence.forge_content import ContentVerdict, ContentVerdictKind, PrContentSnapshot, classify_content
+from teatree.core.gates.merge_evidence_gate import audit_pr_ref
 from teatree.core.merge.ci_rollup import CodeHostQuery
-from teatree.core.merge.pr_slug_resolution import resolved_repo_slug
 from teatree.core.models import MergeAudit, MergeClear, MergeVoid, PullRequest, Ticket
 from teatree.core.models.merge_void import (
     MergeVoidFields,
@@ -174,14 +174,14 @@ def plan_void(pr_url: str) -> VoidPlan:
     ref = pr_ref(pr_url.strip())
     if ref is None:
         raise VoidRefusedError(VoidRefusal.NOT_A_PR_URL, f"{pr_url!r} names no pull or merge request")
-    if MergeVoid.objects.for_pr(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind).exists():
+    voided = MergeVoid.objects.voided_refs()
+    if ref in voided:
         raise VoidRefusedError(VoidRefusal.ALREADY_VOIDED, f"the merge of {pr_url} is already voided")
     try:
         snapshot = CodeHostQuery.for_ref(ref).pr_content_snapshot()
     except _FORGE_READ_FAILURES as exc:
         snapshot = PrContentSnapshot(unreadable=f"forge unreachable: {exc}")
     verdict = classify_content(snapshot)
-    voided = MergeVoid.objects.voided_refs()
     restores: list[TicketRestore] = []
     kept: list[TicketKept] = []
     edgeless: list[int] = []
@@ -256,61 +256,37 @@ def _refusal(plan: VoidPlan, edgeless: list[int]) -> VoidRefusedError | None:
     return None
 
 
-def _names(ref: PrRef, *, slug: str, pr_id: object, host_kind: str = "") -> bool:
-    return (
-        slug.strip().casefold() == ref.slug.casefold()
-        and pr_id == ref.pr_id
-        and (not host_kind or host_kind == ref.host_kind)
-    )
-
-
 def _rows(ref: PrRef) -> "QuerySet[PullRequest]":
     return PullRequest.objects.for_pr(slug=ref.slug, pr_id=ref.pr_id)
 
 
-def _audit_ref(audit: MergeAudit) -> tuple[str, int, str]:
-    clear = audit.clear
-    return audit.repo_slug or resolved_repo_slug(clear) or clear.slug, clear.pr_id, clear.host_kind
+def _recorded_ref(ticket: Ticket) -> PrRef | None:
+    recorded = (ticket.extra or {}).get("forge_merge_evidence")
+    if not isinstance(recorded, dict) or not isinstance(pr_id := recorded.get("pr_id"), int):
+        return None
+    return PrRef(slug=str(recorded.get("slug", "")), pr_id=pr_id, host_kind="")
 
 
 def _candidate_tickets(ref: PrRef) -> list[Ticket]:
     """Merged-or-past tickets naming the PR by row, issue url, recorded forge evidence, or a merge audit."""
     ids = set(_rows(ref).values_list("ticket_id", flat=True))
-    for audit in MergeAudit.objects.filter(clear__pr_id=ref.pr_id, clear__ticket__isnull=False).select_related(
-        "clear__ticket"
-    ):
-        slug, pr_id, host_kind = _audit_ref(audit)
-        if _names(ref, slug=slug, pr_id=pr_id, host_kind=host_kind):
-            ids.add(audit.clear.ticket_id)
-    candidates = []
-    for ticket in Ticket.objects.filter(state__in=Ticket.merged_states()).order_by("pk"):
-        own = pr_ref(ticket.issue_url or "")
-        recorded = (ticket.extra or {}).get("forge_merge_evidence")
-        if (
-            ticket.pk in ids
-            or (own is not None and _names(ref, slug=own.slug, pr_id=own.pr_id, host_kind=own.host_kind))
-            or (
-                isinstance(recorded, dict)
-                and _names(ref, slug=str(recorded.get("slug", "")), pr_id=recorded.get("pr_id"))
-            )
-        ):
-            candidates.append(ticket)
-    return candidates
+    audits = MergeAudit.objects.filter(clear__pr_id=ref.pr_id, clear__ticket__isnull=False).select_related("clear")
+    ids |= {audit.clear.ticket_id for audit in audits if ref.same_pr(audit_pr_ref(audit))}
+    return [
+        ticket
+        for ticket in Ticket.objects.filter(state__in=Ticket.merged_states()).order_by("pk")
+        if ticket.pk in ids
+        or any(named and ref.same_pr(named) for named in (pr_ref(ticket.issue_url or ""), _recorded_ref(ticket)))
+    ]
 
 
 def _other_merge_evidence(ticket: Ticket, ref: PrRef, voided: VoidedRefs) -> str:
     """The first evidence that *ticket* merged through a PR other than *ref* and not voided, else ``""``."""
-    evidence = [_audit_ref(audit) for audit in MergeAudit.objects.filter(clear__ticket=ticket).select_related("clear")]
-    recorded = (ticket.extra or {}).get("forge_merge_evidence")
-    if isinstance(recorded, dict):
-        evidence.append((str(recorded.get("slug", "")), recorded.get("pr_id"), ""))
+    audits = MergeAudit.objects.filter(clear__ticket=ticket).select_related("clear")
+    evidence = [*map(audit_pr_ref, audits), _recorded_ref(ticket)]
     for row in PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED):
-        row_ref = pr_ref(row.url)
-        evidence.append((row.repo, row_ref.pr_id if row_ref else row.iid, row_ref.host_kind if row_ref else ""))
-    for slug, pr_id, host_kind in evidence:
-        if _names(ref, slug=slug, pr_id=pr_id, host_kind=host_kind):
-            continue
-        if isinstance(pr_id, int) and voided.covers(slug=slug, pr_id=pr_id, host_kind=host_kind):
-            continue
-        return f"{slug}#{pr_id}"
-    return ""
+        if (parsed := pr_ref(row.url)) is None:
+            return f"{row.repo}#{row.iid}"
+        evidence.append(PrRef(slug=row.repo, pr_id=parsed.pr_id, host_kind=parsed.host_kind))
+    other = next((named for named in evidence if named and not ref.same_pr(named) and named not in voided), None)
+    return f"{other.slug}#{other.pr_id}" if other else ""

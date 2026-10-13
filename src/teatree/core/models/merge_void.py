@@ -7,6 +7,8 @@ from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from teatree.utils.pr_ref import PrRef
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -55,25 +57,26 @@ class MergeVoidFields(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class VoidedRefs:
-    refs: frozenset[tuple[str, str, int]]
+    """Every recorded void, read once: the only answer to "is this PR's merge voided"."""
 
-    def covers(self, *, slug: str, pr_id: int, host_kind: str = "") -> bool:
-        """Evidence that names no host cannot prove it is a different PR, so it counts as voided."""
-        wanted = slug.strip().casefold()
-        return any(
-            voided_slug == wanted and voided_id == pr_id and (not host_kind or voided_host == host_kind)
-            for voided_host, voided_slug, voided_id in self.refs
-        )
+    voids: tuple["MergeVoid", ...]
+
+    def __bool__(self) -> bool:
+        return bool(self.voids)
+
+    def __contains__(self, ref: object) -> bool:
+        return isinstance(ref, PrRef) and self.void_for(ref) is not None
+
+    def void_for(self, ref: PrRef | None) -> "MergeVoid | None":
+        return next((void for void in self.voids if ref is not None and void.ref.same_pr(ref)), None)
 
 
 class MergeVoidQuerySet(models.QuerySet):
-    def for_pr(self, *, slug: str, pr_id: int, host_kind: str = "") -> "MergeVoidQuerySet":
-        voids = self.filter(slug__iexact=slug.strip(), pr_id=pr_id)
-        return voids.filter(host_kind=host_kind) if host_kind else voids
-
     def voided_refs(self) -> VoidedRefs:
-        rows = self.values_list("host_kind", "slug", "pr_id")
-        return VoidedRefs(frozenset((host, slug.casefold(), pr_id) for host, slug, pr_id in rows))
+        return VoidedRefs(tuple(self.all()))
+
+    def restored_ticket_ids(self) -> set[int]:
+        return set(self.exclude(tickets=None).values_list("tickets", flat=True))
 
     def record(self, fields: MergeVoidFields, *, tickets: "Iterable[Ticket]") -> "MergeVoid":
         void = self.create(**fields)
@@ -113,6 +116,10 @@ class MergeVoid(models.Model):
 
     def __str__(self) -> str:
         return f"merge-void<{self.pr_url}@{self.merged_sha[:8]}>"
+
+    @property
+    def ref(self) -> PrRef:
+        return PrRef(slug=self.slug, pr_id=self.pr_id, host_kind=self.host_kind)
 
     def describe(self) -> str:
         changed = len(self.changed_paths)

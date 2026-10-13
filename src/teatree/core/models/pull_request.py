@@ -8,6 +8,7 @@ from django_fsm import FSMField, transition
 
 from teatree.core.models.merge_void import MergeVoid
 from teatree.url_classify import repo_and_iid
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -21,13 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _merge_is_voided(row: object) -> bool:
-    pull_request = cast("PullRequest", row)
-    ref = pr_ref_from_url(pull_request.url)
-    if ref is None or not pull_request.iid.isdigit():
-        return False
-    return MergeVoid.objects.for_pr(
-        slug=pull_request.repo, pr_id=int(pull_request.iid), host_kind=ref.host_kind
-    ).exists()
+    return pr_ref_from_url(cast("PullRequest", row).url) in MergeVoid.objects.voided_refs()
 
 
 class PullRequestQuerySet(models.QuerySet):
@@ -171,7 +166,7 @@ class PullRequestQuerySet(models.QuerySet):
         every route crosses, so the keystone's own post-hook call finds the rows already
         settled and marks zero (#3984).
         """
-        if MergeVoid.objects.for_pr(slug=slug, pr_id=pr_id).exists():
+        if PrRef(slug=slug, pr_id=pr_id, host_kind="") in MergeVoid.objects.voided_refs():
             return 0
         merged = 0
         for row in self.for_pr(slug=slug, pr_id=pr_id).exclude(state=PullRequest.State.MERGED):

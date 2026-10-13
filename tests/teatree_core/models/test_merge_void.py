@@ -1,9 +1,14 @@
+import ast
+from pathlib import Path
+
 import pytest
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
+import teatree
 from teatree.core.models import MergeVoid, Ticket
 from teatree.core.models.merge_void import MergeVoidFields
+from teatree.utils.pr_ref import PrRef
 
 _SHA = "c" * 40
 
@@ -59,23 +64,42 @@ class TestMergeVoidKeying(TestCase):
 
 
 class TestVoidedRefs(TestCase):
-    def test_covers_the_voided_pr_case_insensitively_and_nothing_else(self) -> None:
-        MergeVoid.objects.record(void_fields(), tickets=[])
-
-        refs = MergeVoid.objects.voided_refs()
-
-        assert refs.covers(slug="EXAMPLE-ORG/example-repo", pr_id=41, host_kind="github")
-        assert not refs.covers(slug="example-org/example-repo", pr_id=42, host_kind="github")
-        assert not refs.covers(slug="example-org/other-repo", pr_id=41, host_kind="github")
-        assert not refs.covers(slug="example-org/example-repo", pr_id=41, host_kind="gitlab")
-
-    def test_evidence_that_names_no_host_is_covered(self) -> None:
-        MergeVoid.objects.record(void_fields(), tickets=[])
-
-        assert MergeVoid.objects.voided_refs().covers(slug="example-org/example-repo", pr_id=41)
-
-    def test_for_pr_matches_the_slug_case_insensitively(self) -> None:
+    def test_names_the_voided_pr_case_insensitively_and_nothing_else(self) -> None:
         void = MergeVoid.objects.record(void_fields(), tickets=[])
 
-        assert list(MergeVoid.objects.for_pr(slug="Example-Org/Example-Repo", pr_id=41)) == [void]
-        assert not MergeVoid.objects.for_pr(slug="example-org/example-repo", pr_id=41, host_kind="gitlab").exists()
+        voided = MergeVoid.objects.voided_refs()
+
+        assert voided.void_for(PrRef(slug="EXAMPLE-ORG/example-repo", pr_id=41)) == void
+        assert PrRef(slug="example-org/example-repo", pr_id=42) not in voided
+        assert PrRef(slug="example-org/other-repo", pr_id=41) not in voided
+        assert PrRef(slug="example-org/example-repo", pr_id=41, host_kind="gitlab") not in voided
+
+    def test_evidence_that_names_no_host_is_voided(self) -> None:
+        MergeVoid.objects.record(void_fields(), tickets=[])
+
+        assert PrRef(slug="example-org/example-repo", pr_id=41, host_kind="") in MergeVoid.objects.voided_refs()
+
+
+def test_no_module_rederives_whether_a_merge_is_voided() -> None:
+    package = Path(teatree.__file__).parent
+    model = package / "core" / "models" / "merge_void.py"
+    offenders = [
+        f"{path.relative_to(package)}:{node.lineno}"
+        for path in sorted(package.rglob("*.py"))
+        if path != model and "migrations" not in path.parts
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Attribute) and (node.attr == "voids" or _queries_the_table(node))
+    ]
+
+    assert offenders == []
+
+
+def _queries_the_table(node: ast.Attribute) -> bool:
+    manager = node.value
+    return (
+        isinstance(manager, ast.Attribute)
+        and manager.attr == "objects"
+        and isinstance(manager.value, ast.Name)
+        and manager.value.id == "MergeVoid"
+        and node.attr not in {"voided_refs", "restored_ticket_ids", "record"}
+    )

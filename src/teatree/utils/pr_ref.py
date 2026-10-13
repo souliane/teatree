@@ -24,3 +24,12 @@ class PrRef:
     slug: str
     pr_id: int
     host_kind: str = "github"
+
+    def same_pr(self, other: "PrRef") -> bool:
+        """A blank host on either side cannot prove the two are different PRs."""
+        hosts = {self.host_kind, other.host_kind}
+        return (
+            self.pr_id == other.pr_id
+            and self.slug.strip().casefold() == other.slug.strip().casefold()
+            and (len(hosts) == 1 or "" in hosts)
+        )

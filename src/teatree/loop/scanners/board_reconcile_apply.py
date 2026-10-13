@@ -32,23 +32,18 @@ def scoped(queryset: "QuerySet[Ticket]", overlay: str) -> "QuerySet[Ticket]":
 def without_voided(tickets: "Iterable[Ticket]") -> "list[Ticket]":
     """Drop the tickets a merge void holds, so no rule re-merges, delivers or retires them from a voided PR."""
     voided = MergeVoid.objects.voided_refs()
-    if not voided.refs:
+    if not voided:
         return list(tickets)
-    restored = set(MergeVoid.objects.exclude(tickets=None).values_list("tickets", flat=True))
+    restored = MergeVoid.objects.restored_ticket_ids()
     return [ticket for ticket in tickets if not _held_by_void(ticket, voided, restored=restored)]
 
 
 def _held_by_void(ticket: "Ticket", voided: "VoidedRefs", *, restored: set[int]) -> bool:
     """Its own url is a voided PR, or a void restored it and no open or merged PR outside the voided set carries it."""
-    if _voided_url(ticket.issue_url, voided):
+    if pr_ref(ticket.issue_url or "") in voided:
         return True
     live = PullRequest.objects.filter(ticket=ticket).exclude(state=PullRequest.State.CLOSED)
-    return ticket.pk in restored and all(_voided_url(url, voided) for url in live.values_list("url", flat=True))
-
-
-def _voided_url(url: str, voided: "VoidedRefs") -> bool:
-    ref = pr_ref(url or "")
-    return ref is not None and voided.covers(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind)
+    return ticket.pk in restored and all(pr_ref(url) in voided for url in live.values_list("url", flat=True))
 
 
 def collect(

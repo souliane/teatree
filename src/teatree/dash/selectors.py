@@ -83,13 +83,13 @@ class PrChip:
     label: str = ""
 
 
-def pr_chip(pr: PullRequest, *, voided: bool = False) -> PrChip:
+def pr_chip(pr: PullRequest, voided: VoidedRefs) -> PrChip:
     """The chip for one ``PullRequest`` row — the single builder both surfaces use.
 
     The label falls back to the raw value for a state the choices no longer name,
     so a row written by an older schema renders as itself rather than as blank.
     """
-    if voided:
+    if pr_ref(pr.url) in voided:
         return PrChip(url=pr.url, repo=pr.repo, iid=pr.iid, state="voided", label="Merge voided")
     return PrChip(
         url=pr.url,
@@ -356,16 +356,11 @@ def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
     return dict(rows)
 
 
-def merge_is_voided(pr: PullRequest, voided: VoidedRefs) -> bool:
-    ref = pr_ref(pr.url)
-    return ref is not None and voided.covers(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind)
-
-
 def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
     chips: dict[int, list[PrChip]] = {}
     voided = MergeVoid.objects.voided_refs()
     for pr in PullRequest.objects.filter(ticket_id__in=ticket_ids).order_by("ticket_id", "pk"):
-        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr, voided=merge_is_voided(pr, voided)))
+        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr, voided))
     return {ticket_id: tuple(prs) for ticket_id, prs in chips.items()}
 
 

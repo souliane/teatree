@@ -49,7 +49,6 @@ from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
-    from teatree.core.models.merge_void import VoidedRefs
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
@@ -70,17 +69,16 @@ def has_merge_audit_evidence(ticket: "Ticket") -> bool:
     """True iff *ticket* links a ``MergeAudit`` with a real ``merged_sha`` for a PR whose merge is not voided."""
     voided = MergeVoid.objects.voided_refs()
     return any(
-        audit.merged_sha.strip() and not _audit_is_voided(audit, voided)
+        audit.merged_sha.strip() and not (voided and audit_pr_ref(audit) in voided)
         for audit in MergeAudit.objects.filter(clear__ticket=ticket).select_related("clear")
     )
 
 
-def _audit_is_voided(audit: MergeAudit, voided: "VoidedRefs") -> bool:
-    if not voided.refs:
-        return False
+def audit_pr_ref(audit: MergeAudit) -> PrRef:
     clear = audit.clear
-    slug = audit.repo_slug or resolved_repo_slug(clear) or clear.slug
-    return voided.covers(slug=slug, pr_id=clear.pr_id, host_kind=clear.host_kind)
+    return PrRef(
+        slug=audit.repo_slug or resolved_repo_slug(clear) or clear.slug, pr_id=clear.pr_id, host_kind=clear.host_kind
+    )
 
 
 def _pr_host_kind(pr: PullRequest) -> str:
@@ -109,7 +107,7 @@ def _probeable_refs(ticket: "Ticket") -> list[PrRef]:
     if not refs and (own := pr_ref(ticket.issue_url or "")) is not None:
         refs.append(own)
     voided = MergeVoid.objects.voided_refs()
-    return [ref for ref in refs if not voided.covers(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind)]
+    return [ref for ref in refs if ref not in voided]
 
 
 def forge_confirms_merged(ticket: "Ticket") -> bool:

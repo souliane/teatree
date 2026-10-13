@@ -21,7 +21,7 @@ from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
-from teatree.dash.selectors import PrChip, group_slug, merge_is_voided, pr_chip
+from teatree.dash.selectors import PrChip, group_slug, pr_chip
 from teatree.dash.skills import skill_bundle
 from teatree.dash.task_actions import EnqueueButton, enqueue_buttons
 
@@ -282,5 +282,4 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
 
 def _pr_chips(ticket_id: int) -> tuple[PrChip, ...]:
     voided = MergeVoid.objects.voided_refs()
-    rows = PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk")
-    return tuple(pr_chip(pr, voided=merge_is_voided(pr, voided)) for pr in rows)
+    return tuple(pr_chip(pr, voided) for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk"))
