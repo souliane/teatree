@@ -1331,9 +1331,9 @@ class TestAMaskRefusalNeverQuotesATerm(_TermGuardCase):
         return self._run("import", "--input", str(path), *flags)
 
     def test_a_restored_mask_keyed_by_a_term_of_any_class_is_refused_without_it(self) -> None:
-        for term in (LEAK, OV):
-            with self.subTest(term=term):
-                entries = {**dict.fromkeys(self.loops, False), f"{term}-loop": True}
+        for term_class in ("leak", "overlay"):
+            with self.subTest(term_class=term_class):
+                entries = {**dict.fromkeys(self.loops, False), f"{TEST_TERM_REGISTRY[term_class][0]}-loop": True}
                 code, out, err = self._import_mask(entries, "--restore-private", marked=True)
                 assert code == 2
                 assert "(invalid mask (banned-term; message withheld))" in err
