@@ -86,6 +86,7 @@ from teatree.loop.scanners.forge_readback import (
     fetch_open_prs,
     issue_number,
 )
+from teatree.loop.scanners.issue_payload import issue_author, issue_created_at, issue_url
 from teatree.types import RawAPIDict
 from teatree.utils.run import redact_secrets
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -112,51 +113,9 @@ class _TickContext:
     readback: ReadbackIndex
 
 
-def issue_url(issue: RawAPIDict) -> str:
-    for name in ("web_url", "html_url"):
-        value = issue.get(name)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
 def _issue_title(issue: RawAPIDict) -> str:
     title = issue.get("title")
     return title if isinstance(title, str) else ""
-
-
-def issue_created_at(issue: RawAPIDict) -> dt.datetime | None:
-    """When *issue* was FILED — the intake queue's ordering key on both forges.
-
-    GitHub and GitLab both name the field ``created_at``. A naive timestamp is read as
-    UTC, which is what both forges emit; an absent or unparsable one yields ``None``.
-    """
-    raw = issue.get("created_at")
-    if not isinstance(raw, str):
-        return None
-    try:
-        moment = dt.datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
-
-
-def issue_author(issue: RawAPIDict) -> str:
-    """The handle that FILED *issue*, across both forges' payload shapes.
-
-    GitHub nests the author under ``user.login``; GitLab under ``author.username``.
-    Returns ``""`` when no author can be resolved — which the gate reads as UNTRUSTED,
-    never as a wildcard.
-    """
-    for container in ("user", "author"):
-        value = issue.get(container)
-        if not isinstance(value, dict):
-            continue
-        for name in ("login", "username"):
-            handle = cast("RawAPIDict", value).get(name)
-            if isinstance(handle, str) and handle.strip():
-                return handle.strip()
-    return ""
 
 
 def _issue_is_open(issue: RawAPIDict) -> bool:
@@ -483,7 +442,11 @@ class IssueIntakeScanner:
         if claim is None:
             return None
         return ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            url, self.overlay_name, claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+            url,
+            self.overlay_name,
+            claim_ref_sha=claim.sha,
+            claimed_by_instance=claim.instance_id,
+            claim_lineage=claim.lineage,
         )
 
     def _trusted_author_set(self) -> frozenset[str]:

@@ -22,6 +22,7 @@ class FleetClaimStub:
             ref=claim_ref(issue_url),
             sha="a" * 40,
             instance_id="test-instance",
+            lineage="f" * 32,
             claimed_at=0.0,
             ttl_seconds=3600.0,
         )

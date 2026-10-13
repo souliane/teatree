@@ -7,7 +7,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0009_dispatch_loop_description"),
+        ("core", "0011_implemented_issue_marker_claim_lineage"),
     ]
 
     operations = [

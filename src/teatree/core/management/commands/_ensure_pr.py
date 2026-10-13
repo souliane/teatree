@@ -292,15 +292,13 @@ def _owning_ticket_pre_create_gate(
         return EnsurePrResult(branch=branch_name, error=debt_error)
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
-    if wire.ticket_claim_is_lost(owning_ticket, repo_path):
-        return EnsurePrResult(
-            branch=branch_name,
-            error=(
-                f"fleet claim for {owning_ticket.issue_url or branch_name} is no longer held by this instance "
-                f"— refusing to open a PR (stolen by another instance, or the ref infra is unreachable)"
-            ),
-        )
-    return None
+    loss = wire.ticket_claim_loss(owning_ticket, repo_path)
+    if loss is None:
+        return None
+    return EnsurePrResult(
+        branch=branch_name,
+        error=f"fleet claim for {owning_ticket.issue_url or branch_name} — refusing to open a PR: {loss}",
+    )
 
 
 def _named_author_refusal(repo_path: str, branch_name: str) -> str:

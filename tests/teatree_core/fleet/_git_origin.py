@@ -5,8 +5,21 @@ receive-pack ref transaction (server-side CAS) as a GitHub push, with no network
 Not a test module — no ``test_`` prefix, so pytest never collects it.
 """
 
+import os
 import subprocess
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
+
+from teatree.instance_id import instance_id
+
+FIXTURE_IDENTITY = (
+    "-c",
+    "user.name=teatree-fixture",
+    "-c",
+    "user.email=teatree-fixture@users.noreply.github.com",  # privacy-scan:allow placeholder noreply fixture identity
+)
 
 
 def _run(*args: str) -> str:
@@ -18,8 +31,16 @@ def git(repo: Path, *args: str) -> str:
     return _run("-C", str(repo), *args)
 
 
+def empty_tree(repo: Path) -> str:
+    return git(repo, "hash-object", "-t", "tree", "-w", "/dev/null")
+
+
 def init_bare(path: Path) -> Path:
+    """A bare origin whose default branch ``main`` holds one root commit, as every forge repo does."""
     _run("init", "--bare", "-q", str(path))
+    git(path, "symbolic-ref", "HEAD", "refs/heads/main")
+    root = git(path, *FIXTURE_IDENTITY, "commit-tree", empty_tree(path), "-m", "root")
+    git(path, "update-ref", "refs/heads/main", root)
     return path
 
 
@@ -43,8 +64,10 @@ def require_credential(bare: Path, token: str) -> Path:
 
 
 def init_client(client_dir: Path, bare: Path) -> Path:
-    _run("init", "-q", str(client_dir))
+    _run("init", "-q", "-b", "main", str(client_dir))
     git(client_dir, "remote", "add", "origin", f"file://{bare}")
+    if bare.exists():
+        git(client_dir, "fetch", "-q", "origin")
     return client_dir
 
 
@@ -60,6 +83,39 @@ def private_origin(tmp: Path, token: str) -> tuple[Path, Path]:
     upload_pack.chmod(0o755)
     git(client, "config", "remote.origin.uploadpack", str(upload_pack))
     return bare, client
+
+
+def run_before_upload_pack(client: Path, commands: Mapping[int, str]) -> None:
+    """Run each command just before *client*'s read of its origin with that number: ref writes racing those reads."""
+    counter = client / ".git" / "upload-pack-calls"
+    wrapper = client / ".git" / "upload-pack-racing-a-write"
+    races = "".join(f'[ "$n" = {call} ] && {command}\n' for call, command in commands.items())
+    wrapper.write_text(
+        f'#!/bin/sh\nn=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\necho "$n" > "{counter}"\n'
+        f'{races}exec git upload-pack "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    git(client, "config", "remote.origin.uploadpack", str(wrapper))
+
+
+@contextmanager
+def as_other_instance(data_home: Path) -> Iterator[None]:
+    """Act as a separate teatree installation: ``instance_id()`` resolves its own machine data dir."""
+    with patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}):
+        yield
+
+
+@contextmanager
+def as_twin_instance(data_home: Path) -> Iterator[None]:
+    """Act as a separate installation that shares this one's ``instance_id`` but not its ledger."""
+    ours = instance_id()
+    twin_dir = data_home / "teatree"
+    twin_dir.mkdir(parents=True, exist_ok=True)
+    (twin_dir / "instance_id").write_text(ours, encoding="utf-8")
+    with as_other_instance(data_home):
+        assert instance_id() == ours
+        yield
 
 
 def ref_sha(bare: Path, ref: str) -> str:

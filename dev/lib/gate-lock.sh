@@ -13,11 +13,12 @@ acquire_push_gate_lock() {
     T3_PUSH_GATE_LOCK_PATH="$lock_path"
     export T3_PUSH_GATE_LOCK_PATH
 
+    # Never fall back to another path: a second lock file excludes nobody.
     if ! exec 9<>"$lock_path"; then
         T3_PUSH_GATE_LOCK_WAIT_S=$((SECONDS - lock_started))
         export T3_PUSH_GATE_LOCK_WAIT_S
-        echo "=== push-gate: WARNING: cannot open lock $lock_path — running unserialised ===" >&2
-        return 0
+        echo "=== push-gate: ABORTED: cannot open lock $lock_path (fix its permissions); no check ran ===" >&2
+        return 75
     fi
 
     local lock_rc=0
@@ -25,12 +26,13 @@ acquire_push_gate_lock() {
         "${T3_PUSH_GATE_LOCK_WAIT_SECONDS:-1500}" || lock_rc=$?
     T3_PUSH_GATE_LOCK_WAIT_S=$((SECONDS - lock_started))
     export T3_PUSH_GATE_LOCK_WAIT_S
-    if [ "$lock_rc" -eq 75 ]; then
-        return 75
-    fi
-    if [ "$lock_rc" -ne 0 ]; then
-        exec 9>&-
-        echo "=== push-gate: WARNING: lock guard failed (rc=$lock_rc) for $lock_path — running unserialised ===" >&2
+    if [ "$lock_rc" -eq 0 ]; then
         return 0
     fi
+    exec 9>&-
+    # 75 is the helper's timed-out wait, already reported with its holder.
+    if [ "$lock_rc" -ne 75 ]; then
+        echo "=== push-gate: ABORTED: lock helper failed (rc=$lock_rc) for $lock_path; no check ran ===" >&2
+    fi
+    return 75
 }
