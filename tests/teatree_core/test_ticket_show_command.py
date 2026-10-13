@@ -116,6 +116,6 @@ class TicketShowMergeVoidTest(TestCase):
         assert result["merge_voids"] == [second.describe(), void.describe()]
         assert void.describe() == (
             f"merge voided: {PR_URL} @{MERGED_SHA[:8]} by alice at {void.voided_at.isoformat(timespec='seconds')}: "
-            "history rewrite dropped the change (2 changed paths absent on main)"
+            "history rewrite dropped the change (2/2 paths absent on main)"
         )
         assert f"  {void.describe()}" in render_ticket_show(cast("TicketShowResult", result))

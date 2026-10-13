@@ -122,8 +122,9 @@ class MergeVoid(models.Model):
         return PrRef(slug=self.slug, pr_id=self.pr_id, host_kind=self.host_kind)
 
     def describe(self) -> str:
+        changed = len(self.changed_paths)
         return (
             f"merge voided: {self.pr_url} @{self.merged_sha[:8]} by {self.actor} at "
             f"{self.voided_at.isoformat(timespec='seconds')}: {self.reason} "
-            f"({len(self.changed_paths)} changed paths absent on {self.default_branch})"
+            f"({changed}/{changed} paths absent on {self.default_branch})"
         )
