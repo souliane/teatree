@@ -7,6 +7,8 @@ import pytest
 from teatree.agents.live_federation import (
     FederationRefusedError,
     FederationUnavailableError,
+    WorkerGoneError,
+    call,
     proof,
     verified_sender,
     workers,
@@ -75,3 +77,8 @@ def test_discovery_refuses_an_unbounded_worker_directory(tmp_path: Path) -> None
 
     with pytest.raises(FederationUnavailableError, match="discovery limit"):
         workers(tmp_path, tmp_path / "own.sock")
+
+
+def test_a_socket_its_worker_already_removed_reads_as_a_gone_worker(tmp_path: Path) -> None:
+    with pytest.raises(WorkerGoneError, match="removed by its worker"):
+        asyncio.run(call(tmp_path / "w-gone.sock", {"method": "relay.peers"}, wait=1))

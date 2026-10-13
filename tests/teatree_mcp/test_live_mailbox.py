@@ -6,6 +6,7 @@ import socket
 import stat
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator
 from multiprocessing.connection import Connection
@@ -464,14 +465,44 @@ def test_peer_push_crosses_worker_sockets_to_the_recipient_owner_loop(
     assert "ticket ticket-1" in session.delivered[0]
 
 
-def test_unreachable_worker_is_reported_instead_of_hiding_peers(broker: LiveMailboxBroker, tmp_path: Path) -> None:
-    sender = broker.register(room="ticket", harness="claude_sdk", label="planner")
+def test_a_dead_workers_leftover_socket_is_removed_and_discovery_continues(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    sender = broker.register(room="ticket-1", harness="claude_sdk", label="planner")
+    peer = broker.register(room="ticket-2", harness="codex_app_server", label="coder")
     stale = tmp_path / "w-stale.sock"
     with socket.socket(socket.AF_UNIX) as abandoned:
         abandoned.bind(str(stale))
 
-    with pytest.raises(ToolError, match=r"w-stale\.sock: connection failed"):
-        invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+    peers = invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+
+    assert [row["address"] for row in peers] == [peer.address]
+    assert not stale.exists()
+
+
+def _answer_once(server: socket.socket, reply: bytes) -> None:
+    connection, _ = server.accept()
+    with connection:
+        connection.recv(65_536)
+        connection.sendall(reply)
+
+
+def test_a_worker_that_answers_garbage_is_reported_instead_of_hiding_peers(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    sender = broker.register(room="ticket", harness="claude_sdk", label="planner")
+    garbled = tmp_path / "w-garbled.sock"
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(garbled))
+        server.listen(1)
+        answering = threading.Thread(target=_answer_once, args=(server, b"not json\n"))
+        answering.start()
+
+        with pytest.raises(ToolError, match=r"w-garbled\.sock: invalid JSON"):
+            invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+        answering.join(timeout=5)
+
+    assert garbled.exists()
 
 
 def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exists(

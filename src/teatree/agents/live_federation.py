@@ -47,6 +47,10 @@ class FederationUnavailableError(Exception):
     pass
 
 
+class WorkerGoneError(FederationUnavailableError):
+    """Nothing listens on the socket: its worker exited, so it holds no peers."""
+
+
 class FederationRefusedError(Exception):
     pass
 
@@ -72,7 +76,7 @@ async def remote_peers(own_socket: Path, sender: str, secret: bytes) -> list[tup
         "key": "",
     }
     request["proof"] = proof(secret, request)
-    responses = await asyncio.gather(*(call(worker, request, wait=2) for worker in paths))
+    responses = await asyncio.gather(*(_listed(worker, request) for worker in paths))
     for worker, response in zip(paths, responses, strict=True):
         if not isinstance(response, list) or any(
             not isinstance(peer, dict) or not isinstance(peer.get("address"), str) for peer in response
@@ -81,6 +85,13 @@ async def remote_peers(own_socket: Path, sender: str, secret: bytes) -> list[tup
             raise FederationUnavailableError(msg)
         found.extend((worker, cast("PeerIdentity", peer)) for peer in response)
     return found
+
+
+async def _listed(worker: Path, request: Mapping[str, object]) -> object:
+    try:
+        return await call(worker, request, wait=2)
+    except WorkerGoneError:
+        return []
 
 
 def proof(secret: bytes, request: Mapping[str, object]) -> str:
@@ -146,6 +157,13 @@ async def call(socket_path: Path, request: Mapping[str, object], *, wait: float)
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(str(socket_path), limit=_MAX_RESPONSE_BYTES), _CONNECT_SECONDS
         )
+    except ConnectionRefusedError as exc:
+        await asyncio.to_thread(socket_path.unlink, missing_ok=True)
+        msg = f"{socket_path.name}: nothing listens on it; removed"
+        raise WorkerGoneError(msg) from exc
+    except FileNotFoundError as exc:
+        msg = f"{socket_path.name}: removed by its worker"
+        raise WorkerGoneError(msg) from exc
     except (OSError, TimeoutError) as exc:
         msg = f"{socket_path.name}: connection failed"
         raise FederationUnavailableError(msg) from exc

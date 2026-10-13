@@ -472,8 +472,9 @@ original message instead of sending a second copy, and at most four sends per ta
 wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
 with the message. Delivery is live-only: there is no database queue, parked-task
-delivery across hosts, or idle-session wake-up. An unreachable worker is reported
-as an error; it does not make discovery look empty. The MCP tools are absent
+delivery across hosts, or idle-session wake-up. A socket left by a worker that
+exited is removed; any other unreachable worker is reported as an error, so it
+never makes discovery look empty. The MCP tools are absent
 outside TeaTree-managed tasks.
 
 #### Live control
