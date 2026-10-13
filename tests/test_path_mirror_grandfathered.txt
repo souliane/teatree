@@ -162,7 +162,6 @@ tests/test_secrets.py
 tests/test_skill_deps.py
 tests/test_slack_setup.py
 tests/test_transcript_replay_conformance.py
-tests/test_visual_qa.py
 tests/utils/test_db.py
 tests/utils/test_django_bootstrap.py
 tests/utils/test_forge.py
