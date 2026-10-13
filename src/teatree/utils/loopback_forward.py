@@ -138,28 +138,19 @@ def _pump_pipe_to_socket(source: IO[bytes], sink: socket.socket) -> None:
             sink.sendall(chunk)
 
 
-class _AmbiguousAdminContainersError(ValueError):
-    def __init__(self, project: str, containers: list[str]) -> None:
-        super().__init__(
-            f"compose project {project!r} has {len(containers)} running {_ADMIN_SERVICE} containers "
-            f"({', '.join(containers)}); cannot choose one for the admin forward"
-        )
+def _running_admin_containers() -> list[str]:
+    """The ids of the running admin containers, none when the stack is not up.
 
-
-def _running_admin_container() -> str:
-    """The sole running admin id, or ``""`` when the stack is not up.
-
-    Docker failures and a stopped stack return no id; multiple admins raise
-    ``_AmbiguousAdminContainersError`` so the caller can report the ambiguity.
+    Bounded and non-raising: an absent docker binary, an unresponsive daemon and a stopped
+    stack must all degrade to an actionable message rather than stall the command.
     """
-    project = production_compose_project()
     try:
         result = run_allowed_to_fail(
             [
                 "docker",
                 "ps",
                 "--filter",
-                f"label=com.docker.compose.project={project}",
+                f"label=com.docker.compose.project={production_compose_project()}",
                 "--filter",
                 f"label=com.docker.compose.service={_ADMIN_SERVICE}",
                 "--filter",
@@ -171,11 +162,8 @@ def _running_admin_container() -> str:
             timeout=_DOCKER_PROBE_TIMEOUT_SECONDS,
         )
     except (OSError, TimeoutExpired):
-        return ""
-    containers = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if len(containers) > 1:
-        raise _AmbiguousAdminContainersError(project, containers)
-    return containers[0] if containers else ""
+        return []
+    return result.stdout.split()
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,14 +370,17 @@ def ensure_admin_forward(*, port: int = FORWARD_PORT) -> ForwardResult:
     A containerized caller cannot bind a host port at all, so it publishes one instead —
     the only venue difference; both end at the same ``docker exec`` bridge.
     """
-    try:
-        container = _running_admin_container()
-    except _AmbiguousAdminContainersError as exc:
-        return ForwardResult(error=str(exc))
-    if not container:
+    containers = _running_admin_containers()
+    if not containers:
         return ForwardResult(
             error=f"no running {_ADMIN_SERVICE} container — start the stack (deploy/deploy.sh) to reach it from here"
         )
+    if len(containers) > 1:
+        return ForwardResult(
+            error=f"{len(containers)} running {_ADMIN_SERVICE} containers in compose project "
+            f"{production_compose_project()!r} ({', '.join(containers)}); the deploy runs one, so none is forwarded"
+        )
+    [container] = containers
     if running_in_container():
         return _ensure_published_forwarder(container, port=port)
     forward = LoopbackForward(container, _ADMIN_CONTAINER_PORT, port=port)
