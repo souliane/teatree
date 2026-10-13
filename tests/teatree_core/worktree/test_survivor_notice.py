@@ -22,7 +22,7 @@ class SurvivorNoticeTests(TestCase):
                 "surviving_writers": {
                     "namespace": "pid:[1]",
                     "claim_generation": claim_generation(task),
-                    "processes": [{"pid": 9, "started": 1}],
+                    "processes": [{"pid": 9, "start_ticks": 1}],
                 },
             },
         )
@@ -50,7 +50,7 @@ class SurvivorNoticeTests(TestCase):
                 "surviving_writers": {
                     "namespace": "pid:[1]",
                     "claim_generation": "older claim",
-                    "processes": [{"pid": 9, "started": 1}],
+                    "processes": [{"pid": 9, "start_ticks": 1}],
                 },
             },
         )

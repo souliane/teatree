@@ -53,7 +53,7 @@ class RunnerCancelTests(TestCase):
         assert attempt.result["surviving_writers"] == {
             "namespace": "pid:[1]",
             "claim_generation": claim_generation(task),
-            "processes": [{"pid": 101, "started": 11}],
+            "processes": [{"pid": 101, "start_ticks": 11}],
         }
 
     def test_owner_cancel_stops_only_after_two_beat_wait(self) -> None:
@@ -83,7 +83,7 @@ class RunnerCancelTests(TestCase):
                 "surviving_writers": {
                     "namespace": "pid:[1]",
                     "claim_generation": claim_generation(task),
-                    "processes": [{"pid": 101, "started": 11}],
+                    "processes": [{"pid": 101, "start_ticks": 11}],
                 },
             },
         )
@@ -120,7 +120,7 @@ class RunnerCancelTests(TestCase):
                 "surviving_writers": {
                     "namespace": "pid:[1]",
                     "claim_generation": "older claim",
-                    "processes": [{"pid": 101, "started": 11}],
+                    "processes": [{"pid": 101, "start_ticks": 11}],
                 },
             },
         )

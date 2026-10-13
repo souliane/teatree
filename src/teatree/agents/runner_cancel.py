@@ -24,7 +24,7 @@ def settle_cancelled_checkout(task: Task, checkout: Path, *, beat_seconds: float
         stop_owned_writers(checkout)
     elif cancel_source(task) == "agent":
         candidates = [
-            {"pid": process.pid, "started": process.started}
+            {"pid": process.pid, "start_ticks": process.started}
             for process in survivors
             if isinstance(process, CheckoutProcess)
             and process.descendant

@@ -29,6 +29,7 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.lane_b import toolsets as lane_b_toolsets
 from teatree.agents.lane_b.tool_names import TOOL_READ
@@ -36,6 +37,7 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.runner_failure_taxonomy import RESULT_ERROR_PREFIX
 from teatree.agents.session_lineage import resume_session_id
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import CONTEXT_EXHAUSTED_MARKER
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, dispatch_reason, schedule_resume
@@ -198,6 +200,7 @@ class TestAPydanticRunReopenedInPlaceContinuesItsOwnConversation(TestCase):
             patch.object(harness_mod.PydanticAiHarness, "_resolve_model", lambda _self, _options, _run: model),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, _task: TaskUsage(0, 0.0))),
             patch.object(lane_b_toolsets, "build_mcp_toolsets", return_value=[]),
+            patch.object(checkout_fence_mod, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")),
         ):
             return run_agent(self.task, phase="debugging", overlay_skill_metadata={})
 

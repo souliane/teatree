@@ -512,10 +512,11 @@ class TestCheckoutStopAnswer(TestCase):
             question="Should the verified child writers be stopped?",
             dedupe_marker="checkout-exit-held:7:session",
         )
-        with patch("teatree.loop.question_binding.apply_stop_answer") as stop:
-            assert apply_bound_answer(BoundAnswer(question=question, answer="Stop verified writers")) is True
-        stop.assert_called_once()
-        assert stop.call_args.args[0].resolved_via == DeferredQuestion.ResolvedVia.SLACK
+        answered: list[DeferredQuestion] = []
+        assert apply_bound_answer(
+            BoundAnswer(question=question, answer="Stop verified writers"), on_answer=answered.append
+        )
+        assert [row.resolved_via for row in answered] == [DeferredQuestion.ResolvedVia.SLACK]
 
 
 class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):

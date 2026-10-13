@@ -31,6 +31,7 @@ Every applied answer, typed or tapped, closes the posted card in place.
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -44,7 +45,6 @@ from teatree.core.owner_question_message import (
     closed_message,
     replace_root,
 )
-from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
 
 if TYPE_CHECKING:
@@ -96,7 +96,12 @@ def bind_reply(
     return None if answer is None else BoundAnswer(question=question, answer=answer)
 
 
-def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None" = None) -> bool:
+def apply_bound_answer(
+    bound: BoundAnswer,
+    *,
+    backend: "MessagingBackend | None" = None,
+    on_answer: Callable[[DeferredQuestion], object] | None = None,
+) -> bool:
     """Resolve the bound question, resume its parked task and close its posted card; ``True`` when applied.
 
     ``False`` means a concurrent answer won the single-use CAS, which the caller
@@ -108,13 +113,19 @@ def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None"
     from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
     resume_on_answer(applied, applied.parked_task)
-    apply_stop_answer(applied)
+    if on_answer is not None:
+        on_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:
         replace_root(applied, closed_message(applied, answered_line(applied)), backend)
     return True
 
 
-def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
+def answer_from_click(
+    payload: dict,
+    *,
+    backend: "MessagingBackend",
+    on_answer: Callable[[DeferredQuestion], object] | None = None,
+) -> bool:
     """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
     if tap is None or not _is_the_owner(tap.user_id, configured_owner_id(backend)):
@@ -128,7 +139,7 @@ def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
         label = _tapped_label(question, tap)
         if label is None:
             return False
-        if apply_bound_answer(BoundAnswer(question=question, answer=label), backend=backend):
+        if apply_bound_answer(BoundAnswer(question=question, answer=label), backend=backend, on_answer=on_answer):
             return True
         question.refresh_from_db()
     closing = NO_LONGER_NEEDED if question.dismissed_at else f"{ALREADY_ANSWERED}{question.answer_text}"

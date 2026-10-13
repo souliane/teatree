@@ -21,7 +21,7 @@ _STOP_QUESTION = "Should the verified child writers be stopped?"
 
 class WriterProcess(TypedDict):
     pid: int
-    started: int
+    start_ticks: int
 
 
 class WriterSnapshot(TypedDict):
@@ -45,7 +45,7 @@ def _current_writer_snapshot(task: Task, attempt: TaskAttempt | None) -> WriterS
         return None
     processes = snapshot["processes"]
     if not processes or any(
-        not isinstance(entry, dict) or type(entry.get("pid")) is not int or type(entry.get("started")) is not int
+        not isinstance(entry, dict) or type(entry.get("pid")) is not int or type(entry.get("start_ticks")) is not int
         for entry in processes
     ):
         return None
@@ -102,7 +102,7 @@ def apply_stop_answer(question: DeferredQuestion) -> tuple[int, ...]:
     snapshot = _current_writer_snapshot(task, attempt)
     if snapshot is None:
         return ()
-    candidates = tuple((entry["pid"], entry["started"]) for entry in snapshot["processes"])
+    candidates = tuple((entry["pid"], entry["start_ticks"]) for entry in snapshot["processes"])
     return stop_recorded_writers(Path(path), candidates, str(snapshot.get("namespace") or ""))
 
 

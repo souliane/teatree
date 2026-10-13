@@ -10,6 +10,7 @@ import typer
 from teatree.backends.slack.receiver import default_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
@@ -127,7 +128,7 @@ def _answer_click(overlay: str, payload: dict) -> None:
     if backend is None:
         logging.getLogger(__name__).warning("No slack backend for overlay %r — a button tap was dropped", overlay)
         return
-    answer_from_click(payload, backend=backend)
+    answer_from_click(payload, backend=backend, on_answer=apply_stop_answer)
 
 
 @slack_app.command("listen")

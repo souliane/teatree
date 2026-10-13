@@ -65,10 +65,12 @@ def _posted_card(**record_kwargs: Any) -> tuple[DeferredQuestion, MagicMock]:
 class TestTheTapRoundTrip(TestCase):
     def test_a_tap_records_the_recommended_label_and_closes_the_root_card(self) -> None:
         row, backend = _posted_card()
+        answered: list[DeferredQuestion] = []
 
-        assert answer_from_click(_tap(row), backend=backend)
+        assert answer_from_click(_tap(row), backend=backend, on_answer=answered.append)
 
         row.refresh_from_db()
+        assert [question.pk for question in answered] == [row.pk]
         assert (row.answer_text, row.resolved_via) == ("Yes", "slack")
         backend.update_message.assert_called_once()
         update = backend.update_message.call_args.kwargs

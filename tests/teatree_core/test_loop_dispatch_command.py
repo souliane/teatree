@@ -145,14 +145,18 @@ class TestClaimNextPayload(_LoopDispatchTest):
             pristine = Worktree.objects.get(pk=worktree.pk).get_extra()["attested_state"]
             (checkout / "a.py").write_text("in-session edit\n")
 
-            call_command(
-                "tasks",
-                "record-attempt",
-                str(task.pk),
-                json.dumps({"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]}),
-                claim_token=json.loads(claimed.getvalue())[0]["claim_token"],
-                stdout=StringIO(),
-            )
+            with patch(
+                "teatree.core.worktree.occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps({"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]}),
+                    claim_token=json.loads(claimed.getvalue())[0]["claim_token"],
+                    stdout=StringIO(),
+                )
 
             finished = Worktree.objects.get(pk=worktree.pk)
             assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
