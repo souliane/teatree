@@ -128,7 +128,6 @@ tests/teatree_loop/test_task_sweep_scanner.py
 tests/teatree_loop/test_ticket_dispositions.py
 tests/teatree_loop/test_white_check_mark_sweep.py
 tests/teatree_loops/test_backward_compat_shims.py
-tests/teatree_loops/test_mini_loop_jobs.py
 tests/teatree_loops/test_run_tick_shim.py
 tests/teatree_skill_support/test_teatree_skill_cli_reference.py
 tests/test_banned_terms_tree_scan.py
