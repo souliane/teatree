@@ -4,10 +4,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
+from tests import conftest as shared_conftest
 
 
 def test_auto_workers_are_parallel_but_bounded_on_a_healthy_box() -> None:
@@ -24,6 +27,24 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
     assert "PYTEST_XDIST_AUTO_NUM_WORKERS" in whole_tree_refusal([], root=tmp_path, sharded=False)
     assert whole_tree_refusal(["tests/teatree_core/test_admission_governor.py"], root=tmp_path, sharded=False) == ""
     assert whole_tree_refusal(["tests"], root=tmp_path, sharded=True) == ""
+
+
+@pytest.mark.parametrize("workers", ["auto", 2])
+def test_xdist_whole_tree_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: str | int) -> None:
+    monkeypatch.delenv("CI_NODE_TOTAL", raising=False)
+    monkeypatch.delenv("CI_NODE_INDEX", raising=False)
+    session = cast(
+        "pytest.Session",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                rootpath=tmp_path,
+                args=[],
+                option=SimpleNamespace(splits=0, group=0, tach=False, numprocesses=workers),
+            )
+        ),
+    )
+
+    shared_conftest.pytest_sessionstart(session)
 
 
 def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Path) -> None:

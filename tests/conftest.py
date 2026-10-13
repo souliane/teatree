@@ -139,8 +139,11 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     config = session.config
     if hasattr(config, "workerinput"):
         return
-    sharded = bool(getattr(config.option, "splits", 0) and getattr(config.option, "group", 0)) or bool(
-        os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
+    xdist_workers = getattr(config.option, "numprocesses", None)
+    sharded = (
+        xdist_workers not in {None, 0, "0"}
+        or bool(getattr(config.option, "splits", 0) and getattr(config.option, "group", 0))
+        or bool(os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX"))
     )
     tach_active = bool(getattr(config.option, "tach", False))
     refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
