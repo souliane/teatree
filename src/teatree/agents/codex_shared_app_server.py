@@ -358,9 +358,13 @@ class SharedCodexAppServer:
 
     def close(self) -> None:
         loop, stop, thread = self._loop, self._stop, self._thread
-        if loop is not None and not loop.is_closed() and stop is not None and thread is not None and thread.is_alive():
-            loop.call_soon_threadsafe(stop.set)
-            thread.join(timeout=transport_close_seconds())
+        if loop is None or thread is None or not thread.is_alive():
+            return
+        # A closed loop is a thread still unwinding after asyncio.run returned: join it all the same.
+        if not loop.is_closed() and stop is not None:
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(stop.set)
+        thread.join(timeout=transport_close_seconds())
 
     @property
     def failed(self) -> bool:
