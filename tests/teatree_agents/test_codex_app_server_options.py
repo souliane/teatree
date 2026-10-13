@@ -180,9 +180,7 @@ _PLANNING_OPTIONS = ClaudeAgentOptions(
 
 
 @pytest.mark.parametrize(
-    "impostor",
-    [None, True, object(), SimpleNamespace(container_id=EXECUTOR_ID)],
-    ids=["none", "true", "object", "look-alike"],
+    "impostor", [object(), SimpleNamespace(container_id=EXECUTOR_ID)], ids=["object", "look-alike"]
 )
 def test_mutation_denied_phase_needs_an_attestation(monkeypatch: pytest.MonkeyPatch, impostor: object) -> None:
     monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)

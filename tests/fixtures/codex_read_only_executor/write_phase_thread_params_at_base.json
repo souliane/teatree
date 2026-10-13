@@ -28,22 +28,6 @@
     ],
     "sandbox": "danger-full-access"
   },
-  "coding-host": {
-    "approvalPolicy": "never",
-    "config": {
-      "features": {
-        "apps": false
-      }
-    },
-    "cwd": "/work/main",
-    "developerInstructions": "brief",
-    "model": "gpt-x",
-    "runtimeWorkspaceRoots": [
-      "/work/main",
-      "/work/peer"
-    ],
-    "sandbox": "workspace-write"
-  },
   "debugging-container": {
     "approvalPolicy": "untrusted",
     "config": {
@@ -72,22 +56,6 @@
       "/work/peer"
     ],
     "sandbox": "danger-full-access"
-  },
-  "debugging-host": {
-    "approvalPolicy": "never",
-    "config": {
-      "features": {
-        "apps": false
-      }
-    },
-    "cwd": "/work/main",
-    "developerInstructions": "brief",
-    "model": "gpt-x",
-    "runtimeWorkspaceRoots": [
-      "/work/main",
-      "/work/peer"
-    ],
-    "sandbox": "workspace-write"
   },
   "e2e-container": {
     "approvalPolicy": "untrusted",
@@ -118,22 +86,6 @@
     ],
     "sandbox": "danger-full-access"
   },
-  "e2e-host": {
-    "approvalPolicy": "never",
-    "config": {
-      "features": {
-        "apps": false
-      }
-    },
-    "cwd": "/work/main",
-    "developerInstructions": "brief",
-    "model": "gpt-x",
-    "runtimeWorkspaceRoots": [
-      "/work/main",
-      "/work/peer"
-    ],
-    "sandbox": "workspace-write"
-  },
   "testing-container": {
     "approvalPolicy": "untrusted",
     "config": {
@@ -162,21 +114,5 @@
       "/work/peer"
     ],
     "sandbox": "danger-full-access"
-  },
-  "testing-host": {
-    "approvalPolicy": "never",
-    "config": {
-      "features": {
-        "apps": false
-      }
-    },
-    "cwd": "/work/main",
-    "developerInstructions": "brief",
-    "model": "gpt-x",
-    "runtimeWorkspaceRoots": [
-      "/work/main",
-      "/work/peer"
-    ],
-    "sandbox": "workspace-write"
   }
 }

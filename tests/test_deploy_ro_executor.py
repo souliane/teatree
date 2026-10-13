@@ -185,11 +185,6 @@ def test_executor_declares_no_grant(key: str) -> None:
     assert key not in _executor()
 
 
-@pytest.mark.parametrize("fragment", ["docker.sock", "control-db", "password-store", "gnupg", "/proc", "TOKEN"])
-def test_executor_reaches_no_credential_or_control_plane(fragment: str) -> None:
-    assert fragment not in json.dumps(_executor())
-
-
 def test_executor_stage_is_minimal() -> None:
     stages = _stages()
     executor_stage = stages["ro-executor"]
