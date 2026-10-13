@@ -603,7 +603,10 @@ emitted by the loader: bundled T3 skills use their bare manifest names such as
 The lifecycle skill for the active phase owns routing when it has a list. Thus a
 review dispatch that loads both `review` and companion `code` follows the
 `review` route. If no lifecycle skill owns the route and multiple companions do,
-dispatch refuses the ambiguity instead of choosing by load order. The older
+an owner another owner `requires` yields to it (the more specific skill routes,
+so a review loading `code`, which requires `architecture-design`, stays on `code`
+when both own a row); owners with no such relation are an ambiguity dispatch
+refuses instead of choosing by load order. The older
 `factory_phase_harness_candidates` route and a skill-owned route are mutually
 exclusive for the same dispatch.
 
@@ -699,9 +702,9 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 | `prose_collider` | diff + core | `banned_terms` | may be empty when `leak` supplies scan terms |
 | `tone` | diff | (none) | optional |
 | `overlay` | overlay core-generic gate | `overlay_leak_terms` | nonempty for the core overlay-leak scan |
-| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | optional |
+| `allow` | the exact-occurrence carve-out; scanned *for* by `scan-tree --classes` | `banned_terms_allowlist` | optional |
 
-* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
+* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out: each EXACT occurrence is blanked before matching, while an identifier extending one (a suffix, a prefix, a longer address) is still scanned. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
 * **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate also refuses when its scan classes contain no terms, and so do the settings export (shared and `--include-private`), the settings snapshot and `snapshot_settings_defaults` (`secret_guard.ScanTermsUnavailableError`): an unclassified row would leave the box. `--include-private --include-banned-term-values --output <file>` needs no term, so it is the backup a box with no term can still make; it uses the terms it finds only to keep a term-carrying name out of its omitted-row report, and names no omitted row on a box with none. The import proceeds UNSCANNED instead — the receiving box's terms are what its scan protects — applying the key classes alone, showing every value withheld, and saying so in one line on the CLI and a banner on the dashboard. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
 * **Single resolver.** Every gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. Legacy keys have no runtime fallback. Migration `0123` preserves registry class values when both old and new rows exist, and removes the old rows per scope.
 

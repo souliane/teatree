@@ -16,6 +16,7 @@ import pytest
 from hooks.scripts import hook_budget
 from teatree.agents import live_mailbox
 from teatree.agents.codex_app_server_options import container_is_the_sandbox
+from teatree.agents.codex_read_only_server import reset_executor_app_servers
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.live_registry import reset_shared_registries
@@ -244,10 +245,12 @@ def _reset_live_harness_registries() -> Iterator[None]:
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
+    reset_executor_app_servers()
     yield
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
+    reset_executor_app_servers()
 
 
 @pytest.fixture(autouse=True)

@@ -278,7 +278,10 @@ def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
     instead of re-deriving it. Empty when intake recorded none (forge outage),
     so the planner falls back to ``t3 <overlay> workspace landscape``.
     """
-    survey_json = intake_survey_json(task)
+    return intake_survey_lines(intake_survey_json(task))
+
+
+def intake_survey_lines(survey_json: str) -> tuple[str, ...]:
     if not survey_json:
         return ()
     return (
@@ -451,7 +454,7 @@ def _shipping_phase_lines() -> tuple[str, ...]:
 
 
 def phase_specific_lines(
-    task: Task, skills: list[str], *, stage_exclude: frozenset[str] = frozenset()
+    task: Task, skills: list[str], *, stage_exclude: frozenset[str] = frozenset(), read_only_venue: bool = False
 ) -> tuple[str, ...]:
     """The per-phase trailing block for ``build_system_context``, or ``()``.
 
@@ -471,7 +474,7 @@ def phase_specific_lines(
             *_coding_phase_directive(skills, stage_exclude=stage_exclude),
         )
     else:
-        builder = _PHASE_BLOCK_BUILDERS.get(phase)
+        builder = (read_only_venue and _READ_ONLY_PHASE_BLOCK_BUILDERS.get(phase)) or _PHASE_BLOCK_BUILDERS.get(phase)
         block = builder(task) if builder is not None else ()
     if fanout := _phase_fanout_directive(task):
         block = (*block, fanout) if phase == "reviewing" else (*block, "", f"PHASE: {phase}", fanout)
@@ -504,4 +507,9 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "answering": _answering_phase_lines,
     "scanning_news": lambda _task: _scanning_news_phase_lines(),
     "shipping": lambda _task: _shipping_phase_lines(),
+}
+
+#: The read-only executor gets its survey in the task message, in full, so its planning block carries none.
+_READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
+    "planning": lambda _task: _PLAN_RETURN_LINES,
 }

@@ -545,6 +545,10 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo-root        PATH  Repository root to scan (defaults to the current    │
 │                          directory).                                         │
+│ --classes          TEXT  Comma-separated registry classes whose every value  │
+│                          must be absent from src, scripts, tests, docs,      │
+│                          .github; only the repository owner's login is       │
+│                          exempt.                                             │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -750,8 +754,11 @@ Usage: t3 codex auth import [OPTIONS]
  Store a locally authenticated ``auth.json`` as one base64 pass entry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --from        PATH|-  [default: ~/.codex/auth.json]                          │
-│ --help                Show this message and exit.                            │
+│ --from            PATH|-  Default ~/.codex/auth.json; required with          │
+│                           --executor.                                        │
+│ --executor                Act on the read-only executor's own login; only    │
+│                           teatree-worker reaches it.                         │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -764,7 +771,9 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --executor          Act on the read-only executor's own login; only          │
+│                     teatree-worker reaches it.                               │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

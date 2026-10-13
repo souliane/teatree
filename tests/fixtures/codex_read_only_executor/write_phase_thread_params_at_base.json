@@ -1,0 +1,118 @@
+{
+  "coding-container": {
+    "approvalPolicy": "untrusted",
+    "config": {
+      "features": {
+        "apps": false
+      },
+      "plugins": {
+        "t3@souliane": {
+          "enabled": false
+        }
+      },
+      "projects": {
+        "/work/main": {
+          "trust_level": "untrusted"
+        },
+        "/work/peer": {
+          "trust_level": "untrusted"
+        }
+      }
+    },
+    "cwd": "/work/main",
+    "developerInstructions": "brief",
+    "model": "gpt-x",
+    "runtimeWorkspaceRoots": [
+      "/work/main",
+      "/work/peer"
+    ],
+    "sandbox": "danger-full-access"
+  },
+  "debugging-container": {
+    "approvalPolicy": "untrusted",
+    "config": {
+      "features": {
+        "apps": false
+      },
+      "plugins": {
+        "t3@souliane": {
+          "enabled": false
+        }
+      },
+      "projects": {
+        "/work/main": {
+          "trust_level": "untrusted"
+        },
+        "/work/peer": {
+          "trust_level": "untrusted"
+        }
+      }
+    },
+    "cwd": "/work/main",
+    "developerInstructions": "brief",
+    "model": "gpt-x",
+    "runtimeWorkspaceRoots": [
+      "/work/main",
+      "/work/peer"
+    ],
+    "sandbox": "danger-full-access"
+  },
+  "e2e-container": {
+    "approvalPolicy": "untrusted",
+    "config": {
+      "features": {
+        "apps": false
+      },
+      "plugins": {
+        "t3@souliane": {
+          "enabled": false
+        }
+      },
+      "projects": {
+        "/work/main": {
+          "trust_level": "untrusted"
+        },
+        "/work/peer": {
+          "trust_level": "untrusted"
+        }
+      }
+    },
+    "cwd": "/work/main",
+    "developerInstructions": "brief",
+    "model": "gpt-x",
+    "runtimeWorkspaceRoots": [
+      "/work/main",
+      "/work/peer"
+    ],
+    "sandbox": "danger-full-access"
+  },
+  "testing-container": {
+    "approvalPolicy": "untrusted",
+    "config": {
+      "features": {
+        "apps": false
+      },
+      "plugins": {
+        "t3@souliane": {
+          "enabled": false
+        }
+      },
+      "projects": {
+        "/work/main": {
+          "trust_level": "untrusted"
+        },
+        "/work/peer": {
+          "trust_level": "untrusted"
+        }
+      }
+    },
+    "cwd": "/work/main",
+    "developerInstructions": "brief",
+    "model": "gpt-x",
+    "runtimeWorkspaceRoots": [
+      "/work/main",
+      "/work/peer"
+    ],
+    "sandbox": "danger-full-access"
+  }
+}

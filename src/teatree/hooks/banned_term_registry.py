@@ -30,6 +30,7 @@ __all__ = [
     "export_scan_terms",
     "load_registry",
     "load_term_refs",
+    "required_registry",
     "terms_for_gate",
 ]
 
@@ -108,6 +109,14 @@ def load_registry(db_path: Path | None = None) -> dict[str, tuple[str, ...]] | N
     if read.value is None:
         return None
     return _normalise_registry(read.value)
+
+
+def required_registry(*, db_path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """:func:`load_registry`, refusing an unset registry the way every scanning gate does."""
+    registry = load_registry(db_path=db_path)
+    if registry is None:
+        raise BannedTermsUnsetError.for_key(_REGISTRY_KEY, _REGISTRY_ENV)
+    return registry
 
 
 def _classes_union(registry: dict[str, tuple[str, ...]], gate: str) -> tuple[str, ...]:

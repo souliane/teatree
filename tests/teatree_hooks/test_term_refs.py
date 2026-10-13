@@ -31,6 +31,14 @@ def test_the_earliest_class_wins_a_term_listed_twice_and_allow_never_names_a_fin
     assert refs.ref("epsilon-term") == UNLISTED_REF
 
 
+def test_a_values_scan_names_exactly_its_classes_allow_included() -> None:
+    refs = TermRefs.of_classes(_REGISTRY, ("leak", "overlay", "allow"))
+
+    assert refs.ref("alpha-term") == "leak#0"
+    assert refs.ref("epsilon-term") == "allow#1"
+    assert refs.ref("gamma-term") == UNLISTED_REF
+
+
 def test_lookup_ignores_case_and_surrounding_space() -> None:
     assert TermRefs(_REGISTRY).ref("  GAMMA-Term ") == "prose_collider#0"
 

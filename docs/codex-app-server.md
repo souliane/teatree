@@ -42,7 +42,8 @@ A verification phase never routes to Codex unless an explicit `agent_phase_harne
 through. Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk`,
 and a route candidate naming another harness for a pinned phase is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
 write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
-those by sandbox only. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
+those by sandbox only, with one exception: `planning` is admitted when the read-only executor passes a
+live probe on that very selection (see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
 `"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
@@ -177,7 +178,8 @@ gap; closing it needs a Codex-side change.
   availability probe refuses Codex. Read-only phases cannot be enforced in an
   opted-in container, and an `architectural_review` that starts in a managed main
   clone could dirty it, so the probe refuses Codex for both and selects the next
-  candidate (Claude).
+  candidate (Claude). The exception is `planning`, which runs in the read-only
+  executor instead of the worker.
 - Those threads run with the `t3@souliane` plugin switched off
   (`plugins."t3@souliane".enabled = false`) and without inline MCP servers: the
   plugin declares the teatree MCP server, and an MCP tool call is not an approval
@@ -237,6 +239,108 @@ server failure after startup, is logged; the stream-failure record carries the
 last 2 KiB of the server's stderr, which goes only to the local log and never
 into the error text.
 
+## Read-only executor
+
+`teatree-ro-executor` is a separate container where Codex runs `planning`, the one phase that bars write
+tools and can still run on Codex. Codex's own read-only sandbox cannot start inside a container, so the
+read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
+
+- **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
+  node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
+  checkout's `.git` (path identity, where the worktrees' gitdirs point), never the directory that holds
+  `deploy/teatree.env`, plus the clone volume and `t3-workspaces`, all read-only, over a read-only root,
+  plus two tmpfs mounts: `/run/t3-ro` for Codex homes and `/run/t3-tmp` for `TMPDIR`. It runs as `nobody`
+  (65534), which owns none of the trees it reads, so an owner-only file there stays unreadable, and its
+  system git config trusts every repository owner. It drops every capability, sets `no-new-privileges`
+  and sits on its own bridge network. It holds no forge or store credential, control DB, data dir or
+  docker socket.
+- **The live probe.** On every selection of `planning`, and again when the session opens, the worker
+  (`codex_read_only_executor.attest`) resolves exactly one running executor in its own compose project,
+  runs a stdlib probe program in it through `docker exec`, and judges the answer with `docker inspect` of
+  both containers (`codex_read_only_verdict.evaluate`). A write is attempted on every mount except the
+  kernel, device and declared tmpfs ones, whatever its filesystem type; only `EROFS` counts as
+  read-only, except that Docker's `/etc/hosts`, `/etc/hostname` and `/etc/resolv.conf` may answer `EACCES`
+  while mounted `ro`, because a non-root write fails its permission check first. Every mounted directory
+  is also walked in full for env and credential files it can open and that are not empty (`.env`, `*.env`,
+  `.env.*`, `.env-*` and `.env_*` other than `.example`, `.sample`, `.template` and `.dist` templates,
+  `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ed25519`), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
+  than `*.pub`) whose first 64 KiB carry a private-key marker; content is read only for key names, since
+  source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
+  accepts a write or is not declared, a declared mount that is missing or that the write probe or the
+  secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
+  checkout whose git files (`HEAD`, `index`, `config`, `commondir`, `packed-refs`, `refs/`, `objects/`)
+  it cannot read, a tmpfs whose control write fails, capabilities or a missing `no_new_privs`, any
+  environment key outside the allowlist in the probe's own environment or in `/proc/1/environ`, `t3`,
+  `gh`, `docker` or `pass` on `PATH`, an inspect mount whose source differs from the worker's mount at the
+  same place (for `.git`, the worker's checkout source plus `/.git`), a writable root, privilege, added
+  capabilities, a network other than `<project>_ro-executor`, a PID, IPC or user namespace that is not
+  private, security options other than exactly `no-new-privileges:true`, a `/dev` mount outside `/dev`,
+  `/dev/pts`, `/dev/mqueue` and `/dev/shm`, devices, and any malformed or partial answer. No setting or
+  environment flag can skip it. The walk covers every entry under the mounts (about 2.6 million on a box
+  with many worktrees: measured 6.6 s with a warm page cache and 54 s cold), so the worker gives each
+  docker call 180 s.
+- **Git permissions.** The executor reads git data as `nobody`, so a clone whose git files were written
+  owner-only (under umask 077: `packed-refs` 0600, packs 0400) refuses the run and names the first such
+  file. Making them readable is an owner decision about the box: `chmod -R a+rX <clone>/.git` for the
+  deploy checkout and each clone in the clone volume, and `git config core.sharedRepository 0644` there so
+  new files stay readable.
+- **Attestation.** Only an `ExecutorAttestation`, which only a passing probe can construct, turns a
+  write-barring phase into the unsandboxed translation. The worker's own session and shared server refuse
+  attested options before anything starts, and an executor server refuses another container's.
+- **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
+  app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
+  environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
+  own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Under
+  the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
+  every process outside PID 1's session except the worker's own `docker exec` programs that run no Codex
+  home, the sweep among them; only `docker exec` gives a process a parent outside the container.
+  Nothing a process changes about itself moves it out of that set: it cannot join PID 1's session or gain
+  a parent outside the container, so clearing its environment and detaching (it is then a child of PID 1
+  in a session of its own) does not escape. `tini` and its `sleep` keep the container and its tmpfs up.
+  A survivor, or a malformed sweep answer, refuses the run before any home is touched. The server then
+  recovers a newer login a stale home still holds (by `last_refresh`, written to pass and verified by
+  re-read); a stale home that cannot be read, or whose newer login cannot be persisted, is kept and
+  refuses the run. Only then are both tmpfs mounts emptied (one that keeps an entry refuses), so `TMPDIR` never carries
+  one session's files into the next, the new `/run/t3-ro/codex-*` home is created owner-only
+  (`mkdir -m 0700`), and its login is hydrated over exec stdin; the launch never creates a home. A
+  rotated login is persisted the same way at every thread close. At stop, still under the lease, the same
+  sweep runs, the login is persisted, and both tmpfs mounts are emptied only after that persist
+  succeeded. The agent can rewrite its own home, so a login read back from one is kept only when it
+  carries a `tokens.refresh_token` and the stored login's `tokens.account_id`. Another account or an
+  incomplete login is never written to pass: at persist it fails the run with an auth error that names the
+  executor's entry, and a stale home holding one is deleted without recovery.
+- **Per thread.** Each new thread attests again with its own roots and the live home. A home that holds
+  `rules/*.rules`, `config.toml` or `plugins/` retires the server; the one retry then reopens the thread on a
+  fresh server.
+- **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
+  comments (system notes left out, oldest first, each with its author and time), the ticket context, the
+  predecessor handoff and the intake survey and puts them in the task message under fixed caps (64 KiB for
+  the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
+  target ref in the ticket checkout first. An unreadable body or comment list, a missing survey, a failed
+  fetch or a part over its cap refuses the run before it opens, so the next route candidate plans instead.
+  The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
+  skill the phase requires, stack skills included, names the others as not available, and points at no
+  skill path. Each code span naming a `t3` command or a teatree MCP tool reads
+  `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
+  context budget, refuses the run rather than being cut.
+- **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
+  `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
+  service granted the docker socket; anywhere else they refuse and name that route. The import needs an
+  explicit `--from`, and refuses a login without `tokens.account_id` or `tokens.refresh_token` and one
+  on the worker's own refresh-token chain: two consumers of one chain break at its first rotation, so the
+  executor needs a second device login.
+- **Proof on a real container.** `uv run python dev/ro_executor_proof.py scratch --dir DIR` builds the
+  `ro-executor` stage, runs this compose file's executor block in a throwaway project on placeholder trees,
+  checks the live verdict, the sweep against a detached env-cleared process, the tmpfs reset and the home
+  mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
+  `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
+- **Routing planning to Codex.** Once the executor login checks green, add an `architecture-design` row to
+  `agent_skill_models` that mirrors the `code` row (Codex first, Claude second). An owner another owner
+  requires yields to it, so reviews keep their `code` route and only `planning` and
+  `directive_interpreting` move; `directive_interpreting` is not an executor phase, so its Codex candidate
+  is rejected and Claude runs it.
+
 ## Rotation, recovery, and revocation
 
 - **Rotate:** authenticate locally again, rerun `t3 codex auth import --from
@@ -253,6 +357,10 @@ into the error text.
 - **Revoke immediately:** also stop the worker and remove the private
   `$T3_CODEX_HOME/auth.json`. Deleting pass alone does not erase a cache already
   materialized in a running worker.
+- **The executor's login** follows the same steps with `--executor`: rotate with
+  `t3 codex auth import --executor --from -` from `teatree-worker`, revoke by deleting
+  `teatree/codex/ro-executor-auth-json-b64`, and revoke immediately by also restarting
+  `teatree-ro-executor`, whose homes live only in its tmpfs.
 
 The harness fails before Codex starts when pass cannot be read or validated, and
 its remediation always names the pass entry and bootstrap command without

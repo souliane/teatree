@@ -10,8 +10,8 @@ This module gives the installation a stable identity: a UUID persisted once in
 the machine data dir, read identically by the main clone and every worktree
 checkout on the machine (:func:`teatree.instance_id.machine_data_dir` deliberately
 resolves to the non-isolated dir). The id is stamped into claim/lease metadata
-so a claim can name its owner, and it is the identity Stage 2's GitHub claim
-refs will fence on. It is not a network identity — a persisted UUID4 is
+so a claim can name its owner; a Stage 2 claim record names it, and the fence
+pairs it with the claim's lineage. It is not a network identity — a persisted UUID4 is
 deliberately enough, and it must never require network access to resolve.
 """
 

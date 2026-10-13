@@ -175,11 +175,12 @@ def scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()
     already honour; without it an allow-listed identifier (``myorg-engineering``)
     is flagged here for the bare ``myorg`` token with no escape available.
     """
-    if not terms:
+    reachable = term_match.terms_in_reach(text, terms)
+    if not reachable:
         return []
     hits: list[tuple[int, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        term = term_match.matched_term(line, terms, allowlist)
+        term = term_match.matched_term(line, reachable, allowlist)
         if term is not None:
             hits.append((lineno, term, line))
     return hits

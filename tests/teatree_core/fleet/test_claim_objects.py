@@ -21,7 +21,7 @@ from pathlib import Path
 from teatree.core.fleet import claim as fleet_claim
 from teatree.utils.git_run import git_env_without_overrides
 
-from ._git_origin import git, init_bare, init_client, ref_sha
+from ._git_origin import FIXTURE_IDENTITY, git, init_bare, init_client, init_with_origin, ref_sha
 
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _TTL = 100.0
@@ -39,8 +39,8 @@ def _origin(tmp_path: Path, name: str = "clone") -> tuple[Path, Path]:
 
 def _write_claim_commit_unisolated(repo: Path) -> None:
     """The leaking write shape — the module's own writer, minus the ephemeral object dir."""
-    scope = fleet_claim._Scope(repo=str(repo), remote="origin", env=git_env_without_overrides())
-    fleet_claim._write_claim_commit(scope, fleet_claim._meta(_WORK_KEY, "instance", 0.0, _TTL))
+    scope = fleet_claim._Scope(repo=str(repo), remote="origin", env=git_env_without_overrides(), extra_env={})
+    fleet_claim._write_claim_commit(scope, fleet_claim._meta(_WORK_KEY, "instance", 0.0, _TTL, lineage="f" * 32))
 
 
 def test_probe_detects_an_unisolated_object_write(tmp_path: Path) -> None:
@@ -93,12 +93,51 @@ def test_steal_writes_no_objects_into_the_stealing_clone(tmp_path: Path) -> None
     assert _loose_objects(rival) == before
 
 
+def test_a_clone_lacking_origins_default_branch_fetches_it_without_touching_its_refs_or_objects(tmp_path: Path) -> None:
+    bare = init_bare(tmp_path / "origin.git")
+    clone = init_with_origin(tmp_path / "clone", f"file://{bare}")
+    objects = {path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()}
+    refs = git(clone, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    held = fleet_claim.acquire(_WORK_KEY, repo=str(clone), ttl_seconds=_TTL, now=0.0)
+    assert isinstance(held, fleet_claim.Claim)
+    assert isinstance(fleet_claim.heartbeat(held, repo=str(clone), now=1.0), fleet_claim.Claim)
+
+    assert git(clone, "for-each-ref", "--format=%(refname) %(objectname)") == refs
+    assert {path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()} == objects
+    assert not (clone / ".git" / "FETCH_HEAD").exists()
+
+
+def test_no_claim_fetch_writes_a_ref_whatever_the_clones_fetch_configuration(tmp_path: Path, subtests) -> None:
+    bare = init_bare(tmp_path / "origin.git")
+    git(bare, *FIXTURE_IDENTITY, "tag", "-a", "v1", "-m", "release", "main")
+    never_fetched = init_with_origin(tmp_path / "never-fetched", f"file://{bare}")
+    git(never_fetched, "config", "remote.origin.tagOpt", "--tags")
+    tags_not_fetched = init_with_origin(tmp_path / "tags-not-fetched", f"file://{bare}")
+    git(tags_not_fetched, "fetch", "-q", "--no-tags", "origin")
+    git(tags_not_fetched, "config", "remote.origin.tagOpt", "--tags")
+    mirror = init_client(tmp_path / "mirror", bare)
+    git(mirror, "config", "--replace-all", "remote.origin.fetch", "+refs/*:refs/*")
+    holder = init_client(tmp_path / "holder", bare)
+    cases = (("tagOpt, default branch", never_fetched, never_fetched), ("tagOpt", tags_not_fetched, tags_not_fetched))
+    for name, claimant, reader in (*cases, ("mirror", holder, mirror)):
+        with subtests.test(clone=name):
+            work_key = f"{_WORK_KEY}#{reader.name}"
+            refs = git(reader, "for-each-ref", "--format=%(refname) %(objectname)")
+
+            assert fleet_claim.acquire(work_key, repo=str(claimant), ttl_seconds=_TTL, now=0.0) is not None
+            assert fleet_claim.read_tip(work_key, repo=str(reader)) is not None
+
+            assert git(reader, "for-each-ref", "--format=%(refname) %(objectname)") == refs
+
+
 def test_the_expiry_probe_leaves_no_ref_behind_in_the_clone(tmp_path: Path) -> None:
     bare, holder = _origin(tmp_path, "holder")
     rival = init_client(tmp_path / "rival", bare)
     assert fleet_claim.acquire(_WORK_KEY, repo=str(holder), ttl_seconds=_TTL, now=0.0) is not None
+    before = git(rival, "for-each-ref", "--format=%(refname) %(objectname)")
     fleet_claim.steal_if_expired(_WORK_KEY, repo=str(rival), ttl_seconds=_TTL, now=1.0)
-    assert git(rival, "for-each-ref", "--format=%(refname)") == ""
+    assert git(rival, "for-each-ref", "--format=%(refname) %(objectname)") == before
 
 
 class TestLiveClaimSurvivesTheZeroFootprintCycle:
@@ -117,7 +156,10 @@ class TestLiveClaimSurvivesTheZeroFootprintCycle:
     def test_the_ref_still_carries_the_holders_fencing_token(self, tmp_path: Path) -> None:
         bare, holder, held = self._held_after_cycle(tmp_path)
         assert ref_sha(bare, held.ref) == held.sha
-        assert fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder)) is True
+        tip = fleet_claim.read_tip(_WORK_KEY, repo=str(holder))
+        assert tip is not None
+        assert tip.sha == held.sha
+        assert tip.held_by(held.instance_id, held.lineage)
 
     def test_a_rival_still_loses_the_acquire(self, tmp_path: Path) -> None:
         bare, _holder, held = self._held_after_cycle(tmp_path)

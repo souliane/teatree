@@ -68,6 +68,8 @@ def test_every_container_learns_the_host_os() -> None:
     compose = yaml.safe_load((_DEPLOY_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
 
     for name, service in compose["services"].items():
+        if name == "teatree-ro-executor":
+            continue  # its env is an allowlist the core verifies (tests/test_deploy_ro_executor.py)
         assert service["environment"].get("TEATREE_HOST_OS") == "${TEATREE_HOST_OS:-unknown}", name
 
 

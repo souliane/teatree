@@ -653,6 +653,55 @@ services:
     mem_limit: 256m
     cpus: "0.25"
 
+  # Codex's own sandbox cannot start in a container, so these mounts are the read-only boundary for
+  # planning; the core attests them live before every run (codex_read_only_executor.py). Standalone:
+  # the anchor would bring the credential, control-DB and socket mounts.
+  teatree-ro-executor:
+    # deploy.sh builds and recreates it in its own steps, so no whole-project build or up does.
+    profiles: ["ro-executor"]
+    image: teatree-ro-executor:local
+    build:
+      context: ${TEATREE_BUILD_CONTEXT:-..}
+      dockerfile: deploy/Dockerfile
+      target: ro-executor
+    entrypoint: ["/usr/bin/tini", "--", "sleep", "infinity"]
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TMPDIR: /run/t3-tmp
+      GIT_OPTIONAL_LOCKS: "0"
+      LANG: C.UTF-8
+      TZ: UTC
+    volumes:
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/.git  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/.git  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      - type: volume
+        source: teatree_clones
+        target: /home/teatree/workspace  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      - type: bind
+        source: ${TEATREE_HOST_HOME:-/home/teatree}/workspace/t3-workspaces  # privacy-scan:allow — the box's public, documented deploy home
+        target: /home/teatree/workspace/t3-workspaces  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+    tmpfs:
+      - /run/t3-tmp:uid=65534,gid=65534,mode=0700,size=256m
+      - /run/t3-ro:uid=65534,gid=65534,mode=0700,size=512m
+    # Its own bridge, never host (the admin trusts loopback) and never the stack's default network.
+    networks: [ro-executor]
+    restart: unless-stopped
+    logging: *teatree-logging
+    # The two tmpfs mounts count against this ceiling.
+    mem_limit: 4g
+    cpus: "2.0"
+    pids_limit: 512
+
+networks:
+  ro-executor:
+
 volumes:
   teatree_src:
   teatree_uv:
