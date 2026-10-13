@@ -1,4 +1,5 @@
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -126,6 +127,15 @@ class TestVoidRestoresAndKeepsEveryLedger(_VoidCase):
         newest = self.ticket.transitions.order_by("-created_at", "-pk").first()
         assert (newest.from_state, newest.to_state, newest.triggered_by) == (State.MERGED, State.CODED, "void_merge")
 
+    def test_a_failure_mid_write_rolls_the_whole_void_back(self) -> None:
+        before = _counts()
+
+        with stub_forge(), patch.object(Ticket, "void_merge", side_effect=RuntimeError), pytest.raises(RuntimeError):
+            _void()
+
+        assert _counts() == before
+        assert PullRequest.objects.get(url=PR_URL).state == PullRequest.State.MERGED
+
     def test_the_void_records_who_why_and_the_forge_evidence(self) -> None:
         with stub_forge():
             void = _void()
@@ -149,6 +159,7 @@ class TestVoidRestoresAndKeepsEveryLedger(_VoidCase):
 class TestVoidSources(_VoidCase):
     def test_a_ticket_past_merged_restores_from_its_edge_into_merged(self) -> None:
         ticket = self.landed(from_state=State.TESTED)
+        TicketTransition.objects.create(ticket=ticket, from_state=State.MERGED, to_state=State.MERGED)
         ticket.retrospect()
         ticket.save()
 
@@ -160,7 +171,8 @@ class TestVoidSources(_VoidCase):
 
     def test_a_ticket_keyed_on_the_pr_url_with_no_row_is_restored(self) -> None:
         owner = self.landed()
-        keyed = self.landed(from_state=State.WORK_STARTED, issue_url=PR_URL, with_row=False)
+        keyed = Ticket.objects.create(overlay="t3-teatree", state=State.MERGED, issue_url=PR_URL)
+        TicketTransition.objects.create(ticket=keyed, from_state=State.WORK_STARTED, to_state=State.MERGED)
 
         with stub_forge():
             void = _void()
@@ -352,6 +364,17 @@ class TestKeptIdempotentAndDryRun(_VoidCase):
         assert voided.state == State.CODED
         assert [entry["ticket_id"] for entry in void.evidence["kept"]] == [kept.pk]
         assert f"{SLUG}#42" in void.evidence["kept"][0]["reason"]
+
+    def test_a_merged_row_whose_url_names_no_pr_keeps_the_ticket_merged(self) -> None:
+        ticket = self.landed()
+        PullRequest.objects.create(
+            ticket=ticket, overlay="t3-teatree", url="https://example.com/x", repo=SLUG, iid="7", state="merged"
+        )
+
+        with stub_forge():
+            plan = plan_void(PR_URL)
+
+        assert [kept["reason"] for kept in plan.kept] == [f"still evidenced by {SLUG}#7"]
 
     def test_evidence_for_an_already_voided_pr_does_not_keep_a_ticket(self) -> None:
         ticket = self.landed(pr_url=OTHER_PR_URL)

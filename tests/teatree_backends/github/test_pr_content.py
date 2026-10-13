@@ -136,8 +136,9 @@ class TestRewrittenHead:
         assert classify_content(snapshot).kind is ContentVerdictKind.ABSENT
         assert classify_content(snapshot).changed == ("docs/old.md", "src/a.py", "src/b.py", "src/new.py")
 
-    def test_no_recorded_earlier_head_is_unreadable(self) -> None:
-        gh = FakeGh(graphql=(0, _graphql(events=[]), ""))
+    def test_a_head_force_push_that_did_not_land_on_the_head_records_no_earlier_head(self) -> None:
+        push = _event("HeadRefForcePushedEvent", NEW_HEAD, OLD_HEAD, "2026-10-09T23:29:50Z")
+        gh = FakeGh(graphql=(0, _graphql(events=[push]), ""))
 
         assert "no earlier head" in _snapshot(gh).unreadable
 

@@ -29,6 +29,7 @@ from teatree.core.gates.merge_evidence_gate import (
 )
 from teatree.core.modelkit import gate_registry
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
+from tests.factories import MergeAuditFactory, MergeClearFactory
 from tests.void_merge_fixtures import MERGED_SHA, PR_URL, SLUG, landed_ticket, void_pr
 
 _FORTY_HEX = "a" * 40
@@ -305,7 +306,9 @@ class TestVoidedMergeEvidence(TestCase):
             yield probe
 
     def test_the_keystone_audit_for_the_voided_pr_no_longer_counts(self) -> None:
-        assert MergeAudit.objects.filter(clear__ticket=self.ticket, merged_sha=MERGED_SHA).exists()
+        clear = MergeClearFactory(ticket=self.ticket, slug="a-workstream", pr_id=41)
+        MergeAuditFactory(clear=clear, merged_sha=MERGED_SHA, repo_slug=SLUG)
+        assert MergeAudit.objects.filter(clear__ticket=self.ticket, merged_sha=MERGED_SHA).count() == 2
 
         assert has_merge_audit_evidence(self.ticket) is False
 

@@ -52,13 +52,14 @@ class TestTheJanitorLeavesAVoidedTicketAlone(TestCase):
         return probed, list(report.transitions)
 
     def test_its_own_voided_pr_url_is_neither_probed_nor_re_merged(self) -> None:
-        ticket = landed_ticket(issue_url=PR_URL, with_row=False)
+        landed_ticket()
         void_pr()
+        keyed = Ticket.objects.create(overlay="t3-teatree", state=State.PR_OPENED, issue_url=PR_URL)
 
         probed, transitions = self._reconcile()
 
-        ticket.refresh_from_db()
-        assert ticket.state == State.CODED
+        keyed.refresh_from_db()
+        assert keyed.state == State.PR_OPENED
         assert PR_URL not in probed
         assert transitions == []
         assert not KnownIssue.objects.filter(kind="board_merge_refused").exists()
