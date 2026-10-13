@@ -108,18 +108,37 @@ class TestCliPick:
         assert pick.container == ""
         assert pick.reason == "compose project 'teatree' runs no teatree-worker or teatree-admin container"
 
-    @pytest.mark.parametrize("source", ["TEATREE_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME"])
-    def test_several_containers_of_the_route_declare_nothing_and_say_why(
-        self, monkeypatch: pytest.MonkeyPatch, source: str
-    ) -> None:
-        monkeypatch.setenv(source, "teatree")
+    def test_several_containers_of_the_route_declare_nothing_and_say_why(self) -> None:
         with _docker_answers("wrk111 teatree-worker \nwrk222 teatree-worker \nadm333 teatree-admin \n"):
             pick = container_visibility.cli_pick()
         assert pick.container == ""
-        assert "2 running teatree-worker containers (wrk111, wrk222)" in pick.reason
-        assert "scaled or started outside the deploy" in pick.reason
-        assert "docker compose -p teatree ps teatree-worker" in pick.reason
-        assert f"(project from {source})" in pick.reason
+        assert pick.reason.startswith(
+            "2 running teatree-worker containers in compose project 'teatree' (wrk111, wrk222);"
+        )
+        assert "scaled or started outside it" in pick.reason
+        assert "`docker compose -p teatree ps teatree-worker` lists them" in pick.reason
+
+    @pytest.mark.parametrize(
+        ("env", "suffix"),
+        [
+            pytest.param({}, "", id="default"),
+            pytest.param({"COMPOSE_PROJECT_NAME": "repo-wt42"}, " (project from COMPOSE_PROJECT_NAME)", id="compose"),
+            pytest.param(
+                {"TEATREE_COMPOSE_PROJECT": "rolled", "COMPOSE_PROJECT_NAME": "repo-wt42"},
+                " (project from TEATREE_COMPOSE_PROJECT)",
+                id="teatree",
+            ),
+        ],
+    )
+    def test_a_reason_names_the_variable_that_chose_the_project(
+        self, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], suffix: str
+    ) -> None:
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        with _docker_answers("watch333 teatree-watchdog \n"):
+            reason = container_visibility.unreachable_reason(Path("/srv/host/teatree-deploy")) or ""
+        assert reason.startswith(f"compose project {container_visibility.production_compose_project()!r} runs no ")
+        assert reason.endswith(f"container{suffix}")
 
     def test_a_daemon_that_will_not_answer_is_named(self) -> None:
         with _docker_answers(None):
@@ -226,7 +245,7 @@ class TestUnreachableReason:
     def test_no_pick_carries_the_picks_reason(self) -> None:
         with _docker_answers("wrk111 teatree-worker \nwrk222 teatree-worker \n"):
             reason = container_visibility.unreachable_reason(Path("/srv/host/teatree-deploy")) or ""
-        assert "scaled or started outside the deploy" in reason
+        assert "scaled or started outside it" in reason
 
 
 _FAKE_DOCKER = """\
