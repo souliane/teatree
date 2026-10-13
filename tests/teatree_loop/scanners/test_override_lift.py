@@ -1,4 +1,4 @@
-"""The override-lift scanner PROPOSES and never lifts (A8).
+"""The override-lift scanner PROPOSES, and lifts only on the owner's own answer (A8).
 
 An override is a person's decision, so the factory's whole job is to notice that the
 condition justifying it has cleared and ASK. That is only possible because an override
@@ -26,7 +26,7 @@ from teatree.loop.scanners.override_lift import (
     override_lift_proposals,
     raise_override_lift_questions,
 )
-from tests._owner_channel import assert_a_plain_card
+from tests._owner_channel import assert_a_plain_card, tap_on_slack
 
 _NOW = dt.datetime(2026, 8, 28, 12, 0, tzinfo=dt.UTC)
 _PR_URL = "https://example.test/org/repo/-/merge_requests/7"
@@ -115,7 +115,7 @@ class TestAClearedConditionIsProposed(django.test.TestCase):
 
 
 class TestProposingIsNotLifting(django.test.TestCase):
-    """A4/A5: nothing auto-clears an override. The scanner asks; the owner decides."""
+    """A4/A5: nothing the factory decides clears an override. The scanner asks; the owner decides."""
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
@@ -176,6 +176,48 @@ class TestProposingIsNotLifting(django.test.TestCase):
         assert [s.kind for s in signals] == ["override.lift_candidate"]
         assert signals[0].payload["loop"] == "standing"
         assert signals[0].payload["runs"] is False
+
+
+class TestTheOwnersTapIsCarriedOut(django.test.TestCase):
+    """What the card says a tap does, the next pass does: only for the owner, only for that override."""
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        _loop("standing", runs=False, reason="waiting on the vendor", age=dt.timedelta(days=30))
+        raise_override_lift_questions(_NOW)
+        self.question = DeferredQuestion.objects.get()
+
+    def test_lift_it_tapped_by_the_owner_lifts_the_override_on_the_next_pass(self) -> None:
+        assert tap_on_slack(self.question, "Lift it")
+
+        signals = OverrideLiftScanner().scan()
+
+        row = Loop.objects.get(name="standing")
+        assert (row.enabled, row.override_reason, row.override_set_at) == (None, "", None)
+        assert [s.kind for s in signals] == ["override.lifted"]
+
+    def test_keep_it_leaves_the_override_standing(self) -> None:
+        assert tap_on_slack(self.question, "Keep it")
+
+        OverrideLiftScanner().scan()
+
+        assert Loop.objects.get(name="standing").enabled is False
+
+    def test_an_answer_given_off_the_owner_channels_lifts_nothing(self) -> None:
+        DeferredQuestion.consume(self.question.pk, answer="Lift it")
+
+        OverrideLiftScanner().scan()
+
+        assert Loop.objects.get(name="standing").enabled is False
+
+    def test_a_lift_answered_for_an_earlier_override_never_lifts_the_one_set_since(self) -> None:
+        assert tap_on_slack(self.question, "Lift it")
+        Loop.objects.set_manual_override("standing", runs=True, reason="a new incident")
+
+        OverrideLiftScanner().scan()
+
+        row = Loop.objects.get(name="standing")
+        assert (row.enabled, row.override_reason) == (True, "a new incident")
 
 
 class TestAFailedCheckKeepsTheOverride(django.test.TestCase):
