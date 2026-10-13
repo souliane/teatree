@@ -907,6 +907,8 @@ dump of `defaults.toml` itself imports to zero rows. Export key-sorts every tabl
 `export → import → export` is byte-stable; a shareable export withholds Secret values and
 keeps Personal ones. Every report names a withheld or refused row by key and class, never by
 the matched term, and an invalid private value drops the parser message that would quote it.
+A seed refusal whose reason quotes a term (a preset mask's names its keys and the box's live
+loops) is shown withheld, and an unscanned import withholds every mask refusal's reason.
 Every private export stamps its restore marker, defaults shape included; only the SHARED
 defaults shape stays byte-identical to `defaults.toml`. `--include-private` carries the key
 classes but still withholds each row carrying a banned term, and the stored term registry
