@@ -250,10 +250,19 @@ class TestItDeclinesInsteadOfBlocking:
             _running_admin_container()
         assert "label=com.docker.compose.project=rolled" in run.call_args.args[0]
 
-    def test_only_the_first_container_id_is_taken(self) -> None:
-        with patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run:
+    def test_two_admin_containers_return_an_error_naming_both_ids(self) -> None:
+        with (
+            patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run,
+            patch("teatree.utils.loopback_forward._ensure_published_forwarder") as publish,
+            patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
+        ):
             run.return_value.stdout = f"{_ADMIN_CONTAINER}\nsecond-one\n"
-            assert _running_admin_container() == _ADMIN_CONTAINER
+            result = ensure_admin_forward()
+
+        assert result.url == ""
+        assert _ADMIN_CONTAINER in result.error
+        assert "second-one" in result.error
+        publish.assert_not_called()
 
 
 class TestForwardResultClose:
