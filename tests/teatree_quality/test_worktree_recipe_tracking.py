@@ -22,12 +22,15 @@ from teatree.quality.worktree_recipe_tracking import (
     ALLOW_PRAGMA,
     NO_TRACK,
     Finding,
+    PlacementFinding,
     _repo_root,
     collect_files,
     invocations_in,
     is_defective,
     logical_lines,
     run,
+    scan_placement_source,
+    scan_placement_tree,
     scan_source,
     scan_tree,
 )
@@ -35,7 +38,7 @@ from teatree.quality.worktree_recipe_tracking import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _DEFECTIVE = "git worktree add ../wt -b 42-feature ../wt origin/main"
-_CLEAN = f"git worktree add -b 42-feature {NO_TRACK} ../wt origin/main"
+_CLEAN = f"git worktree add -b 42-feature {NO_TRACK} ~/workspace/t3-workspaces/wt origin/main"
 
 
 def _fence(body: str) -> str:
@@ -52,6 +55,10 @@ def _plant(root: Path, relpath: str, body: str) -> Path:
 class TestLiveTree:
     def test_no_published_recipe_omits_no_track(self) -> None:
         findings = scan_tree(_REPO_ROOT)
+        assert findings == [], "\n".join(f.message for f in findings)
+
+    def test_published_recipes_stay_under_allowed_roots(self) -> None:
+        findings = scan_placement_tree(_REPO_ROOT)
         assert findings == [], "\n".join(f.message for f in findings)
 
     def test_the_scanned_roots_are_actually_present(self) -> None:
@@ -157,3 +164,50 @@ class TestFinding:
         assert "skills/x/SKILL.md:7" in message
         assert NO_TRACK in message
         assert ALLOW_PRAGMA in message
+
+
+class TestPlacement:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git worktree add -b feature --no-track ../outside origin/main",
+            "git worktree move old ~/workspace/stray",
+            "git worktree add /opt/stray feature",
+            "git worktree add /opt/stray/.claude/worktrees/agent feature",
+        ],
+    )
+    def test_flags_outside_target(self, command: str) -> None:
+        findings = scan_placement_source(_fence(command), "skills/example.md")
+        assert len(findings) == 1
+        assert findings[0].line_no == 4
+        assert "worktree-placement: allow" in findings[0].message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git worktree add -b feature --no-track ~/workspace/t3-workspaces/feature origin/main",
+            "git worktree add /tmp/review feature",
+            "git worktree move old /var/tmp/review",
+        ],
+    )
+    def test_allows_literal_allowed_roots(self, command: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_DISPOSABLE_CHECKOUT_ROOTS", raising=False)
+        assert scan_placement_source(_fence(command), "skills/example.md") == []
+
+    def test_uses_configured_disposable_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_DISPOSABLE_CHECKOUT_ROOTS", "/opt/review")
+        assert scan_placement_source(_fence("git worktree add /opt/review/agent HEAD"), "skills/x.md") == []
+
+    def test_waiver_applies_only_to_placement(self) -> None:
+        body = _fence(f"{_DEFECTIVE} # worktree-placement: allow")
+        assert scan_placement_source(body, "skills/example.md") == []
+        assert len(scan_source(body, "skills/example.md")) == 1
+
+    def test_runner_includes_placement_findings(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _plant(tmp_path, "skills/a/SKILL.md", _fence("git worktree add ../outside feature"))
+        assert run(tmp_path) == 1
+        assert "worktree-placement: allow" in capsys.readouterr().out
+
+    def test_message_names_target(self) -> None:
+        message = PlacementFinding("skills/example.md", 4, "../outside").message
+        assert "../outside" in message

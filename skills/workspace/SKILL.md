@@ -574,7 +574,7 @@ t3 <overlay> workspace ticket <issue-url-or-id>
 # RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
 # `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
 # refuses confusingly — and aims at main under push.default=upstream.
-git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+git fetch origin main -q && git worktree add -b <branch> --no-track ~/workspace/t3-workspaces/<repo>-wt-<slug> origin/main
 
 # WRONG — forks whatever the local ref holds:
 git checkout -b <branch>     # FORBIDDEN — stale local main

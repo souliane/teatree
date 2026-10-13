@@ -497,7 +497,7 @@ lands today.
 
 ```bash
 # do X — open the follow-up off the default branch; the green PR is never touched:
-git worktree add -b <prefix>/tidy-loader-comment --no-track ../tidy-loader-comment origin/main
+git worktree add -b <prefix>/tidy-loader-comment --no-track ~/workspace/t3-workspaces/tidy-loader-comment origin/main
 t3 <overlay> workspace ticket <id>        # the ticketed equivalent when one exists
 gh pr create --base main --head <prefix>/tidy-loader-comment --fill   # once committed there
 

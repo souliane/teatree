@@ -123,6 +123,7 @@ class TestDenyReason:
         assert "MAIN CLONE" in reason
         assert "worktree" in reason
         assert "origin/main" in reason
+        assert "~/workspace/t3-workspaces/" in reason
         assert "[main-clone-ok:" in reason
 
     def test_edit_reason_names_the_path(self) -> None:
