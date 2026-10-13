@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from teatree.agents import codex_read_only_probe_program
 from teatree.agents.codex_auth_cache import CodexAuthCacheError
@@ -153,18 +153,32 @@ def executor_lease_dir() -> Path:
     return data_dir_root() / "codex-ro-executor"
 
 
+class Login(NamedTuple):
+    """The fields of an ``auth.json`` the core decides on, ``""`` for any that is absent or malformed."""
+
+    account: str
+    refresh_token: str
+    last_refresh: str
+
+    @classmethod
+    def parse(cls, raw: bytes) -> "Login":
+        try:
+            login = json.loads(raw)
+        except ValueError:
+            login = None
+        login = login if isinstance(login, dict) else {}
+        tokens = tokens if isinstance(tokens := login.get("tokens"), dict) else {}
+        fields = (tokens.get("account_id"), tokens.get("refresh_token"), login.get("last_refresh"))
+        return cls(*(value if isinstance(value, str) else "" for value in fields))
+
+
 def login_account(raw: bytes, where: str) -> str:
     """The ``tokens.account_id`` of a complete login, which also carries a ``tokens.refresh_token``."""
-    try:
-        tokens = json.loads(raw).get("tokens")
-    except (ValueError, AttributeError):
-        tokens = None
-    account = tokens.get("account_id") if isinstance(tokens, dict) else None
-    refresh = tokens.get("refresh_token") if isinstance(tokens, dict) else None
-    if not (isinstance(account, str) and account and isinstance(refresh, str) and refresh):
+    login = Login.parse(raw)
+    if not (login.account and login.refresh_token):
         msg = f"the login in {where} lacks tokens.account_id or tokens.refresh_token"
         raise CodexAuthCacheError(msg)
-    return account
+    return login.account
 
 
 def _login_refusal() -> str | None:
@@ -177,22 +191,22 @@ def _login_refusal() -> str | None:
     return "it has no Codex login: run `t3 codex auth import --executor` in teatree-worker"
 
 
+def _unserved(phase: str) -> str | None:
+    if phase not in EXECUTOR_PHASES:
+        return f"the read-only executor serves only {', '.join(sorted(EXECUTOR_PHASES))}"
+    return _login_refusal()
+
+
 def executor_availability_reason(phase: str) -> str | None:
     """The cheap part of the refusal, safe to cache: it grants nothing, the live probe still decides."""
-    if phase not in EXECUTOR_PHASES:
-        return refusal_reason(phase, f"the read-only executor serves only {', '.join(sorted(EXECUTOR_PHASES))}")
-    if refusal := _login_refusal():
-        return refusal_reason(phase, refusal)
-    return None
+    refusal = _unserved(phase)
+    return refusal_reason(phase, refusal) if refusal else None
 
 
 def attest(
     phase: str, roots: Sequence[str], *, home: str = "", docker: ExecutorDocker | None = None
 ) -> ExecutorAttestation:
-    if phase not in EXECUTOR_PHASES:
-        msg = f"the read-only executor serves only {', '.join(sorted(EXECUTOR_PHASES))}"
-        raise ExecutorRefusalError(msg)
-    if refusal := _login_refusal():
+    if refusal := _unserved(phase):
         raise ExecutorRefusalError(refusal)
     docker = docker or ExecutorDocker()
     worker = docker.worker()

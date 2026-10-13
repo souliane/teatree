@@ -2,7 +2,6 @@
 
 import asyncio
 import atexit
-import json
 import os
 import secrets
 import threading
@@ -22,6 +21,7 @@ from teatree.agents.codex_read_only_executor import (
     ExecutorAttestation,
     ExecutorDocker,
     ExecutorRefusalError,
+    Login,
     PlantedHomeError,
     attest,
     executor_lease_dir,
@@ -106,21 +106,6 @@ class ExecutorAuthFile:
         _run_script(self.docker, self.container_id, CREATE_HOME_SCRIPT, self.home, failure=failure)
 
 
-def _last_refresh(raw: bytes) -> str:
-    try:
-        value = json.loads(raw).get("last_refresh")
-    except (ValueError, AttributeError):
-        return ""
-    return value if isinstance(value, str) else ""
-
-
-def _of_account(raw: bytes, account: str) -> bool:
-    try:
-        return login_account(raw, "a stale executor home") == account
-    except CodexAuthCacheError:
-        return False
-
-
 class ExecutorAuthCache(CodexAuthCache):
     """Under the lease: end every stray, keep a newer login a stale home holds, and start and stop on empty tmpfs."""
 
@@ -135,32 +120,25 @@ class ExecutorAuthCache(CodexAuthCache):
         self.auth_file.create()
         return super().hydrate()
 
-    async def _finish_persist(self) -> None:
-        """The session's last persist, still under the lease; ``persist`` alone also runs mid-server per thread."""
-        task = asyncio.create_task(asyncio.to_thread(self._end_session))
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
-
     def _end_session(self) -> None:
         end_strays(self.auth_file.docker, self.auth_file.container_id)
         self.persist()
         self._empty_tmpfs()
 
     def _recover_stale_logins(self) -> None:
-        current = self.stored()
-        account = login_account(current, EXECUTOR_LOGIN_ENTRY)
+        stored = self.stored()
+        login_account(stored, EXECUTOR_LOGIN_ENTRY)
+        current = Login.parse(stored)
         for home in self._stale_homes():
             try:
                 raw = ExecutorAuthFile(self.auth_file.docker, self.auth_file.container_id, home).fetch()
             except CodexAuthCacheError as exc:
                 msg = f"the stale executor home {exc}; it is kept for the login it may hold"
                 raise ExecutorRefusalError(msg) from exc
-            if _of_account(raw, account) and _last_refresh(raw) > _last_refresh(current):
+            stale = Login.parse(raw)
+            if stale.account == current.account and stale.refresh_token and stale.last_refresh > current.last_refresh:
                 self.write_verified(encode_auth_cache(raw))
-                current = raw
+                current = stale
 
     def _empty_tmpfs(self) -> None:
         roots = (EXECUTOR_HOME_ROOT, SCRATCH_ROOT)

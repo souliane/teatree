@@ -1,6 +1,5 @@
 """One-time import of an already-authenticated Codex ChatGPT cache."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from teatree.agents.codex_read_only_executor import (
     EXECUTOR_LOGIN_ENTRY,
     ExecutorDocker,
     ExecutorRefusalError,
+    Login,
     executor_lease_dir,
     login_account,
 )
@@ -67,14 +67,6 @@ def _require_worker_route(verb: str) -> None:
         raise typer.Exit(code=1) from exc
 
 
-def _refresh_token(raw: bytes) -> object:
-    try:
-        tokens = json.loads(raw).get("tokens")
-    except (ValueError, AttributeError):
-        return None
-    return tokens.get("refresh_token") if isinstance(tokens, dict) else None
-
-
 def _executor_login(source: str | None) -> bytes:
     """A complete login on a refresh-token chain of its own: two consumers of one chain break at its first rotation."""
     if source is None:
@@ -86,7 +78,7 @@ def _executor_login(source: str | None) -> bytes:
         worker = CodexAuthCache(resolve_codex_home()).stored()
     except CodexAuthCacheError:
         return raw
-    if _refresh_token(raw) == _refresh_token(worker):
+    if Login.parse(raw).refresh_token == Login.parse(worker).refresh_token:
         message = f"this is the worker's own Codex login ({CODEX_AUTH_PASS_ENTRY}); log in again for the executor"
         raise CodexAuthCacheError(message)
     return raw

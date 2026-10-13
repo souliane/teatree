@@ -255,12 +255,15 @@ class CodexAuthCache:
             os.close(fd)
 
     async def _finish_persist(self) -> None:
-        task = asyncio.create_task(asyncio.to_thread(self.persist))
+        task = asyncio.create_task(asyncio.to_thread(self._end_session))
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             await task
             raise
+
+    def _end_session(self) -> None:
+        self.persist()
 
     def stored(self) -> bytes:
         try:

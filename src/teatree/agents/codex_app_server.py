@@ -443,7 +443,7 @@ class CodexAppServerHarness:
     ) -> None:
         self.capabilities = codex_capabilities()
         if read_only_phase is not None:
-            self.capabilities = replace(self.capabilities, mcp=False, read_only_venue=True)
+            self.capabilities = replace(self.capabilities, read_only_venue=True)
         self.code_home = resolve_codex_home(code_home)
         self.command = command
         self.refusal = refusal
