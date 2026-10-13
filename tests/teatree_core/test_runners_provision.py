@@ -811,6 +811,28 @@ class TestWorktreeProvisionerAdopt(TestCase):
         assert (wt.extra or {}).get("worktree_path") == str(worktree)
         assert (wt.extra or {}).get("clone_path") == str(discovered)
 
+    def test_partial_adopt_refuses_new_checkout_under_disallowed_root(self) -> None:
+        _, adopted = self._outside_clone_and_worktree("feature-partial")
+        disallowed = self.tmp / "capped"
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/5247-partial",
+            repos=["myrepo", "other"],
+            extra={"branch": "feature-partial", "adopt": {"myrepo": str(adopted)}},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=disallowed),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        assert not result.ok
+        assert "outside_allowed_roots" in result.detail
+        assert adopted.is_dir()
+        assert not disallowed.exists()
+        worktree_add.assert_not_called()
+
 
 class TestWorktreeProvisionerIsIdempotent(TestCase):
     """souliane/teatree#3234: a leftover worktree must never strand the ticket forever.
@@ -1015,7 +1037,7 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         result, ticket = self._provision(branch, recorded_path=str(hollow))
 
         assert not result.ok
-        assert "workspace relocate" in result.detail
+        assert "workspace_dir" in result.detail
         assert self._recorded_path(ticket) == str(hollow)
         assert hollow.is_dir()
         assert not (hollow / ".git").exists()

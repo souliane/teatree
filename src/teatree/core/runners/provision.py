@@ -378,9 +378,8 @@ class WorktreeProvisioner(RunnerBase):
                 return RunnerResult(
                     ok=False,
                     detail=(
-                        f"outside_allowed_roots: {reason} Run "
-                        f"`t3 {ticket.overlay or '<overlay>'} workspace relocate` "
-                        "for a dead recorded row outside the roots."
+                        f"outside_allowed_roots: {reason} Set workspace_dir to a safe root or use the default "
+                        "worktree base before retrying."
                     ),
                 )
             break

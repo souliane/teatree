@@ -425,9 +425,6 @@ def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -
     return emit_pretooluse_deny(reason, gate_id=gate_id)
 
 
-fail_open_or_deny = _fail_open_or_deny
-
-
 def _state_file(session_id: str, suffix: str) -> Path:
     return STATE_DIR / f"{session_id}.{suffix}"
 

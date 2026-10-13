@@ -104,12 +104,46 @@ class TestRepairSplitWorkspace(TestCase):
 
     def test_refuses_recorded_branch_mismatch_before_remove(self) -> None:
         ticket, _, frontend = self._split_ticket()
-        Worktree.objects.filter(ticket=ticket, repo_path="frontend").update(branch="wrong-branch")
+        git.run_strict(repo=str(frontend), args=["checkout", "--detach", "-q"])
         with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace):
             outcome = repair_split_workspace(ticket)
         assert not outcome.ok
-        assert "recorded branch" in outcome.render()
+        assert _BRANCH in outcome.render()
+        assert "detached" in outcome.render()
         assert frontend.is_dir()
+
+    def test_failed_new_add_recreates_old_checkout_with_uncommitted_work(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        Worktree.objects.filter(ticket=ticket, repo_path="frontend").update(overlay="t3-teatree")
+        new_path = self.workspace / _BRANCH / "frontend"
+        actual_add = git.worktree_add
+
+        def fail_new_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            return False if Path(path) == new_path else actual_add(repo, path, branch, create_branch=create_branch)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add", side_effect=fail_new_add),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert (frontend / "work.txt").read_text(encoding="utf-8") == "original\n"
+        assert "t3 teatree workspace restore" in outcome.render()
+        assert f"--into {frontend}" in outcome.render()
+
+    def test_failed_recovery_add_names_bundle_without_nonexistent_restore_target(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        new_path = self.workspace / _BRANCH / "frontend"
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add", return_value=False),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert not frontend.exists()
+        assert not new_path.exists()
+        assert "salvage bundle:" in outcome.render()
+        assert "--into" not in outcome.render()
 
     def test_refuses_incomplete_bundle_before_remove(self) -> None:
         ticket, _, frontend = self._split_ticket()

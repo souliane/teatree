@@ -48,11 +48,13 @@ def _stored_workspace_dirs() -> tuple[tuple[str, ...], str]:
         django_db = None
     if django_conf is not None and django_db is not None and django_conf.settings.configured:
         try:
-            with django_db.connection.cursor() as cursor:
+            model = import_module("django.apps").apps.get_model("core", "ConfigSetting")
+            alias = django_db.router.db_for_read(model)
+            with django_db.connections[alias].cursor() as cursor:
                 cursor.execute("SELECT value FROM teatree_config_setting WHERE key=%s", ["workspace_dir"])
                 rows = cursor.fetchall()
             return tuple(value for (raw,) in rows if isinstance((value := json.loads(raw)), str)), ""
-        except (django_db.DatabaseError, RuntimeError, ValueError, TypeError):
+        except (django_db.DatabaseError, RuntimeError, ValueError, TypeError, LookupError):
             pass
     db = cold_db.canonical_config_db()
     if db.exists():

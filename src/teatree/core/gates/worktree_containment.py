@@ -8,12 +8,12 @@ from pathlib import Path
 from teatree.hooks._commit_repo_dir import segment_cwds
 from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
 from teatree.hooks.forge_subcommand import basename, command_substitution_bodies, program_words, strip_heredoc_bodies
+from teatree.utils.git_worktree import worktree_destination
 
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)=(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))")
 _GIT_VALUE_OPTIONS = frozenset({"-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--exec-path"})
-_ADD_VALUE_OPTIONS = frozenset({"-b", "-B", "--orphan", "--reason"})
-_MOVE_POSITIONALS = 2
+_PIPED_SHELL = re.compile(r"\b(?:echo|printf)\s+(.+?)\s*\|\s*(?:bash|sh|zsh)(?:\s|$)")
 _MAX_NESTING = 3
 
 
@@ -25,23 +25,25 @@ class WorktreeCheckout:
     verb: str
 
 
-def _path(word: str, base: Path | None) -> Path | None:
-    candidate = Path(word).expanduser()
+def _path(word: str, base: Path | None, *, expand_tilde: bool = True) -> Path | None:
+    candidate = Path(word).expanduser() if expand_tilde else Path(word)
     if candidate.is_absolute():
         return candidate.resolve()
     return (base / candidate).resolve() if base is not None else None
 
 
-def _git_call(words: list[str], cwd: Path | None) -> tuple[str, list[str], Path | None] | None:
+def _git_call(words: list[str], cwd: Path | None) -> tuple[str, list[str], Path | None, Path | None] | None:
     if not words or basename(words[0]) != "git":
         return None
     source = cwd
+    target_base = cwd
     i = 1
     while i < len(words):
         word = words[i]
         if word == "-C" or (word.startswith("-C") and len(word) > len("-C")):
             value = words[i + 1] if word == "-C" and i + 1 < len(words) else word[2:]
             source = _path(value, source) if "$" not in value else None
+            target_base = source
             i += 2 if word == "-C" else 1
         elif word in _GIT_VALUE_OPTIONS:
             if word == "--git-dir" and i + 1 < len(words):
@@ -55,33 +57,16 @@ def _git_call(words: list[str], cwd: Path | None) -> tuple[str, list[str], Path 
         elif word.startswith("-"):
             i += 1
         else:
-            return word, words[i + 1 :], source
+            return word, words[i + 1 :], source, target_base
     return None
-
-
-def _positional(args: list[str], *, add: bool) -> str | None:
-    values: list[str] = []
-    i = 0
-    options = True
-    while i < len(args):
-        word = args[i]
-        if word == "--":
-            options = False
-        elif options and word in (_ADD_VALUE_OPTIONS if add else frozenset()):
-            i += 1
-        elif options and word.startswith("-"):
-            pass
-        else:
-            values.append(word)
-        i += 1
-    if add:
-        return values[0] if values else None
-    return values[-1] if len(values) >= _MOVE_POSITIONALS else None
 
 
 def _flock_program(words: list[str]) -> list[str]:
     if not words or basename(words[0]) != "flock":
         return words
+    if "-c" in words:
+        index = words.index("-c") + 1
+        return ["sh", "-c", words[index]] if index < len(words) else []
     i = 1
     while i < len(words) and words[i].startswith("-"):
         i += 2 if words[i] in {"-w", "--timeout", "-E", "--conflict-exit-code"} else 1
@@ -116,40 +101,86 @@ def _targets(word: str, variables: dict[str, tuple[str, ...]]) -> tuple[str | No
         values = variables.get(match[1] or match[2])
         if not values:
             return (None,)
-        expanded = [candidate.replace(match[0], value) for candidate in expanded for value in values]
+        resolved = tuple(_mktemp_directory(value) if value.startswith("$(mktemp ") else value for value in values)
+        if any(value is None for value in resolved):
+            return (None,)
+        expanded = [candidate.replace(match[0], value) for candidate in expanded for value in resolved if value]
     return tuple(expanded)
 
 
+def _script_checkouts(argv: list[str], cwd: Path | None, depth: int) -> list[WorktreeCheckout] | None:
+    if argv and basename(argv[0]) in {"sh", "bash", "zsh"}:
+        options = next(
+            (word for word in argv[1:] if word.startswith("-") and not word.startswith("--") and "c" in word[1:]),
+            "",
+        )
+        if not options:
+            return []
+        index = argv.index(options) + 1
+        inner = argv[index] if index < len(argv) else ""
+    elif argv[:1] == ["eval"]:
+        inner = " ".join(argv[1:])
+    else:
+        return None
+    if re.fullmatch(r"\$\{?\w+\}?", inner):
+        return [WorktreeCheckout(cwd, None, inner, "shell")]
+    return _scan(inner, cwd, depth + 1)
+
+
+def _env_cwd(words: list[str], cwd: Path | None) -> Path | None:
+    if words[:1] != ["env"]:
+        return cwd
+    for index, word in enumerate(words[1:], 1):
+        if word in {"-C", "--chdir"} and index + 1 < len(words):
+            cwd = _path(words[index + 1], cwd)
+        elif word.startswith("--chdir="):
+            cwd = _path(word.partition("=")[2], cwd)
+    return cwd
+
+
 def _segment_checkouts(
-    words: list[str], cwd: Path | None, variables: dict[str, tuple[str, ...]], depth: int
+    words: list[str], cwd: Path | None, variables: dict[str, tuple[str, ...]], depth: int, raw_words: list[str]
 ) -> list[WorktreeCheckout]:
     if words[:1] == ["for"] and words[2:3] == ["in"]:
         variables[words[1]] = tuple(words[3:])
+    cwd = _env_cwd(words, cwd)
     argv = _flock_program(program_words(words))
-    if argv and basename(argv[0]) in {"sh", "bash", "zsh"}:
-        if "-c" not in argv:
-            return []
-        index = argv.index("-c") + 1
-        inner = argv[index] if index < len(argv) else ""
-        return [WorktreeCheckout(cwd, None, inner, "shell")] if "$" in inner else _scan(inner, cwd, depth + 1)
+    if (nested := _script_checkouts(argv, cwd, depth)) is not None:
+        return nested
     parsed = _git_call(argv, cwd)
     if parsed is None or parsed[0] != "worktree" or not parsed[1]:
         return []
     verb, args = parsed[1][0], parsed[1][1:]
     if verb not in {"add", "move"}:
         return []
-    raw = _positional(args, add=verb == "add")
+    raw = worktree_destination(args, add=verb == "add")
     if raw is None:
-        return []
+        return [WorktreeCheckout(parsed[2], None, "<missing target>", verb)]
+    quoted_tilde = raw.startswith("~") and any(word.startswith(("'~", '"~')) for word in raw_words)
     return [
-        WorktreeCheckout(parsed[2], _path(value, parsed[2]) if value else None, raw, verb)
+        WorktreeCheckout(
+            parsed[2], _path(value, parsed[3], expand_tilde=not quoted_tilde) if value else None, raw, verb
+        )
         for value in _targets(raw, variables)
     ]
 
 
+def _consume_assignments(words: list[str], variables: dict[str, tuple[str, ...]]) -> list[str]:
+    while words and (assignment := _ASSIGNMENT.fullmatch(words[0])) is not None:
+        value = assignment[2]
+        consumed = 1
+        if value.startswith("$(mktemp"):
+            while not value.endswith(")") and consumed < len(words):
+                value += " " + words[consumed]
+                consumed += 1
+        variables[assignment[1]] = (value,)
+        words = words[consumed:]
+    return words
+
+
 def _scan(command: str, cwd: Path | None, depth: int) -> list[WorktreeCheckout]:
     if depth > _MAX_NESTING:
-        return [WorktreeCheckout(cwd, None, command, "shell")]
+        return [WorktreeCheckout(cwd, None, command, "shell")] if "worktree" in command else []
     cleaned = strip_heredoc_bodies(command)
     cwds = iter(segment_cwds(cleaned, cwd))
     variables: dict[str, tuple[str, ...]] = {}
@@ -158,11 +189,17 @@ def _scan(command: str, cwd: Path | None, depth: int) -> list[WorktreeCheckout]:
         words = [token.value for token in segment if token.kind is TokenKind.WORD]
         if not words:
             continue
-        while words and (assignment := _ASSIGNMENT.fullmatch(words[0])) is not None:
-            variables[assignment[1]] = (assignment[2],)
-            words = words[1:]
+        words = _consume_assignments(words, variables)
         if words:
-            calls.extend(_segment_checkouts(words, next(cwds, None), variables, depth))
+            calls.extend(
+                _segment_checkouts(words, next(cwds, None), variables, depth, [token.raw for token in segment])
+            )
+    for match in _PIPED_SHELL.finditer(cleaned):
+        try:
+            piped = " ".join(shlex.split(match[1]))
+        except ValueError:
+            continue
+        calls.extend(_scan(piped, cwd, depth + 1))
     for inner in command_substitution_bodies(command):
         calls.extend(_scan(inner, cwd, depth + 1))
     return calls

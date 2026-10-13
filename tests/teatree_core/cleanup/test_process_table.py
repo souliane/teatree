@@ -190,10 +190,10 @@ class TestPartialVisibility:
     @pytest.mark.parametrize(
         ("name", "state", "threads", "expected_refusal"),
         [
-            ("python", "S", "1", "pid 2 is unreadable by this uid"),
+            ("python", "S", "1", "pid 2 (python) is unreadable by this uid"),
             ("ssh-agent", "S", "1", ""),
             ("python", "Z", "1", ""),
-            ("python", "Z", "2", "pid 2 is unreadable by this uid"),
+            ("python", "Z", "2", "pid 2 (python) is unreadable by this uid"),
         ],
     )
     def test_eviction_only_tolerates_known_unreadable_processes(

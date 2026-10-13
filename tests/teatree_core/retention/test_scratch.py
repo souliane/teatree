@@ -1112,6 +1112,19 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
         assert "open-file probe unsighted" in plan.probe_gap
         assert stale.exists()
 
+    def test_tolerated_eviction_process_name_still_blinds_scratch_probe(self) -> None:
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        pid = self.proc / "778"
+        (pid / "fd").mkdir(parents=True)
+        (pid / "comm").write_text("ssh-agent\n", encoding="utf-8")
+        (pid / "fd" / "3").write_bytes(b"")
+
+        plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unsighted" in plan.probe_gap
+        assert stale.exists()
+
     def test_an_empty_but_readable_fd_dir_is_an_answer_not_a_blind(self) -> None:
         """Every kernel thread presents one.
 

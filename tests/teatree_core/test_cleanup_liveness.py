@@ -265,6 +265,17 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         with patch.object(process_table, "_HOST_PROC_ROOT", proc):
             assert cl._any_process_cwd_within(wt.resolve()).fired is False
 
+    def test_usable_table_with_unreadable_pids_is_a_negative_not_a_blind_probe(self) -> None:
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        table = process_table.ProcessTable(
+            frozenset({self._tmp_path / "elsewhere"}), "/host-proc", ("one pid unreadable",)
+        )
+        with patch.object(cl, "read_process_table", return_value=table):
+            answer = cl._any_process_cwd_within(wt)
+        assert answer.fired is False
+        assert answer.obstacle == ""
+
     def test_the_worktrees_raw_spelling_is_matched_when_resolving_would_miss(self) -> None:
         """Under the host bind mount the table holds HOST paths, which need not resolve in this namespace.
 

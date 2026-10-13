@@ -1,6 +1,7 @@
 """PreToolUse refusal for linked checkouts outside teatree's allowed roots."""
 
 import re
+from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,16 +20,16 @@ def _gate_enabled() -> bool:
 
 
 def _deny_reason(raw_target: str, target: Path | None, roots: "CheckoutRoots") -> str:
-    all_roots = (*roots.durable, *roots.disposable, *roots.harness)
-    location = str(target) if target is not None else f"unresolved target {raw_target!r}"
-    names = ", ".join(str(root) for root in all_roots)
-    dropped = f" Ignored unsafe workspace_dir: {', '.join(roots.dropped)}." if roots.dropped else ""
-    degraded = f" Settings store unreadable: {roots.read_error}." if roots.read_error else ""
+    raw_policy = replace(roots, harness=())
+    if target is None:
+        names = ", ".join(str(root) for root in (*roots.durable, *roots.disposable))
+        location = f"unresolved target {raw_target!r}; allowed roots: {names}"
+    else:
+        location = raw_policy.refusal(target)
     return (
-        f"BLOCKED: git worktree target {location} is outside allowed roots ({names}).{dropped}{degraded} "
-        "Use `t3 <overlay> workspace ticket <issue>`, choose a path under "
-        "`~/workspace/t3-workspaces/` (or an allowed temp root for disposable work), "
-        "or set `workspace_dir` to a safe durable root. One-call waiver: "
+        f"BLOCKED: git worktree target {location} "
+        "Use `t3 <overlay> workspace ticket <issue>` or choose an allowed temp root for disposable work. "
+        "One-call waiver: "
         "`[worktree-containment-ok: <reason>]` in the Bash command."
     )
 
@@ -52,12 +53,13 @@ def handle_block_worktree_checkout(data: dict) -> bool:
             if clone is None or not repo_root_is_teatree_managed(str(clone)):
                 continue
             roots = placement.checkout_roots(source_clone=clone)
-            if call.target is not None and roots.allows(call.target):
+            if call.target is not None and any(
+                call.target.is_relative_to(root) for root in (*roots.durable, *roots.disposable)
+            ):
                 continue
             router = import_module("hooks.scripts.hook_router")
-            return router.fail_open_or_deny(
-                data, _deny_reason(call.raw_target, call.target, roots), gate_id="worktree_containment"
-            )
+            deny = vars(router)["_fail_open_or_deny"]
+            return deny(data, _deny_reason(call.raw_target, call.target, roots), gate_id="worktree_containment")
     return False
 
 

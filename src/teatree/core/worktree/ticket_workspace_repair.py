@@ -23,6 +23,7 @@ from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.config.checkout_roots import checkout_roots
+from teatree.config.settings import OverlayEntry
 from teatree.core.cleanup.unshipped_work import (
     ARTIFACT_NAMESPACE,
     COMMITS_SUFFIX,
@@ -83,7 +84,7 @@ def _apply_uncommitted_delta(patch: str, into: Path) -> str | None:
     return result.stderr.strip() or f"git apply exited {result.returncode}"
 
 
-def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str) -> str | None:
+def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> str | None:
     """``git worktree remove`` + ``add`` from *old_path* to *new_path*; ``None`` on success."""
     if not git.worktree_remove(str(clone), str(old_path)):
         return f"git worktree remove failed for {old_path} — nothing was moved"
@@ -92,8 +93,22 @@ def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str)
     # The branch is now free but unchecked-out anywhere; recreate at the OLD
     # path so the checkout — and the row, still pointing at it — survive.
     recovered = git.worktree_add(str(clone), str(old_path), branch, create_branch=False)
+    if recovered and (error := _apply_uncommitted_delta(patch, old_path)):
+        return (
+            f"git worktree add failed for {new_path} "
+            f"(recreated at the original path, but delta reapply failed: {error})"
+        )
     reason = "recreated at the original path" if recovered else "COULD NOT be recreated — inspect the clone"
     return f"git worktree add failed for {new_path} ({reason})"
+
+
+def _restore_hint(prefix: str, overlay: str, target: Path | None) -> str:
+    if not prefix:
+        return ""
+    if target is None:
+        return f"; salvage bundle: {prefix}; recreate a checkout before restoring"
+    name = OverlayEntry.canonical_overlay_name(overlay)
+    return f"; t3 {name} workspace restore {prefix} --into {target}"
 
 
 def _verified_bundle(checkout: Path, branch: str, overlay: str, work: UnshippedWork) -> tuple[str, str]:
@@ -124,8 +139,13 @@ def _source_clone(worktree: Worktree, old_path: Path) -> Path | str:
     clone = git_common_clone_dir(str(old_path))
     if clone is None:
         return f"{worktree.repo_path}: could not resolve the clone behind {old_path}"
-    if git.current_branch(str(old_path)) != worktree.branch:
-        return f"{worktree.repo_path}: {old_path} HEAD differs from its recorded branch — nothing moved"
+    actual = git.current_branch(str(old_path))
+    if actual != worktree.branch:
+        actual_name = "detached HEAD" if actual == "HEAD" else actual
+        return (
+            f"{worktree.repo_path}: {old_path} is on {actual_name}, "
+            f"recorded branch is {worktree.branch} — nothing moved"
+        )
     return clone
 
 
@@ -141,16 +161,16 @@ def _relocate_verified(
     try:
         new_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        hint = f"; t3 {worktree.overlay} workspace restore {prefix} --into {old_path}" if prefix else ""
+        hint = _restore_hint(prefix, worktree.overlay, old_path)
         return f"{worktree.repo_path}: could not create {new_path.parent} ({exc}) — nothing moved{hint}"
-    if relocate_error := _relocate_checkout(clone, old_path, new_path, worktree.branch):
-        target = old_path if old_path.exists() else new_path
-        hint = f"; t3 {worktree.overlay} workspace restore {prefix} --into {target}" if prefix else ""
+    if relocate_error := _relocate_checkout(clone, old_path, new_path, worktree.branch, work.uncommitted_patch):
+        target = old_path if old_path.is_dir() else new_path if new_path.is_dir() else None
+        hint = _restore_hint(prefix, worktree.overlay, target)
         prior = f"; previous salvage: {previous}" if prefix and previous else ""
         return f"{worktree.repo_path}: {relocate_error}{hint}{prior}"
 
     if apply_error := _apply_uncommitted_delta(work.uncommitted_patch, new_path):
-        hint = f"; t3 {worktree.overlay} workspace restore {prefix} --into {new_path}" if prefix else ""
+        hint = _restore_hint(prefix, worktree.overlay, new_path)
         prior = f"; previous salvage: {previous}" if prefix and previous else ""
         return (
             f"{worktree.repo_path}: moved to {new_path}, but its uncommitted delta failed to reapply: "

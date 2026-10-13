@@ -198,6 +198,13 @@ class TestPlacement:
         monkeypatch.setenv("TEATREE_DISPOSABLE_CHECKOUT_ROOTS", "/opt/review")
         assert scan_placement_source(_fence("git worktree add /opt/review/agent HEAD"), "skills/x.md") == []
 
+    def test_placeholder_target_is_documentation_not_a_placement_violation(self) -> None:
+        assert scan_placement_source(_fence("git worktree add <path> origin/main"), "skills/x.md") == []
+
+    def test_orphan_flag_keeps_the_target_positional(self) -> None:
+        findings = scan_placement_source(_fence("git worktree add --orphan ../outside"), "skills/x.md")
+        assert [finding.target for finding in findings] == ["../outside"]
+
     def test_waiver_applies_only_to_placement(self) -> None:
         body = _fence(f"{_DEFECTIVE} # worktree-placement: allow")
         assert scan_placement_source(body, "skills/example.md") == []

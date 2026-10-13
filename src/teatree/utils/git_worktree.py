@@ -17,6 +17,28 @@ from teatree.utils.run import CommandFailedError, run_checked
 # A git reflog line is "<old-sha> <new-sha> <committer> <ts> <tz>\t<message>";
 # fewer than two whitespace fields means there is no <new-sha> to recover.
 _REFLOG_MIN_FIELDS = 2
+_MOVE_POSITIONALS = 2
+
+
+def worktree_destination(args: list[str], *, add: bool) -> str | None:
+    values: list[str] = []
+    i = 0
+    options = True
+    while i < len(args):
+        word = args[i]
+        bundled_branch = word.startswith("-") and word[-1:] in {"b", "B"} and set(word[1:]) <= set("qfdbB")
+        if word == "--":
+            options = False
+        elif options and add and (word in {"-b", "-B", "--reason"} or bundled_branch):
+            i += 1
+        elif options and word.startswith("-"):
+            pass
+        else:
+            values.append(word)
+        i += 1
+    if add:
+        return values[0] if values else None
+    return values[-1] if len(values) >= _MOVE_POSITIONALS else None
 
 
 def recovered_head_sha_after_ref_gone(wt_path: str) -> str | None:

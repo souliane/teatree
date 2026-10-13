@@ -6,6 +6,7 @@ against the same registry the reaper reads.
 """
 
 import io
+import os
 import tempfile
 from collections.abc import Callable
 from contextlib import redirect_stdout
@@ -288,6 +289,9 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
 class LinkedCheckoutPlacementTest(_TmpTestCase):
     def _clone(self) -> tuple[Path, Path, Path]:
         clone = make_git_repo(self.tmp / "clone")
+        (clone / "tracked.txt").write_text("stable\n", encoding="utf-8")
+        run_git(clone, "add", "tracked.txt")
+        run_git(clone, "commit", "--amend", "-q", "--no-edit")
         initial = run_git(clone, "rev-parse", "HEAD")
         run_git(clone, "update-ref", "refs/remotes/origin/main", initial)
         outside = self.tmp / "stray"
@@ -313,8 +317,14 @@ class LinkedCheckoutPlacementTest(_TmpTestCase):
         before = run_git(outside, "status", "--porcelain")
         head = run_git(outside, "rev-parse", "HEAD")
         index_lock = Path(run_git(outside, "rev-parse", "--git-path", "index.lock"))
+        index = Path(run_git(outside, "rev-parse", "--git-path", "index"))
+        tracked = outside / "tracked.txt"
+        refreshed_time = tracked.stat().st_mtime_ns + 120_000_000_000
+        os.utime(tracked, ns=(refreshed_time, refreshed_time))
+        before_index_mtime = index.stat().st_mtime_ns
 
         ok, out = self._report(clone)
+        after_index_mtime = index.stat().st_mtime_ns
 
         assert ok is True
         assert f"{outside}" in out
@@ -325,6 +335,7 @@ class LinkedCheckoutPlacementTest(_TmpTestCase):
         assert run_git(outside, "status", "--porcelain") == before
         assert run_git(outside, "rev-parse", "HEAD") == head
         assert not index_lock.exists()
+        assert after_index_mtime == before_index_mtime
 
     def test_unreadable_clone_is_unverified(self) -> None:
         clone = make_git_repo(self.tmp / "clone")

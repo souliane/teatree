@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from teatree.utils.disposable_checkout import disposable_roots
+from teatree.utils.git_worktree import worktree_destination
 
 ALLOW_PRAGMA = "worktree-tracking: allow"
 PLACEMENT_ALLOW_PRAGMA = "worktree-placement: allow"
@@ -146,22 +147,12 @@ def _recipe_target(verb: str, argv: str) -> str | None:
         words = shlex.split(argv)
     except ValueError:
         return None
-    values: list[str] = []
-    i = 0
-    while i < len(words):
-        word = words[i]
-        if word in {"-b", "-B", "--orphan", "--reason"}:
-            i += 2
-            continue
-        if not word.startswith("-"):
-            values.append(word)
-        i += 1
-    if verb == "add":
-        return values[0] if values else None
-    return values[1] if len(values) > 1 else None
+    return worktree_destination(words, add=verb == "add")
 
 
 def _allowed_recipe_target(target: str) -> bool:
+    if re.fullmatch(r"<[A-Za-z][^>]*>", target):
+        return True
     if target.startswith(("~/", "$HOME/")):
         return target.startswith(("~/workspace/t3-workspaces/", "$HOME/workspace/t3-workspaces/"))
     if not target.startswith(("/", "~/")):

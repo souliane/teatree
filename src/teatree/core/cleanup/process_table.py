@@ -197,7 +197,9 @@ def read_process_table() -> ProcessTable:
     partial_gaps = (view.unknowable_reason,) if view.unknowable_reason else ()
     unreadable_pids = {pid for pid, _cause in view.unknowable_details} | set(unreadable_executables)
     eviction_gaps = tuple(
-        f"pid {pid} is unreadable by this uid" for pid in sorted(unreadable_pids) if _same_user_untolerated(root / pid)
+        f"pid {pid} ({_process_name(root / pid)}) is unreadable by this uid"
+        for pid in sorted(unreadable_pids)
+        if _same_user_untolerated(root / pid)
     )
     return ProcessTable(frozenset(paths), str(root), (*partial_gaps, *executable_gaps), eviction_gaps)
 
@@ -224,6 +226,13 @@ def _same_user_untolerated(pid: Path) -> bool:
         return True
     lines = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
     return not (lines.get("State", "").strip().startswith("Z") and lines.get("Threads", "").strip() == "1")
+
+
+def _process_name(pid: Path) -> str:
+    try:
+        return (pid / "comm").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
 
 
 def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...], tuple[str, ...]]:

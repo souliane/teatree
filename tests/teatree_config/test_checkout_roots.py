@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db import router
 from django.test import TestCase
 
 from teatree.config.checkout_roots import checkout_roots
@@ -114,3 +115,10 @@ class TestActiveSettingsStore(TestCase):
 
         assert roots.allows(Path("/srv/global-checkouts/ticket"), durable=True)
         assert roots.allows(Path("/srv/other-checkouts/ticket"), durable=True)
+
+    def test_django_read_uses_the_config_setting_router(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/routed-checkouts", scope="")
+        with patch.object(router, "db_for_read", wraps=router.db_for_read) as routed:
+            roots = checkout_roots(home=Path("/fixture-home"), clone_dir=Path("/fixture-home/workspace"), disposable=())
+        assert routed.called
+        assert roots.allows(Path("/srv/routed-checkouts/ticket"), durable=True)

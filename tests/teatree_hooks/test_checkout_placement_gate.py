@@ -46,24 +46,35 @@ def test_denies_outside_target_and_names_remedies(managed_clone: tuple[Path, Pat
     assert "temp root" in reason
 
 
-def test_allows_base_temp_harness_and_unmanaged(managed_clone: tuple[Path, Path]) -> None:
+def test_allows_base_temp_and_unmanaged_but_refuses_raw_harness(managed_clone: tuple[Path, Path]) -> None:
     clone, home = managed_clone
     targets = [
         home / "workspace" / "t3-workspaces" / "ticket",
         Path("/tmp/allowed-temp/review"),
-        clone / ".claude" / "worktrees" / "agent",
     ]
     with (
         patch("pathlib.Path.home", return_value=home),
         patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=True),
+        patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
     ):
         for target in targets:
             assert handle_block_worktree_checkout(_event(f"git worktree add '{target}' main", clone)) is False
+        harness_target = clone / ".claude" / "worktrees" / "agent"
+        assert handle_block_worktree_checkout(_event(f"git worktree add {harness_target} main", clone)) is True
     with (
         patch("pathlib.Path.home", return_value=home),
         patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=False),
     ):
         assert handle_block_worktree_checkout(_event(f"git worktree add {clone.parent / 'stray'} main", clone)) is False
+
+
+def test_ordinary_shell_script_is_allowed(managed_clone: tuple[Path, Path]) -> None:
+    clone, _ = managed_clone
+    with (
+        patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=True),
+        patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
+    ):
+        assert handle_block_worktree_checkout(_event('bash -c "echo $HOME"', clone)) is False
 
 
 def test_waiver_needs_reason_and_switch_disables_gate(managed_clone: tuple[Path, Path]) -> None:
@@ -98,6 +109,11 @@ def test_waiver_needs_reason_and_switch_disables_gate(managed_clone: tuple[Path,
         ('target={base}/one; git worktree add "$target" main', False),
         ('for target in {base}/one {base}/two; do git worktree add "$target"; done', False),
         ('git worktree add "$(mktemp -d /tmp/allowed-temp/review.XXXXXX)" main', False),
+        ("D=$(mktemp -d /tmp/allowed-temp/review.XXXXXX) && git -C {clone} worktree add $D/wt", False),
+        ("D=$(mktemp -d) && git -C {clone} worktree add $D/wt", True),
+        ("ls | xargs git -C {clone} worktree add", True),
+        ('bash -lc "git -C {clone} worktree add {outside}"', True),
+        ('bash -c "echo $HOME"', False),
         ("git worktree add '{base}/with spaces' main", False),
         ("echo 'git worktree add {outside} main'", False),
         ("cat <<'EOF'\ngit worktree add {outside} main\nEOF", False),
