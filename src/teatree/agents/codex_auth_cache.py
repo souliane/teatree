@@ -263,6 +263,7 @@ class CodexAuthCache:
             raise
 
     def _end_session(self) -> None:
+        """The session's last persist, still under the lease; ``persist`` alone also runs mid-session."""
         self.persist()
 
     def stored(self) -> bytes:
