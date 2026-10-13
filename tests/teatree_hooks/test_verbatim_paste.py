@@ -152,6 +152,10 @@ class TestAnUnresolvableBodyIsUnknownNotClean:
         body = f"Post-mortem\n{FAIL_CLOSED_SENTINEL}"
         assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.UNKNOWN
 
+    def test_unresolved_body_with_no_known_messages_is_unknown(self) -> None:
+        body = f"Post-mortem\n{FAIL_CLOSED_SENTINEL}"
+        assert vp.scan_body(body, operator_messages=[]).outcome == vp.UNKNOWN
+
     def test_readable_quote_is_checked_despite_an_injected_reason(self) -> None:
         body = f"{FAIL_CLOSED_SENTINEL}\n> {_OPERATOR_MESSAGE}"
         assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.REPRODUCED

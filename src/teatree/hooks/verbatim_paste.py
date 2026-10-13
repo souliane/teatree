@@ -164,7 +164,7 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
         for message in operator_messages
         for shingle in _shingles(_words(message))[:MAX_FINGERPRINTS_PER_MESSAGE]
     )
-    if not known:
+    if not known and not unreadable:
         return Verdict(CLEAN)
     for source, threshold in ((_quoted_regions(body), QUOTED_RUN_WORDS), (body, PROSE_RUN_WORDS)):
         words = _words(source)
