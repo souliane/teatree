@@ -7,11 +7,16 @@ because the gate cannot read them at PreToolUse scan time. Synthetic term
 ``acmecorp`` only.
 """
 
+import hashlib
+import io
+import json
 import re
 import shutil
 import subprocess
 
-from scripts.hooks.generate_curl_option_table import parse_aliases
+import pytest
+
+from scripts.hooks import generate_curl_option_table as generator
 from teatree.hooks._curl_payload import (
     CURL_LONG_KINDS,
     CURL_SHORT_KINDS,
@@ -95,18 +100,55 @@ class TestCurlOptionGrammar:
 
     def test_installed_curl_help_options_are_in_the_pinned_table(self) -> None:
         curl_binary = shutil.which("curl")
-        assert curl_binary is not None
+        if curl_binary is None:
+            pytest.skip("curl is not installed; cannot compare its options with the pinned table")
+        version_text = subprocess.run(
+            [curl_binary, "--version"], capture_output=True, text=True, check=True, timeout=5
+        ).stdout
+        version_match = re.search(r"curl (\d+)\.(\d+)\.(\d+)", version_text)
+        if version_match is None:
+            pytest.skip("installed curl version is unreadable; cannot compare its options with the pinned table")
+        version = tuple(int(part) for part in version_match.groups())
         help_text = subprocess.run(
             [curl_binary, "--help", "all"], capture_output=True, text=True, check=True, timeout=5
         ).stdout
+        newer_options: list[str] = []
         for short, long in re.findall(r"(?m)^\s*(?:-(.),\s*)?--([a-z0-9.-]+)\b", help_text):
             name = long.removeprefix("no-").removeprefix("expand-")
-            assert f"--{name}" in CURL_LONG_KINDS
-            if short:
-                assert f"-{short}" in CURL_SHORT_KINDS
+            if f"--{name}" not in CURL_LONG_KINDS:
+                newer_options.append(f"--{name}")
+            elif short and f"-{short}" not in CURL_SHORT_KINDS:
+                newer_options.append(f"-{short}")
+        if newer_options and version > (8, 18, 0):
+            pytest.skip(
+                f"curl {version_text.splitlines()[0]} has newer options beyond the pinned 8.18 table: {newer_options}"
+            )
+        assert newer_options == []
 
     def test_both_upstream_alias_formats_preserve_short_letter_rules(self) -> None:
         old = '{"da", "data-ascii", ARG_STRING},\n{":", "next", ARG_NONE},'
         new = "{\"header\", ARG_STRG, 'H', C_HEADER},\n{\"next\", ARG_NONE, ':', C_NEXT},"
-        assert parse_aliases(old, "curl-8_5_0") == {"data-ascii": ("value", ""), "next": ("switch", ":")}
-        assert parse_aliases(new, "curl-8_18_0") == {"header": ("value", "H"), "next": ("switch", ":")}
+        assert generator.parse_aliases(old, "curl-8_5_0") == {"data-ascii": ("value", ""), "next": ("switch", ":")}
+        assert generator.parse_aliases(new, "curl-8_18_0") == {"header": ("value", "H"), "next": ("switch", ":")}
+
+    @pytest.mark.parametrize(("new_kind", "expected"), [("ARG_FILE", "value"), ("ARG_NONE", "unknown")])
+    def test_file_argness_survives_generator_merge(
+        self, monkeypatch: pytest.MonkeyPatch, new_kind: str, expected: str
+    ) -> None:
+        sources = {
+            "curl-8_5_0": b'aliases[] = {\n{"F", "form", ARG_FILE},\n{":", "next", ARG_NONE},\n};',
+            "curl-8_18_0": (
+                f"aliases[] = {{\n{{\"form\", {new_kind}, 'F', C_FORM}},\n{{\"next\", ARG_NONE, ':', C_NEXT}},\n}};"
+            ).encode(),
+        }
+        monkeypatch.setattr(
+            generator, "SOURCES", {tag: hashlib.sha256(source).hexdigest() for tag, source in sources.items()}
+        )
+        monkeypatch.setattr(
+            generator.urllib.request,
+            "urlopen",
+            lambda url, timeout: io.BytesIO(sources[url.split("/")[-3]]),
+        )
+        assert [row for row in json.loads(generator.generate())["options"] if row[0] == "form"] == [
+            ["form", expected, "F"]
+        ]

@@ -55,6 +55,9 @@ class TestResolveInlineBodyValue:
 
 
 class TestResolveShortCluster:
+    def test_equals_suffix_is_not_a_bare_letter_cluster(self) -> None:
+        assert resolve_short_cluster(["-m=", "acmecorp"], ["-m=", "acmecorp"], frozenset({"-m"}), None) == []
+
     def test_later_unquoted_attached_value_is_scanned(self) -> None:
         assert resolve_short_cluster(["-sbacmecorp"], ["-sbacmecorp"], frozenset({"-b"}), None) == ["acmecorp"]
 
