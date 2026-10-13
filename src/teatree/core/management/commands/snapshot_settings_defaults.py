@@ -11,7 +11,9 @@ change it is — and that review is the only approval there is, because a render
 cannot diverge from its in-code default for anything else to approve.
 
 Safety-posture keys and dark feature-flags are declined by the planner and reported as
-such, so a live override of one is visible here and adopted by no path.
+such, so a live override of one is visible here and adopted by no path. A row carrying a
+banned term is declined by class, and a scope name carrying one is reported without it;
+a box with no term to scan for is refused, since nothing could be classified.
 """
 
 import difflib
@@ -22,9 +24,14 @@ from django_typer.management import TyperCommand, command
 from teatree.backends.slack.table_format import slack_table_fence
 from teatree.config import cold_defaults
 from teatree.config.defaults_snapshot import ShippedFile, SnapshotPlan, change_table, plan_snapshot
+from teatree.core.config_interchange.secret_guard import (
+    ScanTermsUnavailableError,
+    carries_banned_term,
+    resolve_export_scan_terms,
+)
 from teatree.core.models import ConfigSetting
-from teatree.hooks.banned_term_registry import export_scan_terms
-from teatree.hooks.term_match import matched_term
+from teatree.core.models.config_setting import WITHHELD_NAME_SCOPE
+from teatree.hooks.term_match import line_matches
 
 _GLOBAL_SCOPE = ""
 
@@ -45,13 +52,20 @@ class Command(TyperCommand):
         )
 
     def _plan(self) -> SnapshotPlan:
+        try:
+            terms = resolve_export_scan_terms()
+        except ScanTermsUnavailableError as exc:
+            self.stderr.write(f"  refusing to classify the live rows: {exc}")
+            raise SystemExit(2) from exc
         shipped = cold_defaults.shipped_defaults_table(cold_defaults.DEFAULTS_TOML)
-        scan_terms = export_scan_terms()
+        overlay_rows = ConfigSetting.objects.exclude(scope=_GLOBAL_SCOPE).values_list("scope", "key")
         return plan_snapshot(
             shipped=ShippedFile(table=shipped, text=_current_text(cold_defaults.DEFAULTS_TOML)),
             live_global=ConfigSetting.objects.overrides_for_scope(_GLOBAL_SCOPE),
-            overlay_scope_rows=list(ConfigSetting.objects.exclude(scope=_GLOBAL_SCOPE).values_list("scope", "key")),
-            banned_scan=lambda text: matched_term(text, scan_terms),
+            overlay_scope_rows=[
+                (WITHHELD_NAME_SCOPE if line_matches(scope, terms) else scope, key) for scope, key in overlay_rows
+            ],
+            banned_scan=lambda key, value: carries_banned_term(key, value, terms),
         )
 
     def _print_report(self, plan: SnapshotPlan) -> None:

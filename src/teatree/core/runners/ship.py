@@ -394,22 +394,16 @@ class ShipExecutor(RunnerBase):
 
         Re-verified immediately before BOTH the branch push and the PR-open (the two
         outward writes ``execute_ship`` makes), because the claim can be stolen in
-        the async gap after the sync pre-ship gate. Inert when the kill-switch is off
-        or the ticket carries no fleet claim; a lost/unconfirmable claim fails CLOSED
-        (another instance is doing this work — a rare self-heartbeat race just retries).
+        the async gap after the sync pre-ship gate. Inert when the ticket carries no
+        fleet claim; a lost or unconfirmable claim fails CLOSED.
         """
         from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
-        if wire.ticket_claim_is_lost(self.ticket, repo_path):
-            ref = self.ticket.ticket_number or self.ticket.pk
-            return RunnerResult(
-                ok=False,
-                detail=(
-                    f"fleet claim for ticket {ref} is no longer held by this instance — aborting ship "
-                    f"(stolen by another instance, or the ref infra is unreachable so ownership is unconfirmable)"
-                ),
-            )
-        return None
+        loss = wire.ticket_claim_loss(self.ticket, repo_path)
+        if loss is None:
+            return None
+        ref = self.ticket.ticket_number or self.ticket.pk
+        return RunnerResult(ok=False, detail=f"fleet claim for ticket {ref} — aborting ship: {loss}")
 
     @staticmethod
     def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":

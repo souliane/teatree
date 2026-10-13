@@ -77,6 +77,7 @@ The first roll off a legacy stack finds no registry table: it drains and stops t
 - The image-only layout is the override `deploy/docker-compose.generation.yml`, which only the roller and a generation's own watchdog add, on top of the base read out of the same image and before `docker-compose.host-identity.yml`: every runtime role runs the image's own `/usr/local/bin/entrypoint.sh` with `pull_policy: never`, the build reset, no source or `teatree_uv` mount and no `TEATREE_CLONE_DIR` (the image sets it), and `env_file` addressed through `TEATREE_DEPLOY_CHECKOUT`.
 - Compose drops a list entry only by replacing the list, so the override repeats the base volumes minus those two mounts and `tests/test_deploy_generation_image.py` fails on any drift.
 - `roll.sh` refuses a deploy checkout at or around the baked tree, which its path-identity bind would shadow.
+- `teatree-ro-executor` is not a runtime service of the roll: it runs its own `ro-executor` image stage, which carries no generation label, so the roller neither verifies nor recreates it. It sits behind its own `ro-executor` compose profile, so a generation stack's whole-project `up -d` never builds or starts it; `deploy/deploy.sh` builds it on its own and recreates it inside its drained window, and its failure fails the deploy only after everything else converged.
 
 ## The baked tree
 

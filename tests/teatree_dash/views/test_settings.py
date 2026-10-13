@@ -358,6 +358,11 @@ class TestSettingsSet(TestCase):
         assert response.status_code == 400
         assert ConfigSetting.objects.count() == 0
 
+    def test_set_names_the_retirement_reason(self) -> None:
+        response = self._set("branch_prefix", {"value": '"ac"'})
+        assert response.status_code == 400
+        assert b"no readers" in response.content
+
     def test_set_rejects_an_invalid_value(self) -> None:
         response = self._set("admit_colleague_prs_to_board", {"value": '"false"'})
         assert response.status_code == 400
@@ -483,6 +488,21 @@ class TestSettingsRestore(TestCase):
 
     def test_restore_rejects_an_unknown_key_instead_of_silently_no_opping(self) -> None:
         assert self._restore("not_a_setting").status_code == 400
+
+    def test_set_and_restore_say_why_a_key_is_unknown(self) -> None:
+        answers = {
+            "speed": ("renamed to wip",),
+            "branch_prefix": ("retired:", "#2731"),
+            "not_a_setting_probe": ("not a declared setting",),
+        }
+        for route in ("dash:settings_set", "dash:settings_restore"):
+            for key, fragments in answers.items():
+                with self.subTest(route=route, key=key):
+                    response = self.client.post(reverse(route, args=[key]), {"value": '"x"'}, **_LOOPBACK)
+                    body = response.content.decode()
+                    assert response.status_code == 400
+                    assert all(fragment in body for fragment in fragments), body
+                    assert "git " not in body
 
     def test_restoring_an_unset_key_audits_nothing_but_still_answers(self) -> None:
         # Nothing was deleted, so there is no action to record — the page still answers.

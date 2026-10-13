@@ -37,6 +37,7 @@ from teatree.hooks import (
     secret_file_print_detect,
     self_reviewer_assign_detect,
     unbounded_wait_detect,
+    void_merge_detect,
 )
 
 #: A pure Bash-shaped deny predicate: the refusal reason for a command, or ``None``.
@@ -68,6 +69,7 @@ HARD_DENY_PREDICATES: tuple[tuple[str, HardDenyPredicate], ...] = (
     ("self_reviewer_assign", self_reviewer_assign_detect.reviewer_assign_deny_reason),
     ("raw_pid_kill", _raw_pid_kill_deny_reason),
     ("unbounded_wait", _unbounded_wait_deny_reason),
+    ("void_merge", void_merge_detect.void_merge_deny_reason),
 )
 
 

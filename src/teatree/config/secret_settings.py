@@ -15,8 +15,9 @@ is sufficient):
     contain a customer/brand term (e.g. ``ban_close_trailers_on_namespaces =
     ['acme-engineering/*']``) — the case a static keylist can never enumerate.
 
-``config_setting export`` filters both by default and WARNS what it dropped; the
-``--include-private`` flag exports everything for a PERSONAL (never-shared) backup.
+``config_setting export`` filters both by default and WARNS what it dropped. A PERSONAL
+(never-shared) backup is ``--include-private``, which still withholds a row carrying a banned
+term; ``--include-banned-term-values`` carries those too.
 
 Beyond the explicit ``SECRET_SETTINGS`` denylist (customer/brand keys a rule cannot
 derive), two rule-driven classes are withheld from a shared export so no second

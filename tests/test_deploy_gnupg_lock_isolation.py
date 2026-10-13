@@ -94,6 +94,10 @@ def _entrypoint_container_home() -> str:
     return _expanded(match.group(1))
 
 
+# Runs its own minimal image with an allowlisted env and no entrypoint.sh (tests/test_deploy_ro_executor.py).
+_READ_ONLY_EXECUTOR = "teatree-ro-executor"
+
+
 def _compose_service_environments() -> dict[str, dict[str, str]]:
     """Each service's ``environment`` mapping, with YAML merge keys applied.
 
@@ -102,7 +106,11 @@ def _compose_service_environments() -> dict[str, dict[str, str]]:
     than deep-merges — a file that reads as pinned while pinning nothing.
     """
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
-    return {name: dict(block.get("environment") or {}) for name, block in compose["services"].items()}
+    return {
+        name: dict(block.get("environment") or {})
+        for name, block in compose["services"].items()
+        if name != _READ_ONLY_EXECUTOR
+    }
 
 
 def _rendered_services(overrides: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
@@ -119,7 +127,8 @@ def _rendered_services(overrides: dict[str, str] | None = None) -> dict[str, dic
     env.update(overrides or {})
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     proc = subprocess.run(argv, capture_output=True, text=True, check=True, env=env)
-    return json.loads(proc.stdout)["services"]
+    services = json.loads(proc.stdout)["services"]
+    return {name: block for name, block in services.items() if name != _READ_ONLY_EXECUTOR}
 
 
 def _rendered_service_environments() -> dict[str, dict[str, str]]:
@@ -218,9 +227,8 @@ class TestComposeRunsTheCurrentEntrypoint:
             "bash",
             "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh",
         ]
-        assert {name: block.get("entrypoint") for name, block in compose["services"].items()} == dict.fromkeys(
-            compose["services"], expected
-        )
+        services = {name: block for name, block in compose["services"].items() if name != _READ_ONLY_EXECUTOR}
+        assert {name: block.get("entrypoint") for name, block in services.items()} == dict.fromkeys(services, expected)
 
     def test_the_rendered_entrypoint_tracks_a_relocated_deploy_checkout(self) -> None:
         if shutil.which("docker") is None:

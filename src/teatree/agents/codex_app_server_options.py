@@ -9,6 +9,7 @@ from typing import Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
 from teatree.utils.ports import running_in_container
@@ -64,6 +65,14 @@ class CodexAppServerError(RuntimeError):
         return CodexAppServerRefusalError(f"Codex App Server refused {method!r}.")
 
     @classmethod
+    def wrong_transport(cls, detail: str) -> "CodexAppServerError":
+        return cls(f"Codex App Server refused {detail}.")
+
+    @classmethod
+    def attested_on_local_transport(cls, code_home: object) -> "CodexAppServerError":
+        return cls.wrong_transport(f"executor-attested options on the local transport ({code_home})")
+
+    @classmethod
     def unsupported_policy(cls, detail: str) -> "CodexAppServerError":
         return cls(f"Codex App Server cannot enforce this unsupported tool policy: {detail}.")
 
@@ -79,14 +88,18 @@ class CodexAppServerOptions:
     sandbox_mode: str
     sandbox_policy: dict[str, Any]
     config: dict[str, Any]
+    executor: ExecutorAttestation | None = None
 
     @classmethod
-    def from_sdk_options(cls, options: ClaudeAgentOptions) -> "CodexAppServerOptions":
+    def from_sdk_options(
+        cls, options: ClaudeAgentOptions, *, executor: ExecutorAttestation | None = None
+    ) -> "CodexAppServerOptions":
         if options.output_format is not None:
             _raise_unsupported("native structured output is not enabled")
         core = HarnessOptions.from_sdk_options(options)
-        runtime_workspace_roots = _workspace_roots(core)
-        sandbox_mode, sandbox_policy = _tool_policy(options, runtime_workspace_roots)
+        runtime_workspace_roots = workspace_roots(core)
+        attested = executor if isinstance(executor, ExecutorAttestation) else None
+        sandbox_mode, sandbox_policy = _tool_policy(options, runtime_workspace_roots, attested=attested is not None)
         config = _codex_config(options)
         if sandbox_mode == "danger-full-access":
             # A trusted project's `.codex/rules` ALLOW would skip the approval gate.
@@ -99,6 +112,7 @@ class CodexAppServerOptions:
             sandbox_mode=sandbox_mode,
             sandbox_policy=sandbox_policy,
             config=config,
+            executor=attested,
         )
 
 
@@ -146,22 +160,31 @@ def codex_container_unavailable_reason() -> str | None:
     return f"Codex's sandbox cannot start in a container; {CONTAINER_IS_SANDBOX_ENV}=1 makes the container the sandbox"
 
 
-def _tool_policy(options: ClaudeAgentOptions, runtime_workspace_roots: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+def _require_supported(options: ClaudeAgentOptions, denied: set[str], *, attested: bool) -> None:
     if options.permission_mode not in _SUPPORTED_PERMISSION_MODES:
         _raise_unsupported(f"permission mode {options.permission_mode!r}")
     if options.allowed_tools:
         _raise_unsupported("Claude allowed-tools lists")
     if options.can_use_tool is not None or options.permission_prompt_tool_name is not None:
         _raise_unsupported("interactive permission callbacks")
-    denied = set(options.disallowed_tools)
-    if reason := codex_phase_policy_unavailable_reason(denied):
+    if reason := codex_phase_policy_unavailable_reason(denied - _MUTATION_TOOLS if attested else denied):
         _raise_unsupported(reason)
     if any(name.startswith("mcp__") for name in denied):
         _raise_unsupported("per-tool denials that Codex cannot represent")
     known = _MUTATION_TOOLS | _READ_TOOLS | _SHELL_TOOLS | _DISPATCH_TOOLS | _CLAUDE_ONLY_TOOLS
     if denied - known:
         _raise_unsupported("unknown per-tool denials")
+
+
+def _tool_policy(
+    options: ClaudeAgentOptions, runtime_workspace_roots: tuple[str, ...], *, attested: bool
+) -> tuple[str, dict[str, Any]]:
+    denied = set(options.disallowed_tools)
+    _require_supported(options, denied, attested=attested)
     if options.permission_mode == "plan" or denied & _MUTATION_TOOLS:
+        if attested:
+            # The executor's read-only mounts, attested by a live probe, are the sandbox.
+            return "danger-full-access", {"type": "dangerFullAccess"}
         if container_is_the_sandbox():
             _raise_unsupported(_CONTAINER_READ_ONLY_UNENFORCEABLE)
         return "read-only", {"type": "readOnly"}
@@ -174,7 +197,7 @@ def _tool_policy(options: ClaudeAgentOptions, runtime_workspace_roots: tuple[str
     return "workspace-write", {"type": "workspaceWrite", "writableRoots": list(runtime_workspace_roots)}
 
 
-def _workspace_roots(options: HarnessOptions) -> tuple[str, ...]:
+def workspace_roots(options: HarnessOptions) -> tuple[str, ...]:
     roots = ((options.cwd,) if options.cwd else ()) + options.add_dirs
     return tuple(dict.fromkeys(roots))
 

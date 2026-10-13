@@ -8,6 +8,7 @@ from pathlib import Path
 
 from teatree.agents.codex_app_server_options import CodexAppServerError
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV
+from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 _PROCESS_ENV_KEYS = frozenset(
     {
@@ -60,4 +61,4 @@ def codex_process_env(
     if author_email := retained.get("GIT_AUTHOR_EMAIL"):
         retained.setdefault("GIT_COMMITTER_EMAIL", author_email)
     retained["GIT_CONFIG_GLOBAL"] = str(code_home / ".gitconfig")
-    return {**retained, "CODEX_HOME": str(code_home), "HOME": str(code_home)}
+    return {**retained, **dispatched_agent_env(), "CODEX_HOME": str(code_home), "HOME": str(code_home)}

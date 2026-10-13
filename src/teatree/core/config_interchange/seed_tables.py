@@ -20,13 +20,18 @@ written / skipped / rejected shape.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import tomlkit
 from tomlkit import items as tomlkit_items
 
-from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
-from teatree.core.config_interchange.secret_guard import withheld_within
+from teatree.config.seed_defaults import (
+    SEED_ROW_FIELDS,
+    SEED_TABLES,
+    classify_seed_field,
+    seed_divergences,
+    shipped_seed_table,
+)
 from teatree.core.models import Loop, Mode, ModeSchedule
 from teatree.core.models.config_setting import ConfigValue
 from teatree.core.models.loop_preset import mask_refusal
@@ -99,27 +104,46 @@ def live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
     }
 
 
+class SeedExportGuard(Protocol):
+    """What the seed emitter asks of the export's guard — one field, and one entry name."""
+
+    def field_reason(self, key: str, value: ConfigValue) -> str | None: ...
+
+    def withheld_name(self, name: str, rows: int) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SeedEmission:
+    """What :func:`emit_seed_tables` kept out: guarded fields, and entries no import can place."""
+
+    withheld: tuple[WithheldSeedField, ...]
+    unshipped: tuple[str, ...]  # "<family>.<name>"
+
+
 def emit_seed_tables(
-    document: tomlkit.TOMLDocument,
-    sorted_table: SortedTableFactory,
-    *,
-    terms: tuple[str, ...] = (),
-    withhold_secrets: bool = True,
-) -> list[WithheldSeedField]:
+    document: tomlkit.TOMLDocument, sorted_table: SortedTableFactory, *, guard: SeedExportGuard
+) -> SeedEmission:
     """Attach a ``[<family>.<name>]`` sub-table per seed row that diverges from its default.
 
     *sorted_table* is the caller's key-sorted table renderer, so the seed tables and the
-    settings tables come out of one formatting path. Each field then goes through the shared
-    guard (*terms* being the export's banned-term scan terms) and a withheld one is dropped,
-    reported back so the caller names it exactly as it names a withheld ``ConfigSetting`` row.
-    *withhold_secrets* off is the ``--include-private`` personal backup, which carries
-    everything.
+    settings tables come out of one formatting path. An entry whose name *guard* withholds
+    is dropped whole; an entry ``defaults.toml`` does not ship is dropped too, because the
+    import only restores tuning onto shipped rows and would refuse the whole file on it.
+    Every other field goes through *guard*, and a withheld one is dropped and reported back
+    so the caller names it exactly as it names a withheld ``ConfigSetting`` row.
     """
-    withheld = []
+    withheld: list[WithheldSeedField] = []
+    unshipped: list[str] = []
     for table in SEED_TABLES:
+        shipped = shipped_seed_table(table)
         shareable = {}
         for name, body in seed_divergences(table, live_seed_rows(table)).items():
-            kept, dropped = _shareable_fields(table, name, body, terms, guarded=withhold_secrets)
+            if guard.withheld_name(name, len(body)):
+                continue
+            if name not in shipped:
+                unshipped.append(f"{table}.{name}")
+                continue
+            kept, dropped = _shareable_fields(table, name, body, guard)
             withheld.extend(dropped)
             if kept:
                 shareable[name] = kept
@@ -129,20 +153,17 @@ def emit_seed_tables(
         for name in sorted(shareable):
             family[name] = sorted_table(shareable[name])
         document[table] = family
-    return withheld
+    return SeedEmission(tuple(withheld), tuple(unshipped))
 
 
 def _shareable_fields(
-    table: str, name: str, body: dict[str, ConfigValue], terms: tuple[str, ...], *, guarded: bool
+    table: str, name: str, body: dict[str, ConfigValue], guard: SeedExportGuard
 ) -> tuple[dict[str, ConfigValue], list[WithheldSeedField]]:
-    if not guarded:
-        return dict(body), []
     kept: dict[str, ConfigValue] = {}
     dropped = []
     for field, value in body.items():
-        held = withheld_within(field, value, terms)
-        if held:
-            dropped.append(WithheldSeedField(table, name, field, held[0].reason))
+        if (reason := guard.field_reason(field, value)) is not None:
+            dropped.append(WithheldSeedField(table, name, field, reason))
         else:
             kept[field] = value
     return kept, dropped

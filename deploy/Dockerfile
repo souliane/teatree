@@ -343,6 +343,22 @@ ENV UV_CONSTRAINT="${TEATREE_CLONE_DIR}/uv-constraints.txt"
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
+# The read-only executor (teatree-ro-executor). Built from the pinned base, never from
+# `system`: an image ENV cannot be unset by compose, and the core refuses an executor whose
+# environment holds a key outside its allowlist or whose PATH resolves t3, gh, docker or pass.
+# It runs as nobody, which owns none of the trees it reads, so git must trust them all.
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS ro-executor
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends ca-certificates git python3 tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    git config --system safe.directory '*'
+COPY --from=system /usr/bin/node /usr/bin/node
+COPY --from=system /usr/lib/node_modules/@openai/codex /usr/lib/node_modules/@openai/codex
+RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/bin/codex && \
+    codex --version && \
+    python3 -I -S -c 'import errno, json, os, stat, sys'
+USER 65534:65534
+
 # The code-bearing files, kept out of `system` so a code change never invalidates its layers.
 FROM system AS toolchain
 # Where core sits inside the build context: empty for a core clone, `vendor/teatree` for a fork's archive.

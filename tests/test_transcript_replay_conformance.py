@@ -27,6 +27,7 @@ from typing import Final
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import forge_api_detect, out_of_band_merge_guard
 from teatree.core.gates.privacy_gate import scan_for_publication
 from teatree.eval import transcript_conformance as tc
 from teatree.eval.session_transcript import parse_session_jsonl
@@ -185,12 +186,12 @@ def test_mirrored_constants_match_hook_router() -> None:
     rules. This test imports the router values read-only (tests are tach-exempt)
     and asserts equality, so a drift in either side trips the build.
     """
-    assert tc._OUT_OF_BAND_MERGE_RE.pattern == router._OUT_OF_BAND_MERGE_RE.pattern
+    assert tc._OUT_OF_BAND_MERGE_RE.pattern == out_of_band_merge_guard._OUT_OF_BAND_MERGE_RE.pattern
     assert tc._MERGE_ENDPOINT_RE.pattern == router._MERGE_ENDPOINT_RE.pattern
     assert tc._REVIEW_POST_ENDPOINT_RE.pattern == router._REVIEW_POST_ENDPOINT_RE.pattern
     assert tc._REVIEW_POST_METHOD_RE.pattern == router._REVIEW_POST_METHOD_RE.pattern
     assert tc._REVIEW_POST_BODY_FLAG_RE.pattern == router._REVIEW_POST_BODY_FLAG_RE.pattern
-    assert tc._GLAB_GH_API_RE.pattern == router._GLAB_GH_API_RE.pattern
+    assert tc._GLAB_GH_API_RE.pattern == forge_api_detect._GLAB_GH_API_RE.pattern
 
 
 # ── out-of-band-merge invariant: action-aware evasion matrix (#2387) ──────────

@@ -19,6 +19,7 @@ from teatree.backends.github.api import (
 )
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
+from teatree.backends.github.pr_content import GhPrContentReader
 from teatree.backends.github.pr_create import create_pr as _create_pr
 from teatree.backends.github.pr_notes import GitHubPrNotes
 from teatree.backends.github.pr_reads import PR_URL_RE
@@ -34,6 +35,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -544,6 +546,9 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_content_snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot:
+        return GhPrContentReader(_forge_merge.gh_runner(self._token)).snapshot(slug=slug, pr_id=pr_id)
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
