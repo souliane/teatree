@@ -140,9 +140,9 @@ holistic (`architectural-review`).
 - **consumers:** architecture-design, architectural-review, eval
 - **refs:** effective-method-classifier, gh-glab-last-wins-finding
 
-**Anti-pattern.** Deciding whether a forge command is a read or a write by the literal verb/tool-name or the mere presence of a method flag, so a last-wins -X/--method override (gh/glab) bypasses the write gate.
+**Anti-pattern.** Deciding whether a forge command is a read or a write by the literal verb/tool-name or the mere presence of a method flag, so a last-wins -X/--method override (gh/glab) bypasses the write gate. The same holds for option spellings: a parser that knows only `-d` and `--data` reads `curl -sd x`, `gh pr create -dt x` or `--data-ascii x` as carrying no body.
 
-**Preferred.** Classify by EFFECTIVE HTTP method — last -X/--method wins; body/field flags default to POST — mirroring the transcript-conformance effective-method classifier.
+**Preferred.** Classify by EFFECTIVE HTTP method — last -X/--method wins; body/field flags default to POST — mirroring the transcript-conformance effective-method classifier. Read the argv as the tool does (clusters, aliases, attached values), through one reader that detection and extraction both consume.
 
 ## Shared predicate tightened for one caller's safety needs
 
