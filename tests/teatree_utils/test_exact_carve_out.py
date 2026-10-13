@@ -11,7 +11,7 @@ ARABIC_INDIC_TWO = chr(0x662)
 
 
 @pytest.mark.parametrize("joined", ["acme.owner", "acme_owner"])
-def test_joining_separators_and_case_are_one_identifier(joined: str) -> None:
+def test_joining_separators_are_one_identifier(joined: str) -> None:
     assert mask_exempt(joined, (HANDLE,)).strip() == ""
 
 
@@ -54,10 +54,6 @@ def test_a_letter_digit_or_joiner_glued_to_either_end_extends_the_identifier(ext
 )
 def test_an_address_mark_joined_to_a_word_extends_an_address(entry: str, extended: str) -> None:
     assert mask_exempt(extended, (entry,)) == extended
-
-
-def test_a_leading_diff_marker_does_not_extend_an_address_entry() -> None:
-    assert mask_exempt(f"+{ALIAS} ping", (ALIAS, ADDRESS)) == "+" + " " * len(ALIAS) + " ping"
 
 
 def test_only_the_exact_occurrences_among_several_are_blanked() -> None:

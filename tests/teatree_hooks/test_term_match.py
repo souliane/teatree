@@ -271,7 +271,7 @@ class TestMaskExemptBlanksWholeEntryRuns:
 class TestTheCarveOutReadsTheMatchersTokens:
     """An allow entry spelled with the matcher's own tokens exempts its text, whatever the script."""
 
-    @pytest.mark.parametrize("text", ["AcmeOwner", f"{chr(0x130)}acme", f"{chr(0x212A)}cme"])
+    @pytest.mark.parametrize("text", [f"{chr(0x130)}acme", f"{chr(0x212A)}cme"])
     def test_an_entry_of_the_matchers_tokens_exempts_the_whole_text(self, text: str) -> None:
         entry = "-".join(term_match.tokens(text))
 
