@@ -254,6 +254,12 @@ class TestAStoreWithNoScanTerm(TestCase):
             result = import_toml_to_db('[teatree]\nmode = "not-a-mode"\n')
         assert [row.reason for row in result.rejected] == ["invalid (not content-scanned; message withheld)"]
 
+    def test_an_unscanned_restore_names_the_class_of_an_invalid_private_value(self) -> None:
+        with mock.patch.dict(os.environ, self._without_registry(), clear=True):
+            text = "[backup]\ninclude_private = true\n[teatree]\nslack_user_id = 12\n"
+            result = import_toml_to_db(text, restore_private=True)
+        assert [row.reason for row in result.rejected] == ["invalid (personal-identifier value; message withheld)"]
+
 
 class TestExportScanTermsRoutesThroughRegistry:
     """``resolve_export_scan_terms`` resolves through the consolidated registry.
