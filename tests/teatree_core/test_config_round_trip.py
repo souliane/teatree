@@ -16,17 +16,22 @@ Asserted through BOTH surfaces, because the report came from the dashboard while
 reproduction was on the CLI, and the two must not be able to disagree.
 """
 
+import os
 import tomllib
+from collections.abc import Iterator
 from typing import Any, ClassVar, cast
+from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
-from teatree.core.config_interchange.secret_guard import is_private_backup
+from teatree.core.config_interchange.secret_guard import ExportPrivacy, is_private_backup
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.interchange import export_text, import_preview
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
 #: Rows a live box holds in the ``ConfigSetting`` store that are NOT operator configuration —
 #: internal state a module owns, written through the same store. The two the report named.
@@ -34,6 +39,12 @@ _INTERNAL_STATE_ROWS: dict[str, object] = {
     "host_projection_generation": 180,
     "loop_preset_transition_stamp": "maintenance",
 }
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
+        yield
 
 
 class TestExportImportRoundTripIsANoOp(TestCase):
@@ -232,7 +243,7 @@ class TestAPrivateBackupIsRestorable(TestCase):
         ConfigSetting.objects.set_value("merge_wip", 4)
 
     def _backup(self) -> str:
-        return export_db_to_toml(include_private=True, scan_terms=self._TERMS).toml
+        return export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES, scan_terms=self._TERMS).toml
 
     def _import(self, text: str, *, dry_run: bool = True, restore_private: bool = False) -> ConfigImport:
         return import_toml_to_db(
@@ -249,7 +260,7 @@ class TestAPrivateBackupIsRestorable(TestCase):
         assert is_private_backup(tomllib.loads(export_db_to_toml(scan_terms=self._TERMS).toml)) is False
 
     def test_the_private_export_declares_itself_a_personal_backup(self) -> None:
-        result = export_db_to_toml(include_private=True, scan_terms=self._TERMS)
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES, scan_terms=self._TERMS)
         assert is_private_backup(tomllib.loads(result.toml)) is True
         assert result.private_backup is True
 

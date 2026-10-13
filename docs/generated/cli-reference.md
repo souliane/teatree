@@ -13831,6 +13831,11 @@ Usage: t3 teatree config_setting import [OPTIONS]
  file: an
  ordinary dump's secret rows are refused under it exactly as without it.
 
+ On a box with no ban-class term nothing can be content-scanned, so the import
+ says so
+ on stderr, shows every value withheld, and proceeds with the key classes
+ alone.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --input                  TEXT  Read the TOML dump from this path; omit to    │
 │                                read stdin.                                   │
@@ -13871,16 +13876,27 @@ Usage: t3 teatree config_setting export [OPTIONS]
  (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
  SHARED export (auto-configuring a fresh teatree) cannot leak customer data
  even though the private DB store keeps it. Each withheld row is named on
- stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
- backup. That file carries the rows an ordinary ``import`` refuses, so it
- stamps
- itself a backup and is restored with ``import --restore-private`` (#4156).
+ stderr by key and class, never by the term; ``--include-private`` selects a
+ PERSONAL, never-shared backup that carries the key classes but still withholds
+ every row carrying a banned term. ``--include-banned-term-values`` carries
+ those
+ too: it needs no term, so it is the one export a box with no term can make,
+ and it
+ writes only to ``--output``, never to a terminal. Any private file carries the
+ rows
+ an ordinary ``import`` refuses, so it stamps itself a backup and is restored
+ with
+ ``import --restore-private`` (#4156). A store with no ban-class term refuses
+ every
+ other export before anything is written.
 
  A stored row that is not a SETTING — internal runtime state sharing the store,
  a
- key outliving its declaration — is named on stderr and left out whatever the
- flags
- say: ``import`` has no home for such a key and refuses the whole file on one.
+ key outliving its declaration — is reported on stderr (by name only where a
+ term scan
+ clears the name) and left out whatever the flags say: ``import`` has no home
+ for such
+ a key and refuses the whole file on one.
 
  Two INDEPENDENT filters widen the dump, both off by default.
  ``--default-keys-only``
@@ -13893,21 +13909,32 @@ Usage: t3 teatree config_setting export [OPTIONS]
  included.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay                  TEXT  Overlay name to scope the row to; omit for  │
-│                                  the global scope (every overlay).           │
-│ --output                   TEXT  Write the TOML to this path instead of      │
-│                                  stdout.                                     │
-│ --include-private                Also export private/secret rows             │
-│                                  (terms/brands, token refs) — PERSONAL       │
-│                                  backup only, never share.                   │
-│ --default-keys-only              Restrict the dump to the Category.DEFAULT   │
-│                                  keys defaults.toml ships (drops registries, │
-│                                  secrets, identifiers and overlay scopes).   │
-│ --include-defaults               Also emit keys with no DB row, at their     │
-│                                  resolved effective value. With              │
-│                                  --default-keys-only this is the             │
-│                                  defaults.toml shape.                        │
-│ --help                           Show this message and exit.                 │
+│ --overlay                           TEXT  Overlay name to scope the row to;  │
+│                                           omit for the global scope (every   │
+│                                           overlay).                          │
+│ --output                            TEXT  Write the TOML to this path        │
+│                                           instead of stdout.                 │
+│ --include-private                         Also export private rows (token    │
+│                                           refs, personal identifiers) —      │
+│                                           PERSONAL backup only, never share. │
+│                                           A row carrying a banned term still │
+│                                           needs                              │
+│                                           --include-banned-term-values.      │
+│ --default-keys-only                       Restrict the dump to the           │
+│                                           Category.DEFAULT keys              │
+│                                           defaults.toml ships (drops         │
+│                                           registries, secrets, identifiers   │
+│                                           and overlay scopes).               │
+│ --include-defaults                        Also emit keys with no DB row, at  │
+│                                           their resolved effective value.    │
+│                                           With --default-keys-only this is   │
+│                                           the defaults.toml shape.           │
+│ --help                                    Show this message and exit.        │
+│ --include-banned-term-values              Also export rows carrying a banned │
+│                                           term, the term registry included;  │
+│                                           needs --include-private and        │
+│                                           --output, and needs no term, so it │
+│                                           works on a box with none.          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
