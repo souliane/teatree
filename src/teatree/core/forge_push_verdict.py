@@ -30,7 +30,7 @@ _GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hi
 _EMITTER_LABELS = r"(?:-?[\w./()][\w./()-]*(?: [\w./()-]+)*: )*"
 #: Every pattern starts at the stripped line's TRUE start, so a test report line naming the marker never matches.
 _GATE_ABORT_LINES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^=== push-gate: ABORTED\b"),  # utils/push_gate_lock.py
+    re.compile(r"^=== push-gate: ABORTED\b"),  # utils/push_gate_lock.py, dev/lib/gate-lock.sh
     re.compile(r"^worker '[^']+' crashed while running '"),  # xdist dsession
     re.compile(r"^replacing crashed worker \S+$"),  # xdist dsession
     re.compile(rf"^(?:E\s+)?{_EMITTER_LABELS}(?:\[Errno 12\] )?Cannot allocate memory\b"),  # OSError, bash, git, prek

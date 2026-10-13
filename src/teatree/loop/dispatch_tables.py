@@ -105,6 +105,8 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # A standing manual override whose reason reads as resolved: a QUESTION for the owner,
     # never an action teatree takes — proposing is not lifting (A8).
     "override.lift_candidate": "action_needed",
+    # The owner's own "Lift it" answer, carried out — a completed action, as board.reconciled.
+    "override.lifted": "in_flight",
     # A shipped gate that has never fired and nobody decided to leave off (16A).
     "gate.undecided": "action_needed",
     # Control-DB leftovers the owner could reclaim — a proposal, never a deletion (A8).

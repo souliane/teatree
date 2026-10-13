@@ -20,53 +20,21 @@ database default protects every writer, including one older than the gate.
 from typing import cast
 
 import django.test
-from django.db import connection
 
 from teatree.core.loop_lease_liveness import reader_pid_namespace
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.task import Task
 from tests.factories import TaskFactory
+from tests.teatree_core._row_clone import clone_row_omitting
 
 _COLUMN = "owner_pid_namespace"
-
-
-def _clone_row_omitting(table: str, column: str, pk: int, *, replacing: dict[str, str] | None = None) -> None:
-    """Re-insert row *pk* of *table* with every column except ``id`` and *column*.
-
-    The generic shape matters: it is what a model class that predates *column*
-    emits, and it stays correct as the table grows more columns. *replacing*
-    substitutes a bound value for a column the copy cannot duplicate (a unique
-    ``name``), so the only thing under test stays the omission.
-    """
-    substitutions = replacing or {}
-    with connection.cursor() as cursor:
-        names = [field.name for field in connection.introspection.get_table_description(cursor, table)]
-        copied = [name for name in names if name not in {"id", column}]
-        targets = ", ".join(connection.ops.quote_name(name) for name in copied)
-        sources = ", ".join("%s" if name in substitutions else connection.ops.quote_name(name) for name in copied)
-        quoted_table = connection.ops.quote_name(table)
-        cursor.execute(
-            " ".join(
-                [
-                    "INSERT INTO",
-                    quoted_table,
-                    "(" + targets + ")",
-                    "SELECT",
-                    sources,
-                    "FROM",
-                    quoted_table,
-                    "WHERE id = %s",
-                ]
-            ),
-            [*(substitutions[name] for name in copied if name in substitutions), pk],
-        )
 
 
 class TestTaskOwnerPidNamespaceHasADatabaseDefault(django.test.TestCase):
     def test_an_insert_that_omits_the_column_stores_blank(self) -> None:
         task = cast("Task", TaskFactory())
 
-        _clone_row_omitting(Task._meta.db_table, _COLUMN, task.pk)
+        clone_row_omitting(Task._meta.db_table, _COLUMN, task.pk)
 
         clone = Task.objects.exclude(pk=task.pk).get()
         assert clone.owner_pid_namespace == ""
@@ -86,7 +54,7 @@ class TestLoopLeaseOwnerPidNamespaceHasADatabaseDefault(django.test.TestCase):
     def test_an_insert_that_omits_the_column_stores_blank(self) -> None:
         lease = LoopLease.objects.create(name="t3-master", owner="worker", owner_pid_namespace="pid:[1]")
 
-        _clone_row_omitting(LoopLease._meta.db_table, _COLUMN, lease.pk, replacing={"name": "t3-master-copy"})
+        clone_row_omitting(LoopLease._meta.db_table, _COLUMN, lease.pk, replacing={"name": "t3-master-copy"})
 
         clone = LoopLease.objects.exclude(pk=lease.pk).get()
         assert clone.owner_pid_namespace == ""

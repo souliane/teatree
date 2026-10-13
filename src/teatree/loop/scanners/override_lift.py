@@ -1,8 +1,9 @@
-"""Propose lifting a manual override whose reason has cleared — never lift one (A8).
+"""Propose lifting a manual override whose reason has cleared — and lift it only when the owner says so (A8).
 
-Nothing here writes an override. An override is a person's decision, so the factory's
-whole job is to notice when the condition that justified it is gone and ASK. That is only
-possible because an override carries the REASON it was set: without one the only policy
+An override is a person's decision, so the factory's whole job is to notice when the
+condition that justified it is gone and ASK; the one write here carries out the owner's own
+"Lift it" answer, on an owner channel, for the very override it was asked about. Asking is
+only possible because an override carries the REASON it was set: without one the only policy
 available is a timer, which is exactly the auto-revert A6 was retracted for.
 
 Two classes of reason, two behaviours. A MACHINE-CHECKABLE reason names a condition this
@@ -58,8 +59,12 @@ class OverrideProposal:
 
     @property
     def dedupe_marker(self) -> str:
-        stamp = f"{self.set_at.timestamp():.0f}" if self.set_at else ""
-        return f"override-lift:{self.loop_name}@{stamp}"
+        return _marker(self.loop_name, self.set_at)
+
+
+def _marker(loop_name: str, set_at: dt.datetime | None) -> str:
+    stamp = f"{set_at.timestamp():.0f}" if set_at else ""
+    return f"override-lift:{loop_name}@{stamp}"
 
 
 def override_lift_proposals(now: dt.datetime | None = None) -> list[OverrideProposal]:
@@ -102,6 +107,28 @@ def raise_override_lift_questions(now: dt.datetime | None = None) -> int:
         except Exception:
             logger.exception("override-lift question failed for %r — the override is untouched", proposal.loop_name)
     return len(proposals)
+
+
+def lift_the_overrides_the_owner_chose() -> list[str]:
+    """Lift each standing override whose own question the owner answered "Lift it" on an owner channel."""
+    from django.db import transaction  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+    from teatree.core.models import DeferredQuestion, Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+    lifted = []
+    for row in Loop.objects.exclude(enabled=None).order_by("name"):
+        chosen = DeferredQuestion.objects.filter(
+            dedupe_marker=_marker(row.name, row.override_set_at),
+            answer_text__iexact=_LIFT.label,
+            resolved_via__in=DeferredQuestion.OWNER_CHANNELS,
+        )
+        if not chosen.exists():
+            continue
+        with transaction.atomic():
+            standing = Loop.objects.select_for_update().filter(name=row.name, override_set_at=row.override_set_at)
+            if standing.exclude(enabled=None).exists() and Loop.objects.set_manual_override(row.name, runs=None):
+                lifted.append(row.name)
+    return lifted
 
 
 _LIFT = CardOption("Lift it", "The presets decide again whether the job runs.")
@@ -207,9 +234,17 @@ class OverrideLiftScanner:
 
     @staticmethod
     def scan() -> list[ScanSignal]:
+        lifted = [
+            ScanSignal(
+                kind="override.lifted",
+                summary=f"Lifted the manual override on {name!r}: the owner chose to lift it.",
+                payload={"loop": name},
+            )
+            for name in lift_the_overrides_the_owner_chose()
+        ]
         proposals = override_lift_proposals()
         raise_override_lift_questions()
-        return [
+        return lifted + [
             ScanSignal(
                 kind="override.lift_candidate",
                 summary=proposal.summary,
@@ -223,6 +258,7 @@ __all__ = [
     "PROSE_REMINDER_AGE",
     "OverrideLiftScanner",
     "OverrideProposal",
+    "lift_the_overrides_the_owner_chose",
     "override_lift_proposals",
     "raise_override_lift_questions",
 ]

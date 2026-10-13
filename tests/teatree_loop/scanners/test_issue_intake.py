@@ -20,13 +20,7 @@ from teatree.core.models import (
     UnclaimedIntakeCandidate,
     WaitingCandidate,
 )
-from teatree.loop.scanners.issue_intake import (
-    IssueIntakeScanner,
-    author_is_trusted,
-    issue_author,
-    issue_created_at,
-    issue_url,
-)
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner, author_is_trusted
 from teatree.types import RawAPIDict
 from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
@@ -923,31 +917,7 @@ class IssueIntakeStarvationVisibilityTests(_PublicRepoTestCase):
         assert not UnclaimedIntakeCandidate.objects.exists()
 
 
-class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
-    """The three payload readers the fail-closed gate leans on."""
-
-    def test_issue_url_reads_both_forge_url_fields(self) -> None:
-        assert issue_url({"web_url": self.URL_A}) == self.URL_A
-        assert issue_url({"html_url": self.URL_A}) == self.URL_A
-        assert issue_url({}) == ""
-
-    def test_issue_author_reads_both_forge_shapes_and_strips(self) -> None:
-        assert issue_author({"user": {"login": " souliane "}}) == OWNER
-        assert issue_author({"author": {"username": OWNER}}) == OWNER
-        assert issue_author({"user": "not-a-dict"}) == ""
-
-    def test_issue_created_at_reads_both_forges_and_degrades_to_none(self) -> None:
-        assert issue_created_at({"created_at": "2026-08-01T09:00:00Z"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
-        # GitLab emits sub-second precision and a numeric offset.
-        assert issue_created_at({"created_at": "2026-08-01T11:00:00.000+02:00"}) == dt.datetime(
-            2026, 8, 1, 9, tzinfo=dt.UTC
-        )
-        # A naive stamp is read as UTC, not as local time.
-        assert issue_created_at({"created_at": "2026-08-01T09:00:00"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
-        assert issue_created_at({"created_at": "not a date"}) is None
-        assert issue_created_at({"created_at": 1234}) is None
-        assert issue_created_at({}) is None
-
+class IssueIntakeAuthorGateTests(_PublicRepoTestCase):
     def test_author_is_trusted_refuses_an_unresolvable_author(self) -> None:
         trusted = frozenset({OWNER})
 

@@ -190,6 +190,49 @@ class ActionLadderBehaviourTests(TestCase):
         assert Ticket.objects.count() == 1
         assert ticket.tasks.count() == 1
 
+    def test_recurrence_after_resolution_reuses_the_open_repair_ticket(self) -> None:
+        first = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::load", requested_rung=ActionRung.TICKET)
+        )
+        assert first is not None
+        first_ticket_id = first.firing.ticket_id
+        SelfImproveFiring.objects.filter(pk=first.firing.pk).update(resolved_at=timezone.now())
+
+        recurrence = run_action_ladder(
+            _report(
+                detector="pressure_incident",
+                dedup_key="pressure_incident::load",
+                state_hash_value="h2",
+                requested_rung=ActionRung.TICKET,
+            )
+        )
+
+        assert recurrence is not None
+        assert recurrence.firing.ticket_id == first_ticket_id
+        assert Ticket.objects.count() == 1
+
+    def test_recurrence_after_finished_repair_ticket_opens_a_fresh_one(self) -> None:
+        first = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::load", requested_rung=ActionRung.TICKET)
+        )
+        assert first is not None
+        first_ticket_id = first.firing.ticket_id
+        Ticket.objects.filter(pk=first_ticket_id).update(state=Ticket.State.IGNORED)
+        SelfImproveFiring.objects.filter(pk=first.firing.pk).update(resolved_at=timezone.now())
+
+        recurrence = run_action_ladder(
+            _report(
+                detector="pressure_incident",
+                dedup_key="pressure_incident::load",
+                state_hash_value="h2",
+                requested_rung=ActionRung.TICKET,
+            )
+        )
+
+        assert recurrence is not None
+        assert recurrence.firing.ticket_id != first_ticket_id
+        assert Ticket.objects.count() == 2
+
     def test_ticket_rung_walks_the_repair_ticket_to_work_started_so_planning_can_complete(self) -> None:
         result = run_action_ladder(
             _report(detector="pressure_incident", dedup_key="pressure_incident::disk", requested_rung=ActionRung.TICKET)
