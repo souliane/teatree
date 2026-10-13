@@ -19,9 +19,11 @@ from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallback
 from teatree.agents.phase_agent_skills import declared_skills_for_phase
 from teatree.agents.read_only_venue_brief import (
     ABSENT_TOOL,
+    HANDOFF_CAP_BYTES,
     ISSUE_BODY_CAP_BYTES,
     ISSUE_COMMENTS_CAP_BYTES,
     READ_ONLY_DIRECTIVE,
+    TICKET_CONTEXT_CAP_BYTES,
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
@@ -228,12 +230,24 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         assert "the issue comments could not be read" in str(refusal)
 
-    def test_over_budget_issue_comments_refuse_the_executor_run(self) -> None:
-        body = "c" * (ISSUE_COMMENTS_CAP_BYTES + 1)
-
-        refusal = self._refusal(self._task(), _Host(comments=[{"user": {"login": "example-owner"}, "body": body}]))
-
-        assert "read-only brief over budget: issue comments" in str(refusal)
+    def test_every_inlined_part_over_its_cap_refuses_the_executor_run(self) -> None:
+        handoff = Path(self.enterContext(TemporaryDirectory())) / "handoff.json"
+        handoff.write_text("h" * (HANDOFF_CAP_BYTES + 1), encoding="utf-8")
+        ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}2", context="t" * (TICKET_CONTEXT_CAP_BYTES + 1))
+        LandscapeArtifact.record(ticket=ticket, survey=_SURVEY, recorded_by="t3:intake")
+        comments = [{"user": {"login": "example-owner"}, "body": "c" * ISSUE_COMMENTS_CAP_BYTES}]
+        cases: list[tuple[str, int, _Host | None, Ticket | None, Path | None]] = [
+            ("issue body", ISSUE_BODY_CAP_BYTES, _Host({"body": "x" * (ISSUE_BODY_CAP_BYTES + 1)}), None, None),
+            ("issue comments", ISSUE_COMMENTS_CAP_BYTES, _Host(comments=comments), None, None),
+            ("ticket context", TICKET_CONTEXT_CAP_BYTES, None, ticket, None),
+            ("handoff", HANDOFF_CAP_BYTES, None, None, handoff),
+        ]
+        for part, cap, host, part_ticket, part_handoff in cases:
+            with (
+                self.subTest(part=part),
+                pytest.raises(HarnessFallbackError, match=rf"over budget: {part} \d+ bytes > {cap}"),
+            ):
+                self._prepare(self._task(part_ticket), host=host, handoff=part_handoff)
 
     def test_unreadable_issue_body_refuses_the_executor_run(self) -> None:
         for issue in (CommandFailedError(["gh"], 1, "", "boom"), {"error": "Not a GitHub issue URL"}):
@@ -244,13 +258,6 @@ class TestTheReadOnlyVenueBrief(TestCase):
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
 
         assert "no intake landscape survey" in str(self._refusal(self._task(ticket)))
-
-    def test_over_budget_issue_body_refuses_the_executor_run(self) -> None:
-        body = "x" * (200 * 1024)
-
-        refusal = self._refusal(self._task(), _Host({"body": body}))
-
-        assert f"read-only brief over budget: issue body {len(body)} bytes > {ISSUE_BODY_CAP_BYTES}" in str(refusal)
 
     def test_a_22kb_issue_body_fits(self) -> None:
         body = "y" * (22 * 1024)

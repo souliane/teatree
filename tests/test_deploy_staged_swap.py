@@ -833,7 +833,7 @@ class TestLogsSurviveTheRecreate:
         self, checkout: Path, tmp_path: Path
     ) -> None:
         _, calls = _run(checkout, tmp_path)
-        for service in _SERVICES.split():
+        for service in (*_SERVICES.split(), _EXECUTOR):
             logs_at = _index_of(calls, lambda a, s=service: a[:1] == ["logs"] and s in a)
             up_at = _index_of(calls, lambda a, s=service: _is_up(a) and s in _up_services(a))
             assert logs_at != -1, f"{service}'s log is destroyed by the recreate with no copy kept"

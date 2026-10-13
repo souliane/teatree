@@ -1,4 +1,4 @@
-"""Runs inside the read-only executor as ``python3 -I -S -``: ends every process but PID 1's session and its own.
+"""Runs inside the read-only executor as ``python3 -I -S -``: ends all but PID 1's session and the worker's programs.
 
 Nothing a process can change about itself decides it: no process joins PID 1's session after the fact, and
 no process inside the container gets a parent outside it, which only ``docker exec`` hands out.
@@ -68,7 +68,7 @@ def _spared_exec_root(process: _Process, home_root: str) -> bool:
 
 
 def strays(home_root: str, proc: Path) -> list[int]:
-    """Every live process outside PID 1's session, but this sweep and the worker's own exec programs."""
+    """Every live process outside PID 1's session but the worker's own exec programs, this sweep among them."""
     init = _process(proc / "1")
     if init is None:
         msg = f"PID 1 is unreadable under {proc}, so its session cannot be spared"
@@ -82,7 +82,6 @@ def strays(home_root: str, proc: Path) -> list[int]:
         process.pid
         for process in table.values()
         if process.state not in {"Z", "X"}
-        and process.pid != os.getpid()
         and process.sid != init.sid
         and (process.ppid in table or not _spared_exec_root(process, home_root))
     )

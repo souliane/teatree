@@ -37,10 +37,7 @@ from teatree.utils.run import CompletedProcess
 WRITE_AUTH_SCRIPT: Final = 'umask 077; cat >"$1/.auth.tmp" && mv -f "$1/.auth.tmp" "$1/auth.json"'
 LIST_HOMES_SCRIPT: Final = f'for home in {EXECUTOR_HOME_ROOT}/codex-*; do [ -d "$home" ] && echo "$home"; done; true'
 READ_AUTH_SCRIPT: Final = 'cd -- "$1" && if [ -e auth.json ]; then exec cat auth.json; fi'
-RESET_SCRIPT: Final = (
-    'for root; do find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + '
-    '&& [ -z "$(ls -A -- "$root")" ] || exit 1; done'
-)
+RESET_SCRIPT: Final = 'for root; do find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || exit 1; done'
 CREATE_HOME_SCRIPT: Final = 'mkdir -m 0700 -- "$1"'
 _SWEEP_PROGRAM: Final = Path(codex_read_only_sweep_program.__file__).read_text(encoding="utf-8")
 

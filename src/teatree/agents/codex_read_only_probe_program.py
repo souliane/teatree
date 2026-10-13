@@ -139,7 +139,7 @@ def _environ_names(raw: bytes) -> list[str]:
 def _resolves(name: str) -> bool:
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         candidate = Path(directory) / name
-        if directory and candidate.is_file() and os.access(candidate, os.X_OK):
+        if directory and candidate.is_file():
             return True
     return False
 

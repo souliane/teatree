@@ -174,7 +174,7 @@ def test_executor_runs_as_a_uid_that_owns_none_of_the_mounted_trees() -> None:
 
     assert executor["user"] == _NOBODY
     assert "TEATREE_UID" not in json.dumps(executor)
-    assert all(f"uid={uid},gid={gid}," in entry for entry in executor["tmpfs"])
+    assert all(f"uid={uid},gid={gid},mode=0700," in entry for entry in executor["tmpfs"])
     assert f"USER {_NOBODY}" in _stages()["ro-executor"]
 
 

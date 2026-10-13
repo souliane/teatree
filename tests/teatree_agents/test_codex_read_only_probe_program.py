@@ -99,7 +99,6 @@ def test_a_tool_on_the_exec_path_is_reported(layout: Path) -> None:
     tool = layout / "bin" / "gh"
     tool.parent.mkdir()
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
-    tool.chmod(0o755)
 
     with patch.dict(os.environ, {"PATH": str(tool.parent)}, clear=True):
         observed = observe(_request(layout), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
@@ -171,6 +170,7 @@ def test_a_readable_private_key_is_found_by_its_content_under_any_key_name(layou
 def test_a_nested_mount_is_scanned_once_under_its_own_target(layout: Path) -> None:
     root, nested = layout / "root", layout / "root" / "ws"
     _plant(nested, ".env")
+    (root / "alias").symlink_to(nested)
 
     observed = observe(_request(layout), _fake_proc(layout, [(str(root), "ext4"), (str(nested), "ext4")]))
 

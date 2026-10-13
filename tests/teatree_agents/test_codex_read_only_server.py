@@ -112,7 +112,8 @@ def test_a_home_is_created_owner_only_after_a_clean_sweep_and_an_emptied_tmpfs(f
         _first_script_call(fake, codex_read_only_server.WRITE_AUTH_SCRIPT),
     ]
     assert sweep < steps[0] < steps[1] < steps[2] < fake.calls.index(launch)
-    assert stat.S_IMODE(Path(f"{fake.fs}{_codex_home(launch)}").stat().st_mode) == 0o700
+    home = Path(f"{fake.fs}{_codex_home(launch)}")
+    assert [stat.S_IMODE(path.stat().st_mode) for path in (home, home / "auth.json")] == [0o700, 0o600]
 
 
 def test_the_tmpfs_is_empty_when_a_server_starts_and_after_it_stops(fake: FakeExecutor) -> None:
@@ -201,7 +202,8 @@ def test_the_sweep_runs_before_the_launch_and_after_the_stop(fake: FakeExecutor)
 
     (launch,) = _app_server_execs(fake)
     start, stop = _sweeps(fake)
-    assert start < fake.calls.index(launch) < stop
+    last_read = max(i for i, call in enumerate(fake.calls) if codex_read_only_server.READ_AUTH_SCRIPT in call)
+    assert start < fake.calls.index(launch) < stop < last_read
     assert fake.keeper_alive
 
 
@@ -218,6 +220,21 @@ def test_an_unclean_sweep_starts_no_server_and_keeps_stale_homes(fake: FakeExecu
     assert _app_server_execs(fake) == []
     assert fake.homes() == [home]
     assert _refresh_token(fake) == "stored"
+
+
+def test_a_tmpfs_entry_the_reset_cannot_remove_refuses_the_run(fake: FakeExecutor) -> None:
+    stuck = Path(f"{fake.fs}{EXECUTOR_HOME_ROOT}/stuck")
+    (stuck / "file").parent.mkdir()
+    (stuck / "file").write_text("x", encoding="utf-8")
+    stuck.chmod(0o500)
+    try:
+        with pytest.raises(HarnessFallbackError, match="the executor tmpfs could not be emptied") as refused:
+            asyncio.run(_turn())
+    finally:
+        stuck.chmod(0o700)
+
+    assert refused.value.kind is HarnessFallbackKind.ACCESS
+    assert _app_server_execs(fake) == []
 
 
 def test_a_stale_home_that_cannot_be_read_is_kept_and_refuses_the_run(fake: FakeExecutor) -> None:
