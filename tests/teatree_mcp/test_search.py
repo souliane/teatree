@@ -23,6 +23,7 @@ from tests.factories import (
     TicketFactory,
     WorktreeFactory,
 )
+from tests.void_merge_fixtures import MERGED_SHA, PR_URL, landed_ticket, void_pr
 
 
 class TestCapped:
@@ -181,6 +182,29 @@ class TestPrForTicket(TestCase):
 
     def test_unknown_ticket_returns_empty(self) -> None:
         assert search.pr_for_ticket(ticket="999999") == []
+
+    def test_a_voided_merge_is_reported_on_its_row_in_one_query(self) -> None:
+        ticket = landed_ticket()
+        PullRequestFactory(ticket=ticket, url="https://github.com/example-org/example-repo/pull/43", iid="43")
+        void = void_pr()
+
+        with self.assertNumQueries(3):
+            rows = search.pr_for_ticket(ticket=str(ticket.pk))
+
+        voided = next(row for row in rows if row["url"] == PR_URL)
+        other = next(row for row in rows if row["url"] != PR_URL)
+        assert voided["state"] == PullRequest.State.CLOSED
+        assert voided["merge_void"] == {
+            "reason": void.reason,
+            "actor": "alice",
+            "voided_at": void.voided_at.isoformat(),
+            "merged_sha": MERGED_SHA,
+            "content_head": void.content_head,
+            "default_branch": "main",
+            "default_tip": void.default_tip,
+            "changed_paths": ["src/a.py", "src/b.py"],
+        }
+        assert other["merge_void"] is None
 
 
 class TestLoopStats(TestCase):

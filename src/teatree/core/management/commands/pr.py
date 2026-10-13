@@ -70,6 +70,7 @@ from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
 from teatree.core.management.commands._test_plan.mr_post import TestPlanMediaError as _TestPlanMediaError
+from teatree.core.management.commands._void_merge_commands import VoidMergeCommands
 from teatree.core.management.db_free_checks import without_database_checks
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase
@@ -287,7 +288,7 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
     return branch_name, None
 
 
-class Command(PendingPrCommands, RefusalExitTyperCommand):
+class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
     """Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan posting."""
 
     # #4210: every refusal below is RETURNED, not raised, so an in-process caller

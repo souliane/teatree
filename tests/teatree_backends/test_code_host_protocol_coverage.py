@@ -46,6 +46,10 @@ _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
     ],
+    "fetch_pr_content_snapshot": [
+        ("slug", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+    ],
     "fetch_pr_message": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),

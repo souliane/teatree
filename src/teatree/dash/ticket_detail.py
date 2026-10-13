@@ -13,6 +13,7 @@ from datetime import datetime
 from django.db.models import Count, F, Prefetch, Window
 from django.db.models.functions import RowNumber
 
+from teatree.core.models.merge_void import MergeVoid
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -280,4 +281,5 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
 
 
 def _pr_chips(ticket_id: int) -> tuple[PrChip, ...]:
-    return tuple(pr_chip(pr) for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk"))
+    voided = MergeVoid.objects.voided_refs()
+    return tuple(pr_chip(pr, voided) for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk"))

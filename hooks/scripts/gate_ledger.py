@@ -57,6 +57,7 @@ DECLARED_GATES = frozenset(
         "unbounded_wait",
         "unknown_repo_push",
         "verbatim_operator_paste",
+        "void_merge",
         "visible_plan_gate",
     }
 )

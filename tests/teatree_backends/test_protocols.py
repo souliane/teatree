@@ -16,6 +16,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
+from teatree.core.evidence.forge_content import PrContentSnapshot
 
 
 class _FakeCIService:
@@ -260,6 +261,10 @@ class _FakeCodeHost:
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         _ = (slug, pr_id)
         return []
+
+    def fetch_pr_content_snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot:
+        _ = (slug, pr_id)
+        return PrContentSnapshot(unreadable="fake")
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         _ = (slug, pr_id)

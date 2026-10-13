@@ -6,6 +6,8 @@ These build rows directly via the ORM (``DjangoModelFactory`` ⇒
 merge-time gate refuses it independently of the issue-time gate.
 """
 
+from typing import TYPE_CHECKING, cast
+
 import factory
 from factory.django import DjangoModelFactory
 
@@ -17,6 +19,7 @@ from teatree.core.models import (
     IncomingEvent,
     MergeAudit,
     MergeClear,
+    MergeVoid,
     PullRequest,
     RedCardSignal,
     RedMrFixAttempt,
@@ -34,6 +37,9 @@ from teatree.core.models import (
 from teatree.core.models.pending_pull_request import SerializedPrSpec
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _FORTY_HEX = "c" * 40
 
@@ -119,6 +125,31 @@ class MergeAuditFactory(DjangoModelFactory[MergeAudit]):
     clear = factory.SubFactory(MergeClearFactory)
     merged_sha = _FORTY_HEX
     required_checks_status = "green"
+
+
+class MergeVoidFactory(DjangoModelFactory[MergeVoid]):
+    class Meta:
+        model = MergeVoid
+
+    host_kind = "github"
+    slug = "example-org/example-repo"
+    pr_id = 41
+    pr_url = factory.LazyAttribute(lambda void: f"https://github.com/{void.slug}/pull/{void.pr_id}")
+    merged_sha = _FORTY_HEX
+    content_head = "d" * 40
+    merge_base = "e" * 40
+    default_branch = "main"
+    default_tip = "f" * 40
+    changed_paths = factory.LazyFunction(lambda: ["src/a.py", "src/b.py"])
+    evidence = factory.LazyFunction(lambda: {"tickets": [], "kept": [], "pull_requests": [], "open_clears": []})
+    reason = "history rewrite dropped the change"
+    actor = "alice"
+
+
+def merge_void(*, tickets: "Iterable[Ticket]" = (), **overrides: object) -> MergeVoid:
+    void = cast("MergeVoid", MergeVoidFactory(**overrides))
+    void.tickets.add(*tickets)
+    return void
 
 
 class RedMrFixAttemptFactory(DjangoModelFactory[RedMrFixAttempt]):
