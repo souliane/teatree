@@ -26,7 +26,6 @@ import datetime as dt
 import io
 from collections.abc import Callable
 from typing import Any, cast
-from unittest.mock import patch
 
 from django.db import connection
 from django.test import TestCase
@@ -136,15 +135,14 @@ class HotPathQueryPlansTestCase(TestCase):
                     reconcile_ticket(ticket)
 
     def test_the_reconcile_sweep_pays_the_per_ticket_cost_and_nothing_per_board(self) -> None:
-        with patch("teatree.core.worktree.reconcile.shutil.which", return_value=None):
-            for scale in (_SMALL, _LARGE):
-                _populate(scale)
-                expected = RECONCILE_ALL_BOARD_QUERIES + sum(
-                    Ticket.objects.filter(state=state).count() * cost for state, cost in _RECONCILE_TICKET_COSTS
-                )
-                reconcile_all()  # settles any once-per-process resolution
-                with self.assertNumQueries(expected, msg=f"reconcile_all at scale {scale}"):
-                    reconcile_all()
+        for scale in (_SMALL, _LARGE):
+            _populate(scale)
+            expected = RECONCILE_ALL_BOARD_QUERIES + sum(
+                Ticket.objects.filter(state=state).count() * cost for state, cost in _RECONCILE_TICKET_COSTS
+            )
+            reconcile_all()  # settles any once-per-process resolution
+            with self.assertNumQueries(expected, msg=f"reconcile_all at scale {scale}"):
+                reconcile_all()
 
 
 def _standup() -> dict[str, Any]:
