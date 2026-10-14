@@ -1,16 +1,16 @@
-"""Slack MCP tool group — reads + one gated reaction write (#3076).
+"""Slack MCP tool group — reads plus gated react/post/update/delete writes (#3076).
 
 Registered only when a registered overlay declares ``Service.SLACK``. The
 messaging client is resolved through
 :func:`teatree.core.backend_factory.configured_messaging_from_overlay` (a core
 seam that returns ``None`` for a noop-messaging declarer so the resolver reaches
 the credentialed overlay — #3299), never a direct ``teatree.backends.slack``
-import, so the transport-boundary fitness test holds. The reads stay read-only; the one write (``slack_react``) routes
+import, so the transport-boundary fitness test holds. Every write routes
 through :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the single
 colleague-surface Slack egress owner — so the #117 send-proxy, the on-behalf
-approval gate, and the after-post notify receipt all fire (a self-DM reaction is
-ungated by design; a colleague-surface reaction with no recorded approval is
-refused). All other posting stays on the gated ``t3`` / review surfaces.
+approval gate, and the after-post notify receipt all fire (a self-DM is
+ungated by design; a colleague-surface write with no recorded approval is
+refused).
 """
 
 from typing import Any
@@ -22,7 +22,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.send_proxy import SendBlockedError
+from teatree.core.send_proxy import OutboundBlockedError, SendBlockedError
 from teatree.mcp.service_resolver import SLACK
 from teatree.types import ChannelReadRefusedError
 
@@ -44,8 +44,8 @@ INSTRUCTIONS = (
     "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
     "ungated; a colleague/channel reaction goes through the on-behalf gate and "
     "returns ok=false + a `blocked` remediation when no approval is recorded.\n"
-    "- slack_post(channel, text, thread_ts): post through the on-behalf gate; "
-    "a colleague/channel post needs recorded approval.\n"
+    "- slack_post(channel, text, idempotency_key, thread_ts): post through the on-behalf gate; "
+    "a colleague/channel post needs recorded approval, and a reused key never posts twice.\n"
     "- slack_conversations(cursor, limit): visible conversations, next cursor; read failures error.\n"
     "- slack_update(channel, ts, expected_text, text): edit after a live compare and on-behalf gate.\n"
     "- slack_delete(channel, ts, expected_text, dry_run): preview by default; exact approval is required to delete."
@@ -150,27 +150,32 @@ async def _slack_react(channel: str, ts: str, emoji: str) -> dict[str, Any]:
                 action="mcp_slack_react",
                 destination=channel,
             )
-        except OnBehalfPostBlockedError as blocked:
+        except (OnBehalfPostBlockedError, OutboundBlockedError) as blocked:
             return {"ok": False, "blocked": str(blocked)}
         return {"ok": bool(response.get("ok")), "channel": channel, "ts": ts, "response": response}
 
     return await sync_to_async(_react, thread_sensitive=True)()
 
 
-async def _slack_post(channel: str, text: str, *, thread_ts: str = "") -> dict[str, Any]:
+async def _slack_post(channel: str, text: str, idempotency_key: str, *, thread_ts: str = "") -> dict[str, Any]:
     def _post() -> dict[str, Any]:
         try:
-            response = OnBehalfSlackEgress(_client()).post(
-                channel=channel,
-                text=text,
-                thread_ts=thread_ts,
-                target=channel,
-                action="mcp_slack_post",
-                destination=channel,
+            response = OnBehalfSlackEgress(_client()).post_once(
+                idempotency_key=idempotency_key, channel=channel, text=text, thread_ts=thread_ts
             )
-        except OnBehalfPostBlockedError as blocked:
+        except (OnBehalfPostBlockedError, OutboundBlockedError) as blocked:
             return {"ok": False, "blocked": str(blocked)}
-        return {"ok": bool(response.get("ok")), "channel": channel, "ts": response.get("ts", "")}
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(str(exc)) from exc
+        if not response.get("ok"):
+            msg = f"Slack refused the post: {response.get('error') or 'no response'}"
+            raise ToolError(msg)
+        return {
+            "ok": True,
+            "channel": channel,
+            "ts": response["ts"],
+            "already_sent": bool(response.get("already_sent")),
+        }
 
     return await sync_to_async(_post, thread_sensitive=True)()
 

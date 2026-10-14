@@ -30,8 +30,8 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 ci cancel` | Cancel stale CI pipelines |
 | `t3 ci divergence` | Check fork divergence from upstream |
 | `t3 ci trigger-e2e` | Trigger E2E tests on CI |
-| `t3 ci fetch-errors` | Fetch error logs from the latest CI pipeline |
-| `t3 ci fetch-failed-tests` | Extract failed test IDs from the latest CI pipeline |
+| `t3 ci fetch-errors` | Fetch error logs from the latest CI pipeline (MCP: `mcp__teatree__gitlab_ci_errors`) |
+| `t3 ci fetch-failed-tests` | Extract failed test IDs from the latest CI pipeline (MCP: `mcp__teatree__gitlab_ci_failed_tests`) |
 | `t3 ci quality-check` | Run quality analysis (fetch test report from latest pipeline) |
 | `t3 review post-comment` / `publish-draft-notes` / `delete-draft-note` / `delete-discussion` / `list-draft-notes` / `update-note` / `reply-to-discussion` / `resolve-discussion` | Code review helpers; use `mcp__teatree__review_post_comment` first for comments and the CLI when that tool is unavailable. |
 | `t3 review-request discover` | Discover open PRs awaiting review |

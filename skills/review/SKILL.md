@@ -354,7 +354,7 @@ What the agent does *after* an independent cold-review verdict exists on a **col
 
 **Autonomous tiers (`autonomy = "full"` or `"notify"`):** once an independent cold-review verdict exists, act on it — no "say the word", no per-MR ask. What the tier removes is the *asking*, not the egress gate:
 
-- **Merge-safe verdict** → post the terse verdict / nits **and** `t3 review approve`.
+- **Merge-safe verdict** → post the terse verdict / nits **and** `mcp__teatree__review_approve`.
 - **Non-blockers only** → post them (plain findings, bare `Nit:` for trivial items); approve per the merge-safe rule above.
 - **A blocking finding** → post it; do **not** approve.
 
@@ -368,7 +368,7 @@ Every on-behalf post DMs the user afterwards, at every tier.
 
 **Babysit tier (`autonomy = "babysit"`):** keep the draft-and-ask flow — drafts publish autonomously, every live post / approval waits for the user (Step 3 below; `t3 review authorize`). This is the right setting for client / shared-team overlays.
 
-**The quality floor is identical under every tier and is never relaxed by this knob:** the verdict must come from an *independent* cold reviewer (maker ≠ checker — never self-approve your own MR), findings are verified against ground truth before posting (a Blocker you cannot falsify is posted as a question, not a Blocker), `t3 review approve` keeps its review-first precondition (no approval without a prior reviewing footprint), and CI must be green. The knob decides *whether to ask the user*, never *whether the work is correct*.
+**The quality floor is identical under every tier and is never relaxed by this knob:** the verdict must come from an *independent* cold reviewer (maker ≠ checker — never self-approve your own MR), findings are verified against ground truth before posting (a Blocker you cannot falsify is posted as a question, not a Blocker), approval keeps its review-first precondition (no approval without a prior reviewing footprint), and CI must be green. The knob decides *whether to ask the user*, never *whether the work is correct*.
 
 **Verifying a colleague's finding before posting (and retracting if it was wrong):** before a finding goes out under the user's name on a colleague's MR, confirm it against ground truth — the real code, live data or the DB, and the domain conventions — not against your own mental model of how the code probably behaves. A *recheck* is an independent re-derivation that tries to **falsify** the finding (re-grep, re-query, re-read the producer's schema), never a re-read of your own earlier note — re-reading your note only re-confirms the mistake that produced it. If the verification cannot pull the finding to certainty, post it as a question, not a Blocker. And if a finding you already posted turns out to be wrong, retract **all** affected findings at once and quickly: a stale false Blocker sitting on a colleague's correct MR reads as the user not understanding the code, and the longer it stays the more it costs the working relationship.
 
@@ -473,9 +473,9 @@ When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 
 Post each reply via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"`. To mark a thread resolved after the reply, use `t3 review resolve-discussion <REPO> <MR_IID> <DISCUSSION_ID>` (pass `--no-resolved` to re-open).
 
-### Recording a GIVE-review approval — `t3 review approve` (Mandatory)
+### Recording a GIVE-review approval (Mandatory)
 
-When giving review on a colleague's MR and the verdict is approve, record it through the sanctioned CLI — never raw `glab mr approve` / `gh pr review --approve` (prohibited for state-changing review actions):
+When giving review on a colleague's MR and the verdict is approve, record it with `mcp__teatree__review_approve` / `mcp__teatree__review_unapprove` (CLI fallback below) — never raw `glab mr approve` / `gh pr review --approve`:
 
 ```bash
 t3 review approve <REPO> <MR_IID>      # approve
@@ -494,7 +494,7 @@ If it refuses, leave a genuine review (a real finding via `t3 review post-commen
 
 ### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)
 
-When the external PR under review is one where the correct outcome is **post nothing and approve nothing** — a bot MR (Aikido / Dependabot / Renovate), an auto-generated bump there is no diff worth commenting on, an MR you are not the right reviewer for and have no finding on — the reviewing Task still has to reach a terminal state. An FSM-owned review drives `review()` by completing its reviewing task; an external review that **approves** drives `t3 review approve`. The no-action outcome has its own terminal transition — without it the reviewing Task re-dispatches every Stop-hook pump forever (the PR never gets a forge reviewer assignment, so neither the dedup nor the orphan sweep can ever fire):
+When the external PR under review is one where the correct outcome is **post nothing and approve nothing** — a bot MR (Aikido / Dependabot / Renovate), an auto-generated bump there is no diff worth commenting on, an MR you are not the right reviewer for and have no finding on — the reviewing Task still has to reach a terminal state. An FSM-owned review drives `review()` by completing its reviewing task; an external review that **approves** drives `mcp__teatree__review_approve`. The no-action outcome has its own terminal transition — without it the reviewing Task re-dispatches every Stop-hook pump forever (the PR never gets a forge reviewer assignment, so neither the dedup nor the orphan sweep can ever fire):
 
 ```bash
 t3 <overlay> ticket transition <ticket_id> mark_review_no_action
@@ -502,7 +502,7 @@ t3 <overlay> ticket transition <ticket_id> mark_review_no_action
 
 This records `last_review_state = reviewed_no_action` (deliberately **not** `approved`, so a later genuine review is never suppressed) at the current head SHA and consumes the PENDING reviewing task. If a new revision is pushed (head SHA moves) the recorded state is dropped and the PR is reviewed again — concluding "no action" now never costs a future obligation. Maker≠checker is preserved: the reviewer sub-agent runs its own dispatch and invokes this itself; it is not a self-approval.
 
-Use this **only** when there is genuinely nothing to post or approve. If you have a finding, post it (`t3 review post-comment` — default draft, #1207); if the verdict is approve, use `t3 review approve`. `mark_review_no_action` is the third, distinct outcome — not a shortcut to skip a review you should have done.
+Use this **only** when there is genuinely nothing to post or approve. If you have a finding, post it (`t3 review post-comment` — default draft, #1207); if the verdict is approve, use `mcp__teatree__review_approve`. `mark_review_no_action` is the third, distinct outcome — not a shortcut to skip a review you should have done.
 
 ## Commands
 

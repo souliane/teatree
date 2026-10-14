@@ -112,6 +112,9 @@ class ReviewService:
         """The API token for the forge that owns *repo*, or ``""`` when it cannot be read."""
         return read_token(repo).value
 
+    def gitlab_api(self) -> "GitLabAPI":
+        return self._get_api()
+
     def _get_api(self) -> "GitLabAPI":
         if self._api is not None:
             return self._api

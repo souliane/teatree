@@ -57,6 +57,8 @@ An archived Notion page renders as **completely current**: full requirements, ac
 2. **Never** proceed on content you already hold from that page — the copy in your context, an earlier connector read, a cached fetch, or a quote in the work item. Its age is invisible; that is the whole failure.
 3. **Never** re-read it to "just check" (`t3 notion audit-fetch` exists for a genuine postmortem, not for getting the content back), and never treat it as a tie-breaker against a live source that disagrees.
 
+Read the current page through `mcp__teatree__notion_fetch` when the MCP server is connected; the CLI below is the fallback.
+
 ```bash
 # refused as archived → resolve and read the CURRENT page, do not fall back to the dead one
 t3 notion fetch <current-page-url>      # the page the refusal named

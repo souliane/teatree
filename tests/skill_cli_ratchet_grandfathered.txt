@@ -16,14 +16,7 @@ skills/contribute/SKILL.md::gh pr create
 skills/contribute/references/upstream-issue.md::gh auth status
 skills/contribute/references/upstream-issue.md::gh issue list
 skills/contribute/references/upstream-issue.md::gh repo view
-skills/debug/SKILL.md::t3 ci fetch-errors
-skills/e2e-review/SKILL.md::gh pr approve
-skills/e2e-review/SKILL.md::gh pr review
-skills/e2e-review/SKILL.md::glab mr approve
-skills/interactive/SKILL.md::t3 ci fetch-errors
-skills/interactive/references/factory-watch.md::t3 ci fetch-errors
 skills/internals/SKILL.md::t3 config_setting set
-skills/internals/SKILL.md::t3 notion fetch
 skills/internals/SKILL.md::t3 pr create
 skills/internals/SKILL.md::t3 worktree status
 skills/internals/SKILL.md::t3 worktree teardown
@@ -68,9 +61,7 @@ skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
 skills/review/SKILL.md::t3 config_setting set
 skills/review/SKILL.md::t3 lifecycle visit-phase
-skills/review/SKILL.md::t3 review approve
 skills/review/SKILL.md::t3 review post-comment
-skills/review/SKILL.md::t3 review unapprove
 skills/review/references/giving-review-investigation.md::gh issue view
 skills/review/references/giving-review-investigation.md::gh pr list
 skills/review/references/giving-review-investigation.md::glab api
@@ -79,11 +70,9 @@ skills/review/references/giving-review-investigation.md::glab mr list
 skills/review/references/posting-review-comments.md::t3 review post-comment
 skills/rules/SKILL.md::gh run watch
 skills/rules/SKILL.md::glab ci status
-skills/rules/SKILL.md::t3 notify post
 skills/rules/references/classifier-denial-escalation.md::gh api
 skills/rules/references/classifier-denial-escalation.md::gh issue create
 skills/rules/references/leak-remediation.md::gh repo view
-skills/rules/references/on-behalf-posting.md::t3 notify post
 skills/rules/references/on-behalf-posting.md::t3 slack react
 skills/rules/references/reporting.md::gh issue view
 skills/rules/references/reporting.md::gh pr view
@@ -121,7 +110,6 @@ skills/ship/SKILL.md::glab mr view
 skills/ship/SKILL.md::t3 config_setting set
 skills/ship/SKILL.md::t3 lifecycle visit-phase
 skills/ship/SKILL.md::t3 pr create
-skills/ship/SKILL.md::t3 review approve
 skills/ship/SKILL.md::t3 ticket list
 skills/ship/SKILL.md::t3 ticket merge
 skills/ship/references/pr-siblings-and-bundling.md::gh pr list
@@ -140,15 +128,12 @@ skills/test/SKILL.md::gh pr view
 skills/test/SKILL.md::gh run watch
 skills/test/SKILL.md::glab ci status
 skills/test/SKILL.md::glab mr view
-skills/test/SKILL.md::t3 ci fetch-errors
-skills/test/SKILL.md::t3 ci fetch-failed-tests
 skills/ticket/SKILL.md::gh issue list
 skills/ticket/SKILL.md::gh issue view
 skills/ticket/SKILL.md::gh pr list
 skills/ticket/SKILL.md::glab api
 skills/ticket/SKILL.md::glab issue view
 skills/ticket/SKILL.md::glab mr list
-skills/ticket/SKILL.md::t3 notion fetch
 skills/triaging-issues/SKILL.md::gh issue
 skills/triaging-issues/SKILL.md::gh issue close
 skills/triaging-issues/SKILL.md::gh issue edit
@@ -156,8 +141,6 @@ skills/wip/SKILL.md::gh issue list
 skills/wip/SKILL.md::glab issue list
 skills/workspace/SKILL.md::gh pr list
 skills/workspace/SKILL.md::t3 config_setting set
-skills/workspace/references/scripts-and-functions.md::t3 ci fetch-errors
-skills/workspace/references/scripts-and-functions.md::t3 ci fetch-failed-tests
 skills/workspace/references/scripts-and-functions.md::t3 pr create
 skills/workspace/references/scripts-and-functions.md::t3 worktree status
 skills/workspace/references/scripts-and-functions.md::t3 worktree teardown

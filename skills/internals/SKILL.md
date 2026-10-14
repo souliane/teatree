@@ -61,6 +61,7 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 under an internal **integration token** (env `NOTION_TOKEN`, else the `pass` entry `notion_token_pass_key` routes on this venue;
 there is no default entry). Unnamed, a call runs as the overlay that routes Notion (`whoami` prints which); two overlays routing different entries refuse rather than pick. Agents call `t3`, never the API directly. `t3 setup` and `t3 doctor` run the same
 probe: routed entry, token, identity, and every page an in-flight ticket tracks that the bot cannot see.
+Read a live page body through `mcp__teatree__notion_fetch` when the MCP server is connected; the CLI below is the fallback.
 
 ```bash
 t3 notion setup --page <url>           # mint, store and verify the token; then report each page's sharing

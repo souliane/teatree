@@ -175,8 +175,8 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 
 ### CI Interaction
 
-- `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
-- `t3 ci fetch-errors` — extract error logs from CI.
+- `mcp__teatree__gitlab_ci_failed_tests` (CLI `t3 ci fetch-failed-tests`) — extract failed test node IDs from CI.
+- `mcp__teatree__gitlab_ci_errors` (CLI `t3 ci fetch-errors`) — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
 - `t3 eval ci-heal open` — open an observe-only healing session against a red PR branch.
 
@@ -189,7 +189,7 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 
 #### Responding to Failed Jobs
 
-A job shows `failed` (or any non-`success` state). Do NOT echo "green"/"passing" — act on it. The canonical next command is:
+A job shows `failed` (or any non-`success` state). Do NOT echo "green"/"passing" — act on it. The canonical next call is `mcp__teatree__gitlab_ci_failed_tests` (with `mcp__teatree__gitlab_ci_errors` for the logs), or its CLI fallback:
 
 ```bash
 t3 ci fetch-failed-tests
@@ -216,7 +216,7 @@ Never hand-roll the `docker run`: the runner pins the image, project environment
 
 When CI fails:
 
-1. Fetch failures (`t3 ci fetch-failed-tests`)
+1. Fetch failures (`mcp__teatree__gitlab_ci_failed_tests`, CLI `t3 ci fetch-failed-tests`)
 2. **Check if the failure is pre-existing** (file never touched by branch) → if so, delegate to `/t3:ship` § "Isolate Unrelated Fixes"
 3. Run failed tests locally to reproduce
 4. Fix the issue

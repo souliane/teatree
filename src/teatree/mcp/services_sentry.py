@@ -9,7 +9,9 @@ declaring overlay with a configured ``sentry_org`` (token via the
 ``sentry_token_pass_key`` secret registration).
 """
 
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
@@ -42,6 +44,27 @@ def _client() -> "SentryIssueClient":
 
 def _forge_client(service: Service) -> CodeHostBackend:
     return FORGE_CLIENTS[service].resolve()
+
+
+_BODY_URL = re.compile(r"""https?://[^\s<>()\[\]"']+""")
+
+
+def _links_issue(body: str, permalink: str) -> bool:
+    try:
+        expected = urlsplit(permalink)
+    except ValueError:
+        return False
+    identity = (expected.scheme.casefold(), expected.netloc.casefold(), expected.path.rstrip("/"))
+    if not all(identity):
+        return False
+    for raw in _BODY_URL.findall(body):
+        try:
+            linked = urlsplit(raw.rstrip(".,;:!"))
+        except ValueError:
+            continue
+        if (linked.scheme.casefold(), linked.netloc.casefold(), linked.path.rstrip("/")) == identity:
+            return True
+    return False
 
 
 async def _sentry_top_issues(project: str, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -83,7 +106,7 @@ async def _sentry_issue_resolve(issue_id: str, forge: str, repo: str, pr_iid: in
         issue = client.get_issue(issue_id)
         permalink = issue.get("permalink")
         message = forge_client.fetch_pr_message(slug=repo, pr_id=pr_iid)
-        if not isinstance(permalink, str) or not permalink or message is None or permalink not in message.body:
+        if not isinstance(permalink, str) or message is None or not _links_issue(message.body, permalink):
             msg = "the merged PR body does not link this Sentry issue; resolution is refused"
             raise ToolError(msg)
         outcome = client.resolve_issue(issue_id)

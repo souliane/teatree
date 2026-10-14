@@ -19,6 +19,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
+from teatree.core.send_proxy import SendBlockedError, SendVerdict
 from teatree.mcp import services_slack
 from teatree.types import ChannelReadRefusedError, RawAPIDict
 
@@ -98,17 +99,42 @@ def test_a_readable_channel_still_answers() -> None:
     assert result.structured_content == {"result": messages}
 
 
-def test_slack_post_delegates_to_on_behalf_egress() -> None:
+def _post(response: RawAPIDict | Exception) -> Any:
     with (
         patch.object(services_slack, "_client", return_value=_RefusingBackend()),
         patch.object(services_slack, "OnBehalfSlackEgress") as egress,
     ):
-        egress.return_value.post.return_value = {"ok": True, "ts": "1.2"}
-        result = asyncio.run(_server().call_tool("slack_post", {"channel": "C123", "text": "hello"}))
+        egress.return_value.post_once.side_effect = [response]
+        result = asyncio.run(
+            _server().call_tool("slack_post", {"channel": "C123", "text": "hello", "idempotency_key": "k"})
+        )
+    assert egress.return_value.post_once.call_args.kwargs == {
+        "idempotency_key": "k",
+        "channel": "C123",
+        "text": "hello",
+        "thread_ts": "",
+    }
+    return result.structured_content
 
-    assert result.structured_content == {"ok": True, "channel": "C123", "ts": "1.2"}
-    assert egress.return_value.post.call_args.kwargs["action"] == "mcp_slack_post"
-    assert egress.return_value.post.call_args.kwargs["text"] == "hello"
+
+def test_slack_post_delegates_its_idempotency_key_to_on_behalf_egress() -> None:
+    assert _post({"ok": True, "ts": "1.2"}) == {"ok": True, "channel": "C123", "ts": "1.2", "already_sent": False}
+
+
+def test_slack_post_reports_a_gate_block_as_blocked_not_a_crash() -> None:
+    verdict = SendVerdict(
+        allowed=False, payload="", allowlist_ok=False, reason="slack:C123 is not on the send allowlist"
+    )
+
+    assert _post(SendBlockedError(verdict)) == {
+        "ok": False,
+        "blocked": "slack:C123 is not on the send allowlist",
+    }
+
+
+def test_slack_post_refused_by_slack_is_an_error_never_ok() -> None:
+    with pytest.raises(ToolError, match="channel_not_found"):
+        _post({"ok": False, "error": "channel_not_found"})
 
 
 def test_slack_conversations_returns_a_page_and_cursor() -> None:

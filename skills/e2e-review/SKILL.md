@@ -189,7 +189,7 @@ t3 <overlay> review record <pr_id> <slug> \
 **Real defect → `hold` with the punch-list (feeds back, is NOT an approval).** When a hard gate failed or the score is below threshold, record a `hold` and pass the findings as JSON via `--findings-json`. A HOLD re-arms a fresh author leg carrying your punch-list for the next round. The contrast that keeps a HOLD honest:
 
 - The findings written to a JSON file and passed via `--findings-json <path>` ARE the punch-list the author leg works through — that file is the whole point of a HOLD.
-- A HOLD is the opposite of an approval, so an approving call (`gh pr approve`, `gh pr review --approve`, `glab mr approve`) is wrong here — it merges an unverified spec. The only action a HOLD takes is the `review record --verdict hold` below.
+- A HOLD is the opposite of an approval, so never call an approving command (`gh pr approve`, `gh pr review --approve`, `glab mr approve`) here — it merges an unverified spec. The only action a HOLD takes is the `review record --verdict hold` below.
 - A `--verdict merge_safe` recorded while any hard gate failed or the score is below threshold is a faked pass that skips the fix — the verdict must be `hold` until the punch-list is cleared and the spec re-scored.
 
 ```bash

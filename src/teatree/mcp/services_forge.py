@@ -33,8 +33,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import CodeHostBackend, PrMessage
+from teatree.core.backend_protocols import CodeHostBackend, PrMessage, rollup_query_failed
+from teatree.core.overlay_loader import get_all_overlays
+from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.core.send_proxy import route_forge_write
+from teatree.hooks.ai_signature_scan import scan_text, summary
 from teatree.mcp import services_gitlab_ci
 from teatree.mcp.service_resolver import FORGE_CLIENTS
 
@@ -157,13 +160,14 @@ def _register_pr_update(server: MCPServer, service: Service, prefix: str) -> Non
             if not actor or actor.casefold() != author.casefold():
                 msg = "Only an authenticated author's own PR can be updated"
                 raise ToolError(msg)
+            if client.fetch_pr_merge_state(slug=repo, pr_id=pr_iid).state.upper() != "OPEN":
+                msg = "Only an open PR can be updated; a merged or closed PR's message is history"
+                raise ToolError(msg)
             current = client.fetch_pr_message(slug=repo, pr_id=pr_iid)
             if current != expected:
                 msg = "PR title or body changed since the expected snapshot; read it again"
                 raise ToolError(msg)
-            if not message.title.strip():
-                msg = "PR title must not be blank"
-                raise ToolError(msg)
+            _refuse_unpublishable_pr_message(prefix, repo, message, body_changed=message.body != current.body)
             routed = PrMessage(
                 route_forge_write(
                     forge=prefix, repo=repo, text=message.title, action=f"{prefix}_pr_update", target=pr_url
@@ -180,6 +184,21 @@ def _register_pr_update(server: MCPServer, service: Service, prefix: str) -> Non
         return await _run_hygiene_write(_update)
 
     server.add_tool(pr_update, name=f"{prefix}_pr_update", annotations=_WRITE)
+
+
+def _refuse_unpublishable_pr_message(prefix: str, repo: str, message: PrMessage, *, body_changed: bool) -> None:
+    if not message.title.strip():
+        msg = "PR title must not be blank"
+        raise ToolError(msg)
+    if findings := scan_text(message.as_text()):
+        msg = f"PR message carries an AI-signature trailer; remove it\n{summary(findings)}"
+        raise ToolError(msg)
+    owner = get_all_overlays().get(owning_overlay_for_repo(repo, forge=prefix))
+    if owner is None:
+        return
+    verdict = owner.metadata.validate_pr(message.title, message.body, require_sections=body_changed, repo=repo)
+    if errors := verdict["errors"]:
+        raise ToolError("PR validation failed: " + "; ".join(errors))
 
 
 def _candidate_summary(url: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -329,10 +348,14 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
         )()
 
     async def pr_checks(repo: str, pr_iid: int) -> list[dict[str, Any]]:
-        return await sync_to_async(
+        rollup = await sync_to_async(
             lambda: _forge_client(service).fetch_required_checks_rollup(slug=repo, pr_id=pr_iid),
             thread_sensitive=True,
         )()
+        if rollup_query_failed(rollup):
+            msg = f"the checks rollup of {repo}#{pr_iid} could not be read from the forge"
+            raise ToolError(msg)
+        return rollup
 
     async def repo_get(repo: str) -> dict[str, Any]:
         return await sync_to_async(lambda: _forge_client(service).get_repo(repo=repo), thread_sensitive=True)()
@@ -385,9 +408,11 @@ def _instructions(prefix: str) -> str:
         f"(open/closed/merged) and author.\n"
         f"- {prefix}_pr_diff(repo, pr_iid): the PR's changed files with per-file diffs.\n"
         f"- {prefix}_pr_commits(repo, pr_iid): the commits on the PR.\n"
-        f"- {prefix}_pr_checks(repo, pr_iid): live required-check or pipeline rollup for the PR.\n"
+        f"- {prefix}_pr_checks(repo, pr_iid): live required-check or pipeline rollup for the PR; "
+        "an unreadable rollup is an error.\n"
         f"- {prefix}_pr_update(repo, pr_iid, expected, message): "
-        "update your own PR after matching its current title and body; the write is leak-screened and verified.\n"
+        "update your own open PR after matching its current title and body; the write is leak-, "
+        "AI-signature- and validator-screened and verified.\n"
         f"- {prefix}_repo_get(repo): *repo* metadata (default branch, path, id).\n"
         f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
         f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"

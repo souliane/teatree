@@ -187,7 +187,7 @@ An attended session is the operator's eyes on the factory. It looks for abnormal
 
 **Tiers:**
 
-- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch (`t3 ci fetch-errors main`).
+- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch (`mcp__teatree__gitlab_ci_errors`, or `t3 ci fetch-errors main`).
 - **DEGRADING** — the factory still delivers, but late or with a weaker guard: a shadowed skill, a schedule firing in the wrong timezone (#5053), an override left on past its reason.
 - **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore` (`git ls-files -ci --exclude-standard`), a stale statusline entry.
 

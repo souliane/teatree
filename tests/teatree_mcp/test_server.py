@@ -64,6 +64,8 @@ _WRITE_TOOLS = {
     "review_post_comment",
     "review_post_comments",
     "review_request_post",
+    "review_approve",
+    "review_unapprove",
 }
 
 _EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS
@@ -274,7 +276,7 @@ class TestServiceDeclarationGating(TestCase):
         assert "sentry" not in undeclared
 
 
-_EVERY_SURFACE_SERVICE = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION})
+_EVERY_SURFACE_SERVICE = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION, Service.SENTRY})
 _MAILBOX_ENV = {"T3_AGENT_MAILBOX_SOCKET": "/tmp/missing.sock", "T3_AGENT_MAILBOX_TOKEN": "test-token"}
 
 

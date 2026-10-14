@@ -206,6 +206,45 @@ class TestColleagueGate(TestCase):
         assert replay["already_deleted"] is True
         assert len(fake.delete_routed_calls) == 1
 
+    def test_post_once_posts_a_key_once_and_verifies_by_re_read(self) -> None:
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake(routed_response={"ok": True, "ts": "9.9"})
+        egress = OnBehalfSlackEgress(fake)
+
+        first = egress.post_once(idempotency_key="k1", channel=_COLLEAGUE, text="hi")
+        replay = egress.post_once(idempotency_key="k1", channel=_COLLEAGUE, text="hi")
+
+        assert first["ts"] == "9.9"
+        assert replay == {"ok": True, "already_sent": True, "channel": _COLLEAGUE, "ts": "9.9"}
+        assert fake.post_routed_calls == [(_COLLEAGUE, "hi", "")]
+        claim = OutboundClaim.objects.get(idempotency_key="slack-post:k1")
+        assert claim.verified_at is not None
+        assert claim.extra["ts"] == "9.9"
+
+    def test_post_once_blocked_or_refused_post_releases_its_key(self) -> None:
+        fake = _RouteAwareFake(routed_response={"ok": False, "error": "channel_not_found"})
+        egress = OnBehalfSlackEgress(fake)
+        with pytest.raises(OnBehalfPostBlockedError):
+            egress.post_once(idempotency_key="k2", channel=_COLLEAGUE, text="hi")
+        assert fake.post_routed_calls == []
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+
+        refused = egress.post_once(idempotency_key="k2", channel=_COLLEAGUE, text="hi")
+
+        assert refused["error"] == "channel_not_found"
+        assert not OutboundClaim.objects.filter(idempotency_key="slack-post:k2").exists()
+
+    def test_post_once_unverified_post_keeps_its_key_as_drift(self) -> None:
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake(routed_response={"ok": True, "ts": "9.9"}, message_text="")
+        egress = OnBehalfSlackEgress(fake)
+        with pytest.raises(RuntimeError, match="live read"):
+            egress.post_once(idempotency_key="k3", channel=_COLLEAGUE, text="hi")
+        with pytest.raises(RuntimeError, match="did not verify"):
+            egress.post_once(idempotency_key="k3", channel=_COLLEAGUE, text="hi")
+        assert len(fake.post_routed_calls) == 1
+        assert OutboundClaim.objects.get(idempotency_key="slack-post:k3").drift_detected is True
+
     def test_react_fires_once_and_audits_with_recorded_approval(self) -> None:
         OnBehalfApproval.record(target=_TARGET, action="merge_reaction", approver_id=_APPROVER)
         fake = _RouteAwareFake()

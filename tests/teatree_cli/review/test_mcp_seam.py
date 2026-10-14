@@ -25,7 +25,7 @@ from asgiref.sync import async_to_sync
 
 from teatree.cli.review.batch_post import InlineNote
 from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review.mcp_seam import _finding, register
+from teatree.cli.review.mcp_seam import GatedReviewPoster, _finding, register
 from teatree.cli.review.service import ReviewService
 from teatree.mcp import review_seam
 from teatree.mcp.review_seam import SeamNote
@@ -55,6 +55,7 @@ class TestSeamBindsTheServiceToTheTargetRepo:
 
         monkeypatch.setattr(ReviewService, "approve", approve)
         monkeypatch.setattr(ReviewService, "unapprove", unapprove)
+        monkeypatch.setattr(ReviewService, "gitlab_api", lambda _self: _MrStubAPI(author="colleague"))
         seam = review_seam.review_post_seam("acme/alpha")
 
         assert seam.approve("acme/alpha", 7) == ("approved", 0)
@@ -292,3 +293,51 @@ class TestAMappingEvidencePostsWhereItPreviouslyRefused:
         assert finding is not None
         assert check_finding_evidence(body=self._BODY, evidence=finding.evidence) == ""
         assert check_finding_evidence(body=self._BODY, evidence=None) != ""
+
+
+class _MrStubAPI:
+    def __init__(self, *, author: str, identity: str = "owner") -> None:
+        self._author = author
+        self._identity = identity
+
+    def current_username(self) -> str:
+        return self._identity
+
+    def get_json(self, endpoint: str) -> object:
+        return {"iid": 7, "author": {"username": self._author}} if self._author else {"iid": 7}
+
+
+class TestMcpApprovalIsNeverSelfApproval:
+    @staticmethod
+    def _approve(author: str, monkeypatch: pytest.MonkeyPatch) -> tuple[str, int]:
+        approvals: list[int] = []
+
+        def approve(_self: ReviewService, _repo: str, mr: int) -> tuple[str, int]:
+            approvals.append(mr)
+            return "approved", 0
+
+        monkeypatch.setattr(ReviewService, "approve", approve)
+        monkeypatch.setattr("teatree.cli.review.own_mr._configured_aliases", lambda: ("Owner-Alias",))
+        service = ReviewService("tok", repo="acme/alpha", api=_MrStubAPI(author=author), base_url="https://gl.example")
+        outcome = GatedReviewPoster(service).approve("acme/alpha", 7)
+        assert approvals == ([7] if outcome[1] == 0 else [])
+        return outcome
+
+    @pytest.mark.parametrize("author", ["colleague", "factory-bot"])
+    def test_an_mr_the_owner_did_not_author_reaches_the_gated_service(
+        self, author: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._approve(author, monkeypatch) == ("approved", 0)
+
+    @pytest.mark.parametrize("author", ["owner", "owner-alias"])
+    def test_an_owner_authored_mr_is_refused(self, author: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        message, code = self._approve(author, monkeypatch)
+
+        assert code == 1
+        assert "maker is not checker" in message
+
+    def test_unreadable_author_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        message, code = self._approve("", monkeypatch)
+
+        assert code == 1
+        assert "could not be read" in message

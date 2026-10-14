@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from teatree.cli.review.shape_gate import fetch_mr_author
 from teatree.core.modelkit.gate_verdict import guarded_read
 from teatree.core.review.review_candidate import author_is_self
+from teatree.core.self_forge_identities import issue_author_is_self
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
@@ -46,6 +47,21 @@ def owner_authored_mr(api: "GitLabAPI", repo: str, mr: int) -> bool:
     return author_is_self(author, current_user=identity.value, self_identities=aliases.value)
 
 
+def self_approval_refusal(api: "GitLabAPI", repo: str, mr: int) -> str:
+    """Why approving *repo*!*mr* would approve the owner's own MR, or ``""`` once its author is proved someone else.
+
+    The inverse polarity of :func:`owner_authored_mr`: an unreadable author or identity refuses. A factory-bot
+    author is not the owner — the bot authors precisely so the owner's account can approve.
+    """
+    author = fetch_mr_author(api, repo.replace("/", "%2F"), mr)
+    identity = guarded_read("the approving GitLab identity", api.current_username, neutral="").value
+    if not author or not identity:
+        return f"Refusing to approve !{mr}: its author or the approving identity could not be read."
+    if issue_author_is_self(author, (identity, *_configured_aliases())):
+        return f"Refusing to approve !{mr}: authored by the approving owner {author} — maker is not checker."
+    return ""
+
+
 def _configured_aliases() -> tuple[str, ...]:
     """The owner's configured forge handles (``user_identity_aliases``)."""
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -53,4 +69,4 @@ def _configured_aliases() -> tuple[str, ...]:
     return tuple(get_effective_settings().user_identity_aliases)
 
 
-__all__ = ["owner_authored_mr"]
+__all__ = ["owner_authored_mr", "self_approval_refusal"]

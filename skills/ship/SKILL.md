@@ -626,6 +626,8 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 
   The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the owner's account eligible. "Approved by the owner's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent.
 
+  Through MCP the approval is `mcp__teatree__review_approve`; the CLI below is the fallback.
+
   ```bash
   # do X — the agent reviews cold, then records the approval under the owner's account:
   t3 review approve <repo> <mr>        # resolves the OWNER credential, never the bot's

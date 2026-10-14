@@ -10,11 +10,13 @@ arguments and returns the backend payload verbatim.
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import ApprovalState, DraftState, PrMergeState, PrOpenState
+from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, ApprovalState, DraftState, PrMergeState, PrOpenState
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
 from tests.teatree_mcp._call_tool_result import structured as _structured
@@ -29,6 +31,7 @@ class _GithubOverlay:
 class _FakeForge:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.rollup: list[dict[str, Any]] = [{"name": "unit", "conclusion": "SUCCESS"}]
 
     def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, Any]]:
         self.calls.append(("search_open_issues", {"repo": repo, "query": query}))
@@ -52,7 +55,7 @@ class _FakeForge:
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, Any]]:
         self.calls.append(("fetch_required_checks_rollup", {"slug": slug, "pr_id": pr_id}))
-        return [{"name": "unit", "conclusion": "SUCCESS"}]
+        return self.rollup
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         self.calls.append(("fetch_pr_draft_state", {"slug": slug, "pr_id": pr_id}))
@@ -102,6 +105,13 @@ class TestForgeReadTools(TestCase):
 
         assert result == [{"name": "unit", "conclusion": "SUCCESS"}]
         assert fake.calls == [("fetch_required_checks_rollup", {"slug": "acme/widgets", "pr_id": 42})]
+
+    def test_pr_checks_unreadable_rollup_is_an_error_never_a_result(self) -> None:
+        fake = _FakeForge()
+        fake.rollup = [ROLLUP_QUERY_FAILED]
+
+        with pytest.raises(ToolError, match="could not be read"):
+            _call("github_pr_checks", {"repo": "acme/widgets", "pr_iid": 42}, fake)
 
     def test_issue_search_forwards_repo_and_query(self) -> None:
         fake = _FakeForge()

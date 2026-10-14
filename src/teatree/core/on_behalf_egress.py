@@ -1,49 +1,12 @@
-"""The single cohesive owner of colleague-surface Slack on-behalf egress (#960/#1750).
+"""Gate and observe Slack writes performed under the user's identity.
 
-Every Slack post or reaction made *under the user's identity on a
-colleague surface* goes through :class:`OnBehalfSlackEgress`. One instance
-wraps one :class:`~teatree.core.backend_protocols.MessagingBackend`; each
-public method runs the identical fixed sequence in one place:
+Posts and reactions preserve the self-DM carve-out, colleague send proxy and
+approval gate, rollback for unlanded writes, and success-only receipt notice.
+Self-DM posts also keep spoken delivery and threaded-answer retirement.
 
-1.  classify the destination self-vs-colleague via the backend's #1750
-    ``route_token`` classifier;
-2.  a *self* destination (the user's own DM) → deliver via the shared
-    :func:`teatree.core.speak.deliver_user_dm` chokepoint and return —
-    ungated and unaudited, because a bot→user / self-ack is never an
-    on-behalf post. ``deliver_user_dm`` attaches spoken audio to the DM
-    when ``slack`` is on and plays it locally when ``local`` plays DMs
-    (#2060), so the ``notify post`` user-DM path runs the same DM+speak
-    chokepoint :func:`teatree.core.notify.notify_user` does;
-3.  a *colleague/channel* destination → :func:`require_on_behalf_approval`
-    *before* the wire call (a BLOCK verdict with no recorded approval
-    raises :class:`OnBehalfPostBlockedError` and nothing posts), then the
-    routed wire call (``post_routed`` / ``react_routed``), then
-    :func:`notify_user_on_behalf_post` — but only on a *real* successful
-    publish (``ok`` truthy), never on ``already_reacted`` or ``ok:false``.
-    A wire call whose artifact did NOT land (``ok:false`` other than
-    ``already_reacted``, or an empty body) rolls the gate's approval consume
-    and audit back, so the single-use approval survives for a retry.
-
-It reuses the three existing seams verbatim — the pre-gate
-(:mod:`teatree.core.on_behalf_gate_recorded`), the after-receipt audit
-(:mod:`teatree.core.on_behalf_post_receipt`), and the backend's #1750
-``route_token`` / ``post_routed`` / ``react_routed`` — adding no new gate
-logic, no new audit ledger, no new model/setting/protocol.
-
-The methods return the raw Slack body so callers keep their existing
-``ok`` / ``error`` / ``already_reacted`` / ``missing_scope`` mapping;
-transport exceptions propagate to each caller's existing ``try``/``except``.
-
-Scope is *only* colleague Slack post/react. It does not own bot→user DM
-sinks (``notify_user``, ``reply_transport.post_dm``, ``speak``) — already
-correct and ungated by design — the FSM
-``signals.py`` reactions (already gate+audit-correct on the separate
-``slack_reactions`` single-bot-token transport), or the GitLab
-approve/comment paths (already gated via ``check_on_behalf``).
-
-Home is :mod:`teatree.core`: both the gate and the audit already live
-here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
-/``teatree.types`` — no edge into ``teatree.backends``.
+Updates require a live expected-text match and colleague approval. Deletes
+also spend exact approval. Both verify by re-read and record a verified
+outbound claim. The backend owns token routing and wire calls.
 """
 
 import hashlib
@@ -55,16 +18,18 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.egress_transport import EgressKind, run_egress_transport, suppress_on_behalf_egress
-from teatree.core.gates import exact_approval
-from teatree.core.on_behalf_egress_observation import (
+from teatree.core.egress_transport import (
     EgressAttempt,
     EgressDestination,
+    EgressKind,
     EgressOutcome,
     observe_egress,
     observe_egress_errors,
     observe_on_behalf_egress,
+    run_egress_transport,
+    suppress_on_behalf_egress,
 )
+from teatree.core.gates import exact_approval
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
@@ -230,6 +195,37 @@ class OnBehalfSlackEgress:
                 artifact_url=mutation.channel,
                 summary=mutation.payload[:120],
             )
+
+    def post_once(self, *, idempotency_key: str, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        if not idempotency_key.strip():
+            msg = "an idempotency_key is required"
+            raise ValueError(msg)
+        claim_model = cast("type[OutboundClaim]", apps.get_model("core", "OutboundClaim"))
+        claim, created = claim_model.objects.get_or_create(
+            idempotency_key=f"slack-post:{idempotency_key}",
+            defaults={"kind": claim_model.Kind.SLACK_MESSAGE, "extra": {"channel": channel, "thread_ts": thread_ts}},
+        )
+        if not created:
+            if claim.verified_at is None:
+                msg = f"an earlier post under this idempotency_key did not verify: {claim.drift_reason or 'in flight'}"
+                raise RuntimeError(msg)
+            return {"ok": True, "already_sent": True, "channel": claim.extra["channel"], "ts": claim.extra["ts"]}
+        try:
+            response = self.post(
+                channel=channel, text=text, thread_ts=thread_ts, target=channel, action="mcp_slack_post"
+            )
+        except BaseException:
+            claim.delete()
+            raise
+        ts = str(response.get("ts") or "")
+        if not response.get("ok") or not ts:
+            claim.delete()
+            return response
+        if not self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts):
+            claim.record_drift("Slack accepted the post but a live read did not find it")
+            raise RuntimeError(claim.drift_reason)
+        claim.mark_verified(ts=ts)
+        return response
 
     def update(self, *, channel: str, ts: str, expected_text: str, text: str, thread_ts: str = "") -> RawAPIDict:
         current = self._live_message(channel, ts, thread_ts)

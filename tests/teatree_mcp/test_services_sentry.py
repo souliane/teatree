@@ -82,7 +82,9 @@ class TestSentryToolCalls(TestCase):
         sentry = Sentry()
         forge = MagicMock()
         forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
-        forge.fetch_pr_message.return_value = PrMessage("Fix error", "Fixes https://sentry.io/acme/issues/9/")
+        forge.fetch_pr_message.return_value = PrMessage(
+            "Fix error", "Malformed https://sentry.io\uff0fevil\nFixes https://sentry.io/acme/issues/9/"
+        )
         with (
             patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
             patch("teatree.mcp.services_sentry._client", return_value=sentry),
@@ -119,6 +121,46 @@ class TestSentryToolCalls(TestCase):
             async_to_sync(build_server().call_tool)(
                 "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
             )
+        sentry.resolve_issue.assert_not_called()
+
+    def test_resolve_refuses_a_link_to_a_different_issue_with_the_same_prefix(self) -> None:
+        sentry = MagicMock()
+        sentry.get_issue.return_value = {
+            "id": "9",
+            "status": "unresolved",
+            "permalink": "https://sentry.io/acme/issues/9/",
+        }
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        forge.fetch_pr_message.return_value = PrMessage("Unrelated issue", "Fixes https://sentry.io/acme/issues/9/99")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+            pytest.raises(ToolError, match="link"),
+        ):
+            async_to_sync(build_server().call_tool)(
+                "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
+            )
+        sentry.resolve_issue.assert_not_called()
+
+    def test_resolve_refuses_an_invalid_issue_permalink(self) -> None:
+        sentry = MagicMock()
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        forge.fetch_pr_message.return_value = PrMessage("Fix error", "Fixes https://sentry.io/acme/issues/9/")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+        ):
+            for permalink in ("https://[sentry.io/acme/issues/9/", "https://sentry.io/"):
+                sentry.get_issue.return_value = {"id": "9", "status": "unresolved", "permalink": permalink}
+                with self.subTest(permalink=permalink), pytest.raises(ToolError, match="link"):
+                    async_to_sync(build_server().call_tool)(
+                        "sentry_issue_resolve",
+                        {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7},
+                    )
         sentry.resolve_issue.assert_not_called()
 
     def test_resolve_refuses_an_unmerged_pr_before_sentry_write(self) -> None:

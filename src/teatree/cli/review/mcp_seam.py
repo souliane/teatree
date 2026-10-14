@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from teatree.cli.review.batch_post import InlineNote
 from teatree.cli.review.evidence_gate import FindingEvidence
+from teatree.cli.review.own_mr import self_approval_refusal
 from teatree.cli.review.service import ReviewService
 from teatree.mcp.review_seam import SeamNote, register_review_post_seam
 
@@ -57,6 +58,8 @@ class GatedReviewPoster:
     service: ReviewService
 
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
+        if refusal := self_approval_refusal(self.service.gitlab_api(), repo, mr):
+            return refusal, 1
         return self.service.approve(repo, mr)
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:

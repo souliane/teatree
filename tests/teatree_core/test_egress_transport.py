@@ -2,15 +2,24 @@
 
 The whole no-post guarantee of ``t3 loops tick --loop followup --dry-run`` rests on this
 leaf: every gate, route and audit above it still runs for real, and only the wire call is
-replaced. So the two properties pinned here are that it is INERT with no suppressor
-installed (live is untouched), and that the swap is scoped to the context that set it.
+replaced. So the properties pinned here are that it is INERT with no suppressor
+installed (live is untouched), that the swap is scoped to the context that set it, and
+that an installed observer hears every attempt's outcome.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
+import pytest
+
 from teatree.core.egress_transport import (
+    EgressAttempt,
+    EgressDestination,
     EgressKind,
+    EgressOutcome,
+    observe_egress,
+    observe_egress_errors,
+    observe_on_behalf_egress,
     run_egress_transport,
     suppress_on_behalf_egress,
     suppressed_egress_response,
@@ -73,3 +82,24 @@ class TestSuppressorReplacesOnlyTheTransport:
             response = pool.submit(run_egress_transport, "mr", "nag", EgressKind.POST, _publish).result(timeout=5)
 
         assert response == {"ok": True, "ts": "live"}
+
+
+def test_observer_reports_success_and_refusal_and_restores_nested_context() -> None:
+    outer: list[EgressAttempt] = []
+    inner: list[EgressAttempt] = []
+    destination = EgressDestination(channel="C123", thread="1.1")
+    with observe_on_behalf_egress(outer.append):
+        observe_egress("C123", "post", EgressKind.POST, {"ok": True}, destination=destination)
+        with observe_on_behalf_egress(inner.append):
+            observe_egress("C123", "post", EgressKind.POST, {"ok": False, "error": "denied"})
+        reason = "wire failed"
+        with (
+            pytest.raises(RuntimeError, match="wire failed"),
+            observe_egress_errors("C123", "update", EgressKind.UPDATE, destination=destination),
+        ):
+            raise RuntimeError(reason)
+    assert [event.outcome for event in outer] == [EgressOutcome.POSTED, EgressOutcome.REFUSED]
+    assert outer[0].channel == "C123"
+    assert outer[0].thread == "1.1"
+    assert outer[1].reason == "wire failed"
+    assert [event.reason for event in inner] == ["denied"]

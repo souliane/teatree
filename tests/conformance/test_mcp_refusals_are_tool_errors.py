@@ -40,7 +40,8 @@ _MIN_REFUSING_SEAM_CALLS = 1
 #: The ``raise`` sites that are NOT agent-facing refusals, and why. A new one must be
 #: classified deliberately — that forcing function is the point of an explicit ledger.
 _NOT_A_REFUSAL: dict[tuple[str, str], str] = {
-    ("server.py", "ToolNameCollisionError"): "raised at registration time, before any tool can be called",
+    ("tool_surface.py", "ToolNameCollisionError"): "raised at registration time, before any tool can be called",
+    ("tool_surface.py", "ToolContractError"): "raised at registration time, before any tool can be called",
     ("command_catalogue.py", "RuntimeError"): "unregistered provider — teatree.cli never imported, a wiring bug",
     ("review_seam.py", "RuntimeError"): "unregistered factory — teatree.cli never imported, a wiring bug",
     ("services_notion.py", "RuntimeError"): "unregistered factory — t3 mcp serve never registered it, a wiring bug",
