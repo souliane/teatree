@@ -220,6 +220,7 @@ class TestClassifier(TestCase):
             "Exception: Control request timeout: initialize",
             "outage_death: connection refused",
             "result_error: no terminal ResultMessage",
+            "result_error: context_exhausted — the resumed conversation ended without taking a turn",
             "provision_failed: uv sync exited 1",
             "landing_unverified: coder yielded with no commit",
             "no_result_envelope: agent produced no JSON result envelope",

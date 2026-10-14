@@ -25,13 +25,14 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
-from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work, find_coverage
+from teatree.loop.slack_answer.orchestration import CoverageKind, WorkOrigin, dispatch_work, find_coverage
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
@@ -484,3 +485,38 @@ class TestADivergedLaneOverlayIsRepairedSoCoverageStillFindsIt:
         )
 
         assert coverage is not None, "the lane is invisible to the queue that owns it, so a rival will be minted"
+
+
+class TestFragmentSubjectCoverage(TestCase):
+    def test_pr_subpath_finds_live_pr_keyed_ticket(self) -> None:
+        pr = "https://github.com/souliane/teatree/pull/5"
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=pr, state=Ticket.State.WORK_STARTED)
+
+        for suffix in ("/files", "/"):
+            with self.subTest(suffix=suffix):
+                coverage = find_coverage(
+                    fingerprint="", slack_ts="new", coalesced_ts=(), overlay="t3-teatree", text=f"Review {pr}{suffix}"
+                )
+                assert coverage is not None
+                assert coverage.kind is CoverageKind.SAME_SUBJECT
+                assert str(ticket.pk) in coverage.reference
+
+    def test_live_fragment_member_covers_its_subject_under_ignored_umbrella(self) -> None:
+
+        base = "https://github.com/souliane/teatree/issues/3009"
+        Ticket.objects.create(overlay="t3-teatree", issue_url=base, state=Ticket.State.IGNORED)
+        member = Ticket.objects.create(
+            overlay="t3-teatree", issue_url=f"{base}#slack=D-owner/123.456/dm", state=Ticket.State.WORK_STARTED
+        )
+
+        coverage = find_coverage(
+            fingerprint="",
+            slack_ts="new",
+            coalesced_ts=(),
+            overlay="t3-teatree",
+            text=f"Please check `{member.issue_url}`",
+        )
+
+        assert coverage is not None
+        assert coverage.kind is CoverageKind.SAME_SUBJECT
+        assert str(member.pk) in coverage.reference

@@ -28,7 +28,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts import hook_budget
+from hooks.scripts import hook_budget, t3_invocation
 from hooks.scripts.coverage_gate import diff_coverage_finding, repo_ships_branch, shipped_branch
 from hooks.scripts.existing_artifact import _PROBE_TIMEOUT_S
 from hooks.scripts.hook_budget import HOOK_CEILING_S
@@ -483,6 +483,23 @@ class TestFailsOpenOnBrokenSubprocess:
         with t3_reports("some non-json error text", returncode=2) as measurement:
             assert handle_block_uncovered_diff(data) is False
         assert measurement.ran
+
+    def test_a_launcher_that_cannot_run_here_fails_open_naming_the_cause(self, shipping_repo, monkeypatch, capsys):
+        """Exit 69 is ``deploy/t3`` refusing the venue: nothing was measured, and the note says why."""
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        why = "compose project 'teatree' runs no teatree-worker or teatree-admin container"
+        with (
+            patch.object(t3_invocation, "unreachable_reason", return_value=why) as asked,
+            t3_reports("", returncode=t3_invocation.VENUE_UNAVAILABLE_EXIT) as measurement,
+        ):
+            assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran
+        assert asked.call_args.args[0] == Path(measurement.cwd)
+        err = capsys.readouterr().err
+        assert "produced no parseable report" in err
+        assert "venue fault" in err
+        assert why in err
 
     def test_fail_open_on_malformed_json(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")

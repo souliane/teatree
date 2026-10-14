@@ -41,6 +41,7 @@ from teatree.hooks._parser_primitives import (
     attached_api_field,
     canonical_forge_leader,
     canonical_leader,
+    short_cluster_values,
     strip_wrapper_prefix,
 )
 from teatree.hooks._shell_lexer import TokenKind, raw_substitution_sees_live, split_commands, tokenize
@@ -56,8 +57,8 @@ _GIT_GLOBAL_DIR_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--git-dir", "--
 # Message-bearing flags that make a ``git commit`` a publish surface (its body
 # lands in public history): ``-m`` / ``--message`` / ``-F`` / ``--file`` -- the
 # same set the substring catalogue covers, now reached token-aware.
-_GIT_COMMIT_BODY_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message", "-F", "--file"})
-_GIT_COMMIT_BODY_ATTACHED: Final[tuple[str, ...]] = ("-m", "-F", "--message=", "--file=")
+_GIT_COMMIT_BODY_SHORT: Final[frozenset[str]] = frozenset({"-m", "-F"})
+_GIT_COMMIT_BODY_LONG: Final[tuple[str, ...]] = ("--message", "--file")
 
 # Forge-tool command words the body-extracting walkers can parse a body out of.
 # A segment whose LEADING executable (after cd/env) is one of these is parseable;
@@ -116,6 +117,7 @@ _LEADER_PUBLISH_SUBSTRINGS: Final[tuple[tuple[str, str], ...]] = (
     ("git", "git commit -F"),
     ("git", "git commit --file"),
     ("curl", "chat.postMessage"),
+    ("curl", "files.upload"),
 )
 
 # Forge-tool markers detected as a WORD within any token, so a forge call
@@ -339,9 +341,7 @@ def _segment_is_git_message_publish(words: list[str]) -> bool:
 
 
 def _token_is_commit_body_flag(token: str) -> bool:
-    return token in _GIT_COMMIT_BODY_FLAGS or any(
-        token.startswith(prefix) and len(token) > len(prefix) for prefix in _GIT_COMMIT_BODY_ATTACHED
-    )
+    return token.partition("=")[0] in _GIT_COMMIT_BODY_LONG or bool(short_cluster_values(token, _GIT_COMMIT_BODY_SHORT))
 
 
 def segment_is_substring_publish(words: list[str]) -> bool:

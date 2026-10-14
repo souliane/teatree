@@ -150,13 +150,20 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
 
     A ``body`` the command parser could not resolve (a missing ``--body-file``,
     an unexpanded ``$VAR``, a stdin body) carries an injected fail-closed
-    sentinel rather than real content — there is nothing to shingle, so this is
-    :data:`UNKNOWN`, never a scan that happened to find nothing (#4195 review;
-    the sibling quote-scanner and banned-terms gates recognise the same
-    sentinel before content matching, for the same reason).
+    sentinel rather than real content. Readable fragments are still checked;
+    an unresolved fragment makes an otherwise clean result :data:`UNKNOWN`.
     """
-    if _is_fail_closed_sentinel(body):
-        return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
+    unreadable = _is_fail_closed_sentinel(body)
+    body = "\n".join(line for line in body.split("\n") if not _is_fail_closed_sentinel(line))
+    if not body:
+        reason = (
+            "the publish body could not be resolved before the command runs"
+            if unreadable
+            else "this session's transcript could not be read"
+            if operator_messages is None
+            else ""
+        )
+        return Verdict(UNKNOWN if reason else CLEAN, reason=reason)
     if operator_messages is None:
         return Verdict(UNKNOWN, reason="this session's transcript could not be read")
     known = frozenset(
@@ -164,13 +171,15 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
         for message in operator_messages
         for shingle in _shingles(_words(message))[:MAX_FINGERPRINTS_PER_MESSAGE]
     )
-    if not known:
+    if not known and not unreadable:
         return Verdict(CLEAN)
     for source, threshold in ((_quoted_regions(body), QUOTED_RUN_WORDS), (body, PROSE_RUN_WORDS)):
         words = _words(source)
         start, length = _longest_run(words, known)
         if length >= threshold:
             return Verdict(REPRODUCED, span=" ".join(words[start : start + length])[:_SPAN_CHARS], words=length)
+    if unreadable:
+        return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
     return Verdict(CLEAN)
 
 

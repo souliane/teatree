@@ -24,7 +24,7 @@ the one registration choke point, and a tool with no annotation counts as a writ
 *allowed_writes* (``--allow-write``) names the write tools such a server still
 registers: the one a phase's own deliverable goes through.
 
-The live agent mailbox is a separate, room-scoped communication surface, present
+The live agent mailbox is a separate, addressed communication surface, present
 only when the runner binds this MCP child to a running TeaTree task.
 
 A registered overlay contributes its own tools through
@@ -584,7 +584,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
         + (
-            "\n\nLive agent mailbox (messages arrive on the next inbox/wait call, not as an idle wake):\n"
+            "\n\nLive agent mailbox (busy peers can receive now; idle peers read inbox/wait):\n"
             + agent_mailbox.INSTRUCTIONS
             if agent_mailbox.MailboxClient.from_env() is not None
             else ""

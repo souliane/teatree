@@ -28,7 +28,7 @@ from teatree.utils.loopback_forward import (
     _DOCKER_PROBE_TIMEOUT_SECONDS,
     ForwardResult,
     LoopbackForward,
-    _running_admin_container,
+    _running_admin_containers,
     ensure_admin_forward,
 )
 from teatree.utils.run import TimeoutExpired
@@ -91,7 +91,7 @@ def stack_up() -> Iterator[None]:
     """A host (not a container) whose admin container is running."""
     with (
         patch("teatree.utils.loopback_forward.running_in_container", return_value=False),
-        patch("teatree.utils.loopback_forward._running_admin_container", return_value=_ADMIN_CONTAINER),
+        patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
     ):
         yield
 
@@ -206,7 +206,7 @@ class TestItDeclinesInsteadOfBlocking:
     def test_a_stopped_stack_is_reported_not_raised(self, marker_home: Path) -> None:
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=False),
-            patch("teatree.utils.loopback_forward._running_admin_container", return_value=""),
+            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[]),
         ):
             result = ensure_admin_forward(port=0)
 
@@ -218,7 +218,7 @@ class TestItDeclinesInsteadOfBlocking:
         # The venue changes HOW the forward is made, never whether the stack is up.
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-            patch("teatree.utils.loopback_forward._running_admin_container", return_value=""),
+            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[]),
         ):
             result = ensure_admin_forward(port=0)
 
@@ -228,7 +228,7 @@ class TestItDeclinesInsteadOfBlocking:
     def test_the_docker_probe_is_bounded(self) -> None:
         with patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run:
             run.return_value.stdout = ""
-            _running_admin_container()
+            _running_admin_containers()
 
         assert run.call_args.kwargs["timeout"] == _DOCKER_PROBE_TIMEOUT_SECONDS
 
@@ -237,12 +237,32 @@ class TestItDeclinesInsteadOfBlocking:
         # An unresponsive daemon and an absent binary must both read as "not up",
         # which the caller turns into a message rather than a traceback.
         with patch("teatree.utils.loopback_forward.run_allowed_to_fail", side_effect=failure):
-            assert _running_admin_container() == ""
+            assert _running_admin_containers() == []
 
-    def test_only_the_first_container_id_is_taken(self) -> None:
-        with patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run:
+    def test_only_the_production_projects_admin_is_reached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A scratch stack's admin would serve another DB, and lend its image to the forwarder."""
+        monkeypatch.setenv("TEATREE_COMPOSE_PROJECT", "rolled")
+        with (
+            patch("teatree.utils.compose_project.running_in_container", return_value=False),
+            patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run,
+        ):
+            run.return_value.stdout = ""
+            _running_admin_containers()
+        assert "label=com.docker.compose.project=rolled" in run.call_args.args[0]
+
+    def test_two_admin_containers_return_an_error_naming_both_ids(self) -> None:
+        with (
+            patch("teatree.utils.loopback_forward.run_allowed_to_fail") as run,
+            patch("teatree.utils.loopback_forward._ensure_published_forwarder") as publish,
+            patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
+        ):
             run.return_value.stdout = f"{_ADMIN_CONTAINER}\nsecond-one\n"
-            assert _running_admin_container() == _ADMIN_CONTAINER
+            result = ensure_admin_forward()
+
+        assert result.url == ""
+        assert _ADMIN_CONTAINER in result.error
+        assert "second-one" in result.error
+        publish.assert_not_called()
 
 
 class TestForwardResultClose:
@@ -268,7 +288,7 @@ def containerized_stack_up() -> Iterator[list[list[str]]]:
 
     with (
         patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-        patch("teatree.utils.loopback_forward._running_admin_container", return_value=_ADMIN_CONTAINER),
+        patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
         patch("teatree.utils.loopback_forward.run_allowed_to_fail", side_effect=record),
         patch("teatree.utils.loopback_forward._docker_socket_gid", return_value=0),
     ):
@@ -343,7 +363,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
     def test_a_running_forwarder_is_reused_not_restarted(self) -> None:
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-            patch("teatree.utils.loopback_forward._running_admin_container", return_value=_ADMIN_CONTAINER),
+            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
             patch("teatree.utils.loopback_forward._docker", return_value="already-running") as docker,
         ):
             result = ensure_admin_forward(port=8803)
@@ -354,7 +374,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
     def test_a_forwarder_that_will_not_start_is_reported_not_raised(self) -> None:
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-            patch("teatree.utils.loopback_forward._running_admin_container", return_value=_ADMIN_CONTAINER),
+            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
             patch("teatree.utils.loopback_forward._docker", side_effect=["", "an/image", "", ""]),
         ):
             result = ensure_admin_forward(port=8803)

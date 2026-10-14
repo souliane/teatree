@@ -39,7 +39,9 @@ on a directory the entry point then refuses, and the gate fails closed anyway.
 ``TEATREE_INVOCATION_CWD``, the escape the refusal itself documents, for a
 directory :mod:`hooks.scripts.container_visibility` can PROVE the container reaches.
 A directory it cannot vouch for is declared to nothing and stays refused, which is
-the leak guard doing its job rather than a gap in it.
+the leak guard doing its job rather than a gap in it. That refusal (exit 69) is a
+venue fault, and :func:`venue_fault` names its cause so no gate reads it as a
+verdict on what it was asked to judge.
 
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
 ``teatree`` is importable, so the module top imports only stdlib plus the
@@ -53,7 +55,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from hooks.scripts.container_visibility import container_path
+from hooks.scripts.container_visibility import container_path, unreachable_reason
 
 CompletedProcess = subprocess.CompletedProcess
 TimeoutExpired = subprocess.TimeoutExpired
@@ -217,6 +219,32 @@ def t3_never_started(result: subprocess.CompletedProcess[str]) -> bool:
     if result.returncode in _COULD_NOT_EXEC_CODES:
         return True
     return any(marker in (result.stderr or "") for marker in _BOOTSTRAP_CRASH_MARKERS)
+
+
+#: ``deploy/t3``'s EX_UNAVAILABLE: THIS venue cannot run the CLI, so no command ran and nothing was judged.
+VENUE_UNAVAILABLE_EXIT = 69
+
+
+def venue_fault(returncode: int, stderr: str | None, *, cwd: str | Path | None = None) -> str | None:
+    """Why the launcher could not run here, or ``None`` when *returncode* is not its venue fault.
+
+    The cause is the launcher's refusal line, plus the prover's reason when the hook
+    could not declare the directory it ran from — a refusal names a fact someone can fix.
+    """
+    if returncode != VENUE_UNAVAILABLE_EXIT:
+        return None
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    cause = next(
+        (line for line in lines if line.startswith("deploy/t3:")),
+        lines[0] if lines else "the launcher printed no reason",
+    )
+    directory = Path(cwd) if cwd is not None else hook_checkout_root()
+    if directory is not None and (undeclared := unreachable_reason(directory)):
+        cause = f"{cause} The hook could not declare {directory} to the container: {undeclared}."
+    return (
+        f"the containerized `t3` cannot run in this venue (exit {VENUE_UNAVAILABLE_EXIT}) — a venue fault, "
+        f"not a verdict on the content: {cause}"
+    )
 
 
 def spawn_t3_detached(argv: list[str]) -> None:

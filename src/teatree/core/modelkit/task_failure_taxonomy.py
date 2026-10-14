@@ -108,6 +108,7 @@ CONTEXT_EXHAUSTED_MARKER = "context_exhausted"
 #: above sit immediately behind. Shared so ``teatree.agents.runner_failure_taxonomy`` stamps the
 #: exact token the requeue decision below reads back.
 RESULT_ERROR_MARKER = "result_error:"
+RESUME_REFUSED_PHRASE = "the resumed conversation ended without taking a turn"
 
 #: Prefix a review refusal carries when the PR head advanced past the tree the review
 #: was dispatched for, so the reviewer judged neither (souliane/teatree#4737).
@@ -137,6 +138,7 @@ class FailureKind(models.TextChoices):
     HARNESS_CONTROL_TIMEOUT = "harness_control_timeout", "Harness control request timed out"
     OUTAGE = "outage", "Network or API outage"
     RESULT_ERROR = "result_error", "Run ended without a clean result"
+    RESUME_REFUSED = "resume_refused", "Resume ended without taking a turn"
     RESULT_SCHEMA_INVALID = "result_schema_invalid", "Result envelope violated the schema"
     PROVISION_FAILED = "provision_failed", "Worktree provisioning failed"
     LANDING_UNVERIFIED = "landing_unverified", "Work never landed"
@@ -182,6 +184,7 @@ RECOVERY: Mapping[str, Recovery] = {
     # sweep is bounded twice — the #2009 iteration cap, and a loud halt on two identical failures.
     FailureKind.OUTAGE: Recovery(_RETRY, environmental=True),
     FailureKind.RESULT_ERROR: Recovery(_RETRY, environmental=True),
+    FailureKind.RESUME_REFUSED: Recovery(_RETRY, environmental=True),
     FailureKind.PROVISION_FAILED: Recovery(_RETRY, environmental=True),
     FailureKind.LANDING_UNVERIFIED: Recovery(_RETRY, environmental=True),
     FailureKind.HARNESS_CRASH: Recovery(_RETRY, environmental=True),
@@ -261,13 +264,16 @@ _CAUSELESS: frozenset[str] = frozenset(
 )
 
 #: Environmental kinds whose repeated TEXT still says nothing about the work, so two
-#: identical ones are one outage repeated rather than one defect recurring. Deliberately
-#: NARROWER than :data:`RECOVERY`'s environmental axis, the operator-DISPLAY axis: ``result_error`` /
-#: ``provision_failed`` / ``landing_unverified`` / the lease kinds carry defect-specific
+#: identical ones are one interruption repeated rather than one defect recurring. Deliberately
+#: NARROWER than :data:`RECOVERY`'s environmental axis, the operator-DISPLAY axis:
+#: ``result_error`` (except resume refusals), ``provision_failed``,
+#: ``landing_unverified`` and the lease kinds carry defect-specific
 #: text, so the fingerprint check still discriminates them. ``harness_crash`` is out for the
 #: same reason — a traceback names a code path, so a verbatim repeat of one is a defect
 #: recurring, and #4505 made it retryable, which is what put it in front of the stall at all.
-_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE, FailureKind.HEAD_SUPERSEDED})
+_TEXT_UNINFORMATIVE: frozenset[str] = frozenset(
+    {FailureKind.OUTAGE, FailureKind.HEAD_SUPERSEDED, FailureKind.RESUME_REFUSED}
+)
 
 #: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
 #: unrelated failures rather than one repeating defect. See the module docstring on why
@@ -352,6 +358,12 @@ def classify_failure(error: str) -> str:
     if not haystack:
         return FailureKind.UNRECORDED
     for kind, needles in _MATCHERS:
+        if (
+            kind == FailureKind.RESULT_ERROR
+            and haystack.startswith(RESULT_ERROR_MARKER)
+            and RESUME_REFUSED_PHRASE in haystack
+        ):
+            return FailureKind.RESUME_REFUSED
         if any(needle.casefold() in haystack for needle in needles):
             return kind
     if outage_signature_in_text(error):
@@ -362,8 +374,8 @@ def classify_failure(error: str) -> str:
 def exhausted_the_conversation(error: str) -> bool:
     """Whether *error* says the run's own conversation ran out, so a requeue must open a new one.
 
-    Orthogonal to :func:`classify_failure`: both markers classify as
-    :attr:`FailureKind.RESULT_ERROR` and earn a retry, and this decides what that retry CARRIES.
+    Orthogonal to :func:`classify_failure`: exhaustion markers earn a retry, and this
+    decides what that retry CARRIES.
     Resuming a conversation with no room left re-pays its whole history into the same wall.
 
     Anchored on the stamped :data:`RESULT_ERROR_MARKER` the runner writes the marker behind,
@@ -417,8 +429,8 @@ def stall_fingerprints(kind_fingerprints: Iterable[tuple[str, str]]) -> list[str
     The single builder every ``last_two_fingerprints`` caller shares, so a causeless
     failure can never be dropped on one repair path and counted on another.
 
-    :data:`_TEXT_UNINFORMATIVE` kinds are dropped here too — an outage or a harness
-    traceback repeated verbatim is one outage repeated, so freezing on its text is a halt
+    :data:`_TEXT_UNINFORMATIVE` kinds are dropped here too — an outage or a resume refusal
+    repeated verbatim is one interruption repeated, so freezing on its text is a halt
     the environment caused. That set is NARROWER than :func:`is_environmental`: a
     verbatim-repeating ``landing_unverified`` names a deterministic defect, and retrying
     it to the cap is the repair storm this stall check exists to prevent.
@@ -457,6 +469,7 @@ __all__ = [
     "NON_REPAIR_KINDS",
     "PLAN_STALE_PREFIX",
     "RECOVERY",
+    "RESUME_REFUSED_PHRASE",
     "REVIEW_UNRECORDABLE_PREFIX",
     "SUPERSEDED_PREFIX",
     "FailureKind",

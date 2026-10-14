@@ -7,7 +7,15 @@ onto one home built on :func:`teatree.utils.url_slug.pr_ref_from_url`.
 
 import pytest
 
-from teatree.url_classify import Forge, forge_of, is_github_pr_url, is_gitlab_mr_url, pr_ref, repo_and_iid
+from teatree.url_classify import (
+    Forge,
+    find_forge_refs,
+    forge_of,
+    is_github_pr_url,
+    is_gitlab_mr_url,
+    pr_ref,
+    repo_and_iid,
+)
 
 _GITHUB_PR = "https://github.com/souliane/teatree/pull/1573"
 _GITHUB_PR_PLURAL = "https://github.com/souliane/teatree/pulls/1573"
@@ -59,3 +67,20 @@ class TestPrRefAndRepoAndIid:
     def test_returns_none_for_non_pr_url(self) -> None:
         assert pr_ref(_ISSUE) is None
         assert repo_and_iid(_ISSUE) is None
+
+
+class TestForgeReferences:
+    def test_pr_subpath_and_trailing_slash_resolve_to_pr_url(self) -> None:
+        pr = "https://github.com/o/r/pull/5"
+        assert find_forge_refs(f"See {pr}/files and {pr}/") == [pr, pr]
+
+    def test_keeps_member_fragments_and_trims_sentence_punctuation(self) -> None:
+        member = f"{_ISSUE}#dream-gap=abc.123/dm"
+        assert find_forge_refs(f"Review `{member}`: then {_ISSUE}#issuecomment-1.") == [
+            member,
+            f"{_ISSUE}#issuecomment-1",
+        ]
+
+    def test_gitlab_work_item_note_anchor_keeps_its_fragment(self) -> None:
+        ref = "https://gitlab.com/acme/backend/-/work_items/42/#note_123"
+        assert find_forge_refs(f"See {ref}.") == [ref]

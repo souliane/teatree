@@ -48,6 +48,18 @@ def container_worktree_root() -> str:
     return _capture(_WORKTREE_ROOT_PATTERN, "the worktree-root mount")
 
 
+def wrapper_function(name: str) -> str:
+    """The verbatim definition of shell function *name* in ``deploy/t3``."""
+    lines = _WRAPPER.read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"{name}() {{")
+    return "\n".join(lines[start : lines.index("}", start) + 1])
+
+
+def wrapper_assignment(name: str) -> str:
+    """The verbatim top-level ``NAME=...`` line ``deploy/t3`` resolves *name* with."""
+    return _capture(rf"^({re.escape(name)}=.*)$", f"a top-level {name} assignment")
+
+
 def container_credential_prologue() -> str:
     """The verbatim ``sh -c`` program every containerized dispatch is prefixed with."""
     lines = _WRAPPER.read_text(encoding="utf-8").splitlines()

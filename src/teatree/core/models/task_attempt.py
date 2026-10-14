@@ -27,7 +27,9 @@ _BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_
 #: Kinds where a route candidate ran and did not deliver. Outage and provisioning failures are deliberately
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
 #: corrective retry on the same candidate.
-CANDIDATE_FAULT_KINDS = frozenset({FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR})
+CANDIDATE_FAULT_KINDS = frozenset(
+    {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
+)
 
 
 class TaskAttemptQuerySet(models.QuerySet):

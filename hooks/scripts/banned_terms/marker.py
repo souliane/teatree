@@ -67,8 +67,9 @@ def resolve_marker(term: str, command: str, cwd_repo: Path | None) -> MarkerVerd
         banned_terms_scanner.UNRESOLVABLE_BODY_MARKER,
         banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER,
     }
-    if term in unreadable_body_markers and publish_surface.command_targets_local_commit(command, cwd_repo):
+    unreadable_body = term in unreadable_body_markers or term.startswith(banned_terms_scanner.NAMED_FAIL_CLOSED_PREFIX)
+    if unreadable_body and publish_surface.command_targets_local_commit(command, cwd_repo):
         return MarkerVerdict(deny_message=None, warning=_LOCAL_COMMIT_WARNING, is_marker=True)
-    if term in unreadable_body_markers and publish_surface.command_targets_private_only(command, cwd_repo):
+    if unreadable_body and publish_surface.command_targets_private_only(command, cwd_repo):
         return MarkerVerdict(deny_message=None, warning=_PRIVATE_DEST_WARNING, is_marker=True)
     return MarkerVerdict(deny_message=marker_message, warning=None, is_marker=True)
