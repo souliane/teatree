@@ -26,6 +26,7 @@ import datetime as dt
 import io
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import patch
 
 from django.db import connection
 from django.test import TestCase
@@ -135,6 +136,7 @@ class HotPathQueryPlansTestCase(TestCase):
                     reconcile_ticket(ticket)
 
     def test_the_reconcile_sweep_pays_the_per_ticket_cost_and_nothing_per_board(self) -> None:
+        self.enterContext(patch("teatree.core.worktree.reconcile.find_orphan_dbs", return_value=[]))
         for scale in (_SMALL, _LARGE):
             _populate(scale)
             expected = RECONCILE_ALL_BOARD_QUERIES + sum(
