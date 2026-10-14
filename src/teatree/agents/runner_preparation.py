@@ -17,7 +17,7 @@ from teatree.agents.prompt import (
     read_only_required_skills,
     required_skill_delivery,
 )
-from teatree.agents.read_only_venue_brief import ReadOnlyFacts, read_only_system_context
+from teatree.agents.read_only_venue_brief import ReadOnlyFacts, fit_read_only_context, read_only_system_context
 from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.core.models import Task
@@ -49,6 +49,9 @@ def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: P
         context = build_read_only_system_context(
             task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills
         )
+        context, continued_skills = fit_read_only_context(context)
+        if continued_skills:
+            prompt = f"Required skills continued from the system context:\n\n{continued_skills}\n\n{prompt}"
         return prompt, context
     prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
     context = build_system_context(
@@ -86,7 +89,7 @@ def prepare_run(
     required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
         required_inline=required_inline,
         required_explicit=required_explicit,
-        rendered_context=system_context,
+        rendered_context=f"{system_context}\n{prompt}" if read_only_venue else system_context,
     )
     if load_directive:
         prompt = f"{load_directive}\n\n{prompt}"

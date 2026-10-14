@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -12,10 +13,12 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 from teatree.agents import codex_read_only_probe_program
 from teatree.agents.codex_auth_cache import CodexAuthCacheError
 from teatree.agents.codex_read_only_verdict import (
+    CLONE_ROOT,
     DECLARED_TMPFS,
     DEVICE_ROOT,
     FORBIDDEN_TOOLS,
     KERNEL_ROOTS,
+    WORKTREE_ROOT,
     evaluate,
     planted_home,
 )
@@ -203,6 +206,111 @@ def executor_availability_reason(phase: str) -> str | None:
     return refusal_reason(phase, refusal) if refusal else None
 
 
+def _readable_git_file(path: Path) -> None:
+    info = path.lstat()
+    if info.st_nlink > 1:
+        msg = f"Git metadata {path} has links outside its checkout"
+        raise ExecutorRefusalError(msg)
+    path.chmod(info.st_mode | stat.S_IROTH)
+
+
+def _readable_git_tree(gitdir: Path) -> None:
+    pending = [gitdir]
+    while pending:
+        path = pending.pop()
+        mode = path.lstat().st_mode
+        if not stat.S_ISDIR(mode):
+            continue
+        path.chmod(mode | stat.S_IROTH | stat.S_IXOTH)
+        with os.scandir(path) as entries:
+            children = list(entries)
+        pending.extend(
+            Path(entry.path)
+            for entry in children
+            if entry.is_dir(follow_symlinks=False) and not Path(entry.path).is_mount()
+        )
+        for entry in children:
+            if entry.is_file(follow_symlinks=False):
+                _readable_git_file(Path(entry.path))
+
+
+def repair_git_metadata(checkout: Path, *, allowed_roots: Sequence[Path]) -> None:
+    """Make only resolved Git metadata readable by the unprivileged executor."""
+    allowed = tuple(root.resolve() for root in allowed_roots if root.is_dir() and not root.is_symlink())
+    checkout_path = checkout.resolve()
+    if not any(checkout_path.is_relative_to(root) or root.is_relative_to(checkout_path) for root in allowed):
+        msg = f"Git checkout {checkout} is outside the executor's declared mounts"
+        raise ExecutorRefusalError(msg)
+    try:
+        for gitdir in codex_read_only_probe_program.resolved_git_dirs(str(checkout)):
+            if not any(gitdir.is_relative_to(root) for root in allowed):
+                msg = f"Git metadata {gitdir} is outside the executor's declared mounts"
+                raise ExecutorRefusalError(msg)
+            _readable_git_tree(gitdir)
+    except OSError as exc:
+        msg = f"could not make Git metadata readable for {checkout}: {exc}"
+        raise ExecutorRefusalError(msg) from exc
+
+
+def _repair_mounted_git(worker: Mapping[str, object], executor: object, roots: Sequence[str]) -> None:
+    if not isinstance(executor, Mapping):
+        return
+    worker_mounts = worker.get("Mounts")
+    executor_mounts = executor.get("Mounts")
+    if not isinstance(worker_mounts, list) or not isinstance(executor_mounts, list):
+        return
+
+    def mounted(target: str, mounts: list[object], *, writable: bool) -> Mapping[str, object] | None:
+        return next(
+            (
+                mount
+                for mount in mounts
+                if isinstance(mount, Mapping) and mount.get("Destination") == target and mount.get("RW") is writable
+            ),
+            None,
+        )
+
+    def same_source(target: str) -> bool:
+        writable = mounted(target, worker_mounts, writable=True)
+        readonly = mounted(target, executor_mounts, writable=False)
+        return bool(
+            writable
+            and readonly
+            and writable.get("Type") == readonly.get("Type")
+            and writable.get("Source") == readonly.get("Source")
+        )
+
+    allowed = [Path(target) for target in (CLONE_ROOT, WORKTREE_ROOT) if same_source(target)]
+    checkouts = [
+        Path(root) for root in roots if Path(root).is_dir() and any(Path(root).is_relative_to(a) for a in allowed)
+    ]
+
+    checkout_env = worker.get("CheckoutEnv")
+    if isinstance(checkout_env, list):
+        named = next(
+            (
+                entry.partition("=")[2]
+                for entry in checkout_env
+                if isinstance(entry, str) and entry.startswith("TEATREE_DEPLOY_CHECKOUT=")
+            ),
+            "",
+        )
+        deploy = Path(named) if named else None
+        if deploy is not None and deploy.is_dir() and (deploy / ".git").is_dir():
+            worker_deploy = mounted(str(deploy), worker_mounts, writable=True)
+            executor_git = mounted(str(deploy / ".git"), executor_mounts, writable=False)
+            if (
+                worker_deploy is not None
+                and executor_git is not None
+                and worker_deploy.get("Type") == executor_git.get("Type") == "bind"
+                and str(Path(str(worker_deploy.get("Source"))) / ".git") == executor_git.get("Source")
+            ):
+                allowed.append(deploy / ".git")
+                checkouts.append(deploy)
+    for checkout in checkouts:
+        repair_git_metadata(checkout, allowed_roots=allowed)
+
+
 def attest(
     phase: str, roots: Sequence[str], *, home: str = "", docker: ExecutorDocker | None = None
 ) -> ExecutorAttestation:
@@ -212,6 +320,7 @@ def attest(
     worker = docker.worker()
     container_id = docker.executor_id(str(worker["Project"]))
     executor = docker.answer(["inspect", "--format", EXECUTOR_INSPECT_FORMAT, container_id])
+    _repair_mounted_git(worker, executor, roots)
     observation = docker.probe(container_id, roots, home)
     if refusal := evaluate(observation, executor, worker, roots):
         msg = f"{EXECUTOR_SERVICE} is not read-only: {refusal}"

@@ -24,9 +24,9 @@ from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_env
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
-from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
+from teatree.core.task_enqueue import TaskEnqueueError, enqueue_phase_task
 
 logger = logging.getLogger(__name__)
 

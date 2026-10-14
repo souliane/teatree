@@ -18,6 +18,7 @@ from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task, Ticket
@@ -87,7 +88,7 @@ class ReadOnlyFacts:
         return facts
 
 
-def read_only_system_context(context: str) -> str:
+def read_only_system_context(context: str, *, max_bytes: int | None = MAX_APPEND_BYTES) -> str:
     """*context* with every teatree command or tool it names rewritten, or refused: none of them runs here."""
     rewritten_fences = _TEATREE_CODE_FENCE.sub(
         lambda fence: _TEATREE_COMMAND.sub(f"{ABSENT_TOOL} ", fence.group()), context
@@ -98,10 +99,39 @@ def read_only_system_context(context: str) -> str:
             f"the system context still names a teatree command: {rewritten[command.start() : command.end() + 40]!r}"
         )
         raise _refused(reason)
-    if (size := len(rewritten.encode())) > MAX_APPEND_BYTES:
-        reason = f"read-only brief over budget: system context {size} bytes > {MAX_APPEND_BYTES}"
+    if max_bytes is not None and (size := len(rewritten.encode())) > max_bytes:
+        reason = f"read-only brief over budget: system context {size} bytes > {max_bytes}"
         raise _refused(reason)
     return rewritten
+
+
+def fit_read_only_context(context: str) -> tuple[str, str]:
+    """Move whole mandatory skill bodies to the task message until the system append fits."""
+    context = read_only_system_context(context, max_bytes=None)
+    if len(context.encode()) <= MAX_APPEND_BYTES:
+        return context, ""
+    header = "\n\n# Loaded Skills\n\n"
+    tail = "\n\n# Context Budget"
+    if header not in context or tail not in context:
+        read_only_system_context(context)
+        return context, ""
+    prefix, remainder = context.split(header, 1)
+    skill_region, suffix = remainder.split(tail, 1)
+    stage_line = ""
+    if "\n\nSTAGE CUSTOM SKILLS" in skill_region:
+        skill_region, stage_line = skill_region.split("\n\nSTAGE CUSTOM SKILLS", 1)
+        stage_line = "\n\nSTAGE CUSTOM SKILLS" + stage_line
+    reach, *raw_sections = skill_region.split("\n\n--- SKILL: ")
+    kept = ["--- SKILL: " + section for section in raw_sections]
+    moved: list[str] = []
+
+    def assembled() -> str:
+        return prefix + header + "\n\n".join((reach, *kept)) + stage_line + tail + suffix
+
+    while kept and len(assembled().encode()) > MAX_APPEND_BYTES:
+        moved.insert(0, kept.pop())
+    fitted = read_only_system_context(assembled())
+    return fitted, "\n\n".join(moved)
 
 
 def _refused(reason: str) -> HarnessFallbackError:
@@ -111,22 +141,30 @@ def _refused(reason: str) -> HarnessFallbackError:
 
 
 def _issue(ticket: "Ticket") -> tuple[str, str]:
-    """The issue body and its comments, where owner decisions often land."""
+    """The issue or PR body and its comments, where owner decisions often land."""
     if not ticket.issue_url:
         return "", ""
     host = None
+    pr = pr_ref_from_url(ticket.issue_url)
     try:
         host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
-        issue = host.get_issue(ticket.issue_url) if host is not None else {}
+        if pr is not None:
+            message = host.fetch_pr_message(slug=pr.slug, pr_id=pr.pr_id) if host is not None else None
+            body = message.body if message is not None else None
+        else:
+            issue = host.get_issue(ticket.issue_url) if host is not None else {}
+            body = next((issue.get(key) for key in ("description", "body") if key in issue), None)
     except Exception as exc:  # an unreadable body refuses the run; the next route candidate plans instead
         reason = f"the issue body could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
-    body = next((issue.get(key) for key in ("description", "body") if key in issue), None)
     if not isinstance(body, str):
         reason = "the issue body could not be read"
         raise _refused(reason)
     try:
-        comments = host.list_issue_comments(issue_url=ticket.issue_url) if host is not None else []
+        if pr is not None:
+            comments = host.list_pr_comments(repo=pr.slug, pr_iid=pr.pr_id) if host is not None else []
+        else:
+            comments = host.list_issue_comments(issue_url=ticket.issue_url) if host is not None else []
     except Exception as exc:  # same as the body: a plan must not miss a decision recorded in a comment
         reason = f"the issue comments could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc

@@ -2,9 +2,12 @@
 
 import logging
 
+from django.db import transaction
+
 from teatree.config import worktree_root
 from teatree.core.intake.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Ticket
+from teatree.forge_credentials import ForgeTokenState, resolve_named_overlay_token
 
 logger = logging.getLogger(__name__)
 
@@ -30,3 +33,19 @@ def persist_intake_landscape(ticket: Ticket) -> None:
         LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
     except ValueError:
         logger.info("Intake landscape survey for ticket %s was empty; no artifact recorded", ticket.pk)
+
+
+def ensure_planning_landscape(ticket: Ticket) -> None:
+    """Record a missing survey before a manually queued planner can consume it."""
+    if LandscapeArtifact.latest_for(ticket) is not None:
+        return
+    for credential in ("github_token", "gitlab_token"):
+        resolution = resolve_named_overlay_token(ticket.overlay, credential=credential)
+        if resolution.state is ForgeTokenState.UNREADABLE:
+            msg = f"{credential} for overlay {ticket.overlay!r} is unreadable: {resolution.detail}"
+            raise ValueError(msg)
+    survey = run_landscape(worktree_root(), overlay_name=ticket.overlay)
+    with transaction.atomic():
+        Ticket.objects.select_for_update().get(pk=ticket.pk)
+        if LandscapeArtifact.latest_for(ticket) is None:
+            LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:manual-planning")

@@ -184,7 +184,7 @@ def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
     )
 
 
-def run_landscape(workspace: Path) -> LandscapeReport:
+def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> LandscapeReport:
     """Gather and render the intake landscape survey for the active overlay.
 
     Resolves the overlay code host, enumerates the workspace worktrees and
@@ -201,7 +201,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
     ``t3 <overlay> workspace landscape`` command surfaces it.
     """
     worktree_paths = _workspace_worktree_paths(workspace)
-    host = code_host_from_overlay()
+    host = code_host_from_overlay(overlay_name)
     if host is None:
         local = survey_landscape(
             host=_NullCodeHost(),
@@ -213,7 +213,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
         report["warnings"].append("no code host configured; surveyed local git landscape only")
         return report
 
-    repo_slugs = get_overlay().review.merge_candidate_repo_slugs()
+    repo_slugs = get_overlay(overlay_name).review.merge_candidate_repo_slugs()
     open_issues, issue_warnings = _open_issues_in_scope(host, repo_slugs)
     try:
         author = host.current_user()

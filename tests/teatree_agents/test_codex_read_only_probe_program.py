@@ -10,8 +10,14 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.agents import codex_read_only_probe_program
-from teatree.agents.codex_read_only_probe_program import ProbeRequest, observe, parse_mountinfo, write_result
+from teatree.agents import codex_read_only_executor, codex_read_only_probe_program
+from teatree.agents.codex_read_only_probe_program import (
+    ProbeRequest,
+    git_readable,
+    observe,
+    parse_mountinfo,
+    write_result,
+)
 from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, evaluate
 from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, executor_fixture, probe_fixture, worker_fixture
 
@@ -242,7 +248,7 @@ def _clone_with_worktree(layout: Path) -> tuple[Path, Path]:
     return clone, worktree
 
 
-def test_a_root_whose_git_data_is_readable_answers_ok(layout: Path) -> None:
+def test_a_root_with_private_git_data_names_the_path(layout: Path) -> None:
     clone, worktree = _clone_with_worktree(layout)
     teatree_file = clone / ".git" / "worktrees" / "ticket" / "t3" / "verify-gates.json"
     _plant(teatree_file.parent, teatree_file.name)
@@ -250,7 +256,7 @@ def test_a_root_whose_git_data_is_readable_answers_ok(layout: Path) -> None:
 
     observed = observe(_request(layout, roots=(str(worktree),)), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
 
-    assert observed["roots"][str(worktree)]["git"] == "OK"
+    assert str(teatree_file) in observed["roots"][str(worktree)]["git"]
 
 
 def test_owner_only_git_data_of_a_worktrees_clone_is_named(layout: Path) -> None:
@@ -260,7 +266,72 @@ def test_owner_only_git_data_of_a_worktrees_clone_is_named(layout: Path) -> None
 
     observed = observe(_request(layout, roots=(str(worktree),)), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
 
-    assert observed["roots"][str(worktree)]["git"] == f"{packed_refs} is unreadable"
+    assert str(packed_refs) in observed["roots"][str(worktree)]["git"]
+
+
+def test_git_readability_reports_every_restrictive_path_and_repair(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    packed_refs = clone / ".git" / "packed-refs"
+    packed_refs.chmod(0o600)
+    graph = clone / ".git" / "objects" / "info" / "commit-graph"
+    graph.write_bytes(b"graph")
+    graph.chmod(0o600)
+    refs = clone / ".git" / "refs" / "remotes" / "origin"
+    refs.mkdir(parents=True)
+    refs.chmod(0o700)
+
+    answer = git_readable(str(worktree))
+
+    assert all(str(path) in answer for path in (packed_refs, graph, refs))
+    assert "chmod" in answer
+
+
+def test_worker_repairs_recreated_git_metadata_before_the_next_probe(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    _git("-C", str(clone), "pack-refs", "--all")
+    assert not (clone / ".git" / "refs" / "heads" / "ticket").exists()
+    gitdir = clone / ".git"
+    packed_refs = gitdir / "packed-refs"
+    graph = gitdir / "objects" / "info" / "commit-graph"
+    refs = gitdir / "refs" / "remotes" / "origin"
+    graph.write_bytes(b"graph")
+    refs.mkdir(parents=True)
+
+    for _ in range(2):
+        packed_refs.chmod(0o600)
+        graph.chmod(0o600)
+        refs.chmod(0o700)
+        assert git_readable(str(worktree)) != "OK"
+
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+        assert git_readable(str(worktree)) == "OK"
+        git = shutil.which("git")
+        assert git is not None
+        assert subprocess.run([git, "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, check=True).stdout
+
+
+def test_worker_refuses_git_metadata_outside_the_declared_mounts(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    outside = layout / "outside-git"
+    outside.mkdir()
+    private = outside / "packed-refs"
+    private.write_text("", encoding="utf-8")
+    private.chmod(0o600)
+    (worktree / ".git").write_text(f"gitdir: {outside}\n", encoding="utf-8")
+
+    with pytest.raises(codex_read_only_executor.ExecutorRefusalError, match="outside the executor"):
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert private.stat().st_mode & 0o777 == 0o600
+
+
+def test_readable_internal_git_symlink_does_not_refuse_the_probe(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    target = clone / ".git" / "info" / "exclude"
+    (clone / ".git" / "info" / "exclude-alias").symlink_to(target)
+
+    assert git_readable(str(worktree)) == "OK"
 
 
 @pytest.mark.parametrize("tree", ["objects", "refs"])
@@ -272,7 +343,7 @@ def test_an_unreadable_object_or_loose_ref_of_the_clone_is_named(layout: Path, t
 
     observed = observe(_request(layout, roots=(str(worktree),)), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
 
-    assert observed["roots"][str(worktree)]["git"] == f"{unreadable} is unreadable"
+    assert str(unreadable) in observed["roots"][str(worktree)]["git"]
 
 
 def test_a_file_target_is_opened_for_append_and_never_written(tmp_path: Path) -> None:

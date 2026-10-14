@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.agents import harness_registry
+from teatree.agents import codex_read_only_executor, harness_registry
 from teatree.agents.codex_read_only_executor import (
     EXECUTOR_PHASES,
     EXECUTOR_SERVICE,
@@ -29,7 +29,15 @@ from teatree.agents.harness_registry import (
     register_harness,
     select_harness,
 )
-from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, EXECUTOR_ID, FakeExecutor, attested, mount
+from tests.teatree_agents._executor_fakes import (
+    EXAMPLE_ROOT,
+    EXECUTOR_ID,
+    FakeExecutor,
+    attested,
+    executor_fixture,
+    mount,
+    worker_fixture,
+)
 
 _CHECKOUT = "/home/<user>/teatree-deploy"
 _CHECKOUT_GIT = f"{_CHECKOUT}/.git"
@@ -64,6 +72,26 @@ def test_a_passing_executor_is_attested_for_the_roots_it_was_probed_with(
 
     assert attestation.container_id == EXECUTOR_ID
     assert [request["roots"] for request in fake.probe_requests] == [[EXAMPLE_ROOT]]
+
+
+def test_deploy_git_is_repaired_only_when_both_mounts_name_the_same_source(tmp_path: Path) -> None:
+    checkout = tmp_path / "deploy"
+    (checkout / ".git").mkdir(parents=True)
+    worker = worker_fixture()
+    executor = executor_fixture("pass")
+    worker["CheckoutEnv"] = [f"TEATREE_DEPLOY_CHECKOUT={checkout}"]
+    worker["Mounts"].append({"Type": "bind", "Source": str(checkout), "Destination": str(checkout), "RW": True})
+    executor["Mounts"].append(
+        {"Type": "bind", "Source": str(checkout / ".git"), "Destination": str(checkout / ".git"), "RW": False}
+    )
+
+    with patch("teatree.agents.codex_read_only_executor.repair_git_metadata") as repair:
+        codex_read_only_executor._repair_mounted_git(worker, executor, ())
+        repair.assert_called_once()
+        repair.reset_mock()
+        executor["Mounts"][-1]["Source"] = str(tmp_path / "unrelated")
+        codex_read_only_executor._repair_mounted_git(worker, executor, ())
+        repair.assert_not_called()
 
 
 def test_writable_mount_refuses_with_named_reason_and_starts_nothing(

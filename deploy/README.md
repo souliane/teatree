@@ -1519,11 +1519,10 @@ mount instead, and the worker never takes the executor's word for it:
   `docker inspect` against its own mounts; any writable mount, unexpected mount, readable
   secret file, owned tree, environment key, tool, capability or malformed answer refuses
   the phase, which then runs on Claude.
-- **Git data must be readable by others.** It reads git as `nobody`, so a clone whose git
-  files were written owner-only (`packed-refs` 0600, packs 0400, as a umask of 077 leaves
-  them) refuses the phase and names the file. Opening them up is the owner's call:
-  `chmod -R a+rX <clone>/.git` on the deploy checkout and each clone in the clone volume,
-  then `git config core.sharedRepository 0644` there so later writes stay readable.
+- **Git data remains readable after maintenance.** Before each attestation, the writable
+  worker repairs Git files and directories under the matched read-only executor mounts for
+  `nobody`, including `packed-refs`, packs, commit graphs, refs and logs. The probe then
+  reports all remaining unreadable paths together with the `chmod -R a+rX <gitdir>` repair.
 
 It sits behind its own compose profile, `ro-executor`, so no whole-project `compose build`
 or `up` reaches it: neither the watchdog's `up -d` nor a generation stack's ever builds or
