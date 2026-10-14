@@ -145,10 +145,12 @@ def curl_options(words: list[str], raws: list[str] | None = None) -> Iterator[Cu
 
 
 def curl_groups(words: list[str], raws: list[str] | None = None) -> list[tuple[list[CurlOption], list[str]]]:
+    argv = list(curl_argv(words, raws))
+    opaque = any(isinstance(item, CurlOption) and (item.unknown or item.name in {"-K", "--config"}) for item in argv)
     groups: list[tuple[list[CurlOption], list[str]]] = [([], [])]
-    for item in curl_argv(words, raws):
+    for item in argv:
         if isinstance(item, CurlOption):
-            if not item.unknown and item.name in {"--next", "-:"}:
+            if not opaque and not item.unknown and item.name in {"--next", "-:"}:
                 groups.append(([], []))
             else:
                 groups[-1][0].append(item)
@@ -156,6 +158,8 @@ def curl_groups(words: list[str], raws: list[str] | None = None) -> list[tuple[l
                     groups[-1][1].append(item.value)
         else:
             groups[-1][1].append(item)
+    if opaque:
+        groups[0][1].extend(words)
     return groups
 
 

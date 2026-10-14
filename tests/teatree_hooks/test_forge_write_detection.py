@@ -436,9 +436,29 @@ class TestCurlOptionBoundaries:
         assert handle_banned_terms_pretool(_bash(command)) is False
         assert capsys.readouterr().out == ""
 
-    def test_unknown_option_in_a_nonforge_group_keeps_a_forge_read_a_read(self) -> None:
-        command = f"curl -sS {_GH_COMMENTS} --next --anyauth -u a:b http://127.0.0.1:8000/x"
-        assert is_publish_command(command) is False
+    @pytest.mark.usefixtures("public_gate")
+    def test_unknown_option_in_another_group_taints_the_curl_segment(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f"curl -sS {_GH_COMMENTS} --next --frobnicate http://127.0.0.1:8000/x"
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "--frobnicate" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.parametrize("separator", ["--next", "-:"])
+    @pytest.mark.usefixtures("public_gate")
+    def test_unknown_option_cannot_swallow_group_boundary_before_forge(
+        self, separator: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        command = f"curl -d 'body={_TERM}' --data-asc {separator} {_GH_COMMENTS}"
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "--data-asc" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_config_option_cannot_hide_later_forge_group(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f"curl -K /tmp/fixture.cfg --next {_GH_COMMENTS}"
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "config file" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
 
     @pytest.mark.usefixtures("public_gate")
     def test_double_dash_after_a_forge_write_still_reads_its_body(self, capsys: pytest.CaptureFixture[str]) -> None:
