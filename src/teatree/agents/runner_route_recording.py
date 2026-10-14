@@ -19,6 +19,7 @@ from teatree.agents.skill_routing import (
 )
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import Task, TaskAttempt
+from teatree.core.models.checkout_exit import attest_checkout_on_park
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,7 @@ def park_after_route_failure(task: Task, dispatch: DispatchHarness, record: Rout
     """Park *task* behind a failure that already ran side effects; a quota or auth one holds the candidate too."""
     if record.hold is not None:
         learn_route_failure(task, dispatch, record, phase=phase)
+    attest_checkout_on_park()
     task.park(not_before=timezone.now() + (record.hold or timedelta()))
 
 

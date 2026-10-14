@@ -327,10 +327,11 @@ class Ticket(
         target=State.PLAN_RECORDED,
         conditions=[_check_plan_artifact],
     )
-    def plan(self, *, parent_task: "Task | None" = None) -> None:
+    def plan(self, *, parent_task: "Task | None" = None, schedule_followup: bool = True) -> None:
         """Advance WORK_STARTED → PLAN_RECORDED after a PlanArtifact record exists."""
         self._consume_pending_phase_tasks("planning")
-        self.schedule_planned_work(parent_task=parent_task)
+        if schedule_followup:
+            self.schedule_planned_work(parent_task=parent_task)
 
     @transition(field="state", source=State.PLAN_RECORDED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
@@ -373,11 +374,12 @@ class Ticket(
             _anti_vacuity_satisfied,
         ],
     )
-    def review(self, *, parent_task: "Task | None" = None) -> None:
+    def review(self, *, parent_task: "Task | None" = None, schedule_followup: bool = True) -> None:
         self._refuse_if_worktree_dirty("reviewing")
         self._consume_pending_phase_tasks("reviewing")
         if self.has_shippable_diff():
-            self.schedule_shipping(parent_task=parent_task)
+            if schedule_followup:
+                self.schedule_shipping(parent_task=parent_task)
             return
         logger.info(
             "Ticket %s reviewed with no shippable diff; skipping auto-shipping (likely meta or already-shipped work)",

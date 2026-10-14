@@ -8971,6 +8971,8 @@ Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 │ claim-occupancy    Claim a checkout for a hand-driven lane, refusing if an   │
 │                    agent already holds it.                                   │
 │ release-occupancy  Hand a checkout back, naming whose claim was freed.       │
+│ attest             Record the checkout state after the owner has inspected   │
+│                    it.                                                       │
 │ adopt              Register an existing on-disk checkout as a Worktree row.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -9199,6 +9201,21 @@ Usage: t3 teatree worktree release-occupancy [OPTIONS] PATH
  this is the operator's escape for a holder that died without releasing,
  and it is the command every refusal points at. It touches the four claim
  columns and nothing else — no directory, branch, container or process.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree attest`
+
+```
+Usage: t3 teatree worktree attest [OPTIONS] PATH
+
+ Record the present checkout state after the owner has inspected it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    path      TEXT  [required]                                              │

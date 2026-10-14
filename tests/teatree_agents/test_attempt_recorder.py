@@ -208,6 +208,16 @@ class TestRecordResultEnvelope(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
 
+    def test_failed_hand_record_keeps_its_source(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "nothing changed"},
+            usage=AttemptUsage(recording_source="hand"),
+        )
+        assert attempt.result["recording_source"] == "hand"
+        assert task.recorded_by_hand()
+
 
 class TestLandingVerifiedCompletion(TestCase):
     """A coding result completes only when a commit actually landed (root-cause gate)."""
