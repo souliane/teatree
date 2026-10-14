@@ -17,10 +17,14 @@ def check_secret_store() -> bool:
     ensure_django()
     model = cast("type[SealedSecret]", apps.get_model("core", "SealedSecret"))
     try:
-        health = model.objects.key_health(master_key_source())
+        source = master_key_source()
+        health = model.objects.key_health(source, verify_rows=True)
     except (DatabaseError, OSError, ValueError) as exc:
         typer.echo(f"FAIL  Sealed secret key source could not be checked: {type(exc).__name__}")
         return False
+    if health.row_count == 0 and not source.path.exists():
+        typer.echo(f"WARN  Sealed secret key {health.source}: no key yet; first write will create it")
+        return True
     if health.healthy:
         typer.echo(f"OK    Sealed secret key {health.source}: {health.detail}")
         return True

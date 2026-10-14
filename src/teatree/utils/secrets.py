@@ -155,6 +155,10 @@ def _first_line(value: str | None) -> str:
 
 
 def read_pass(key: str) -> str:
+    """Return the first secret line, or empty for an absent entry or missing pass binary.
+
+    An unreadable entry raises SecretStoreError, so callers never mistake an unknown value for absence.
+    """
     try:
         return _first_line(_store().read(key))
     except FileNotFoundError:
@@ -162,6 +166,10 @@ def read_pass(key: str) -> str:
 
 
 def read_pass_required(key: str) -> str:
+    """Require a nonempty first line, distinguishing absence from an unreadable store.
+
+    A missing pass binary raises SecretNotFoundError; read failures raise SecretStoreError.
+    """
     try:
         raw = _store().read(key)
     except FileNotFoundError as exc:

@@ -22,8 +22,12 @@ class TestSecretStoreDoctor(TestCase):
                 output = io.StringIO()
                 with redirect_stdout(output):
                     assert check_secret_store() is True
-                assert "OK" in output.getvalue()
+                assert "WARN" in output.getvalue()
                 DbStore(source).write("alpha/token", "canary")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    assert check_secret_store() is True
+                assert source.load().key_id in output.getvalue()
                 source.path.unlink()
                 output = io.StringIO()
                 with redirect_stdout(output):

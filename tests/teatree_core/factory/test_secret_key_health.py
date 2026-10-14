@@ -7,6 +7,7 @@ from django.test import TestCase
 
 from teatree.core.factory.operational_health import HealthStatus, collect_signals, read_health, reconcile_health
 from teatree.core.factory.secret_key_health import secret_key_signals
+from teatree.core.models.sealed_secret import SealedSecret
 from teatree.core.sealed_store import DbStore
 from teatree.utils.master_key import KeyFileSource
 
@@ -44,3 +45,14 @@ class TestSecretKeyHealth(TestCase):
         (signal,) = secret_key_signals().signals
         assert original in signal.summary
         assert replacement in signal.summary
+
+    def test_tick_uses_key_ids_without_decrypting_rows(self) -> None:
+        DbStore(self.source).write("alpha/token", "canary")
+        with patch("teatree.core.models.sealed_secret.SealedSecret.reveal", side_effect=AssertionError("decrypted")):
+            assert secret_key_signals().signals == ()
+
+    def test_mode_error_is_unreadable_even_when_path_mentions_base64(self) -> None:
+        source = KeyFileSource(self.source.path.parent / "base64-key")
+        DbStore(source).write("alpha/token", "canary")
+        source.path.chmod(0o644)
+        assert SealedSecret.objects.key_health(source).status == "UNREADABLE"

@@ -10,20 +10,22 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from teatree.utils.secrets import SecretStoreError
+
 MASTER_KEY_BYTES = 32
 
 
-class InvalidMasterKeyError(ValueError):
+class InvalidMasterKeyError(SecretStoreError, ValueError):
     def __init__(self, source: str, reason: str) -> None:
         super().__init__(f"master key at {source} {reason}")
 
 
-class WrongMasterKeyError(ValueError):
+class WrongMasterKeyError(SecretStoreError, ValueError):
     def __init__(self, stored_id: str, active_id: str) -> None:
         super().__init__(f"sealed key_id {stored_id} differs from active key_id {active_id}")
 
 
-class SealedValueTamperedError(ValueError):
+class SealedValueTamperedError(SecretStoreError, ValueError):
     def __init__(self) -> None:
         super().__init__("sealed value failed authentication")
 

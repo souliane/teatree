@@ -8,8 +8,6 @@ from teatree.utils.master_key import master_key_source
 
 
 def secret_key_signals() -> SignalCollection:
-    if not SealedSecret.objects.exists():
-        return SignalCollection()
     try:
         health = SealedSecret.objects.key_health(master_key_source())
     except (DatabaseError, OSError, ValueError) as exc:

@@ -280,7 +280,7 @@ The staged sealed store keeps its master key in the `teatree_control_db`
 named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
 and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
 a different key file during bootstrap. The current deployment still reads
-`pass` through the default store slot; `t3 secrets import-pass --plan` only
+`pass` through the default store slot; `t3 teatree secrets import-pass` only
 inventories candidate entries and does not migrate or delete credentials.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of

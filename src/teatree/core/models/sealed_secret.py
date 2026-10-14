@@ -4,13 +4,16 @@ import hmac
 from dataclasses import dataclass
 from typing import ClassVar
 
-from django.db import models, transaction
+from django.db import OperationalError, connections, models, transaction
 from django.db.models.functions import Length
 from django.db.models.lookups import Exact, GreaterThanOrEqual
 
 from teatree.config.credential_pass_key import validate_pass_key_entry
-from teatree.utils.master_key import MasterKeySource
-from teatree.utils.sealing import MasterKey, SealedValue, SealedValueTamperedError, aad
+from teatree.utils.master_key import MasterKeySource, MasterKeySourceError
+from teatree.utils.sealing import InvalidMasterKeyError, MasterKey, SealedValue, SealedValueTamperedError, aad
+from teatree.utils.secrets import SecretStoreError
+
+TABLE_NAME = "teatree_sealed_secret"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,18 +28,21 @@ class KeyHealth:
         return self.status == "OK"
 
 
-class SealedStoreReadBackError(ValueError):
+class SealedStoreReadBackError(SecretStoreError, ValueError):
     def __init__(self, name: str) -> None:
         super().__init__(f"sealed secret {name!r} failed read-back")
 
 
 class SealedSecretManager(models.Manager["SealedSecret"]):
+    def table_missing(self) -> bool:
+        return TABLE_NAME not in connections[self.db].introspection.table_names()
+
     def names(self, prefix: str) -> frozenset[str]:
         root = prefix.rstrip("/") + "/"
         return frozenset(
             name[len(root) :]
             for name in self.filter(name__startswith=root).values_list("name", flat=True)
-            if "/" not in name[len(root) :]
+            if name.startswith(root) and "/" not in name[len(root) :]
         )
 
     def reveal(self, name: str, key: MasterKey) -> str | None:
@@ -52,7 +58,7 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
                 defaults={"key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext},
             )
             read_back = self.reveal(name, key)
-            if read_back is None or not hmac.compare_digest(read_back, value):
+            if read_back is None or not hmac.compare_digest(read_back.encode(), value.encode()):
                 raise SealedStoreReadBackError(name)
 
     def discard(self, name: str) -> bool:
@@ -62,30 +68,36 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
     def key_census(self) -> dict[str, int]:
         return {row["key_id"]: row["count"] for row in self.values("key_id").annotate(count=models.Count("id"))}
 
-    def key_health(self, source: MasterKeySource) -> KeyHealth:
-        rows = list(self.all())
-        if not rows:
+    def key_health(self, source: MasterKeySource, *, verify_rows: bool = False) -> KeyHealth:
+        try:
+            census = self.key_census()
+        except OperationalError:
+            if self.table_missing():
+                return KeyHealth(source.label, "OK", "no sealed rows (migration pending)", 0)
+            raise
+        row_count = sum(census.values())
+        if not row_count:
             return KeyHealth(source.label, "OK", "no sealed rows", 0)
         try:
             key = source.load()
-        except ValueError as exc:
-            detail = str(exc)
-            status = "INVALID" if "base64" in detail or "32 bytes" in detail else "UNREADABLE"
-            return KeyHealth(source.label, status, detail, len(rows))
-        ids = {row.key_id for row in rows}
+        except (InvalidMasterKeyError, MasterKeySourceError) as exc:
+            status = "INVALID" if isinstance(exc, InvalidMasterKeyError) else "UNREADABLE"
+            return KeyHealth(source.label, status, str(exc), row_count)
+        ids = set(census)
         if ids != {key.key_id}:
             return KeyHealth(
                 source.label,
                 "WRONG_KEY",
                 f"stored key_ids {', '.join(sorted(ids))}; active key_id {key.key_id}",
-                len(rows),
+                row_count,
             )
-        try:
-            for row in rows:
-                row.reveal(key)
-        except SealedValueTamperedError as exc:
-            return KeyHealth(source.label, "TAMPERED", str(exc), len(rows))
-        return KeyHealth(source.label, "OK", "all sealed rows readable", len(rows))
+        if verify_rows:
+            try:
+                for row in self.all().iterator():
+                    row.reveal(key)
+            except SealedValueTamperedError as exc:
+                return KeyHealth(source.label, "TAMPERED", str(exc), row_count)
+        return KeyHealth(source.label, "OK", f"key_id {key.key_id}; {row_count} sealed rows", row_count)
 
 
 class SealedSecret(models.Model):
@@ -99,7 +111,7 @@ class SealedSecret(models.Model):
     objects: ClassVar[SealedSecretManager] = SealedSecretManager()
 
     class Meta:
-        db_table = "teatree_sealed_secret"
+        db_table = TABLE_NAME
         constraints: ClassVar = [
             models.CheckConstraint(condition=~models.Q(name=""), name="sealed_secret_name_required"),
             models.CheckConstraint(condition=models.Q(Exact(Length("key_id"), 16)), name="sealed_secret_key_id_length"),

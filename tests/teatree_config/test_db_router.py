@@ -15,17 +15,26 @@ suite runs ``filterwarnings = error`` — and the alias must be registered at mo
 scope so it exists before ``pytest.mark.django_db`` validates its ``databases``.
 """
 
+import io
+import os
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.db import connections
 from django.test import override_settings
 
+from teatree.cli.doctor.checks_secret_store import check_secret_store
 from teatree.config.db_router import CONFIG_DB_ALIAS, CONFIG_MODEL_LABEL, ConfigSettingRouter, pinned_config_db
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
-from teatree.core.models import ConfigSetting, SealedSecret, Ticket
+from teatree.core.factory.secret_key_health import secret_key_signals
+from teatree.core.models import ConfigSetting, SealedSecret, SecretCutover, Ticket
+from teatree.core.sealed_store import DbStore
+from teatree.utils.master_key import KeyFileSource
+from teatree.utils.secrets import SecretStoreError
 from tests.db_alias import register_sqlite_alias, teardown_sqlite_alias
 
 _KEY = "provision_ram_ceiling_percent"
@@ -115,6 +124,8 @@ class TestConfigSettingRouter:
         assert router.db_for_read(ConfigSetting) == CONFIG_DB_ALIAS
         assert router.db_for_write(SealedSecret) == CONFIG_DB_ALIAS
         assert router.db_for_read(SealedSecret) == CONFIG_DB_ALIAS
+        assert router.db_for_write(SecretCutover) == CONFIG_DB_ALIAS
+        assert router.db_for_read(SecretCutover) == CONFIG_DB_ALIAS
         assert router.db_for_write(Ticket) is None
         assert router.db_for_read(Ticket) is None
 
@@ -159,6 +170,61 @@ class TestConfigWritesReachCanonicalFromAWorktree:
             # must land in the SAME file — a counter written anywhere else would label
             # a projection built from a database it does not describe.
             assert sorted(_stored_rows(canonical_db)) == sorted([(_SCOPE, _KEY), (GLOBAL_SCOPE, GENERATION_KEY)])
+
+    def test_missing_sealed_table_is_no_rows(
+        self, canonical_db: Path, django_db_blocker: pytest.FixtureRequest, tmp_path: Path
+    ) -> None:
+        assert canonical_db.exists()
+        with django_db_blocker.unblock(), override_settings(DATABASE_ROUTERS=[_ROUTER_PATH]):
+            health = SealedSecret.objects.key_health(KeyFileSource(tmp_path / "absent.key"))
+            assert health.row_count == 0
+            assert secret_key_signals().signals == ()
+            store = DbStore(KeyFileSource(tmp_path / "absent.key"))
+            assert store.read("alpha/token") is None
+            assert store.names("alpha") == frozenset()
+            assert store.remove("alpha/token") is False
+            with pytest.raises(SecretStoreError, match="migration 0013"):
+                store.write("alpha/token", "value")
+            assert not (tmp_path / "absent.key").exists()
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"T3_MASTER_KEY_SOURCE": f"file:{tmp_path / 'absent.key'}"}),
+                redirect_stdout(output),
+            ):
+                assert check_secret_store() is True
+            assert "WARN" in output.getvalue()
+
+    def test_cutover_marker_writes_to_canonical_file(
+        self, canonical_db: Path, django_db_blocker: pytest.FixtureRequest
+    ) -> None:
+        with django_db_blocker.unblock(), override_settings(DATABASE_ROUTERS=[_ROUTER_PATH]):
+            with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
+                editor.create_model(SecretCutover)
+            try:
+                SecretCutover.objects.create()
+                connections[CONFIG_DB_ALIAS].close()
+                with closing(sqlite3.connect(canonical_db)) as db:
+                    assert db.execute("SELECT id FROM teatree_secret_cutover").fetchall() == [(1,)]
+            finally:
+                with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
+                    editor.delete_model(SecretCutover)
+
+    def test_sealed_row_and_key_files_contain_no_plaintext(
+        self, canonical_db: Path, django_db_blocker: pytest.FixtureRequest, tmp_path: Path
+    ) -> None:
+        source = KeyFileSource(tmp_path / "master.key")
+        plaintext = "disk-scan-canary-5052"
+        with django_db_blocker.unblock(), override_settings(DATABASE_ROUTERS=[_ROUTER_PATH]):
+            with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
+                editor.create_model(SealedSecret)
+            try:
+                SealedSecret.objects.store("scan/token", plaintext, source.create())
+                connections[CONFIG_DB_ALIAS].close()
+                for path in (canonical_db, source.path):
+                    assert plaintext.encode() not in path.read_bytes()
+            finally:
+                with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
+                    editor.delete_model(SealedSecret)
 
     def test_read_comes_back_from_canonical(
         self,

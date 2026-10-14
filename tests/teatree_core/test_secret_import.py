@@ -3,17 +3,30 @@ import os
 import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
-from teatree.core.secret_import import build_import_plan
+from teatree.core.secret_import import build_import_plan, referenced_entry_names
 from teatree.utils.secrets import PassStore
 
 
 class TestSecretImportPlan(TestCase):
+    def test_overlay_declared_pass_key_is_referenced(self) -> None:
+        config = SimpleNamespace(
+            declared_credentials=lambda: frozenset({"artifact_token"}),
+            resolve_pass_key=lambda name: SimpleNamespace(value="custom/artifact" if name == "artifact_token" else ""),
+            slack_token_ref="",
+            user_token_ref="",
+        )
+        with patch(
+            "teatree.core.secret_import.get_all_overlays", return_value={"custom": SimpleNamespace(config=config)}
+        ):
+            assert "custom/artifact" in referenced_entry_names()
+
     def test_names_only_plan_and_command_never_write_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -64,3 +77,4 @@ class TestSecretImportPlan(TestCase):
             assert "SENSITIVE_CANARY" not in output.getvalue()
             assert "team/github" in output.getvalue()
             assert all(line.startswith("show ") for line in argv_log.read_text().splitlines())
+            assert "show external/private" not in argv_log.read_text()

@@ -68,7 +68,7 @@ def referenced_entry_names() -> frozenset[str]:
     names.update(AnthropicActivePick.objects.exclude(pass_path="").values_list("pass_path", flat=True))
     names.update(worktree.pass_key for worktree in Worktree.objects.all())
     for overlay in get_all_overlays().values():
-        for credential in CORE_CREDENTIALS:
+        for credential in CORE_CREDENTIALS | overlay.config.declared_credentials():
             resolution = overlay.config.resolve_pass_key(credential)
             if resolution.value:
                 names.add(resolution.value)
@@ -124,5 +124,12 @@ def build_import_plan(*, store: SecretStore | None = None, root: Path | None = N
             destination = "row" if name in present else "missing"
         else:
             destination = "external"
-        entries.append(ImportEntry(name, destination, _readability(source, name) if name in present else "missing"))
+        readability = (
+            _readability(source, name)
+            if name in present and destination == "row"
+            else "not-checked"
+            if name in present
+            else "missing"
+        )
+        entries.append(ImportEntry(name, destination, readability))
     return tuple(entries)

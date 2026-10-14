@@ -1,11 +1,12 @@
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from teatree.core.models.sealed_secret import SealedSecret
+from teatree.core.models.sealed_secret import SealedSecret, SealedStoreReadBackError
 from teatree.core.sealed_store import DbStore
 from teatree.utils.master_key import KeyFileSource
 from teatree.utils.sealing import SealedValueTamperedError
@@ -30,6 +31,24 @@ class TestSealedSecret(TestCase):
         copy.chmod(0o600)
         assert DbStore(KeyFileSource(copy)).read("alpha/token") == "canary"
         assert SealedSecret.objects.get(name="alpha/token").updated_at
+
+    def test_unicode_roundtrip_and_failed_read_back_preserves_timestamp(self) -> None:
+        assert self.store.write("alpha/token", "pässwörd") is True
+        before = SealedSecret.objects.get(name="alpha/token").updated_at
+        assert self.store.read("alpha/token") == "pässwörd"
+        with (
+            patch.object(SealedSecret.objects, "reveal", return_value="wrong"),
+            pytest.raises(SealedStoreReadBackError),
+        ):
+            self.store.write("alpha/token", "replacement")
+        row = SealedSecret.objects.get(name="alpha/token")
+        assert row.updated_at == before
+        assert row.reveal(self.source.load()) == "pässwörd"
+
+    def test_prefix_listing_is_case_sensitive(self) -> None:
+        self.store.write("Anthropic/token", "upper")
+        self.store.write("anthropic/token", "lower")
+        assert self.store.names("anthropic") == frozenset({"token"})
 
     def test_existing_rows_refuse_missing_key_without_creating_one(self) -> None:
         self.store.write("alpha/token", "canary")

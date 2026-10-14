@@ -12,6 +12,19 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
+            name="SecretCutover",
+            fields=[
+                ("id", models.PositiveSmallIntegerField(default=1, primary_key=True, serialize=False)),
+                ("applied_at", models.DateTimeField(auto_now_add=True)),
+            ],
+            options={
+                "db_table": "teatree_secret_cutover",
+                "constraints": [
+                    models.CheckConstraint(condition=models.Q(("id", 1)), name="secret_cutover_singleton"),
+                ],
+            },
+        ),
+        migrations.CreateModel(
             name="SealedSecret",
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),

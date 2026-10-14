@@ -43,7 +43,7 @@ from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.ram_probe import available_cpu_count
-from teatree.utils.secrets import use_store
+from teatree.utils.secrets import PassStore, use_store
 from teatree.utils.work_tree import reset_cwd_cache
 from tests import _session_resource_guard
 from tests._db_template import MIGRATED_TEMPLATE_KEY, build_or_reuse_template, restore_from_template
@@ -202,6 +202,12 @@ def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
         yield
     reset_backend_caches()
     reset_overlay_cache()
+
+
+@pytest.fixture
+def pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
 
 
 @pytest.fixture(autouse=True)

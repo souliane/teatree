@@ -2,9 +2,11 @@
 
 from typing import override
 
+from django.db import OperationalError
+
 from teatree.core.models.sealed_secret import SealedSecret
 from teatree.utils.master_key import KeyFileSource, master_key_source
-from teatree.utils.secrets import SecretStore
+from teatree.utils.secrets import SecretStore, SecretStoreError
 
 
 class DbStore(SecretStore):
@@ -12,18 +14,44 @@ class DbStore(SecretStore):
         self.source = source or master_key_source()
 
     def read(self, key: str) -> str | None:
-        row = SealedSecret.objects.filter(name=key).first()
+        try:
+            row = SealedSecret.objects.filter(name=key).first()
+        except OperationalError as exc:
+            if SealedSecret.objects.table_missing():
+                return None
+            message = f"sealed secret {key!r} could not be read"
+            raise SecretStoreError(message) from exc
         return row.reveal(self.source.load()) if row is not None else None
 
     def write(self, key: str, value: str) -> bool:
-        active = self.source.load() if SealedSecret.objects.exists() else self.source.create()
+        try:
+            has_rows = SealedSecret.objects.exists()
+        except OperationalError as exc:
+            if SealedSecret.objects.table_missing():
+                message = "sealed secret write requires migration 0013 on the canonical database"
+                raise SecretStoreError(message) from exc
+            message = f"sealed secret {key!r} could not be written"
+            raise SecretStoreError(message) from exc
+        active = self.source.load() if has_rows else self.source.create()
         SealedSecret.objects.store(key, value, active)
         return True
 
     @override
     def remove(self, key: str) -> bool:
-        return SealedSecret.objects.discard(key)
+        try:
+            return SealedSecret.objects.discard(key)
+        except OperationalError as exc:
+            if SealedSecret.objects.table_missing():
+                return False
+            message = f"sealed secret {key!r} could not be removed"
+            raise SecretStoreError(message) from exc
 
     @override
     def names(self, prefix: str) -> frozenset[str]:
-        return SealedSecret.objects.names(prefix)
+        try:
+            return SealedSecret.objects.names(prefix)
+        except OperationalError as exc:
+            if SealedSecret.objects.table_missing():
+                return frozenset()
+            message = f"sealed secret names under {prefix!r} could not be read"
+            raise SecretStoreError(message) from exc

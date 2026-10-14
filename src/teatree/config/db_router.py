@@ -1,4 +1,4 @@
-"""Pin the ``ConfigSetting`` store to the canonical DB, never a worktree-isolated copy.
+"""Pin install-wide settings and sealed secrets to the canonical DB.
 
 :func:`teatree.paths.resolve_data_dir` deliberately auto-isolates a worktree
 checkout onto a sibling per-worktree ``db.sqlite3``, so unmerged control-DB
@@ -47,7 +47,7 @@ CONFIG_DB_ALIAS = "canonical_config"
 #: ``ConfigSetting._meta.label_lower`` — matched as a string so this platform-layer
 #: module never imports the domain-layer model (a backwards tach edge).
 CONFIG_MODEL_LABEL = "core.configsetting"
-PINNED_MODEL_LABELS = frozenset({CONFIG_MODEL_LABEL, "core.sealedsecret"})
+PINNED_MODEL_LABELS = frozenset({CONFIG_MODEL_LABEL, "core.sealedsecret", "core.secretcutover"})
 
 
 def pinned_config_db(
@@ -84,8 +84,7 @@ def pinned_config_db(
 class ConfigSettingRouter:
     """Route ``ConfigSetting`` reads and writes to :data:`CONFIG_DB_ALIAS` when it exists.
 
-    Returning ``None`` from every hook for every other model leaves the rest of
-    the control DB exactly where it was — this router only ever moves config.
+    Returning ``None`` for other models leaves their database selection unchanged.
     """
 
     def _pinned_alias(self, model: type[Model]) -> str | None:  # noqa: PLR6301 — Django router contract: instance method

@@ -32,6 +32,7 @@ from teatree.core.models import (
     OnBehalfApproval,
     OnBehalfAudit,
     Prompt,
+    SealedSecret,
     SelfImproveFiring,
     SelfUpdateMarker,
     SessionTodo,
@@ -77,6 +78,19 @@ class TestConfigSettingAdmin:
         """
         model_admin = admin.site._registry[ConfigSetting]
         assert "value" not in model_admin.list_editable
+
+
+class TestSealedSecretAdmin:
+    def test_only_safe_columns_are_listed(self) -> None:
+        model_admin = admin.site._registry[SealedSecret]
+        assert model_admin.get_list_display(django.test.RequestFactory().get("/admin/")) == [
+            "name",
+            "key_id",
+            "updated_at",
+            "encrypted",
+        ]
+        assert isinstance(model_admin, ReadOnlyAdmin)
+        assert model_admin.encrypted(SealedSecret(name="alpha/token")) == "encrypted"
 
 
 class TestConfigSettingAdminSecrecy(django.test.TestCase):

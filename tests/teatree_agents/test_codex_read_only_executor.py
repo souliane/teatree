@@ -30,6 +30,8 @@ from teatree.agents.harness_registry import (
 )
 from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, EXECUTOR_ID, FakeExecutor, attested, mount
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _CHECKOUT = "/home/<user>/teatree-deploy"
 _CHECKOUT_GIT = f"{_CHECKOUT}/.git"
 

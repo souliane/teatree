@@ -17,11 +17,12 @@ class Command(TyperCommand):
     def status(self) -> None:
         """Report key health without disclosing stored values."""
         source = master_key_source()
-        health = SealedSecret.objects.key_health(source)
+        health = SealedSecret.objects.key_health(source, verify_rows=True)
         typer.echo(f"source {source.label}")
         typer.echo(f"health {health.status}: {health.detail}")
-        for key_id, count in sorted(SealedSecret.objects.key_census().items()):
-            typer.echo(f"key_id {key_id}: {count} rows")
+        if health.row_count:
+            for key_id, count in sorted(SealedSecret.objects.key_census().items()):
+                typer.echo(f"key_id {key_id}: {count} rows")
 
     @command()
     def ls(self, prefix: str = "") -> None:
