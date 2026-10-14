@@ -186,18 +186,16 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
+    if facts.review_diff:
+        lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
+        lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
-    lines.extend(
-        (
-            "",
-            "Instructions:",
-            *_OWNER_STOP_LINES,
-            "5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.",
-            final_output_reminder_line(task.phase),
-        )
-    )
+    lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
+    if normalize_phase(task.phase) == "planning":
+        lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
+    lines.append(final_output_reminder_line(task.phase))
     return "\n".join(lines)
 
 

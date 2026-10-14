@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from teatree.agents.harness_registry import HarnessBuildContext
 
 EXECUTOR_SERVICE: Final = "teatree-ro-executor"
-EXECUTOR_PHASES: Final = frozenset({"planning"})
+EXECUTOR_PHASES: Final = frozenset({"planning", "reviewing", "critic_reviewing"})
 EXECUTOR_LOGIN_ENTRY: Final = "teatree/codex/ro-executor-auth-json-b64"
 DOCKER_TIMEOUT_SECONDS: Final = 180.0
 

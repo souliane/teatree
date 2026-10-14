@@ -167,7 +167,9 @@ def _require_supported(options: ClaudeAgentOptions, denied: set[str], *, atteste
         _raise_unsupported("Claude allowed-tools lists")
     if options.can_use_tool is not None or options.permission_prompt_tool_name is not None:
         _raise_unsupported("interactive permission callbacks")
-    if reason := codex_phase_policy_unavailable_reason(denied - _MUTATION_TOOLS if attested else denied):
+    if reason := codex_phase_policy_unavailable_reason(
+        denied - (_MUTATION_TOOLS | _SHELL_TOOLS) if attested else denied
+    ):
         _raise_unsupported(reason)
     if any(name.startswith("mcp__") for name in denied):
         _raise_unsupported("per-tool denials that Codex cannot represent")
