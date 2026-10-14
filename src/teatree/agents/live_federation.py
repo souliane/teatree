@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import NoReturn, Protocol, TypedDict, cast
 
 from teatree.agents.live_control import PeerIdentity, RejectCode
-from teatree.agents.live_delivery import MailboxRequest, PeerDelivery, SendReceipt, send_fields
+from teatree.agents.live_delivery import MailboxRequest, PeerDelivery, SendReceipt, refused_receipt, send_fields
 from teatree.agents.live_ingress import IngressRefusedError, PeerRole, PeerSocket, classify_peer, peer_credentials
 from teatree.paths import control_db_dir
 
@@ -124,8 +124,7 @@ async def send_remote(own_socket: Path, sender: str, message: MailboxRequest, se
         }
         request["proof"] = proof(secret, request)
         return cast("SendReceipt", await call(worker, request, wait=wait + 2))
-    msg = "Mailbox recipient is not active"
-    raise FederationRefusedError(msg)
+    return refused_receipt(to, RejectCode.SESSION_CLOSED)
 
 
 async def verified_sender(request: Mapping[str, object], *, own_socket: Path, connected_pid: int) -> PeerIdentity:

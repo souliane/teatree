@@ -38,7 +38,7 @@ def test_the_first_verdict_wins_over_a_later_one() -> None:
 
     receipt = asyncio.run(settle_twice())
 
-    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == ("accepted_current_turn", None, False)
+    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == ("accepted_current_turn", None, True)
 
 
 def test_settling_withdraws_a_push_still_waiting_for_its_boundary() -> None:

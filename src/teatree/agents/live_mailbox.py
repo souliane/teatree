@@ -25,9 +25,11 @@ from teatree.agents.live_delivery import (
     InboxPage,
     MailboxIdentity,
     MailboxRequest,
+    MailboxTextTooLargeError,
     PeerDelivery,
     RemoteReceipts,
     SendReceipt,
+    refused_receipt,
     send_fields,
 )
 from teatree.agents.live_federation import (
@@ -187,6 +189,7 @@ class LiveMailboxBroker:
     def _recipient_left(self, address: str, message_ids: list[int]) -> None:
         for message_id in message_ids:
             if (delivery := self._delivery.get(message_id)) is not None:
+                delivery.queued_in_inbox = False
                 delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
         self._sender_left([delivery.message_id for delivery in self._relay.forget(address)])
 
@@ -312,11 +315,17 @@ class LiveMailboxBroker:
         return local + [peer for _, peer in remote]
 
     async def _send(self, participant: _Participant, request: MailboxRequest) -> SendReceipt:
-        to, body, key, timeout = send_fields(request)
+        try:
+            to, body, key, timeout = send_fields(request)
+        except MailboxTextTooLargeError:
+            to = request.get("to")
+            if not isinstance(to, str):
+                raise
+            return refused_receipt(to, RejectCode.TOO_LARGE)
         with self._lock:
             self._require_active(participant)
             if participant.waiting >= MAX_WAITING_SENDS:
-                _reject(f"Mailbox send refused: {MAX_WAITING_SENDS} sends from this task are waiting for acceptance")
+                return refused_receipt(to, RejectCode.BACKPRESSURE)
             delivery = participant.sent.get(key)
             previous = participant.remote_sent.prior(key, to, body)
             if previous is not None:
@@ -350,11 +359,13 @@ class LiveMailboxBroker:
         delivery = PeerDelivery(message_id, to, body, framed, asyncio.get_running_loop().create_future())
         self._delivery[message_id] = delivery
         if not recipient.can_receive:
+            delivery.queued_in_inbox = False
             delivery.settle(ControlOutcome.REJECTED, RejectCode.RECIPIENT_CANNOT_RECEIVE)
             return delivery
         if len(recipient.inbox) == recipient.inbox.maxlen:
             evicted = recipient.inbox[0]["id"]
             if (unread := self._delivery.get(evicted)) is not None:
+                unread.queued_in_inbox = False
                 unread.settle(ControlOutcome.REJECTED, RejectCode.DROPPED_UNREAD)
             recipient.dropped_before = evicted
         recipient.inbox.append(
@@ -370,24 +381,30 @@ class LiveMailboxBroker:
 
     async def _accepted(self, delivery: PeerDelivery, task: int | None, wait: float) -> SendReceipt:
         """Push into the recipient's running turn while its inbox read can still accept first."""
+        deadline = asyncio.get_running_loop().time() + wait
         if not delivery.settled.done():
             if task is not None and delivery.push is None:
                 delivery.push = asyncio.create_task(self._push_into_turn(delivery, task, wait))
+            if delivery.push is not None and not delivery.unknown_reported:
+                await asyncio.wait({delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+                if delivery.push.done() and delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY:
+                    delivery.unknown_reported = True
+                    return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
             try:
-                await asyncio.wait_for(asyncio.shield(delivery.settled), wait)
+                await asyncio.wait_for(
+                    asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())
+                )
             except TimeoutError:
-                if delivery.push is not None:
+                if delivery.push is not None and not delivery.push.done():
                     await asyncio.wait({delivery.push})
         return delivery.receipt()
 
     async def _push_into_turn(self, delivery: PeerDelivery, task: int, wait: float) -> None:
         command_id = f"peer-{delivery.message_id}"
-        try:
-            receipt = await self._registry().push(task, delivery.framed, command_id=command_id, wait=wait)
-        finally:
-            delivery.push = None
-        if receipt.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN:
-            delivery.settle(ControlOutcome.ACCEPTED_CURRENT_TURN)
+        receipt = await self._registry().push(task, delivery.framed, command_id=command_id, wait=wait)
+        delivery.push_outcome = receipt.outcome
+        if receipt.outcome is not ControlOutcome.UNKNOWN_DELIVERY:
+            delivery.settle(receipt.outcome, receipt.code)
 
     def _ack(self, participant: _Participant, request: MailboxRequest) -> bool:
         ids = request.get("ids")

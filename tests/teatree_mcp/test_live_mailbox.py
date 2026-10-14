@@ -21,7 +21,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.agents import live_mailbox
-from teatree.agents.live_control import LiveTask
+from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
@@ -211,8 +211,12 @@ def test_a_sender_cannot_hold_more_than_its_share_of_waiting_sends(broker: LiveM
             for n in range(live_mailbox.MAX_WAITING_SENDS)
         ]
         await asyncio.sleep(0.1)
-        with pytest.raises(ToolError, match="waiting for acceptance"):
-            await client.send(recipient.address, "one more", "k-over", timeout_seconds=0.5)
+        refused = await client.send(recipient.address, "one more", "k-over", timeout_seconds=0.5)
+        assert (refused["outcome"], refused["code"], refused["queued_in_inbox"]) == (
+            "rejected",
+            "backpressure",
+            False,
+        )
         await asyncio.gather(*waiting)
 
     asyncio.run(exchange())
@@ -261,12 +265,81 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
         "to": recipient.address,
         "outcome": "accepted_current_turn",
         "code": None,
-        "queued_in_inbox": False,
+        "queued_in_inbox": True,
     }
     [delivered] = session.delivered
     header = f"[TeaTree peer message id={receipt['id']}] From another TeaTree agent: reviewing task 4"
     assert delivered.startswith(header)
     assert "the schema moved" in delivered
+    assert [
+        row["text"] for row in invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")["messages"]
+    ] == ["the schema moved"]
+
+
+def test_push_refusals_return_their_codes_without_waiting_for_the_inbox(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    class FinishingSession:
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            raise SteerRejectedError(RejectCode.TURN_ENDED)
+
+        async def interrupt(self) -> None:
+            return None
+
+    class NonSteerableSession:
+        async def interrupt(self) -> None:
+            return None
+
+    sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    client = MailboxClient(sender.socket_path, sender.token)
+    for session, code in ((FinishingSession(), "turn_ended"), (NonSteerableSession(), "not_steerable")):
+        with OwnerLoop(registry, _TASK, session):
+            start = time.monotonic()
+            receipt = invoke(client, "send", to=recipient.address, text=code, key=code, timeout_seconds=1)
+            elapsed = time.monotonic() - start
+        assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == (
+            "rejected",
+            code,
+            True,
+        )
+        assert elapsed < 0.8
+
+
+def test_unknown_push_retry_waits_for_the_original_delivery(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    class UnknownSession:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.calls.append(input_id)
+            msg = "delivery unknown"
+            raise RuntimeError(msg)
+
+        async def interrupt(self) -> None:
+            return None
+
+    sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    session = UnknownSession()
+    client = MailboxClient(sender.socket_path, sender.token)
+    reader = MailboxClient(recipient.socket_path, recipient.token)
+    with OwnerLoop(registry, _TASK, session):
+        first = invoke(client, "send", to=recipient.address, text="review", key="once", timeout_seconds=0.2)
+
+        async def retry_and_read() -> SendReceipt:
+            retry = asyncio.create_task(client.send(recipient.address, "review", "once", timeout_seconds=1))
+            await asyncio.sleep(0.05)
+            await reader.inbox()
+            return await retry
+
+        second = asyncio.run(retry_and_read())
+    assert first["outcome"] == "unknown_delivery"
+    assert second["outcome"] == "accepted_inbox_read"
+    assert second["id"] == first["id"]
+    assert session.calls == [f"peer-{first['id']}"]
 
 
 def test_an_inbox_read_accepts_first_and_withdraws_the_pending_push(
@@ -555,8 +628,24 @@ def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
     assert invoke(client, "send", to=recipient.address, text="ping", key="once") == first
     with pytest.raises(ToolError, match="already used"):
         invoke(client, "send", to=recipient.address, text="changed", key="once")
-    with pytest.raises(ToolError, match="16384 bytes"):
-        invoke(client, "send", to=recipient.address, text="🙂" * 4097, key="too-large")
+    too_large = invoke(client, "send", to=recipient.address, text="🙂" * 4097, key="too-large")
+    assert (too_large["outcome"], too_large["code"], too_large["queued_in_inbox"]) == (
+        "rejected",
+        "too_large",
+        False,
+    )
+
+
+def test_a_gone_recipient_returns_a_session_closed_receipt(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="first", harness="claude_sdk", label="sender")
+    recipient = broker.register(room="second", harness="codex_app_server", label="recipient")
+    broker.unregister(recipient.address)
+
+    receipt = invoke(
+        MailboxClient(sender.socket_path, sender.token), "send", to=recipient.address, text="hello", key="gone"
+    )
+
+    assert receipt == _rejected(0, recipient.address, "session_closed", queued=False)
 
 
 def test_wait_is_bounded_and_unregister_discards_mail(broker: LiveMailboxBroker) -> None:
@@ -578,8 +667,9 @@ def test_wait_is_bounded_and_unregister_discards_mail(broker: LiveMailboxBroker)
     broker.unregister(recipient.address)
     with pytest.raises(ToolError, match="Invalid mailbox identity"):
         invoke(recipient_client, "inbox", after_id=0)
-    with pytest.raises(ToolError, match="not active"):
-        invoke(sender_client, "send", to=recipient.address, text="late", key="late")
+    assert invoke(sender_client, "send", to=recipient.address, text="late", key="late") == _rejected(
+        0, recipient.address, "session_closed", queued=False
+    )
 
 
 def test_revoked_sender_cannot_send_after_token_lookup(broker: LiveMailboxBroker) -> None:

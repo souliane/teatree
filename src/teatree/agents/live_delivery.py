@@ -14,6 +14,12 @@ MAX_SENT_KEYS = 1_000
 
 type MailboxRequest = Mapping[str, object]
 
+
+class MailboxTextTooLargeError(ValueError):
+    def __init__(self) -> None:
+        super().__init__("Mailbox text must be 1-16384 bytes")
+
+
 InboxMessage = TypedDict(
     "InboxMessage",
     {"id": int, "text": str, "from": str, "from_harness": str, "from_label": str},
@@ -46,6 +52,8 @@ def send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:
     if not key or len(key.encode()) > MAX_KEY_BYTES:
         _reject("Mailbox key must be 1-128 bytes")
     if not body or len(body.encode()) > MAX_INPUT_BYTES:
+        if body:
+            raise MailboxTextTooLargeError
         _reject("Mailbox text must be 1-16384 bytes")
     return to, body, key, float(timeout)
 
@@ -60,6 +68,10 @@ class SendReceipt(TypedDict):
     outcome: str
     code: str | None
     queued_in_inbox: bool
+
+
+def refused_receipt(to: str, code: RejectCode) -> SendReceipt:
+    return {"id": 0, "to": to, "outcome": ControlOutcome.REJECTED.value, "code": code.value, "queued_in_inbox": False}
 
 
 @dataclass(slots=True)
@@ -91,26 +103,31 @@ class PeerDelivery:
     framed: str
     settled: asyncio.Future[tuple[ControlOutcome, RejectCode | None]]
     push: asyncio.Task[None] | None = None
+    push_outcome: ControlOutcome | None = None
+    unknown_reported: bool = False
+    queued_in_inbox: bool = True
 
     def settle(self, outcome: ControlOutcome, code: RejectCode | None = None) -> None:
         """Keep the first verdict; a push still waiting for the turn's boundary is withdrawn."""
         if self.settled.done():
             return
+        if outcome is ControlOutcome.ACCEPTED_INBOX_READ:
+            self.queued_in_inbox = False
         self.settled.set_result((outcome, code))
-        if self.push is not None:
+        if self.push is not None and self.push is not asyncio.current_task():
             self.push.cancel()
 
     def receipt(self) -> SendReceipt:
         if not self.settled.done():
-            return self._as_receipt(ControlOutcome.REJECTED, RejectCode.NOT_ACCEPTED_IN_TIME, queued_in_inbox=True)
+            return self.as_receipt(ControlOutcome.REJECTED, RejectCode.NOT_ACCEPTED_IN_TIME)
         outcome, code = self.settled.result()
-        return self._as_receipt(outcome, code, queued_in_inbox=False)
+        return self.as_receipt(outcome, code)
 
-    def _as_receipt(self, outcome: ControlOutcome, code: RejectCode | None, *, queued_in_inbox: bool) -> SendReceipt:
+    def as_receipt(self, outcome: ControlOutcome, code: RejectCode | None) -> SendReceipt:
         return {
             "id": self.message_id,
             "to": self.to,
             "outcome": outcome.value,
             "code": code.value if code else None,
-            "queued_in_inbox": queued_in_inbox,
+            "queued_in_inbox": self.queued_in_inbox,
         }
