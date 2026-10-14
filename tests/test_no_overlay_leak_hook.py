@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.paths import CONTROL_DB_DIR_ENV
+
 HOOK = Path(__file__).resolve().parent.parent / "scripts" / "hooks" / "check_no_overlay_leak.py"
 
 
@@ -264,8 +266,9 @@ class TestNoOverlayLeakHook:
 
 def _run_no_terms(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Invoke the hook with NO terms configured (env unset, HOME isolated)."""
-    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB", "T3_DATA_DIR"}}
     env["HOME"] = str(cwd)  # isolate HOME so no host config DB is resolved
+    env[CONTROL_DB_DIR_ENV] = str(cwd / "no-control-db")  # a HOME-derived data dir resolves the control DB from here
     return subprocess.run(
         [sys.executable, str(HOOK), *args],
         cwd=cwd,
