@@ -235,7 +235,7 @@ def venue_fault(returncode: int, stderr: str | None, *, cwd: str | Path | None =
         return None
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
     cause = next(
-        (line for line in lines if line.startswith("deploy/t3:") or "refusing to run" in line),
+        (line for line in lines if line.startswith("deploy/t3:")),
         lines[0] if lines else "the launcher printed no reason",
     )
     directory = Path(cwd) if cwd is not None else hook_checkout_root()
