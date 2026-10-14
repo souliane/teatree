@@ -4,8 +4,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import Mock
 
 import pytest
+from conftest import pytest_sessionstart
 
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 
@@ -71,6 +75,22 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
     assert result.returncode == 4
     assert "unsharded whole-tree pytest is refused" in result.stderr
     assert "collected" not in result.stdout
+
+
+def test_affected_full_escalation_accepts_default_testpaths_but_refuses_explicit_root(tmp_path: Path) -> None:
+    config = Mock(spec=["args", "rootpath", "getini", "getoption", "option", "invocation_params"])
+    config.args = ["tests"]
+    config.rootpath = tmp_path
+    config.getini.return_value = ["tests"]
+    config.getoption.return_value = True
+    config.option = SimpleNamespace(splits=0, group=0, tach=False)
+    config.invocation_params = SimpleNamespace(args=("--affected-lane", "--no-cov", "-n", "auto"))
+    session = cast("pytest.Session", SimpleNamespace(config=config))
+    pytest_sessionstart(session)
+
+    config.invocation_params.args = ("--affected-lane", "tests")
+    with pytest.raises(pytest.UsageError, match="unsharded whole-tree pytest is refused"):
+        pytest_sessionstart(session)
 
 
 @pytest.mark.timeout(420)

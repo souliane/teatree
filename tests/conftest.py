@@ -152,12 +152,20 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
+    affected_lane = bool(config.getoption("--affected-lane"))
+    selected = config.args
+    if (
+        affected_lane
+        and selected == config.getini("testpaths")
+        and not any(arg in selected for arg in config.invocation_params.args)
+    ):
+        selected = []
     refusal = whole_tree_refusal(
-        config.args,
+        selected,
         root=config.rootpath,
         sharded=sharded,
         tach_active=tach_active,
-        affected_lane=bool(config.getoption("--affected-lane")),
+        affected_lane=affected_lane,
     )
     if refusal:
         raise pytest.UsageError(refusal)
