@@ -6,11 +6,11 @@ module inside the never-lockout contract's call graph. Field extraction stays in
 router (``_extract_mr_fields``), and every deny goes through the router's
 ``emit_pretooluse_deny`` / ``_fail_open_or_deny``, back-imported lazily.
 
-The verdict keeps four outcomes apart: a validator too slow or unable to start
-(CANNOT_EVALUATE — warn and allow), one that ran and rejected the content (deny with
-its text), one that does not exist, and a launcher that cannot run in this venue
-(both fail CLOSED, with the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in, the master
-fail-open switch and the self-rescue commands as escapes).
+The typed verdict has three outcomes: ALLOW, DENY, and CANNOT_EVALUATE. A timeout,
+failed spawn, or crash warns and allows. An absent validator or a launcher that
+cannot run in this venue has no verdict and fails CLOSED, with the
+``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in, the master fail-open switch and the
+self-rescue commands as escapes.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
