@@ -2,9 +2,11 @@
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
+from teatree.quality.regression_scan import ASTGREP_PIN
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,13 +53,28 @@ def test_skill_dependency_and_hook_share_revision() -> None:
     assert pins == {hook_pin.group(1)}
 
 
+def test_astgrep_engine_pin_matches_pinned_hook_declaration() -> None:
+    hooks = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    declaration = re.search(r"pinned hook wrapper uses ast-grep ([0-9.]+)", hooks)
+    assert declaration is not None
+    assert declaration.group(1) == ASTGREP_PIN
+
+
 def test_configuration_has_one_per_overlay_heading() -> None:
     doc = (ROOT / "docs/blueprint/configuration.md").read_text(encoding="utf-8")
-    assert len(re.findall(r"^### 10\.1\.1 ", doc, re.MULTILINE)) == 1
-    assert len(re.findall(r"^### 10\.1\.[1-3] ", doc, re.MULTILINE)) == 3
+    headings = Counter(re.findall(r"^#{2,6} (.+)$", doc, re.MULTILINE))
+    assert all(count == 1 for count in headings.values())
+    assert {"10.1.1 Per-Overlay Setting Overrides", "10.1.2 Local text-to-speech (#2060)"} <= headings.keys()
 
 
-def test_owned_repo_approval_documentation_uses_overlay_config() -> None:
+def test_speak_section_references_match_heading() -> None:
+    blueprint = (ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
+    configuration = (ROOT / "docs/blueprint/configuration.md").read_text(encoding="utf-8")
+    assert "appendix §10.1.2" in blueprint
+    assert "See §10.1.2. |" in configuration
+
+
+def test_owned_repo_approval_documentation_names_private_registry() -> None:
     for name in (
         "BLUEPRINT.md",
         "docs/blueprint/configuration.md",
@@ -66,18 +83,19 @@ def test_owned_repo_approval_documentation_uses_overlay_config() -> None:
         text = (ROOT / name).read_text(encoding="utf-8")
         lines = [line for line in text.splitlines() if "require_owned_repo_approval" in line]
         assert lines
-        assert any("OverlayConfig" in line for line in lines), name
-        assert all("private DB `ConfigSetting` store" not in line for line in lines), name
+        assert any("private DB `ConfigSetting` store" in line for line in lines), name
 
 
 def test_eval_readme_describes_generated_promotion_artifact() -> None:
     doc = (ROOT / "evals/README.md").read_text(encoding="utf-8")
-    assert "evals/scenarios/promoted_drift.yaml" not in doc
-    assert "when promotion actually runs" in doc
+    assert "dream umbrella ticket" in doc
+    assert "evals/scenarios/promoted_drift.yaml" in doc
+    assert "evals/fixtures/" in doc
+    assert "never writes into the running install" in doc
 
 
 def test_hooks_only_name_known_literal_tools() -> None:
-    known = set(KNOWN_BUILTIN_TOOLS) | {"CronCreate", "CronDelete", "ScheduleWakeup", "Skill"}
+    known = (set(KNOWN_BUILTIN_TOOLS) - {"TodoWrite"}) | {"CronCreate", "CronDelete", "ScheduleWakeup", "Skill"}
     for event in ("PreToolUse", "PostToolUse"):
         for matcher in _matchers(event):
             if matcher.startswith("mcp__"):

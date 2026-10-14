@@ -25,7 +25,7 @@ import yaml
 from teatree.paths import teatree_source_root
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
-ASTGREP_PIN = "0.42.3"
+ASTGREP_PIN = "0.44.1"
 
 
 class AstGrepUnavailableError(RuntimeError):

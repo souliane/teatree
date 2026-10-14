@@ -104,4 +104,4 @@ These run via `prek`, not via the CLI:
 
 - `check-banned-terms.sh` — reject banned terms. The pre-commit entry passes `--diff-only`, so it scans only the staged diff's ADDED lines per file (a pre-existing committed banned term no longer blocks an unrelated commit; a newly-added one still does). Without the flag (the posting gate's body scan, the parity test) it scans the whole file.
 - `check_skill_versions.py` — sync SKILL.md versions with pyproject.toml
-- `update_readme_skills.py` — regenerate skill index in README
+- `update_readme_skills.py` — regenerate skills catalogue and loop inventory in README

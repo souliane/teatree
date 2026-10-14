@@ -11,7 +11,8 @@ duplicating it.
 The run-url / sha / generated-at are PASSED IN (the timestamp is never computed
 here, so the merge is deterministic). Only the publish-safe summary rows are
 read — the transcript never enters here, so the dashboard is safe to commit and
-serve on Pages. Writes to ``--out`` when given, else stdout.
+serve on Pages. An ``--out`` write requires at least one row; stdout can render
+an empty dashboard for inspection.
 """
 
 from pathlib import Path
@@ -29,8 +30,10 @@ def merge_summaries(
     generated_at: str = typer.Option(..., "--generated-at", help="ISO-8601 timestamp (injected; never computed here)."),
     out: Path | None = typer.Option(None, "--out", help="Write the dashboard to this path instead of stdout."),
 ) -> None:
-    """Merge per-shard summary markdown into one dashboard (to --out or stdout)."""
-    dashboard = _merge_summaries(inputs, run_url=run_url, sha=sha, generated_at=generated_at)
+    """Merge per-shard summaries into one dashboard (to --out or stdout)."""
+    dashboard = _merge_summaries(
+        inputs, run_url=run_url, sha=sha, generated_at=generated_at, min_rows=int(out is not None)
+    )
     if out is not None:
         write_artifact(out, dashboard)
     else:

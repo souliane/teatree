@@ -1615,8 +1615,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           --skip-code (non-list payload exits 2).            │
 │ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
 │                           shard or not backed by metered spend.              │
-│ merge-summaries           Merge per-shard summary markdown into one          │
-│                           dashboard (to --out or stdout).                    │
+│ merge-summaries           Merge per-shard summaries into one dashboard (to   │
+│                           --out or stdout).                                  │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
 │                           §2.4 JSON (to --out or stdout).                    │
 │ prepare-transcript        Emit the per-scenario prompts for a LOCAL          │
@@ -2080,7 +2080,7 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 ```
 Usage: t3 eval merge-summaries [OPTIONS] INPUTS...
 
- Merge per-shard summary markdown into one dashboard (to --out or stdout).
+ Merge per-shard summaries into one dashboard (to --out or stdout).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    inputs      INPUTS...  Per-shard summary .md files, or a directory of   │

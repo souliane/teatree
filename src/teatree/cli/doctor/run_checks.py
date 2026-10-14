@@ -368,8 +368,8 @@ def _run_daily_advisories() -> None:
     count, open-question age, duplicate execution) checked against production telemetry
     and DM'd loud to the owner via the notify seam under a per-day idempotency key (so
     the watchdog's frequent doctor runs fire at most one DM per finding per day), plus
-    the ticket-sweep changed-count trend (#162 Rule 4 — threshold-free by design). All
-    read the ORM, so this runs after ``ensure_django``; every one is surfacing-only, so
+    the ticket-sweep changed-count trend (#162 Rule 4 — threshold-free by design).
+    The ORM readers run after ``ensure_django``; every check is surfacing-only, so
     its return value is deliberately discarded and none can redden the exit code.
     """
     _check_dream_staleness()

@@ -1,9 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = []
-# requires-python = ">=3.12"
-# ///
-"""Auto-update the skills catalogue in README.md from SKILL.md frontmatter."""
+"""Auto-update the skills catalogue and loop inventory in README.md."""
 
 import re
 import sys

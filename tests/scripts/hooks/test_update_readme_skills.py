@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from scripts.hooks import update_readme_skills
 from teatree.loops.seed import DEFAULT_LOOPS
 
@@ -21,7 +23,7 @@ def test_readme_loop_inventory_matches_seed() -> None:
     }
 
 
-def test_generator_repairs_drift_and_is_idempotent(tmp_path: Path, monkeypatch) -> None:
+def test_generator_repairs_drift_and_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     readme = tmp_path / "README.md"
     original = (ROOT / "README.md").read_text(encoding="utf-8")
     readme.write_text(original.replace("| `inbox` |", "| `old-loop` |"), encoding="utf-8")
@@ -33,16 +35,22 @@ def test_generator_repairs_drift_and_is_idempotent(tmp_path: Path, monkeypatch) 
 
 def test_ci_checks_readme_generation() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "- run: uv run python scripts/hooks/update_readme_skills.py" in workflow
+    hooks = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    assert "uv run prek run --all-files" in workflow
+    assert "id: update-readme-skills" in hooks
 
 
-def test_generator_reports_missing_file(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_generator_reports_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(update_readme_skills, "README_PATH", tmp_path / "missing.md")
     assert update_readme_skills.main() == 1
     assert "not found" in capsys.readouterr().err
 
 
-def test_generator_reports_missing_markers(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_generator_reports_missing_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     readme = tmp_path / "README.md"
     readme.write_text("no markers", encoding="utf-8")
     monkeypatch.setattr(update_readme_skills, "README_PATH", readme)

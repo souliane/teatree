@@ -82,3 +82,16 @@ class TestMergeSummaries:
         result = CliRunner().invoke(app, ["eval", "merge-summaries", str(empty), *_META])
         assert result.exit_code == 0, result.output
         assert "0 passed" in result.output
+
+    def test_output_file_refuses_empty_dashboard_before_overwrite(self, tmp_path: Path) -> None:
+        summaries = tmp_path / "summaries"
+        summaries.mkdir()
+        dashboard = tmp_path / "index.md"
+        dashboard.write_text("previous dashboard", encoding="utf-8")
+        result = CliRunner().invoke(
+            app,
+            ["eval", "merge-summaries", str(summaries), *_META, "--out", str(dashboard)],
+        )
+        assert isinstance(result.exception, ValueError)
+        assert "at least 1 summary row" in str(result.exception)
+        assert dashboard.read_text(encoding="utf-8") == "previous dashboard"

@@ -445,11 +445,11 @@ both-attempt hard core rather than an inflated catch-all.
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:
 on every pass it derives an inert eval CANDIDATE from each grounded drift cluster
 (`teatree.loops.dream.eval_proposer`) and then PROMOTES it to a real `under_load` scenario here
-(`teatree.loops.dream.promote`). A promoted candidate writes a scenario spec and
-its `_{fail,pass}` replay fixtures under `evals/scenarios/` when promotion actually runs —
-the same artifacts a hand-authored scenario ships, so the deterministic replay
-gate (`test_scenarios_anti_vacuous.py`) and the weekly metered lane run it with no
-special-casing.
+(`teatree.loops.dream.promote`). By default, promotion queues the validated scenario spec and fail/pass replay fixtures
+on the dream umbrella ticket; it never writes into the running install. A coding PR
+merges the entry into `evals/scenarios/promoted_drift.yaml` and writes its replay
+fixtures under `evals/fixtures/`. The deterministic replay gate
+(`test_scenarios_anti_vacuous.py`) and weekly metered lane then run it.
 
 Promotion is AUTO but gated by a **non-bypassable anti-vacuity guard**
 (`promote.guard_can_fail`), the dreaming-side enforcement of "a drift is not fixed

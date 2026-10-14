@@ -400,8 +400,8 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 | `private_repos` | Host-qualified `host/owner` or `host/owner/repo` entries. A namespace entry declares EVERY repo below it private, so use one only for a group with no public repo; otherwise list individual repos. A reachable forge answer PUBLIC wins over a declaration. Matching preserves the host and path-segment boundaries. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
-| `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in through the overlay’s `OverlayConfig` declaration after listing every owned host and namespace. Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
+| `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.2. |
 
 ### 10.1.2 Local text-to-speech (#2060)
 
@@ -716,35 +716,6 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 * the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
 
 **Secret / defaults boundary.** `banned_term_registry` carries operator-private codenames and is in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. It must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
-
-### 10.6.1 Every declared setting has an owner, and that is ASSERTED
-
-A setting nobody reads is a surface nobody maintains, and the count is what makes the
-schema hard to hold. So ownership is derived from the source, never listed: `quality.
-loop_setting_ownership` attributes a key to the LOOP whose code is its only reader (B17 —
-the settings-to-loop map is STRUCTURE, not a table someone keeps in step), and `quality.
-setting_readership` answers the totality half the loop map cannot — *which settings does
-nobody own?* Ownership is total by construction, so the assertion is one-sided: the
-UNREAD set is empty (measured: 0 of 194), and a key that joins it is a B8 ask — activate
-it, or delete it with the owner's decision — never a key left sitting.
-
-SOLE readership is the whole test, and it is what MOVES a declaration: a key one loop
-reads and non-loop code reads too is owned by NEITHER, so it declares outside every loop
-group. Because the map is re-derived from read sites, a declaration drifts when a READER
-moves — a shared health signal, a helper no single loop reaches — with the declaration
-itself untouched. That is how a vendor sync reddens the gate: `disk_warn_free_gb` and
-`disk_crit_free_gb` grew a reclaim-stall reader in `core/` and a yield-ladder reader no
-loop reaches, so they left the `resource_pressure` group while the four keys still read
-only there stayed.
-
-The REACH is the whole difficulty, because every way of narrowing it produces a FALSE
-ABSENCE, which invites a deletion. Three were measured: `hooks/` is outside the package
-and is the only reader of `loop_cadence_seconds`; a `.sh` reader has no Python AST at all
-and `statusline.sh` reads `statusline_chain`; and `config/` is
-not uniformly a declaration — its RESOLVERS are readers, and excluding the package
-wholesale hid the only read of `independent_reviewer_identities`. Prose is not readership
-either. An unreadable root REFUSES rather than answering empty, and the check carries a
-planted-key control, because zero is also what a walk that reads nothing reports.
 
 ### 10.6.1 Every declared setting has an owner, and that is ASSERTED
 

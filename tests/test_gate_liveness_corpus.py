@@ -489,6 +489,8 @@ def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     ctx.monkeypatch.setenv("CLAUDECODE", "1")
     ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    ctx.monkeypatch.delenv("T3_DISPATCHED_AGENT", raising=False)
+    ctx.monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
     ctx.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
     repo = _managed_repo(ctx, "1-feat-acme")
     source = repo / "src" / "acme"

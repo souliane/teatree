@@ -243,7 +243,8 @@ repos:
   # Phase 6b - ac-django testing conventions (ast-grep; grandfathered INLINE via
   # rule-scoped `# ast-grep-ignore: <rule-id>` comments — no baseline file, no
   # count cap. The colon form is used over the bracket form so it coexists with
-  # ruff's ERA001 preview rule.) The pinned hook wrapper owns the ast-grep version. The pyproject hook
+  # ruff's ERA001 preview rule.) The pinned hook wrapper uses ast-grep 0.44.1,
+  # matching teatree.quality.regression_scan.ASTGREP_PIN. The pyproject hook
   # grandfathers the three existing complexity-ignore entries via --grandfather.
   - repo: https://github.com/souliane/skills
     rev: 84f075fff0187ccbdf187143a6cf3ab91711fddb

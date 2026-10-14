@@ -34,7 +34,26 @@ def test_feature_count_requires_tracked_readme(tmp_path: Path) -> None:
         readme_feature_merges_since_update(tmp_path)
 
 
-def test_doctor_warns_after_five_feature_commits(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_generated_inventory_edit_does_not_reset_feature_count(tmp_path: Path) -> None:
+    make_git_repo(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("Intro\n<!-- BEGIN SKILLS -->\nold\n<!-- END SKILLS -->\n", encoding="utf-8")
+    run_git(tmp_path, "add", "README.md")
+    run_git(tmp_path, "commit", "-qm", "docs: capability prose")
+    run_git(tmp_path, "commit", "--allow-empty", "-qm", "feat: capability")
+    readme.write_text("Intro\n<!-- BEGIN SKILLS -->\nnew\n<!-- END SKILLS -->\n", encoding="utf-8")
+    run_git(tmp_path, "add", "README.md")
+    run_git(tmp_path, "commit", "-qm", "docs: refresh generated index")
+    assert readme_feature_merges_since_update(tmp_path) == 1
+    readme.write_text("Revised intro\n<!-- BEGIN SKILLS -->\nnew\n<!-- END SKILLS -->\n", encoding="utf-8")
+    run_git(tmp_path, "add", "README.md")
+    run_git(tmp_path, "commit", "-qm", "docs: review capability prose")
+    assert readme_feature_merges_since_update(tmp_path) == 0
+
+
+def test_doctor_warns_after_five_feature_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     make_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("start", encoding="utf-8")
     run_git(tmp_path, "add", "README.md")
@@ -49,13 +68,18 @@ def test_doctor_warns_after_five_feature_commits(tmp_path: Path, monkeypatch, ca
     assert "5 feature commits" in capsys.readouterr().out
 
 
-def test_doctor_reports_unreadable_history(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(checks_readme, "CODE_REPO_ROOT", tmp_path)
-    assert checks_readme._check_readme_staleness() is False
-    assert "could not be checked" in capsys.readouterr().out
+def test_doctor_skips_non_checkout_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    make_git_repo(tmp_path)
+    vendored = tmp_path / "vendor" / "teatree"
+    vendored.mkdir(parents=True)
+    monkeypatch.setattr(checks_readme, "CODE_REPO_ROOT", vendored)
+    assert checks_readme._check_readme_staleness() is True
+    assert capsys.readouterr().out == ""
 
 
-def test_doctor_accepts_recent_readme_update(tmp_path: Path, monkeypatch) -> None:
+def test_doctor_accepts_recent_readme_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     make_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("recent", encoding="utf-8")
     run_git(tmp_path, "add", "README.md")
