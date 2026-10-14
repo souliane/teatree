@@ -381,7 +381,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
                 else "1. Review the DIFF UNDER REVIEW from the mounted branch; hold if it is absent or incomplete."
             )
             if read_only_venue
-            else "1. Review this ticket's branch thoroughly."
+            else "1. Do a code review of this ticket's branch."
         ),
         ("Return required `review_context`: work item URL, documents, analysis."),
         (
