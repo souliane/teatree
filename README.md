@@ -466,16 +466,18 @@ steerable peer (`claude_sdk`) takes it into its running turn, framed as a peer's
 information rather than an operator instruction; any peer also accepts it by
 reading its inbox, and whichever comes first wins. The send returns a receipt:
 `accepted_current_turn`, `accepted_inbox_read`, or `rejected` with
-`not_accepted_in_time` (the message stays queued in the peer's inbox),
-`session_closed`, `dropped_unread` or `recipient_cannot_receive` for a pydantic task
-before its mailbox adapter is available. Retrying the same key keeps waiting on the
-original message instead of sending a second copy, and at most four sends per task
-wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
+`not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
+`too_large`, `session_closed`, `dropped_unread` or `recipient_cannot_receive`.
+A mid-push failure returns `unknown_delivery`. The receipt says whether the text
+remains in the recipient's inbox, including after a current-turn push. Retrying
+the same key waits on the original message instead of sending a second copy, and
+at most four sends per task wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
 with the message. Delivery is live-only: there is no database queue, parked-task
 delivery across hosts, or idle-session wake-up. A socket left by a worker that
-exited is removed; any other unreachable worker is reported as an error, so it
-never makes discovery look empty. The MCP tools are absent
+exited is removed before the 32-worker limit is applied. Peer listing skips an
+unresponsive socket and logs a warning; a send whose destination cannot be found
+fails if discovery was incomplete. The MCP tools are absent
 outside TeaTree-managed tasks.
 
 #### Live control

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 from collections.abc import Mapping
@@ -20,8 +21,10 @@ _MAX_RESPONSE_BYTES = 2_000_000
 _CONNECT_SECONDS = 2.0
 _MAX_SOCKET_PATH_BYTES = 100
 _MAX_WORKERS = 32
+_MAX_DISCOVERY_CANDIDATES = 1_024
 _PROOF_FIELDS = ("action", "source_socket", "source_address", "to", "text", "key")
 MAX_RELAYED_KEYS = 10_000
+logger = logging.getLogger(__name__)
 
 
 class VerifiedIdentity(TypedDict):
@@ -57,13 +60,15 @@ class FederationRefusedError(Exception):
 
 def workers(directory: Path, own_socket: Path) -> list[Path]:
     found = [path for path in sorted(directory.glob("w-*.sock")) if path != own_socket]
-    if len(found) > _MAX_WORKERS:
+    if len(found) > _MAX_DISCOVERY_CANDIDATES:
         msg = "Live worker directory exceeds the discovery limit"
         raise FederationUnavailableError(msg)
     return found
 
 
-async def remote_peers(own_socket: Path, sender: str, secret: bytes) -> list[tuple[Path, PeerIdentity]]:
+async def remote_peers(
+    own_socket: Path, sender: str, secret: bytes, *, strict: bool = False
+) -> list[tuple[Path, PeerIdentity]]:
     found: list[tuple[Path, PeerIdentity]] = []
     paths = workers(own_socket.parent, own_socket)
     request = {
@@ -76,8 +81,27 @@ async def remote_peers(own_socket: Path, sender: str, secret: bytes) -> list[tup
         "key": "",
     }
     request["proof"] = proof(secret, request)
-    responses = await asyncio.gather(*(_listed(worker, request) for worker in paths))
+    limiter = asyncio.Semaphore(_MAX_WORKERS)
+
+    async def listed(worker: Path) -> object:
+        async with limiter:
+            return await _listed(worker, request)
+
+    responses = await asyncio.gather(*(listed(worker) for worker in paths), return_exceptions=True)
+    live_count = 0
     for worker, response in zip(paths, responses, strict=True):
+        if response is None:
+            continue
+        if isinstance(response, (FederationUnavailableError, FederationRefusedError)):
+            logger.warning("Live peer discovery skipped %s: %s", worker.name, response)
+            if strict:
+                msg = "Peer discovery incomplete"
+                raise FederationUnavailableError(msg) from response
+            continue
+        live_count += 1
+        if live_count > _MAX_WORKERS:
+            msg = "Live worker directory exceeds the discovery limit"
+            raise FederationUnavailableError(msg)
         if not isinstance(response, list) or any(
             not isinstance(peer, dict) or not isinstance(peer.get("address"), str) for peer in response
         ):
@@ -91,7 +115,7 @@ async def _listed(worker: Path, request: Mapping[str, object]) -> object:
     try:
         return await call(worker, request, wait=2)
     except WorkerGoneError:
-        return []
+        return None
 
 
 def proof(secret: bytes, request: Mapping[str, object]) -> str:
@@ -109,7 +133,7 @@ def valid_proof(secret: bytes, request: Mapping[str, object]) -> bool:
 
 async def send_remote(own_socket: Path, sender: str, message: MailboxRequest, secret: bytes) -> SendReceipt:
     to, body, key, wait = send_fields(message)
-    for worker, peer in await remote_peers(own_socket, sender, secret):
+    for worker, peer in await remote_peers(own_socket, sender, secret, strict=True):
         if peer["address"] != to:
             continue
         request = {

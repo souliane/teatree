@@ -579,7 +579,7 @@ def _answer_once(server: socket.socket, reply: bytes) -> None:
         connection.sendall(reply)
 
 
-def test_a_worker_that_answers_garbage_is_reported_instead_of_hiding_peers(
+def test_a_worker_that_answers_garbage_is_skipped_without_hiding_peers(
     broker: LiveMailboxBroker, tmp_path: Path
 ) -> None:
     sender = broker.register(room="ticket", harness="claude_sdk", label="planner")
@@ -590,11 +590,23 @@ def test_a_worker_that_answers_garbage_is_reported_instead_of_hiding_peers(
         answering = threading.Thread(target=_answer_once, args=(server, b"not json\n"))
         answering.start()
 
-        with pytest.raises(ToolError, match=r"w-garbled\.sock: invalid JSON"):
-            invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+        assert invoke(MailboxClient(sender.socket_path, sender.token), "peers") == []
         answering.join(timeout=5)
 
     assert garbled.exists()
+
+
+def test_a_worker_that_never_answers_is_skipped_without_hiding_peers(broker: LiveMailboxBroker, tmp_path: Path) -> None:
+    sender = broker.register(room="first", harness="claude_sdk", label="sender")
+    peer = broker.register(room="second", harness="codex_app_server", label="peer")
+    mute = tmp_path / "w-mute.sock"
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(mute))
+        server.listen(1)
+        start = time.monotonic()
+        peers = invoke(MailboxClient(sender.socket_path, sender.token), "peers")
+    assert [row["address"] for row in peers] == [peer.address]
+    assert time.monotonic() - start < 3
 
 
 def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exists(

@@ -1,19 +1,13 @@
 import asyncio
 import os
+import socket
 from pathlib import Path
 
 import pytest
 
-from teatree.agents.live_federation import (
-    FederationRefusedError,
-    FederationUnavailableError,
-    WorkerGoneError,
-    call,
-    proof,
-    verified_sender,
-    workers,
-)
+from teatree.agents.live_federation import FederationRefusedError, WorkerGoneError, call, proof, verified_sender
 from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.mcp.agent_mailbox import MailboxClient
 
 
 def test_peer_from_another_pid_namespace_requires_a_matching_source_broker_proof(tmp_path: Path) -> None:
@@ -71,12 +65,18 @@ def test_a_source_socket_outside_the_live_dir_is_refused(tmp_path: Path) -> None
         asyncio.run(verified_sender(request, own_socket=tmp_path / "live" / "w-own.sock", connected_pid=0))
 
 
-def test_discovery_refuses_an_unbounded_worker_directory(tmp_path: Path) -> None:
-    for index in range(33):
-        (tmp_path / f"w-{index}.sock").touch()
+def test_discovery_removes_stale_sockets_before_enforcing_the_worker_limit(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        sender = broker.register(room="first", harness="claude_sdk", label="sender")
+        peer = broker.register(room="second", harness="codex_app_server", label="peer")
+        for index in range(33):
+            path = tmp_path / f"w-junk{index}.sock"
+            with socket.socket(socket.AF_UNIX) as abandoned:
+                abandoned.bind(str(path))
 
-    with pytest.raises(FederationUnavailableError, match="discovery limit"):
-        workers(tmp_path, tmp_path / "own.sock")
+        peers = asyncio.run(MailboxClient(sender.socket_path, sender.token).peers())
+        assert [row["address"] for row in peers] == [peer.address]
+        assert not list(tmp_path.glob("w-junk*.sock"))
 
 
 def test_a_socket_its_worker_already_removed_reads_as_a_gone_worker(tmp_path: Path) -> None:
