@@ -1536,10 +1536,6 @@
           "name": "diagram"
         },
         {
-          "help": "Read every registered checkout's prospective writing-fence status without changing it",
-          "name": "fence-probe"
-        },
-        {
           "help": "Claim a checkout for a hand-driven lane, or refuse naming who already holds it",
           "name": "claim-occupancy"
         },

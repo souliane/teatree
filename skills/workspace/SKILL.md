@@ -83,7 +83,6 @@ t3 <overlay> worktree occupancy                     # who holds what right now
 t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
 t3 <overlay> worktree release-occupancy <path>      # hand it back, naming whose claim was freed
 t3 <overlay> worktree attest <path>                  # accept a clear checkout's current state
-t3 <overlay> worktree fence-probe                    # read every registered checkout before rollout
 ```
 
 A dispatched agent needs none of these — `run_headless` takes and releases the
@@ -91,24 +90,16 @@ claim around the run. Use them when you work a branch OUTSIDE the lifecycle
 (raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
 than walking into it.
 
-A writing factory task also requires exactly one worktree row for its path, no
-live process there, and a checkout matching the last attested state. A manual
-hand record does not update that state; `/loop` `record-attempt` finishes its
-own checkout and schedules the next phase. After hand work, inspect the
+A writing factory task also requires, for every checkout of its ticket, exactly
+one worktree row for the path across all tickets, no live process there, and a
+checkout matching the last attested state. A record whose task does not hold its
+checkout is a hand record: it does not update that state and mints no next phase;
+`/loop` `record-attempt` finishes its own checkout and schedules the next phase. After hand work, inspect the
 checkout and use `worktree attest` directly as the owner only when no process
 is still working there; a refused factory task parks without spending its
 repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
-
-Before deploying the fence, run `worktree fence-probe` in the worker's venue and
-send its single read-only report to the owner. Inspect each `needs-attest` path
-and use the direct-owner `worktree attest <path>` for states the owner accepts;
-rerun the probe before enabling factory writers. A `process-table-unavailable`
-line means the venue cannot prove process absence and needs the one-dispatch
-owner attestation above. After deploy, use a scratch ticket to prove one hand
-edit parks its next writing task without opening a harness, then check an
-agent-cancelled leftover writer keeps its occupancy and receives no signal.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
