@@ -515,9 +515,13 @@ _CLUSTERED_BODY_FILES = [
 
 
 class TestClusteredShortFlagsCarryFreeText:
-    @pytest.mark.parametrize("command", [*_CLUSTERED_FREE_TEXT, *_CLUSTERED_BODY_FILES])
-    def test_publish_cluster_has_nonempty_payload(self, command: str, files: tuple[Path, Path]) -> None:
-        resolved = command.format(text=_TERM, path=files[0])
+    @pytest.mark.parametrize(
+        "command",
+        [*_CLUSTERED_FREE_TEXT, *_CLUSTERED_BODY_FILES, "git commit -am{text}", "git commit -m'{text}'"],
+    )
+    @pytest.mark.parametrize("variant", [0, 1], ids=["term", "clean"])
+    def test_publish_cluster_has_nonempty_payload(self, command: str, variant: int, files: tuple[Path, Path]) -> None:
+        resolved = command.format(text=(_TERM, "routine")[variant], path=files[variant])
         assert is_publish_command(resolved) is True
         assert _payload(resolved)
 
