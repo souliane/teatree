@@ -15,12 +15,14 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup import unshipped_work as unshipped_work_mod
 from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.cleanup.unshipped_work import (
     UNCOMMITTED_SUFFIX,
     bundle_path,
     capture_unshipped_work,
     probe_unshipped_work,
+    write_salvage_bundle,
 )
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dirs
@@ -220,7 +222,7 @@ class TestRepairSplitWorkspace(TestCase):
         ticket, _, frontend = self._split_ticket()
         with (
             patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
-            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", return_value=None),
+            patch("teatree.core.worktree.ticket_workspace_repair.write_salvage_bundle", return_value=None),
         ):
             outcome = repair_split_workspace(ticket)
         assert not outcome.ok
@@ -231,15 +233,15 @@ class TestRepairSplitWorkspace(TestCase):
     def test_refuses_partial_bundle_before_remove(self) -> None:
         ticket, _, frontend = self._split_ticket()
 
-        def partial_capture(checkout: Path, *, branch: str, overlay: str, artifact_root: Path) -> object:
-            record = capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=artifact_root)
-            assert record is not None
-            bundle_path(record.artifact_prefix, UNCOMMITTED_SUFFIX).write_text("partial", encoding="utf-8")
-            return record
+        def partial_write(checkout: Path, *, branch: str, root: Path) -> Path | None:
+            prefix = write_salvage_bundle(checkout, branch=branch, root=root)
+            assert prefix is not None
+            bundle_path(str(prefix), UNCOMMITTED_SUFFIX).write_text("partial", encoding="utf-8")
+            return prefix
 
         with (
             patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
-            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", side_effect=partial_capture),
+            patch("teatree.core.worktree.ticket_workspace_repair.write_salvage_bundle", side_effect=partial_write),
         ):
             outcome = repair_split_workspace(ticket)
         assert "nothing moved" in outcome.render()
@@ -248,12 +250,11 @@ class TestRepairSplitWorkspace(TestCase):
 
     def test_refuses_bundle_from_earlier_capture(self) -> None:
         ticket, _, frontend = self._split_ticket()
-        old_root = self.tmp / "older-artifacts"
-        record = capture_unshipped_work(frontend, branch=_BRANCH, overlay="test", artifact_root=old_root)
-        assert record is not None
+        earlier = write_salvage_bundle(frontend, branch=_BRANCH, root=self.tmp / "older-artifacts")
+        assert earlier is not None
         with (
             patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
-            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", return_value=record),
+            patch("teatree.core.worktree.ticket_workspace_repair.write_salvage_bundle", return_value=earlier),
         ):
             outcome = repair_split_workspace(ticket)
         assert "nothing moved" in outcome.render()
@@ -263,13 +264,13 @@ class TestRepairSplitWorkspace(TestCase):
     def test_refuses_same_length_edit_between_reads(self) -> None:
         ticket, _, frontend = self._split_ticket()
 
-        def edited_capture(checkout: Path, *, branch: str, overlay: str, artifact_root: Path) -> object:
+        def edited_write(checkout: Path, *, branch: str, root: Path) -> Path | None:
             (checkout / "work.txt").write_text("modified\n", encoding="utf-8")
-            return capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=artifact_root)
+            return write_salvage_bundle(checkout, branch=branch, root=root)
 
         with (
             patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
-            patch("teatree.core.worktree.ticket_workspace_repair.capture_unshipped_work", side_effect=edited_capture),
+            patch("teatree.core.worktree.ticket_workspace_repair.write_salvage_bundle", side_effect=edited_write),
         ):
             outcome = repair_split_workspace(ticket)
         assert "nothing moved" in outcome.render()
@@ -344,10 +345,56 @@ class TestRepairSplitWorkspace(TestCase):
         moved = self.workspace / _BRANCH / "frontend"
         assert not outcome.ok
         assert "previous salvage" in outcome.render()
+        assert Worktree.objects.get(ticket=ticket, repo_path="frontend").extra["worktree_path"] == str(moved)
         prefix = outcome.render().split("workspace restore ", 1)[1].split(" --into", 1)[0]
         assert prefix != prior.artifact_prefix
         assert restore_bundle(prefix, moved).ok
         assert (moved / "work.txt").read_text(encoding="utf-8") == "original\n"
+
+    def test_restore_hint_survives_a_later_default_root_sweep_of_the_checkout(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        new_path = self.workspace / _BRANCH / "frontend"
+        actual_add = git.worktree_add
+
+        def fail_new_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            return False if Path(path) == new_path else actual_add(repo, path, branch, create_branch=create_branch)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add", side_effect=fail_new_add),
+            patch("teatree.core.worktree.ticket_workspace_repair._apply_uncommitted_delta", return_value="failed"),
+        ):
+            outcome = repair_split_workspace(ticket)
+        prefix = outcome.render().split("workspace restore ", 1)[1].split(" --into", 1)[0]
+        (frontend / "later.txt").write_text("later\n", encoding="utf-8")
+        with patch("teatree.core.cleanup.unshipped_work.get_data_dir", return_value=self.tmp / "artifacts"):
+            assert capture_unshipped_work(frontend, branch=_BRANCH, overlay="test") is not None
+        (frontend / "later.txt").unlink()
+
+        assert restore_bundle(prefix, frontend).ok
+        assert (frontend / "work.txt").read_text(encoding="utf-8") == "original\n"
+
+    def test_a_sweep_capture_during_the_repair_keeps_its_salvage_record(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        prior = capture_unshipped_work(frontend, branch=_BRANCH, overlay="test", artifact_root=self.tmp / "older")
+        assert prior is not None
+        sweep_root = self.tmp / "sweep"
+        actual_write = unshipped_work_mod._write_bundle
+
+        def sweep_during_write(prefix: Path, checkout: Path, branch: str, work: object) -> None:
+            actual_write(prefix, checkout, branch, work)
+            if prefix.parent != sweep_root:
+                capture_unshipped_work(checkout, branch=branch, overlay="test", artifact_root=sweep_root)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch.object(unshipped_work_mod, "_write_bundle", side_effect=sweep_during_write),
+        ):
+            outcome = repair_split_workspace(ticket)
+
+        assert outcome.ok, outcome.render()
+        record = UnshippedWorkRecord.objects.get(checkout_path=str(frontend))
+        assert Path(record.artifact_prefix).parent == sweep_root
 
     def test_success_keeps_an_earlier_salvage_record_and_bundle(self) -> None:
         ticket, _, frontend = self._split_ticket()

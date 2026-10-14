@@ -326,7 +326,7 @@ class LinkedCheckoutPlacementTest(_TmpTestCase):
         return clone, outside, inside
 
     def _report(self, clone: Path) -> tuple[bool, str]:
-        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(), harness=())
+        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(self.tmp / "disposable",), harness=())
         with (
             mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}),
             mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
@@ -360,6 +360,22 @@ class LinkedCheckoutPlacementTest(_TmpTestCase):
         assert run_git(outside, "rev-parse", "HEAD") == head
         assert not index_lock.exists()
         assert after_index_mtime == before_index_mtime
+
+    def test_disposable_and_harness_checkouts_are_not_reported(self) -> None:
+        clone, outside, _ = self._clone()
+        disposable = self.tmp / "disposable" / "review"
+        harness = clone / ".claude" / "worktrees" / "agent"
+        disposable.parent.mkdir(parents=True)
+        harness.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "add", "-b", "review", str(disposable))
+        run_git(clone, "worktree", "add", "-b", "agent", str(harness))
+
+        ok, out = self._report(clone)
+
+        assert ok is True
+        assert str(outside) in out
+        assert str(disposable) not in out
+        assert str(harness) not in out
 
     def test_unreadable_clone_is_unverified(self) -> None:
         clone = make_git_repo(self.tmp / "clone")

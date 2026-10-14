@@ -6,30 +6,34 @@ knowable the scan reports every candidate (an unknown value as ``None``) rather 
 
 import os
 import re
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.gates.command_runners import (
+    flock_command,
+    mktemp_directory,
+    replace_strings,
+    runner_argv,
+    runner_directory,
+)
+from teatree.core.gates.shell_payloads import SHELLS, here_strings, heredoc_scripts, piped_shell_payloads
 from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, tokenize
-from teatree.hooks.forge_subcommand import basename, command_substitution_bodies, program_words, strip_heredoc_bodies
+from teatree.hooks.forge_subcommand import basename, command_substitution_bodies, strip_heredoc_bodies
 from teatree.utils.git_worktree import worktree_destination_index
 
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)(\+?)=(.*)$", re.DOTALL)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))")
 _GIT_VALUE_OPTIONS = frozenset({"-c", "--work-tree", "--namespace", "--config-env", "--exec-path"})
-_FLOCK_VALUE_OPTIONS = frozenset({"--timeout", "--wait", "--conflict-exit-code"})
 _DECLARATIONS = frozenset({"export", "readonly", "declare", "typeset", "local"})
 _PLAIN_DECLARATION_FLAGS = frozenset("xrgp")
 _REBINDERS = frozenset({"read", "unset", "mapfile", "readarray", "getopts", "printf"})
 _LEADING_KEYWORDS = frozenset({"!", "{", "if", "then", "else", "elif", "do", "while", "until"})
 _NAVIGATION = frozenset({"cd", "pushd", "popd"})
-_SHELLS = frozenset({"sh", "bash", "zsh"})
 _NAVIGATION_WITH_PATH = 2
 _END = Token("", TokenKind.OP)
 _MAX_NESTING = 3
-_REDIRECTION = re.compile(r"^(?:\d+)?(?:&>>?|<>|<<-?|>>?|<&|>&|<)")
-_SHELL_HEREDOC = re.compile(r"(?m)^\s*(?:bash|sh|zsh)(?:\s+-[A-Za-z]+)*\s+<<-?\s*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n")
+_REDIRECTION = re.compile(r"^(?:\d+)?(?:&>>?|<<<|<>|<<-?|>>?|<&|>&|<)")
 
 type Values = tuple[str | None, ...]
 
@@ -49,6 +53,14 @@ class _Frame:
 
     def copy(self) -> "_Frame":
         return _Frame(self.cwds, dict(self.variables))
+
+
+@dataclass(frozen=True, slots=True)
+class _Launch:
+    cwds: tuple[Path | None, ...]
+    env: dict[str, Values]
+    templates: tuple[str, ...]
+    stdin: list[str]
 
 
 def _home(word: str) -> str | None:
@@ -105,66 +117,6 @@ def _unquoted_parens(raw: str) -> str:
     return "".join(parens)
 
 
-def _flock_command(argv: list[str]) -> list[str]:
-    index = 1
-    while index < len(argv) and argv[index].startswith("-") and argv[index] != "-":
-        option = argv[index]
-        index += 1
-        if option == "--":
-            break
-        if option in _FLOCK_VALUE_OPTIONS or (not option.startswith("--") and option[-1] in "wE"):
-            index += 1
-    command = argv[index + 1 :]
-    if command[:1] in (["-c"], ["--command"]):
-        return ["sh", "-c", command[1]] if len(command) > 1 else []
-    return command
-
-
-def _mktemp_directory(word: str) -> str | None:
-    if not word.startswith("$(mktemp ") or not word.endswith(")"):
-        return None
-    try:
-        args = shlex.split(word[2:-1])
-    except ValueError:
-        return None
-    if args[:2] != ["mktemp", "-d"]:
-        return None
-    return _mktemp_template(args[2:])
-
-
-def _mktemp_template(args: list[str]) -> str | None:
-    directory: str | None = None
-    template: str | None = None
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "-p":
-            index += 1
-            directory = args[index] if index < len(args) else None
-        elif arg.startswith("--tmpdir="):
-            directory = arg.partition("=")[2] or None
-        elif arg in {"-t", "--tmpdir"}:
-            directory = os.environ.get("TMPDIR")
-            if directory is None:
-                return None
-        elif not arg.startswith("-"):
-            template = arg
-        index += 1
-    if directory is not None:
-        return str(Path(directory) / template) if template else directory
-    return template
-
-
-def _shell_heredoc_bodies(command: str) -> list[str]:
-    bodies: list[str] = []
-    for head in _SHELL_HEREDOC.finditer(command):
-        remaining = command[head.end() :]
-        end = re.search(rf"(?m)^{re.escape(head[2])}[ \t]*$", remaining)
-        if end is not None:
-            bodies.append(remaining[: end.start()])
-    return bodies
-
-
 def _without_redirections(words: list[str], raws: list[str]) -> tuple[list[str], list[str]]:
     kept_words: list[str] = []
     kept_raws: list[str] = []
@@ -181,30 +133,16 @@ def _without_redirections(words: list[str], raws: list[str]) -> tuple[list[str],
     return kept_words, kept_raws
 
 
-def _piped_shell_payloads(tokens: list[Token]) -> list[str]:
-    payloads: list[str] = []
-    for index, token in enumerate(tokens):
-        if token.kind is not TokenKind.OP or token.value != "|":
-            continue
-        start = index - 1
-        while start >= 0 and tokens[start].kind is TokenKind.WORD:
-            start -= 1
-        left = [part.value for part in tokens[start + 1 : index]]
-        right = tokens[index + 1 :]
-        if not left[1:] or not right or right[0].kind is not TokenKind.WORD:
-            continue
-        if basename(left[0]) not in {"echo", "printf"} or basename(right[0].value) not in _SHELLS:
-            continue
-        payload = left[1:]
-        if left[0] == "printf" and payload[0].startswith("%"):
-            payload = payload[1:]
-        payloads.append(" ".join(payload))
-    return payloads
-
-
 class _ShellScan:
-    def __init__(self, cwds: tuple[Path | None, ...], depth: int, variables: dict[str, Values] | None = None) -> None:
+    def __init__(
+        self,
+        cwds: tuple[Path | None, ...],
+        depth: int,
+        variables: dict[str, Values] | None = None,
+        templates: tuple[str, ...] = (),
+    ) -> None:
         self.depth = depth
+        self.templates = templates
         self.frames = [_Frame(cwds, dict(variables or {}))]
         self.seen: dict[Path | None, None] = dict.fromkeys(cwds)
         self.git_dirs: dict[str | None, None] = dict.fromkeys(self.frames[0].variables.get("GIT_DIR", ()))
@@ -219,11 +157,7 @@ class _ShellScan:
         tokens = tokenize(strip_heredoc_bodies(command))
         self._walk(tokens)
         inherited = {"GIT_DIR": tuple(self.git_dirs)} if self.git_dirs else {}
-        for inner in [
-            *_piped_shell_payloads(tokens),
-            *_shell_heredoc_bodies(command),
-            *command_substitution_bodies(command),
-        ]:
+        for inner in [*piped_shell_payloads(tokens), *heredoc_scripts(command), *command_substitution_bodies(command)]:
             self.calls.extend(_ShellScan(tuple(self.seen), self.depth + 1, inherited).scan(inner))
         return self.calls
 
@@ -290,6 +224,7 @@ class _ShellScan:
             self.frames.pop()
 
     def _command(self, words: list[str], raws: list[str]) -> None:
+        stdin = here_strings(words, raws)
         words, raws = _without_redirections(words, raws)
         start = 0
         while start < len(words) and words[start] in _LEADING_KEYWORDS:
@@ -313,7 +248,7 @@ class _ShellScan:
             self._bind_loop(words, raws)
         else:
             self._taint(words)
-            self._execute(words, raws, env)
+            self._execute(words, raws, env, stdin)
 
     def _bind_loop(self, words: list[str], raws: list[str]) -> None:
         if words[2:3] != ["in"]:
@@ -375,7 +310,7 @@ class _ShellScan:
         if "$" not in word and "`" not in word:
             return (word,)
         if word.startswith("$(mktemp "):
-            return (_mktemp_directory(word),)
+            return (mktemp_directory(word),)
         matches = list(_VARIABLE.finditer(word))
         if not matches or "$" in _VARIABLE.sub("", word) or "`" in word:
             return (None,)
@@ -391,23 +326,29 @@ class _ShellScan:
             offset = match.end()
         return _unique([prefix + word[offset:] if prefix is not None else None for prefix in expanded])
 
-    def _execute(self, words: list[str], raws: list[str], env: dict[str, Values]) -> None:
+    def _execute(self, words: list[str], raws: list[str], env: dict[str, Values], stdin: list[str]) -> None:
         cwds = self.frames[-1].cwds
+        templates = self.templates
         while True:
-            argv = program_words(words)
+            argv = runner_argv(words)
             tail = len(words) - len(argv)
-            for index, word in enumerate(words[:tail] if words[tail:] == argv else words):
+            prefix = words[:tail] if words[tail:] == argv else words
+            for index, word in enumerate(prefix):
                 if basename(word) == "env":
                     cwds, env = self._env(words[index + 1 :], cwds, env)
+                elif (directory := runner_directory(basename(word), prefix[index + 1 :])) is not None:
+                    cwds = _unique([_dir(directory, cwd) for cwd in cwds])
+            templates += replace_strings(prefix)
             raws = _aligned(argv, words, raws)
             if not argv or basename(argv[0]) != "flock":
                 break
-            words = _flock_command(argv)
+            words = flock_command(argv)
             raws = _aligned(words, argv, raws)
-        if argv and (basename(argv[0]) in _SHELLS or argv[0] == "eval"):
-            self._script(argv, cwds, env)
+        launch = _Launch(cwds, env, templates, stdin)
+        if argv and (basename(argv[0]) in SHELLS or argv[0] == "eval"):
+            self._script(argv, launch)
         elif argv and basename(argv[0]) == "git":
-            self._git(argv, raws, cwds, env)
+            self._git(argv, raws, launch)
 
     def _env(
         self, args: list[str], cwds: tuple[Path | None, ...], env: dict[str, Values]
@@ -432,25 +373,28 @@ class _ShellScan:
             index += 1
         return cwds, env
 
-    def _script(self, argv: list[str], cwds: tuple[Path | None, ...], env: dict[str, Values]) -> None:
+    def _script(self, argv: list[str], launch: _Launch) -> None:
         if argv[0] == "eval":
-            inner = " ".join(argv[1:])
-        else:
-            option = next((w for w in argv[1:] if w.startswith("-") and not w.startswith("--") and "c" in w[1:]), "")
-            if not option:
-                return
+            scripts = [" ".join(argv[1:])]
+        elif option := next((w for w in argv[1:] if w.startswith("-") and not w.startswith("--") and "c" in w[1:]), ""):
             index = argv.index(option) + 1
             while index < len(argv) and argv[index].startswith("-"):
                 index += 1
-            inner = argv[index] if index < len(argv) else ""
-        if re.fullmatch(r"\$\{?\w+\}?", inner):
-            self.calls.extend(WorktreeCheckout(cwd, None, inner, "shell") for cwd in cwds)
-            return
-        git_dirs = env.get("GIT_DIR") or self.frames[-1].variables.get("GIT_DIR")
-        self.calls.extend(_ShellScan(cwds, self.depth + 1, {"GIT_DIR": git_dirs} if git_dirs else None).scan(inner))
+            scripts = [argv[index] if index < len(argv) else ""]
+        else:
+            scripts = launch.stdin
+        git_dirs = launch.env.get("GIT_DIR") or self.frames[-1].variables.get("GIT_DIR")
+        for inner in scripts:
+            if re.fullmatch(r"\$\{?\w+\}?", inner):
+                self.calls.extend(WorktreeCheckout(cwd, None, inner, "shell") for cwd in launch.cwds)
+                continue
+            nested = _ShellScan(
+                launch.cwds, self.depth + 1, {"GIT_DIR": git_dirs} if git_dirs else None, launch.templates
+            )
+            self.calls.extend(nested.scan(inner))
 
-    def _git(self, argv: list[str], raws: list[str], cwds: tuple[Path | None, ...], env: dict[str, Values]) -> None:
-        run_dirs = cwds
+    def _git(self, argv: list[str], raws: list[str], launch: _Launch) -> None:
+        run_dirs = launch.cwds
         git_dir: str | None = None
         index = 1
         while index < len(argv) and argv[index].startswith("-"):
@@ -469,13 +413,16 @@ class _ShellScan:
         if argv[index : index + 1] != ["worktree"] or argv[index + 1 : index + 2] not in (["add"], ["move"]):
             return
         verb, args, arg_raws = argv[index + 1], argv[index + 2 :], raws[index + 2 :]
-        pairs = [(source, run_dir) for run_dir in run_dirs for source in self._sources(run_dir, git_dir, env)]
+        pairs = [(source, run_dir) for run_dir in run_dirs for source in self._sources(run_dir, git_dir, launch.env)]
         position = worktree_destination_index(args, add=verb == "add")
         if position is None:
             self.calls.extend(WorktreeCheckout(source, None, "<missing target>", verb) for source, _ in pairs)
             return
         raw = args[position]
-        values = (None,) if raw in {"{}", "{1}"} else self._expand(raw, tilde=arg_raws[position].startswith("~"))
+        values = tuple(
+            None if value is None or any(token in value for token in ("{", *launch.templates)) else value
+            for value in self._expand(raw, tilde=arg_raws[position].startswith("~"))
+        )
         self.calls.extend(
             WorktreeCheckout(source, _path(value, run_dir) if value is not None else None, raw, verb)
             for value in values

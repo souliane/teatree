@@ -31,8 +31,8 @@ from teatree.core.cleanup.unshipped_work import (
     UNCOMMITTED_SUFFIX,
     UnshippedWork,
     bundle_path,
-    capture_unshipped_work,
     probe_unshipped_work,
+    write_salvage_bundle,
 )
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.worktree.clone_paths import git_common_clone_dir
@@ -111,22 +111,15 @@ def _restore_hint(prefix: str, overlay: str, target: Path | None) -> str:
     return f"; t3 {name} workspace restore {prefix} --into {target}"
 
 
-def _verified_bundle(checkout: Path, branch: str, overlay: str, work: UnshippedWork) -> tuple[str, str]:
+def _verified_bundle(checkout: Path, branch: str, work: UnshippedWork) -> tuple[str, str]:
     try:
         root = Path(tempfile.mkdtemp(prefix="repair-", dir=get_data_dir(ARTIFACT_NAMESPACE)))
     except OSError as exc:
         return "", f"could not create a salvage directory ({exc}) — nothing moved"
-    prior = UnshippedWorkRecord.objects.filter(checkout_path=str(checkout)).first()
-    try:
-        record = capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=root)
-    finally:
-        if prior is not None:
-            UnshippedWorkRecord.objects.filter(pk=prior.pk).update(
-                **{name: value for name, value in vars(prior).items() if not name.startswith("_") and name != "id"}
-            )
-    if record is None or Path(record.artifact_prefix).parent != root:
+    written = write_salvage_bundle(checkout, branch=branch, root=root)
+    if written is None or written.parent != root:
         return "", "could not capture a fresh salvage bundle — nothing moved"
-    prefix = record.artifact_prefix
+    prefix = str(written)
     expected = (
         (UNCOMMITTED_SUFFIX, work.uncommitted_patch),
         (COMMITS_SUFFIX, work.commits_patch),
@@ -142,10 +135,9 @@ def _verified_bundle(checkout: Path, branch: str, overlay: str, work: UnshippedW
     return prefix, ""
 
 
-def _retire_verified_bundle(old_path: Path, prefix: str) -> str:
+def _retire_verified_bundle(prefix: str) -> str:
     if not prefix:
         return ""
-    UnshippedWorkRecord.objects.filter(checkout_path=str(old_path), artifact_prefix=prefix).delete()
     root = Path(prefix).parent
     try:
         for suffix in (UNCOMMITTED_SUFFIX, COMMITS_SUFFIX, FILES_SUFFIX, ".meta"):
@@ -193,6 +185,7 @@ def _relocate_verified(
         hint = _restore_hint(prefix, worktree.overlay, target) if needs_restore else ""
         return f"{worktree.repo_path}: {relocate_error}{hint}{prior}"
 
+    worktree.merge_extra(set_keys={"worktree_path": str(new_path)})
     if apply_error := _apply_uncommitted_delta(work.uncommitted_patch, new_path):
         hint = _restore_hint(prefix, worktree.overlay, new_path)
         return (
@@ -200,8 +193,7 @@ def _relocate_verified(
             f"{apply_error}{hint}{prior}"
         )
 
-    worktree.merge_extra(set_keys={"worktree_path": str(new_path)})
-    if cleanup_error := _retire_verified_bundle(old_path, prefix):
+    if cleanup_error := _retire_verified_bundle(prefix):
         return f"{worktree.repo_path}: moved to {new_path}, but {cleanup_error}"
     return None
 
@@ -230,7 +222,7 @@ def _move_one(worktree: Worktree, canonical: Path) -> str | None:
             .first()
             or ""
         )
-        prefix, error = _verified_bundle(old_path, worktree.branch, worktree.overlay, work)
+        prefix, error = _verified_bundle(old_path, worktree.branch, work)
         if error:
             prior = f"; previous salvage: {previous}" if previous else ""
             return f"{worktree.repo_path}: {error}{prior}"

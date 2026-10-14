@@ -256,3 +256,39 @@ def test_split_spellings_and_subshells_from_an_unmanaged_cwd_are_denied(
         patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
     ):
         assert handle_block_worktree_checkout(_event(call, unmanaged)) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo {outside} | xargs -I % git worktree add % main",
+        "echo {outside} | xargs -I {{}} git worktree add {{}} main",
+        "echo {outside} | xargs -I % bash -c 'git worktree add % main'",
+        "parallel git worktree add {{}} main ::: {outside}",
+        "git worktree add {{{outside},x}} main",
+        "true && bash <<EOF\ngit worktree add {outside} main\nEOF",
+        "cat <<EOF | bash\ngit worktree add {outside} main\nEOF",
+        "/bin/bash <<'EOF'\ngit worktree add {outside} main\nEOF",
+        "sudo bash <<EOF\ngit worktree add {outside} main\nEOF",
+        "bash <<<'git worktree add {outside} main'",
+        "sudo -D {clone} git worktree add ../stray main",
+        "parallel --wd {clone} git worktree add ../stray main ::: 1",
+    ],
+)
+def test_substituted_and_shell_fed_targets_from_an_allowed_cwd_are_denied(
+    command: str, managed_clone: tuple[Path, Path]
+) -> None:
+    clone, home = managed_clone
+    ticket_checkout = home / "workspace" / "t3-workspaces" / "5247-ticket" / "repo"
+    ticket_checkout.mkdir(parents=True)
+    git.run_strict(repo=str(ticket_checkout), args=["init", "-q"])
+    call = command.format(clone=clone, outside=clone.parent / "stray")
+    with (
+        patch("pathlib.Path.home", return_value=home),
+        patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=True),
+        patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
+    ):
+        assert handle_block_worktree_checkout(_event(call, ticket_checkout)) is True
+        assert (
+            handle_block_worktree_checkout(_event(f"git worktree add {ticket_checkout.parent / 'b'}", clone)) is False
+        )

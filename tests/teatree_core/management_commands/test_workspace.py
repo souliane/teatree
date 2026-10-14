@@ -735,6 +735,24 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_disallowed_worktree_root_keeps_the_ticket_and_creates_no_dir_or_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._allowed_root(Path(tmp))
+            capped = Path(tmp) / "capped"
+            with (
+                patch.object(workspace_mod, "_worktree_root", return_value=capped),
+                patch.object(provision_mod, "worktree_root", return_value=capped),
+                patch.object(provision_mod.git, "worktree_add") as worktree_add,
+            ):
+                err = _refused_workspace_ticket("https://example.com/issues/5247")
+            assert not capped.exists()
+        assert "Provisioning refused: outside_allowed_roots" in err
+        ticket = Ticket.objects.get(issue_url="https://example.com/issues/5247")
+        assert ticket.worktrees.count() == 0
+        worktree_add.assert_not_called()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_take_over_proceeds_despite_foreign_issue_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

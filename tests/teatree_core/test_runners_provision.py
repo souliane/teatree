@@ -1067,6 +1067,17 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert hollow.is_dir()
         assert not (hollow / ".git").exists()
 
+    def test_dead_outside_row_on_a_later_repo_still_points_at_relocate(self) -> None:
+        self._clone("repo-a")
+        self._clone("repo-b")
+        hollow = self.tmp / "hollow" / "repo-b"
+        hollow.mkdir(parents=True)
+
+        result, _ = self._provision("3943-later", repo="repo-b", repos=("repo-a", "repo-b"), recorded_path=str(hollow))
+
+        assert result.code == "outside_allowed_roots"
+        assert "workspace relocate" in result.detail
+
     def test_hollow_recorded_directory_inside_allowed_root_is_reprovisioned(self) -> None:
         self._clone()
         branch = "3943-hollow-allowed"

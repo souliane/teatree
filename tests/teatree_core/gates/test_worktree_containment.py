@@ -278,3 +278,58 @@ def test_case_pattern_keeps_its_arm_command_visible(tmp_path: Path) -> None:
 def test_unquoted_mktemp_substitution_with_a_template_resolves(tmp_path: Path) -> None:
     calls = scan_worktree_checkouts("git worktree add $(mktemp -d /tmp/review.XXXX) main", tmp_path)
     assert [call.target for call in calls] == [Path("/tmp/review.XXXX")]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo /outside | xargs -I % git worktree add % main",
+        "echo /outside | xargs -I{} git worktree add {} main",
+        "echo /outside | xargs --replace=@ git worktree add base/@ main",
+        "echo /outside | xargs -i git worktree add {} main",
+        "echo /outside | xargs -J % git worktree add % main",
+        "parallel git worktree add {} main ::: /outside",
+        "parallel -j 2 git worktree add {.} main ::: /outside",
+        "parallel --unknown-option value git worktree add {} main ::: /outside",
+        "find . -maxdepth 0 -exec git worktree add {} main ';'",
+        "git worktree add {/outside/stray,x} main",
+    ],
+)
+def test_a_substituted_target_is_unknown(command: str, tmp_path: Path) -> None:
+    assert None in {call.target for call in scan_worktree_checkouts(command, tmp_path)}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -D {wd} git worktree add ../stray main",
+        "sudo --chdir={wd} git worktree add ../stray main",
+        "sudo -u root -D {wd} -T 5 git worktree add ../stray main",
+        "parallel --wd {wd} git worktree add ../stray main ::: 1",
+    ],
+)
+def test_runner_directory_options_move_the_source_and_target_base(command: str, clone: Path, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(command.format(wd=clone), tmp_path)
+    assert (clone, clone.parent / "stray") in {(call.source, call.target) for call in calls}
+
+
+def test_an_unmodelled_runner_option_still_reaches_git(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("sudo --unknown-option value git worktree add stray main", tmp_path)
+    assert [(call.source, call.target) for call in calls] == [(tmp_path, tmp_path / "stray")]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "true && bash <<EOF\ngit worktree add /outside/stray main\nEOF",
+        "cat <<EOF | bash\ngit worktree add /outside/stray main\nEOF",
+        "/bin/bash <<'EOF'\ngit worktree add /outside/stray main\nEOF",
+        "sudo bash <<EOF\ngit worktree add /outside/stray main\nEOF",
+        "bash <<-EOF\n\tgit worktree add /outside/stray main\n\tEOF",
+        "cat <<A; bash <<B\nnothing\nA\ngit worktree add /outside/stray main\nB",
+        "bash <<<'git worktree add /outside/stray main'",
+        'bash <<< "git worktree add /outside/stray main"',
+    ],
+)
+def test_a_shell_reading_a_heredoc_or_here_string_runs_it(command: str, tmp_path: Path) -> None:
+    assert Path("/outside/stray") in {call.target for call in scan_worktree_checkouts(command, tmp_path)}

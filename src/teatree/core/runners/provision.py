@@ -1,5 +1,6 @@
 import logging
 import shutil
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +86,23 @@ def _recorded_plan(repo_name: str, existing: Worktree | None, clones_root: Path)
     if _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
         return _Refusal(f"{repo_name}: {_unreadable_checkout_reason(Path(recorded))}")
     return None
+
+
+def _placement_refusal(ticket_dir: Path, rows: Iterable[Worktree]) -> RunnerResult | None:
+    """Refuse cutting under a disallowed root; point at ``workspace relocate`` when a recorded row is outside them."""
+    policy = checkout_roots()
+    if not (reason := policy.refusal(ticket_dir, durable=True)):
+        return None
+    outside = any(row.worktree_path and not policy.allows(Path(row.worktree_path), durable=True) for row in rows)
+    remedy = " Run `workspace relocate` for the recorded checkout before retrying." if outside else ""
+    return RunnerResult(
+        ok=False,
+        detail=(
+            f"outside_allowed_roots: {reason} Set workspace_dir to a safe root or use the default "
+            f"worktree base before retrying.{remedy}"
+        ),
+        code="outside_allowed_roots",
+    )
 
 
 def _refused(refusals: list[_Refusal]) -> RunnerResult:
@@ -352,24 +370,9 @@ class WorktreeProvisioner(RunnerBase):
             repo_name: _recorded_plan(repo_name, recorded_worktrees.get(repo_name), clone_root_path)
             for repo_name in repos
         }
-        for repo_name in repos:
-            if repo_name in adopt:
-                continue
-            existing = recorded_worktrees.get(repo_name)
-            recorded = existing.worktree_path if existing else ""
-            if recorded_plans[repo_name] is not None:
-                continue
-            if reason := checkout_roots().refusal(ticket_dir, durable=True):
-                remedy = " Run `workspace relocate` for the recorded checkout before retrying." if recorded else ""
-                return RunnerResult(
-                    ok=False,
-                    detail=(
-                        f"outside_allowed_roots: {reason} Set workspace_dir to a safe root or use the default "
-                        f"worktree base before retrying.{remedy}"
-                    ),
-                    code="outside_allowed_roots",
-                )
-            break
+        cuts = any(repo not in adopt and recorded_plans[repo] is None for repo in repos)
+        if cuts and (refusal := _placement_refusal(ticket_dir, recorded_worktrees.values())):
+            return refusal
         preflight = [
             self._preflight(
                 clone_root_path,

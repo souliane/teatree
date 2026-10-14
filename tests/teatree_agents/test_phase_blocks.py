@@ -1,5 +1,7 @@
 """Tests for teatree.agents.phase_blocks — the per-phase trailing context blocks."""
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -11,6 +13,7 @@ from teatree.agents.phase_blocks import (
     phase_specific_lines,
 )
 from teatree.agents.review_envelope_recorder import _RUBRIC_GRADED_PHASES
+from teatree.config.checkout_roots import checkout_roots
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
@@ -18,6 +21,7 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import AutoReviewDispatch, LandscapeArtifact, PullRequest, Session, Task, Ticket
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
+from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 
 
 def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
@@ -398,6 +402,14 @@ class TestReviewingGreenProofBinding(TestCase):
         assert f"GREEN-PROOF BINDING: the head under review is {self._HEAD}." in brief
         assert f"t3 tool verify-gates --expect-sha {self._HEAD}" in brief
         assert "https://github.com/o/r/pull/42" in brief
+
+    def test_brief_checks_out_under_a_shipped_disposable_root(self) -> None:
+        brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
+        assert f"t3 review checkout https://github.com/o/r/pull/42 --sha {self._HEAD} --base-dir /var/tmp" in brief
+        base_dir = brief.split("--base-dir ", 1)[1].split()[0]
+        with patch.dict(os.environ):
+            os.environ.pop(DISPOSABLE_ROOTS_ENV, None)
+            assert checkout_roots().refusal(Path(base_dir)) == ""
 
     def test_brief_names_the_forge_check_runs_as_the_merge_authority(self) -> None:
         assert "check-runs" in self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)

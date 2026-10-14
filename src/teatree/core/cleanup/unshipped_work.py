@@ -237,14 +237,32 @@ def _record_capture(
     return record
 
 
+def _bundle_prefix(root: Path, checkout: Path) -> Path:
+    # The path slug, not the bare dir name: two tickets' worktrees of one repo
+    # share a leaf name and would otherwise overwrite each other's bundle.
+    return root / f"{checkout.name}-{isolated_slug(checkout)}"
+
+
+def write_salvage_bundle(checkout: Path, *, branch: str, root: Path) -> Path | None:
+    """Write ``checkout``'s bundle under *root* without touching its durable record; its prefix, or ``None``."""
+    work = probe_unshipped_work(checkout)
+    if not work.exists or work.unreadable:
+        return None
+    prefix = _bundle_prefix(root, checkout)
+    try:
+        _write_bundle(prefix, checkout, branch, work)
+    except OSError:
+        logger.exception("unshipped-work: could not write the salvage bundle for %s", checkout)
+        return None
+    return prefix
+
+
 def _capture(checkout: Path, branch: str, overlay: str, artifact_root: Path | None) -> UnshippedWorkRecord | None:
     work = probe_unshipped_work(checkout)
     if not work.exists:
         return None
     root = artifact_root if artifact_root is not None else get_data_dir(ARTIFACT_NAMESPACE)
-    # The path slug, not the bare dir name: two tickets' worktrees of one repo
-    # share a leaf name and would otherwise overwrite each other's bundle.
-    prefix = root / f"{checkout.name}-{isolated_slug(checkout)}"
+    prefix = _bundle_prefix(root, checkout)
     try:
         _write_bundle(prefix, checkout, branch, work)
     except OSError:
@@ -294,4 +312,5 @@ __all__ = [
     "bundle_path",
     "capture_unshipped_work",
     "probe_unshipped_work",
+    "write_salvage_bundle",
 ]

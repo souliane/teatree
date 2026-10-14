@@ -46,12 +46,39 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "time": frozenset({"-f", "--format", "-o", "--output"}),
     "exec": frozenset({"-a"}),
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
-    "xargs": frozenset({"-n", "-L", "-I", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"}),
+    "xargs": frozenset(
+        {"-n", "-L", "-I", "-J", "-R", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"}
+    ),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "nice": frozenset({"-n", "--adjustment"}),
     "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
     "setsid": frozenset(),
-    "sudo": frozenset({"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"}),
+    "sudo": frozenset(
+        {
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-h",
+            "--host",
+            "-p",
+            "--prompt",
+            "-D",
+            "--chdir",
+            "-C",
+            "--close-from",
+            "-r",
+            "--role",
+            "-t",
+            "--type",
+            "-T",
+            "--command-timeout",
+            "-U",
+            "--other-user",
+            "-R",
+            "--chroot",
+        }
+    ),
 }
 
 # Wrappers whose own operands come before the program (``timeout DURATION gh …``): how many.
