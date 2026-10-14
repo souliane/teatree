@@ -103,10 +103,10 @@ def test_a_directory_outside_git_is_its_own_session(tmp_path: Path, monkeypatch:
 @pytest.fixture
 def unrelated_leader() -> Iterator[subprocess.Popen[bytes]]:
     """A live session-leader process that has nothing to do with any browser session."""
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True)
-    yield process
-    process.kill()
-    process.wait()
+    with subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"], stdin=subprocess.PIPE, start_new_session=True
+    ) as process:
+        yield process
 
 
 def _stale_record(pid: int, *, with_context: bool) -> str:
@@ -151,26 +151,26 @@ def test_open_never_signals_a_live_process_a_stale_pid_file_names(
 
 
 _HOLD_KEEPER_LOCK = """
-import sys, time
+import sys
 from pathlib import Path
 from teatree.browser.state import KEEPER_LOCK
 from teatree.utils.singleton import singleton
 with singleton(KEEPER_LOCK, pid_path=Path(sys.argv[1])):
-    time.sleep(120)
+    sys.stdin.buffer.read(1)
 """
 
 
 @pytest.fixture
 def lock_holder(session: BrowserSession) -> Iterator[subprocess.Popen[bytes]]:
     """A live process holding this session's keeper lock, deaf to the stop file — the escalation target."""
-    process = subprocess.Popen([sys.executable, "-c", _HOLD_KEEPER_LOCK, str(session.files.pid)])
-    deadline = time.monotonic() + 20
-    while not session._keeper_running():
-        assert time.monotonic() < deadline, "the holder never took the keeper lock"
-        time.sleep(0.05)
-    yield process
-    process.kill()
-    process.wait()
+    with subprocess.Popen(
+        [sys.executable, "-c", _HOLD_KEEPER_LOCK, str(session.files.pid)], stdin=subprocess.PIPE
+    ) as process:
+        deadline = time.monotonic() + 20
+        while not session._keeper_running():
+            assert time.monotonic() < deadline, "the holder never took the keeper lock"
+            time.sleep(0.05)
+        yield process
 
 
 def test_a_live_keeper_whose_endpoint_does_not_answer_is_not_a_session(
