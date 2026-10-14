@@ -1,26 +1,36 @@
 """Live mailbox contract at the runner-to-MCP Unix-socket boundary."""
 
 import asyncio
+import json
 import multiprocessing
+import shlex
 import socket
+import sqlite3
 import stat
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import closing
+from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from django.db import connections
+from django.test import TransactionTestCase
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
+import teatree.agents.harness as harness_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
+from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
@@ -30,9 +40,16 @@ from teatree.agents.live_mailbox import (
     shared_broker,
 )
 from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.models import Session, Task, TaskAttempt
 from teatree.mcp.agent_mailbox import INSTRUCTIONS, InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
+from teatree.skill_support import index as skill_index
+from teatree.utils.thread_db import close_thread_db_connections
+from tests.factories import planned_ticket
 from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
+from tests.teatree_agents.test_live_control_integration import _FakeCliRun, _in_background
+from tests.teatree_agents.test_live_control_integration import _until as wait_until
 from tests.teatree_mcp._call_tool_result import structured
 
 if TYPE_CHECKING:
@@ -88,6 +105,131 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
         }
     ]
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
+
+
+class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
+    @pytest.fixture(autouse=True)
+    def _installed_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fixture_skills = Path(__file__).parents[1] / "fixtures" / "agent_skills"
+        original_roots = skill_index.install_roots
+        monkeypatch.setattr(skill_index, "install_roots", lambda: [fixture_skills, *original_roots()])
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.db_directory = tempfile.TemporaryDirectory(prefix="t3-peer-test-db-")
+        self.db_path = Path(self.db_directory.name) / "shared.sqlite3"
+        connection = connections["default"]
+        connection.ensure_connection()
+        self.original_db_name = connection.settings_dict["NAME"]
+        with closing(sqlite3.connect(self.db_path)) as target:
+            connection.connection.backup(target)
+        connection.settings_dict["NAME"] = str(self.db_path)
+        connection.close()
+
+    def tearDown(self) -> None:
+        connection = connections["default"]
+        connection.close()
+        connection.settings_dict["NAME"] = self.original_db_name
+        connection.ensure_connection()
+        with closing(sqlite3.connect(self.db_path)) as source:
+            source.backup(connection.connection)
+        self.db_directory.cleanup()
+        super().tearDown()
+
+    def _prepare_runs(self, root: Path) -> None:
+        self.runs: dict[str, _FakeCliRun] = {}
+        self.tasks: dict[str, Task] = {}
+        self.clients: dict[str, MailboxClient] = {}
+        self.labels_by_thread: dict[int, str] = {}
+        self.wrappers: dict[str, Path] = {}
+        fake_cli = Path(__file__).parents[1] / "teatree_agents" / "fake_claude_cli.py"
+        for label in ("sender", "recipient"):
+            run_root = root / label
+            run_root.mkdir()
+            self.runs[label] = _FakeCliRun(
+                run_root, steps=[{"tool": "Bash", "hold_until": str(run_root / "release-tool")}]
+            )
+            ticket = planned_ticket()
+            session = Session.objects.create(ticket=ticket, agent_id=f"agent-{label}")
+            self.tasks[label] = Task.objects.create(ticket=ticket, session=session, phase="coding")
+            wrapper = run_root / "claude"
+            wrapper.write_text(
+                "#!/bin/sh\n"
+                f"export T3_FAKE_CLAUDE_SCRIPT={shlex.quote(json.dumps(self.runs[label].script))}\n"
+                f"export T3_FAKE_CLAUDE_LOG={shlex.quote(str(self.runs[label].log))}\n"
+                f'exec {shlex.quote(sys.executable)} {shlex.quote(str(fake_cli))} "$@"\n',
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            self.wrappers[label] = wrapper
+
+    def _sdk_client(self, *, options: ClaudeAgentOptions) -> ClaudeSDKClient:
+        label = self.labels_by_thread[threading.get_ident()]
+        servers = options.mcp_servers
+        assert isinstance(servers, dict)
+        server = cast("McpStdioServerConfig", servers["teatree"])
+        env = server.get("env")
+        assert isinstance(env, dict)
+        self.clients[label] = MailboxClient(Path(env["T3_AGENT_MAILBOX_SOCKET"]), env["T3_AGENT_MAILBOX_TOKEN"])
+        return ClaudeSDKClient(options=replace(options, cli_path=str(self.wrappers[label])))
+
+    def _dispatch(self, label: str) -> TaskAttempt:
+        thread_id = threading.get_ident()
+        self.labels_by_thread[thread_id] = label
+        try:
+            return run_agent(self.tasks[label], phase="coding", overlay_skill_metadata={})
+        finally:
+            self.labels_by_thread.pop(thread_id)
+            close_thread_db_connections()
+
+    def _send_from_sender(self) -> SendReceipt:
+        wait_until(lambda: self.runs["recipient"].saw("holding_tool"), "the recipient to enter its tool")
+        peers = asyncio.run(self.clients["sender"].peers())
+        [recipient] = [peer for peer in peers if peer["ticket"] == str(self.tasks["recipient"].ticket_id)]
+        assert recipient["harness"] == "claude_sdk"
+        sending = _in_background(
+            lambda: asyncio.run(self.clients["sender"].send(recipient["address"], "schema moved to v2", "peer-1"))
+        )
+        live = LiveClient()
+        wait_until(lambda: live.inspect(self.tasks["recipient"].pk)["pending_inputs"] == 1, "the peer push")
+        self.runs["recipient"].release_tool.touch()
+        return sending.result(timeout=30)
+
+    def test_another_tickets_claude_sender_reaches_the_busy_recipient_once(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="t3-peer-runs-") as directory:
+            self._prepare_runs(Path(directory))
+            assert self.tasks["sender"].ticket_id != self.tasks["recipient"].ticket_id
+            with (
+                patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
+                patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    runner_mod.TaskUsage,
+                    "for_task",
+                    classmethod(lambda cls, task: TaskUsage(turns=0, cost_usd=0.0)),
+                ),
+            ):
+                sender = _in_background(lambda: self._dispatch("sender"))
+                try:
+                    wait_until(
+                        lambda: self.runs["sender"].saw("holding_tool") or sender.done(), "the sender to enter its tool"
+                    )
+                    if sender.done():
+                        sender.result(timeout=0)
+                    sending = _in_background(self._send_from_sender)
+                    recipient_attempt = self._dispatch("recipient")
+                    receipt = sending.result(timeout=30)
+                finally:
+                    self.runs["sender"].release_tool.touch()
+                    self.runs["recipient"].release_tool.touch()
+                sender_attempt = sender.result(timeout=30)
+
+            assert (receipt["outcome"], receipt["code"]) == ("accepted_current_turn", None)
+            assert self.runs["recipient"].deliveries_of(str(receipt["id"])) == 1
+            assert "schema moved to v2" in json.dumps(self.runs["recipient"].hook_answers("PostToolUse"))
+            assert "operator input" not in json.dumps(self.runs["recipient"].hook_answers())
+            assert self.runs["recipient"].user_turns() == 1
+            assert recipient_attempt.exit_code == sender_attempt.exit_code == 0
+            assert recipient_attempt.result["summary"] == "Done"
 
 
 def _rejected(message_id: int, to: str, code: str, *, queued: bool) -> SendReceipt:
