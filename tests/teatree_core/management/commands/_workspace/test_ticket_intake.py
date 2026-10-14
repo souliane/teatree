@@ -132,11 +132,13 @@ class TestTheSummaryReportsTheCheckout(TestCase):
             overlay="test", issue_url="https://example.com/issues/4968", repos=["repo-a"], extra={"branch": "4968-x"}
         )
         pk, errs = int(ticket.pk), []
+        worktrees = self.tmp / "workspace" / "t3-workspaces"
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": CommandOverlay()}),
+            patch.object(Path, "home", return_value=self.tmp),
             patch("teatree.core.runners.provision.clone_root", return_value=self.tmp / "workspace"),
-            patch("teatree.core.runners.provision.worktree_root", return_value=self.tmp / "worktrees"),
-            patch.object(ticket_intake_mod, "worktree_root", return_value=self.tmp / "worktrees"),
+            patch("teatree.core.runners.provision.worktree_root", return_value=worktrees),
+            patch.object(ticket_intake_mod, "worktree_root", return_value=worktrees),
         ):
             rc = ticket_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
         return pk, rc, errs
