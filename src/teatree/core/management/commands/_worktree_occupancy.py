@@ -103,7 +103,7 @@ class OccupancyCommands(TyperCommand):
         if len(matching) != 1 or occupancy_holder(worktree) is not None:
             self.stderr.write(f"  Refused: {path} needs one unoccupied Worktree row to attest.")
             raise SystemExit(1)
-        table = read_process_table()
+        table = read_process_table(exclude_ancestors=True)
         if table.usable and table.holds(Path(worktree.worktree_path)):
             self.stderr.write(f"  Refused: {path} has live or unverifiable processes: {table.refuse_reason()}")
             raise SystemExit(1)

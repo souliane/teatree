@@ -98,7 +98,7 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_task_checkout_exit(
-    task: Task, worktree: Worktree, *, holder: str, holder_session: str
+    task: Task, worktree: Worktree, *, holder: str, holder_session: str, exclude_ancestors: bool = False
 ) -> CheckoutExit | None:
     if holder != task_holder_id(task) or holder_session != task.claimed_by_session:
         return None
@@ -108,7 +108,7 @@ def _prepare_task_checkout_exit(
     path = Path(row.worktree_path)
     if wait_for_owned_checkout_processes(path, beat_seconds=60):
         return CheckoutExit(release=False)
-    table = read_process_table()
+    table = read_process_table(exclude_ancestors=True) if exclude_ancestors else read_process_table()
     if not table.usable or table.holds(path):
         return CheckoutExit(release=False)
     digest = None
@@ -230,7 +230,7 @@ def recording_task_checkout(task: Task) -> Iterator[None]:
         return
     with _checkout_exit_scope(
         lambda current: _prepare_task_checkout_exit(
-            current, worktree, holder=holder.holder, holder_session=holder.holder_session
+            current, worktree, holder=holder.holder, holder_session=holder.holder_session, exclude_ancestors=True
         )
     ):
         yield
