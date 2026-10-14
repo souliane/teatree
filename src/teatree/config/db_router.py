@@ -63,7 +63,8 @@ def pinned_config_db(
     ``None`` means "the default connection is the canonical DB" — the primary
     clone and the explicit-sandbox cases — so no second alias is registered and
     the router stays inert. A path means the caller is running from an
-    auto-isolated worktree and config must be routed away from its local DB.
+    auto-isolated worktree and install-wide config, sealed secrets and the
+    cutover marker must be routed away from its local DB.
 
     Both sides are resolved before comparison so a symlinked home or data root
     (``/tmp`` → ``/private/tmp`` on macOS) cannot fake a difference and register

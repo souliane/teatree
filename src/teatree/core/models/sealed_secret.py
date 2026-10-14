@@ -1,5 +1,6 @@
 """Instance credentials sealed under the installation master key."""
 
+import hashlib
 import hmac
 from dataclasses import dataclass
 from typing import ClassVar
@@ -14,6 +15,7 @@ from teatree.utils.sealing import InvalidMasterKeyError, MasterKey, SealedValue,
 from teatree.utils.secrets import SecretStoreError
 
 TABLE_NAME = "teatree_sealed_secret"
+_VERIFIED_ROWS: dict[tuple[str, str, str, bytes], tuple[str, ...]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +98,24 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
                 f"stored key_ids {', '.join(sorted(ids))}; active key_id {key.key_id}",
                 row_count,
             )
-        if tampered := self._tampered_names(key):
+        cache_key = (self.db, source.label, key.key_id, self._row_fingerprint())
+        tampered = _VERIFIED_ROWS.get(cache_key)
+        if tampered is None:
+            tampered = tuple(self._tampered_names(key))
+            _VERIFIED_ROWS.clear()
+            _VERIFIED_ROWS[cache_key] = tampered
+        if tampered:
             return KeyHealth(source.label, "TAMPERED", f"rows failed authentication: {', '.join(tampered)}", row_count)
         return KeyHealth(source.label, "OK", f"key_id {key.key_id}; {row_count} sealed rows", row_count)
+
+    def _row_fingerprint(self) -> bytes:
+        fingerprint = hashlib.sha256()
+        rows = self.order_by("name").values_list("name", "key_id", "nonce", "ciphertext").iterator()
+        for name, key_id, nonce, ciphertext in rows:
+            for part in (name.encode(), key_id.encode(), bytes(nonce), bytes(ciphertext)):
+                fingerprint.update(len(part).to_bytes(4, "big"))
+                fingerprint.update(part)
+        return fingerprint.digest()
 
     def _tampered_names(self, key: MasterKey) -> list[str]:
         tampered: list[str] = []

@@ -204,6 +204,7 @@ def test_an_attested_mutation_denied_phase_runs_unsandboxed_in_the_executor(
     assert options.executor is attestation
 
 
+@pytest.mark.usefixtures("pass_store")
 def test_an_attested_shell_denied_phase_uses_the_executor_boundary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

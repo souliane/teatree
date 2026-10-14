@@ -70,6 +70,22 @@ class TestSecretKeyHealth(TestCase):
         assert [signal for signal in collection.signals if signal.kind == "secret_key"] == []
         assert "secret_key_signals" not in collection.unread
 
+    def test_unchanged_rows_are_not_decrypted_on_every_tick(self) -> None:
+        DbStore(self.source).write("alpha/token", "canary")
+        reveal = SealedSecret.reveal
+        with patch.object(SealedSecret, "reveal", autospec=True, side_effect=reveal) as spy:
+            assert secret_key_signals().signals == ()
+            assert spy.call_count == 1
+            assert secret_key_signals().signals == ()
+            assert spy.call_count == 1
+
+            row = SealedSecret.objects.get(name="alpha/token")
+            flipped = bytearray(row.ciphertext)
+            flipped[0] ^= 1
+            SealedSecret.objects.filter(pk=row.pk).update(ciphertext=bytes(flipped))
+            assert secret_key_signals().signals[0].severity == "critical"
+            assert spy.call_count == 2
+
     def test_mode_error_is_unreadable_even_when_path_mentions_base64(self) -> None:
         source = KeyFileSource(self.source.path.parent / "base64-key")
         DbStore(source).write("alpha/token", "canary")
