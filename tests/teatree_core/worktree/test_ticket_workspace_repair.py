@@ -8,6 +8,7 @@ checkout into the ticket's canonical dir, preserving both an unpushed commit
 and an uncommitted change, rather than reaping anything.
 """
 
+import errno
 from pathlib import Path
 from unittest.mock import patch
 
@@ -167,6 +168,39 @@ class TestRepairSplitWorkspace(TestCase):
         assert not outcome.ok
         assert frontend.is_dir()
         assert "workspace restore" not in outcome.render()
+
+    def test_uncreatable_target_parent_moves_nothing_and_offers_no_restore(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        canonical = self.workspace / _BRANCH
+        actual_mkdir = Path.mkdir
+
+        def refuse_canonical(path: Path, *args: object, **kwargs: object) -> None:
+            if path == canonical:
+                raise OSError(errno.EROFS, str(path))
+            actual_mkdir(path, *args, **kwargs)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch.object(Path, "mkdir", autospec=True, side_effect=refuse_canonical),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert "nothing moved" in outcome.render()
+        assert "workspace restore" not in outcome.render()
+        assert (frontend / "work.txt").read_text(encoding="utf-8") == "original\n"
+
+    def test_failed_remove_names_the_bundle_without_a_restore_command(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_remove", return_value=False),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert "workspace restore" not in outcome.render()
+        prefix = outcome.render().split("salvage bundle: ", 1)[1].split(";", 1)[0].strip()
+        assert bundle_path(prefix, UNCOMMITTED_SUFFIX).is_file()
+        assert frontend.is_dir()
 
     def test_failed_recovery_add_names_bundle_without_nonexistent_restore_target(self) -> None:
         ticket, _, frontend = self._split_ticket()

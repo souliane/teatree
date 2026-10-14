@@ -657,6 +657,23 @@ class TestFinalizeTicketProvision(TestCase):
         assert Ticket.objects.filter(pk=ticket.pk).exists()
         assert any("outside_allowed_roots" in line for line in errs)
 
+    def test_placement_refusal_on_an_in_flight_ticket_fails_without_a_summary(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-inflight"})
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="backend", branch="5247-inflight")
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(
+            ok=False, detail="outside_allowed_roots: fix workspace_dir", code="outside_allowed_roots"
+        )
+        out: list[str] = []
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(out.append, errs.append, ticket, None)
+
+        assert rc == 0
+        assert out == []
+        assert Ticket.objects.get(pk=ticket.pk).worktrees.count() == 1
+        assert any("Provisioning refused: outside_allowed_roots" in line for line in errs)
+
     def test_detail_prefix_without_placement_code_does_not_claim_placement(self) -> None:
         ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-prefix"})
         provisioner = MagicMock()

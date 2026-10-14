@@ -196,13 +196,16 @@ class TestPlacement:
             "git worktree move old /var/tmp/review",
         ],
     )
-    def test_allows_literal_allowed_roots(self, command: str, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEATREE_DISPOSABLE_CHECKOUT_ROOTS", raising=False)
+    def test_allows_literal_allowed_roots(self, command: str) -> None:
         assert scan_placement_source(_fence(command), "skills/example.md") == []
 
-    def test_uses_configured_disposable_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("target", ["/opt/review/agent", "/tmp/../opt/stray"])
+    def test_the_verdict_ignores_the_runners_disposable_roots(
+        self, target: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("TEATREE_DISPOSABLE_CHECKOUT_ROOTS", "/opt/review")
-        assert scan_placement_source(_fence("git worktree add /opt/review/agent HEAD"), "skills/x.md") == []
+        findings = scan_placement_source(_fence(f"git worktree add {target} HEAD"), "skills/x.md")
+        assert [finding.target for finding in findings] == [target]
 
     def test_placeholder_target_is_documentation_not_a_placement_violation(self) -> None:
         assert scan_placement_source(_fence("git worktree add <path> origin/main"), "skills/x.md") == []

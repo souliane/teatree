@@ -173,3 +173,33 @@ def test_symlink_out_of_allowed_base_is_refused(managed_clone: tuple[Path, Path]
         patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
     ):
         assert handle_block_worktree_checkout(_event(f"git worktree add {base / 'alias' / 'stray'} main", clone))
+
+
+@pytest.mark.parametrize("command", ["ls -la", "git status && git log --oneline | head -3", "uv run pytest -q"])
+def test_a_command_that_cannot_add_a_worktree_never_loads_the_scanner(command: str, tmp_path: Path) -> None:
+    with patch("hooks.scripts.checkout_placement_gate.import_module") as loader:
+        assert handle_block_worktree_checkout(_event(command, tmp_path)) is False
+    loader.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git -C {clone} work"tree" add {outside} main',
+        "git -C {clone} $'\\x77orktree' add {outside} main",
+        "(cd {clone} && git worktree add {outside} main)",
+    ],
+)
+def test_split_spellings_and_subshells_from_an_unmanaged_cwd_are_denied(
+    command: str, managed_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    clone, home = managed_clone
+    unmanaged = tmp_path / "elsewhere"
+    unmanaged.mkdir()
+    call = command.format(clone=clone, outside=clone.parent / "stray")
+    with (
+        patch("pathlib.Path.home", return_value=home),
+        patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=True),
+        patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
+    ):
+        assert handle_block_worktree_checkout(_event(call, unmanaged)) is True

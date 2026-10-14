@@ -84,9 +84,7 @@ def _apply_uncommitted_delta(patch: str, into: Path) -> str | None:
     return result.stderr.strip() or f"git apply exited {result.returncode}"
 
 
-def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> tuple[str | None, bool]:
-    if not git.worktree_remove(str(clone), str(old_path)):
-        return f"git worktree remove failed for {old_path} — nothing was moved", False
+def _readd_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> tuple[str | None, bool]:
     if git.worktree_add(str(clone), str(new_path), branch, create_branch=False):
         return None, False
     # The branch is now free but unchecked-out anywhere; recreate at the OLD
@@ -174,23 +172,22 @@ def _relocate_verified(
 ) -> str | None:
     old_path, new_path = paths
     prefix, previous = bundle
+    prior = f"; previous salvage: {previous}" if prefix and previous else ""
     try:
         new_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        hint = _restore_hint(prefix, worktree.overlay, old_path)
-        return f"{worktree.repo_path}: could not create {new_path.parent} ({exc}) — nothing moved{hint}"
-    relocate_error, needs_restore = _relocate_checkout(
-        clone, old_path, new_path, worktree.branch, work.uncommitted_patch
-    )
+        return f"{worktree.repo_path}: could not create {new_path.parent} ({exc}) — nothing moved"
+    if not git.worktree_remove(str(clone), str(old_path)):
+        named = f"; salvage bundle: {prefix}" if prefix else ""
+        return f"{worktree.repo_path}: git worktree remove failed for {old_path} — inspect it{named}{prior}"
+    relocate_error, needs_restore = _readd_checkout(clone, old_path, new_path, worktree.branch, work.uncommitted_patch)
     if relocate_error:
         target = old_path if old_path.is_dir() else new_path if new_path.is_dir() else None
         hint = _restore_hint(prefix, worktree.overlay, target) if needs_restore else ""
-        prior = f"; previous salvage: {previous}" if prefix and previous else ""
         return f"{worktree.repo_path}: {relocate_error}{hint}{prior}"
 
     if apply_error := _apply_uncommitted_delta(work.uncommitted_patch, new_path):
         hint = _restore_hint(prefix, worktree.overlay, new_path)
-        prior = f"; previous salvage: {previous}" if prefix and previous else ""
         return (
             f"{worktree.repo_path}: moved to {new_path}, but its uncommitted delta failed to reapply: "
             f"{apply_error}{hint}{prior}"

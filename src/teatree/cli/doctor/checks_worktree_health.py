@@ -23,6 +23,7 @@ prescribes it only for those (#4368); the vanished-checkout WARN names only the
 read-only disposition report, because absence is never proof of deadness.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -290,18 +291,28 @@ def check_worktree_health() -> bool:
     than failing the doctor run: this check reports on state it reads, so being
     unable to read it is "unverified", never "broken".
     """
-    try:
-        return all(
+    registry = _unverified_on_error(
+        lambda: all(
             (
                 _check_registered_worktrees_are_checkouts(),
                 _check_registered_worktrees_have_a_checkout(),
                 _check_one_worktree_root(),
                 _check_occupied_checkouts(),
-                _check_linked_worktree_placement(),
             )
-        )
+        ),
+        "Worktree health UNVERIFIED: the worktree registry could not be read",
+    )
+    placement = _unverified_on_error(
+        _check_linked_worktree_placement, "Linked worktree placement UNVERIFIED: the scan did not complete"
+    )
+    return registry and placement
+
+
+def _unverified_on_error(check: Callable[[], bool], failure: str) -> bool:
+    try:
+        return check()
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
-        typer.echo(f"WARN  Worktree health UNVERIFIED: the worktree registry could not be read ({exc}).")
+        typer.echo(f"WARN  {failure} ({exc}).")
         return True
 
 

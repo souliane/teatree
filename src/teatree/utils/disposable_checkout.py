@@ -23,13 +23,13 @@ from pathlib import Path
 #: Overrides the defaults entirely (``os.pathsep``-separated), never adds to them.
 DISPOSABLE_ROOTS_ENV = "TEATREE_DISPOSABLE_CHECKOUT_ROOTS"
 
-_DEFAULT_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp")  # noqa: S108 — naming fixed roots, not creating temp files
+DEFAULT_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp")  # noqa: S108 — naming fixed roots, not creating temp files
 
 
 def disposable_roots() -> tuple[Path, ...]:
     """The roots under which a checkout is treated as scratch, resolved and deduplicated."""
     override = os.environ.get(DISPOSABLE_ROOTS_ENV)
-    raw = override.split(os.pathsep) if override is not None else [*_DEFAULT_ROOTS, tempfile.gettempdir()]
+    raw = override.split(os.pathsep) if override is not None else [*DEFAULT_ROOTS, tempfile.gettempdir()]
     roots: dict[Path, None] = {}
     for entry in raw:
         # A blank segment resolves to the cwd, which would make every path disposable.
@@ -49,4 +49,4 @@ def is_disposable_checkout(path: str | Path) -> bool:
     return any(resolved != root and resolved.is_relative_to(root) for root in disposable_roots())
 
 
-__all__ = ["DISPOSABLE_ROOTS_ENV", "disposable_roots", "is_disposable_checkout"]
+__all__ = ["DEFAULT_ROOTS", "DISPOSABLE_ROOTS_ENV", "disposable_roots", "is_disposable_checkout"]

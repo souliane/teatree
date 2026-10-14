@@ -21,7 +21,12 @@ _MOVE_POSITIONALS = 2
 
 
 def worktree_destination(args: list[str], *, add: bool) -> str | None:
-    values: list[str] = []
+    index = worktree_destination_index(args, add=add)
+    return None if index is None else args[index]
+
+
+def worktree_destination_index(args: list[str], *, add: bool) -> int | None:
+    positions: list[int] = []
     i = 0
     options = True
     while i < len(args):
@@ -34,11 +39,11 @@ def worktree_destination(args: list[str], *, add: bool) -> str | None:
         elif options and word.startswith("-"):
             pass
         else:
-            values.append(word)
+            positions.append(i)
         i += 1
     if add:
-        return values[0] if values else None
-    return values[-1] if len(values) >= _MOVE_POSITIONALS else None
+        return positions[0] if positions else None
+    return positions[-1] if len(positions) >= _MOVE_POSITIONALS else None
 
 
 def recovered_head_sha_after_ref_gone(wt_path: str) -> str | None:

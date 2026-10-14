@@ -285,6 +285,17 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
         assert ok is True
         assert "UNVERIFIED" in out
 
+    def test_a_crashing_placement_scan_keeps_an_earlier_failure(self) -> None:
+        self._register(_never_a_checkout(self.tmp / "roots" / "dead-wt"), branch="dead-wt")
+        with mock.patch(
+            "teatree.core.cleanup.checkout_registry.candidate_clones", side_effect=RuntimeError("scan crashed")
+        ):
+            ok, out = _echoes(check_worktree_health)
+
+        assert ok is False
+        assert "FAIL" in out
+        assert "placement UNVERIFIED" in out
+
 
 class LinkedCheckoutPlacementTest(_TmpTestCase):
     def _clone(self) -> tuple[Path, Path, Path]:

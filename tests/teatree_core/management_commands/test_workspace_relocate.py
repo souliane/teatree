@@ -169,6 +169,20 @@ class TestIdempotentAndDryRun(_RelocateCase):
         wt.refresh_from_db()
         assert wt.worktree_path == str(self.old_wt)
 
+    def test_idempotent_when_already_under_an_allowed_target(self) -> None:
+        settled = self.new_ws / self.branch / "myrepo"
+        settled.parent.mkdir(parents=True)
+        _run_git("worktree", "move", str(self.old_wt), str(settled), cwd=self.clone)
+        wt = self._make_row(wt_path=settled)
+
+        result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert not result.moved
+        assert not result.failed
+        assert any("already under" in line for line in result.skipped)
+        wt.refresh_from_db()
+        assert wt.worktree_path == str(settled)
+
     def test_worktree_base_itself_is_an_allowed_target(self) -> None:
         self._make_row()
         base = self._tmp() / "workspace" / "t3-workspaces"

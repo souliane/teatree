@@ -75,7 +75,7 @@ def test_cd_and_git_dash_c_choose_source_and_relative_destination(tmp_path: Path
         ("git worktree add --orphan /outside/new", Path("/outside/new")),
         ("git worktree add -qfb feature /outside/new", Path("/outside/new")),
         ("git worktree add -fb feature /outside/new", Path("/outside/new")),
-        ("VAR=/outside git worktree add $VAR/new", Path("/outside/new")),
+        ("VAR=/outside git worktree add $VAR/new", None),
         ("D=$(mktemp -d /tmp/review.XXXX) && git worktree add $D/new", Path("/tmp/review.XXXX/new")),
         ('git worktree add "~/relative"', None),
         ("ls | xargs git worktree add", None),
@@ -150,3 +150,106 @@ def test_env_chdir_sets_source_and_target_base(tmp_path: Path) -> None:
 )
 def test_ordinary_dollar_bearing_shell_script_has_no_checkout(command: str, tmp_path: Path) -> None:
     assert scan_worktree_checkouts(command, tmp_path) == []
+
+
+@pytest.fixture
+def clone(tmp_path: Path) -> Path:
+    path = tmp_path / "clone"
+    (path / ".git").mkdir(parents=True)
+    return path
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "flock /tmp/lock git -c core.x=1 worktree add /outside/stray main",
+        "flock -w 5 /tmp/lock git worktree add /outside/stray main",
+        "D=/outside/stray; D=/tmp/ok git worktree add $D main",
+        "D=/tmp/ok; export D=/outside/stray; git worktree add $D main",
+        "D=/tmp; D+=/../outside/stray; git worktree add $D main",
+        "X=$(mktemp -d)y git worktree add /outside/stray main",
+        "D=/outside/stray; (D=/tmp/ok); git worktree add $D main",
+        "D=/tmp/ok; if true; then D=/outside/stray; fi; git worktree add $D main",
+        "D=/outside/stray; D=/tmp/ok | true; git worktree add $D main",
+    ],
+)
+def test_bash_semantics_reach_the_executed_target(command: str, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(command, tmp_path)
+    assert Path("/outside/stray") in {call.target for call in calls}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "D=/tmp/ok; read D; git worktree add $D main",
+        "f() { D=/outside/stray; }; D=/tmp/ok; f; git worktree add $D main",
+        "D=/tmp/ok; declare -n D=OTHER; git worktree add $D main",
+        "D=/tmp/ok; unset D; git worktree add $D main",
+    ],
+)
+def test_a_rebinding_the_scan_cannot_follow_leaves_the_target_unknown(command: str, tmp_path: Path) -> None:
+    assert None in {call.target for call in scan_worktree_checkouts(command, tmp_path)}
+
+
+def test_git_dir_env_prefix_selects_the_source(clone: Path, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(f"GIT_DIR={clone}/.git git worktree add /outside/stray main", tmp_path)
+    assert {call.source for call in calls} == {clone}
+
+
+def test_relative_git_dir_resolves_against_the_dash_c_directory(clone: Path, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(f"git -C {clone} --git-dir=.git worktree add /outside/stray main", tmp_path)
+    assert {call.source for call in calls} == {clone}
+
+
+def test_exported_git_dir_reaches_a_nested_shell(clone: Path, tmp_path: Path) -> None:
+    command = f"export GIT_DIR={clone}/.git; bash -c 'git worktree add /outside/stray main'"
+    assert clone in {call.source for call in scan_worktree_checkouts(command, tmp_path)}
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["timeout 5 env -C /outside git worktree add foo", "flock /tmp/lock env -C /outside git worktree add foo"],
+)
+def test_env_chdir_behind_another_wrapper_moves_the_target_base(command: str, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(command, tmp_path)
+    assert [call.target for call in calls] == [Path("/outside/foo")]
+
+
+def test_unknown_user_tilde_is_unresolved_and_later_calls_are_still_scanned(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("git worktree add ~nouser5247/x; git worktree add /outside/stray main", tmp_path)
+    assert [call.target for call in calls] == [None, Path("/outside/stray")]
+
+
+def test_cd_inside_a_subshell_chooses_the_source_and_ends_with_it(clone: Path, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(f"(cd {clone} && git worktree add /outside/x); git worktree add rel", tmp_path)
+    assert [(call.source, call.target) for call in calls] == [
+        (clone, Path("/outside/x")),
+        (tmp_path, tmp_path / "rel"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd {source} && x=$(git worktree add /outside/stray)",
+        "cd {source} && echo 'git worktree add /outside/stray' | sh",
+    ],
+)
+def test_nested_payloads_run_in_the_directory_an_earlier_cd_chose(command: str, clone: Path, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(command.format(source=clone), tmp_path)
+    assert (clone, Path("/outside/stray")) in {(call.source, call.target) for call in calls}
+
+
+def test_quoted_tilde_elsewhere_does_not_suppress_the_target_expansion(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("git worktree add --reason '~' ~/stray", tmp_path)
+    assert [call.target for call in calls] == [Path.home().resolve() / "stray"]
+
+
+def test_case_pattern_keeps_its_arm_command_visible(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("case $x in a) git worktree add /outside/stray;; esac", tmp_path)
+    assert [call.target for call in calls] == [Path("/outside/stray")]
+
+
+def test_unquoted_mktemp_substitution_with_a_template_resolves(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("git worktree add $(mktemp -d /tmp/review.XXXX) main", tmp_path)
+    assert [call.target for call in calls] == [Path("/tmp/review.XXXX")]

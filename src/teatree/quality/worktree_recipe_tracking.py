@@ -29,17 +29,20 @@ quotes the defective shape BECAUSE it is the defect being described.
 """
 
 import dataclasses
+import posixpath
 import re
 import shlex
 import sys
 from pathlib import Path
 
-from teatree.utils.disposable_checkout import disposable_roots
+from teatree.utils.disposable_checkout import DEFAULT_ROOTS
 from teatree.utils.git_worktree import worktree_destination
 
 ALLOW_PRAGMA = "worktree-tracking: allow"
 PLACEMENT_ALLOW_PRAGMA = "worktree-placement: allow"
 NO_TRACK = "--no-track"
+# A published recipe is read on every box, so it is judged against the default roots, never the runner's.
+RECIPE_ROOTS: tuple[str, ...] = ("~/workspace/t3-workspaces/", *(f"{root}/" for root in DEFAULT_ROOTS))
 
 _SCANNED_ROOTS: tuple[str, ...] = ("skills", "docs")
 _FENCE_RE = re.compile(r"^\s*```")
@@ -77,7 +80,7 @@ class PlacementFinding:
     def message(self) -> str:
         return (
             f"{self.path}:{self.line_no}: worktree target {self.target!r} is outside the allowed "
-            "checkout roots. Use `~/workspace/t3-workspaces/`, `/tmp/`, or `/var/tmp/`; "
+            f"checkout roots. Use {', '.join(f'`{root}`' for root in RECIPE_ROOTS)}; "
             f"mark an intentional quoted example `{PLACEMENT_ALLOW_PRAGMA}`."
         )
 
@@ -153,15 +156,7 @@ def _recipe_target(verb: str, argv: str) -> str | None:
 def _allowed_recipe_target(target: str) -> bool:
     if re.fullmatch(r"<[A-Za-z][^>]*>", target):
         return True
-    if target.startswith("$HOME/"):
-        return False
-    if target.startswith("~/"):
-        return target.startswith("~/workspace/t3-workspaces/")
-    if not target.startswith(("/", "~/")):
-        return False
-    location = Path(target).expanduser().resolve()
-    roots = (Path.home() / "workspace" / "t3-workspaces", *disposable_roots())
-    return any(location.is_relative_to(root.resolve()) for root in roots)
+    return f"{posixpath.normpath(target)}/".startswith(RECIPE_ROOTS)
 
 
 def scan_placement_source(source: str, path: str) -> list[PlacementFinding]:
