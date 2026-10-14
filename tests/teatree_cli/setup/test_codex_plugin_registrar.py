@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import shutil
 from collections.abc import Callable, Iterator
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -8,6 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
+import teatree.cli.setup.codex_plugin_registrar as registrar_mod
+from teatree.cli.setup.codex_plugin_payload import CodexPluginPayload
 from teatree.cli.setup.codex_plugin_registrar import CodexPluginRegistrar
 
 type Reply = CompletedProcess[str] | BaseException | Callable[[], CompletedProcess[str]]
@@ -41,7 +45,7 @@ def _with_codex_manifest(root: Path) -> Path:
     )
     (root / ".codex-plugin").mkdir()
     (root / ".codex-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "t3", "skills": "./skills/", "mcpServers": "./.mcp.json"})
+        json.dumps({"name": "t3", "version": "0.0.1", "skills": "./skills/", "mcpServers": "./.mcp.json"})
     )
     (root / "skills" / "code").mkdir(parents=True)
     (root / "skills" / "code" / "SKILL.md").write_text("# code\n")
@@ -71,7 +75,29 @@ def _slim_root(tmp_path: Path) -> Path:
     return (tmp_path / "data" / "codex-plugin").resolve()
 
 
-def _run_install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[bool, str, list[tuple[str, ...]]]:
+def _served_copy(env: Path, repo: Path) -> Path:
+    payload = CodexPluginPayload(repo, _slim_root(env)).materialize()
+    served = env / "codex-home" / "plugins" / "cache" / "souliane" / "t3" / "0.0.1"
+    shutil.copytree(payload / "plugins" / "t3", served)
+    return served
+
+
+def _registered_plugin(slim: Path) -> dict[str, object]:
+    return {
+        "installed": [
+            {
+                "pluginId": "t3@souliane",
+                "installed": True,
+                "enabled": True,
+                "source": {"source": "local", "path": str(slim / "plugins" / "t3")},
+            }
+        ]
+    }
+
+
+def _run_install(
+    registrar: CodexPluginRegistrar, replies: list[Reply], *, add_copies_payload: bool | None = True
+) -> tuple[bool, str, list[tuple[str, ...]]]:
     calls: list[tuple[str, ...]] = []
     queue = list(replies)
 
@@ -81,7 +107,18 @@ def _run_install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple
         reply = queue.pop(0)
         if isinstance(reply, BaseException):
             raise reply
-        return reply if isinstance(reply, CompletedProcess) else reply()
+        result = reply if isinstance(reply, CompletedProcess) else reply()
+        if result.returncode == 0 and command[1:3] in (["plugin", "remove"], ["plugin", "add"]):
+            served = Path(os.environ["CODEX_HOME"]) / "plugins" / "cache" / "souliane" / "t3" / "0.0.1"
+            if command[2] == "remove":
+                shutil.rmtree(served, ignore_errors=True)
+            elif add_copies_payload:
+                source = registrar_mod.get_data_dir("codex-plugin") / "plugins" / "t3"
+                shutil.copytree(source, served, dirs_exist_ok=True)
+            elif add_copies_payload is False:
+                (served / "skills" / "code").mkdir(parents=True)
+                (served / "skills" / "code" / "SKILL.md").write_text("# stale\n")
+        return result
 
     output = io.StringIO()
     with (
@@ -92,9 +129,11 @@ def _run_install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple
     return installed, output.getvalue(), calls
 
 
-def _install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[str | None, list[tuple[str, ...]]]:
+def _install(
+    registrar: CodexPluginRegistrar, replies: list[Reply], *, add_copies_payload: bool | None = True
+) -> tuple[str | None, list[tuple[str, ...]]]:
     """Run ``install()``; return ``None`` on success, else its WARN output, plus the CLI calls."""
-    installed, output, calls = _run_install(registrar, replies)
+    installed, output, calls = _run_install(registrar, replies, add_copies_payload=add_copies_payload)
     return (None if installed else output), calls
 
 
@@ -199,22 +238,149 @@ def test_a_refused_payload_never_reaches_the_cli(env: Path) -> None:
 def test_already_registered_slim_root_is_a_noop(env: Path) -> None:
     repo = _with_codex_manifest(env / "teatree")
     slim = _slim_root(env)
+    _served_copy(env, repo)
     marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
-    installed = {
-        "installed": [
-            {
-                "pluginId": "t3@souliane",
-                "installed": True,
-                "enabled": True,
-                "source": {"source": "local", "path": str(slim / "plugins" / "t3")},
-            }
-        ]
-    }
+    installed = _registered_plugin(slim)
 
     reason, calls = _install(CodexPluginRegistrar(repo), [_ok(marketplace), _ok(installed), _MCP_RESOLVED])
 
     assert reason is None
     assert calls == [("plugin", "marketplace", "list", "--json"), ("plugin", "list", "--json"), _MCP_GET]
+
+
+def test_a_stale_served_copy_is_removed_and_re_added(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    served = _served_copy(env, repo)
+    (served / "skills" / "code" / "SKILL.md").write_text("# stale\n")
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo),
+        [_ok(marketplace), _ok(_registered_plugin(slim)), _ok(), _ok(), _MCP_RESOLVED],
+    )
+
+    assert calls[2:4] == [("plugin", "remove", "t3@souliane", "--json"), ("plugin", "add", "t3@souliane", "--json")]
+    assert reason is None
+    assert (served / "skills" / "code" / "SKILL.md").read_text() == "# code\n"
+
+
+@pytest.mark.parametrize("drift", ["extra", "symlink", "directory"])
+def test_a_served_copy_with_a_different_tree_is_reinstalled(env: Path, drift: str) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    served = _served_copy(env, repo)
+    skill = served / "skills" / "code" / "SKILL.md"
+    if drift == "extra":
+        (served / "extra").write_text("stale")
+    elif drift == "symlink":
+        skill.unlink()
+        skill.symlink_to(repo / "skills" / "code" / "SKILL.md")
+    else:
+        skill.unlink()
+        skill.mkdir()
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo),
+        [_ok(marketplace), _ok(_registered_plugin(slim)), _ok(), _ok(), _MCP_RESOLVED],
+    )
+
+    assert reason is None
+    assert calls[2:4] == [("plugin", "remove", "t3@souliane", "--json"), ("plugin", "add", "t3@souliane", "--json")]
+    assert skill.read_text() == "# code\n"
+
+
+def test_an_unreadable_served_copy_is_not_ready(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    served = _served_copy(env, repo)
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == served / "skills" / "code" / "SKILL.md":
+            reason = "unreadable served skill"
+            raise OSError(reason)
+        return original_read_bytes(path)
+
+    with patch.object(Path, "read_bytes", read_bytes):
+        reason, calls = _install(
+            CodexPluginRegistrar(repo),
+            [_ok(marketplace), _ok(_registered_plugin(slim)), _ok(), _ok()],
+        )
+
+    assert reason is not None
+    assert "still differs" in reason
+    assert _MCP_GET not in calls
+
+
+def test_an_identical_served_copy_is_left_alone(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    served = _served_copy(env, repo)
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo), [_ok(marketplace), _ok(_registered_plugin(slim)), _MCP_RESOLVED]
+    )
+
+    assert reason is None
+    assert served.is_dir()
+    assert calls == [("plugin", "marketplace", "list", "--json"), ("plugin", "list", "--json"), _MCP_GET]
+
+
+def test_a_served_copy_still_stale_after_add_is_not_ready(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    served = _served_copy(env, repo)
+    (served / "skills" / "code" / "SKILL.md").write_text("# stale\n")
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo),
+        [_ok(marketplace), _ok(_registered_plugin(slim)), _ok(), _ok(), _MCP_RESOLVED],
+        add_copies_payload=False,
+    )
+
+    assert reason is not None
+    assert "still differs" in reason
+    assert calls[2:4] == [("plugin", "remove", "t3@souliane", "--json"), ("plugin", "add", "t3@souliane", "--json")]
+    assert _MCP_GET not in calls
+
+
+def test_the_replace_path_is_verified_after_add(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+    disabled = {"installed": [{"pluginId": "t3@souliane", "installed": True, "enabled": False}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo),
+        [_ok(marketplace), _ok(disabled), _ok(), _ok(), _MCP_RESOLVED],
+        add_copies_payload=False,
+    )
+
+    assert reason is not None
+    assert "still differs" in reason
+    assert calls[2:4] == [("plugin", "remove", "t3@souliane", "--json"), ("plugin", "add", "t3@souliane", "--json")]
+    assert _MCP_GET not in calls
+
+
+def test_a_missing_served_copy_after_add_is_not_ready(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    slim = _slim_root(env)
+    marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
+
+    reason, calls = _install(
+        CodexPluginRegistrar(repo),
+        [_ok(marketplace), _ok({"installed": []}), _ok()],
+        add_copies_payload=None,
+    )
+
+    assert reason is not None
+    assert "still differs" in reason
+    assert _MCP_GET not in calls
 
 
 def test_a_disabled_plugin_is_reinstalled(env: Path) -> None:

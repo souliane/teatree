@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from teatree import __version__
 from teatree.agents.codex_sandbox import container_is_the_sandbox
 from teatree.cli.setup.codex_plugin_payload import CodexPayloadError, CodexPluginPayload
 from teatree.cli.setup.codex_plugin_staging import codex_home, reclaiming_new_staging
@@ -97,12 +98,40 @@ class CodexPluginRegistrar:
 
     def _ensure_plugin(self, codex: str, plugin_root: Path) -> None:
         payload = self._json(dict, codex, "inspect Codex plugins", "plugin", "list")
-        if self._plugin_registered(payload, plugin_root):
+        source = plugin_root / "plugins" / PLUGIN_NAME
+        served = codex_home() / "plugins" / "cache" / MARKETPLACE_NAME / PLUGIN_NAME / __version__
+        if self._plugin_registered(payload, plugin_root) and self._same_payload(source, served):
             return
         if self._plugin_present(payload):
             self._call(codex, "replace the TeaTree Codex plugin", "plugin", "remove", PLUGIN_ID)
         with reclaiming_new_staging(codex_home()):
             self._call(codex, "install the TeaTree Codex plugin", "plugin", "add", PLUGIN_ID)
+        if not self._same_payload(source, served):
+            msg = f"Codex served plugin {served} still differs from the TeaTree payload after add"
+            raise CodexCliError(msg)
+
+    @staticmethod
+    def _same_payload(source: Path, served: Path) -> bool:
+        if not served.is_dir() or served.is_symlink():
+            return False
+        try:
+            expected = {path.relative_to(source): path for path in source.rglob("*")}
+            actual = {path.relative_to(served): path for path in served.rglob("*")}
+            if expected.keys() != actual.keys():
+                return False
+            for relative, original in expected.items():
+                copy = actual[relative]
+                same_shape = (original.is_dir() or original.is_file()) and (
+                    original.is_dir() == copy.is_dir() and original.is_file() == copy.is_file()
+                )
+                if original.is_symlink() or copy.is_symlink() or not same_shape:
+                    return False
+                if original.is_file() and original.read_bytes() != copy.read_bytes():
+                    return False
+        except OSError:
+            return False
+        else:
+            return True
 
     @classmethod
     def _confirm_mcp_server(cls, codex: str) -> None:
