@@ -134,6 +134,10 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--affected-lane", action="store_true", default=False)
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Refuse a non-sharded whole-tree local run before test collection starts."""
     config = session.config
@@ -143,7 +147,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
+    refusal = whole_tree_refusal(
+        config.args,
+        root=config.rootpath,
+        sharded=sharded,
+        tach_active=tach_active,
+        affected_lane=bool(config.getoption("--affected-lane")),
+    )
     if refusal:
         raise pytest.UsageError(refusal)
 

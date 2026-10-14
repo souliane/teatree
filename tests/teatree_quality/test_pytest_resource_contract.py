@@ -26,6 +26,11 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
     assert whole_tree_refusal(["tests"], root=tmp_path, sharded=True) == ""
 
 
+def test_affected_lane_full_escalation_is_allowed(tmp_path: Path) -> None:
+    assert whole_tree_refusal([], root=tmp_path, sharded=False, affected_lane=True) == ""
+    assert "unsharded whole-tree" in whole_tree_refusal([], root=tmp_path, sharded=False)
+
+
 def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Path) -> None:
     """``SelectionResult.pytest_args`` emits two SCOPED shapes, neither an explicit test id.
 
