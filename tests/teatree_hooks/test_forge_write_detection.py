@@ -460,6 +460,16 @@ class TestCurlOptionBoundaries:
         assert handle_banned_terms_pretool(_bash(command)) is True
         assert "config file" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
 
+    @pytest.mark.parametrize("endpoint", ["chat.postMessage", "files.upload"])
+    @pytest.mark.usefixtures("public_gate")
+    def test_upload_file_to_slack_publish_endpoint_is_denied(
+        self, endpoint: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        command = f"curl -T /tmp/fixture.txt https://slack.com/api/{endpoint}"
+        assert is_publish_command(command) is True
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     @pytest.mark.usefixtures("public_gate")
     def test_double_dash_after_a_forge_write_still_reads_its_body(self, capsys: pytest.CaptureFixture[str]) -> None:
         command = f"curl -X POST -d 'body={_TERM}' -- {_GH_COMMENTS}"

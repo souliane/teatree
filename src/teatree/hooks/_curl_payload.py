@@ -251,7 +251,7 @@ def _walk_curl_args(
             if option.value is None or option.name not in _CURL_BODY_FLAGS:
                 continue
             if option.name in CURL_UPLOAD_FLAGS or option.reads_a_file():
-                if forge_bound if option.name in CURL_UPLOAD_FLAGS else publish_bound:
+                if publish_bound:
                     payloads.append(FAIL_CLOSED_SENTINEL)
             elif option.name in CURL_FORM_FLAGS:
                 _record_curl_form(option.value, option.raw, payloads, base, fail_closed=publish_bound)
