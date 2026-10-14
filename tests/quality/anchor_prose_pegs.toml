@@ -23,7 +23,7 @@ radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
 "docs/blueprint/admission-governor.md" = ["b7bf92da3aa32c32"]
 # The skill-loading kill-switch has no TaskCreated counterpart.
-"docs/blueprint/configuration.md" = ["6d462c54f2a5c6b8"]
+"docs/blueprint/configuration.md" = ["fc8f72f58efdba5f"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
 "docs/blueprint/factory-architecture.md" = ["8fef355432273104"]
 # 1: the harness's 27-event constant list.
