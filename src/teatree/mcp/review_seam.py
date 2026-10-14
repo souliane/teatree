@@ -46,6 +46,10 @@ class SeamNote:
 
 
 class ReviewPostSeam(Protocol):
+    def approve(self, repo: str, mr: int) -> tuple[str, int]: ...
+
+    def unapprove(self, repo: str, mr: int) -> tuple[str, int]: ...
+
     def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]: ...
 
     def post_comments(

@@ -42,6 +42,28 @@ def registered_seam() -> None:
 
 @pytest.mark.usefixtures("two_overlays", "no_glab_login")
 class TestSeamBindsTheServiceToTheTargetRepo:
+    def test_approval_and_revocation_keep_the_review_services_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[tuple[str, str, int, str]] = []
+
+        def approve(self: ReviewService, repo: str, mr: int) -> tuple[str, int]:
+            calls.append(("approve", repo, mr, self.token))
+            return "approved", 0
+
+        def unapprove(self: ReviewService, repo: str, mr: int) -> tuple[str, int]:
+            calls.append(("unapprove", repo, mr, self.token))
+            return "unapproved", 0
+
+        monkeypatch.setattr(ReviewService, "approve", approve)
+        monkeypatch.setattr(ReviewService, "unapprove", unapprove)
+        seam = review_seam.review_post_seam("acme/alpha")
+
+        assert seam.approve("acme/alpha", 7) == ("approved", 0)
+        assert seam.unapprove("acme/alpha", 7) == ("unapproved", 0)
+        assert calls == [
+            ("approve", "acme/alpha", 7, "glpat-ALPHA"),
+            ("unapprove", "acme/alpha", 7, "glpat-ALPHA"),
+        ]
+
     def test_post_comment_builds_a_service_scoped_to_the_posted_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 

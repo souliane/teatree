@@ -258,7 +258,9 @@ class TestShipAndMergeGatePreservation(TestCase):
         # self-approve (maker≠checker).
         names = {tool.name for tool in asyncio.run(build_server().list_tools())}
 
-        assert not {n for n in names if "approve" in n or "bypass" in n}
+        review_actions = {"review_approve", "review_unapprove"}
+        assert review_actions <= names
+        assert not {n for n in names if ("approve" in n or "bypass" in n) and n not in review_actions}
 
 
 class _SeamRecorder:

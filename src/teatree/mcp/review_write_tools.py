@@ -42,6 +42,16 @@ _UNSERIALISABLE_EVIDENCE_REFUSAL = (
 )
 
 
+async def _review_approve(repo: str, mr: int) -> dict[str, Any]:
+    message, code = await sync_to_async(lambda: review_post_seam(repo).approve(repo, mr), thread_sensitive=True)()
+    return {"message": message, "code": code}
+
+
+async def _review_unapprove(repo: str, mr: int) -> dict[str, Any]:
+    message, code = await sync_to_async(lambda: review_post_seam(repo).unapprove(repo, mr), thread_sensitive=True)()
+    return {"message": message, "code": code}
+
+
 def _parse_anchor(anchor: str) -> InlineAnchor | str | None:
     """``"path:line"`` → ``(path, line)``; blank → ``None`` (general note); malformed → the refusal text."""
     if not anchor.strip():

@@ -30,7 +30,6 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.mcp_tool_group import ApprovalTier, WriteSeam
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
@@ -38,38 +37,22 @@ from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions
-from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments
+from teatree.mcp import config_write_tools
+from teatree.mcp.config_write_tools import _config_setting_set
+from teatree.mcp.review_write_tools import (
+    _review_approve,
+    _review_post_comment,
+    _review_post_comments,
+    _review_unapprove,
+)
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
-
-# Reviewed carve-out (F9.1): fields whose NAME matches the delegation/allowlist
-# heuristics the conformance test walks (``*allowlist``, ``*_threshold``…) but whose
-# EFFECT is an ordinary local-maintenance / quality tuning knob, NOT an authorization,
-# an intake/egress boundary, or an autonomy-posture change — so the MCP surface may set
-# them. ``disk_cache_allowlist`` bounds local cache cleanup and delegates no authority.
-# The conformance test
-# (``tests/teatree_mcp/test_write_tools_refusals.py``) fails CLOSED if a heuristic-matched
-# field is in NEITHER this set NOR :data:`~teatree.config.SAFETY_POSTURE_KEYS`, so adding a
-# new authorization-shaped field forces an explicit reviewed classification here or there.
-MCP_SETTABLE_OK: frozenset[str] = frozenset(
-    {
-        "disk_cache_allowlist",
-    }
-)
-
-
-def refuse_reason(key: str) -> str:
-    """Why the MCP surface refuses to set *key* (empty string = allowed).
-
-    Delegates to the ONE governance predicate (B11): this surface is unattended by
-    definition, so every key an owner has to decide is refused here. Re-deriving the lanes
-    locally is how the same question comes to have two answers.
-    """
-    return owner_only_reason(key)
+MCP_SETTABLE_OK = config_write_tools.MCP_SETTABLE_OK
+refuse_reason = config_write_tools.refuse_reason
 
 
 async def _pr_create(ticket: str, *, title: str = "") -> dict[str, Any]:
@@ -142,30 +125,6 @@ async def _record_e2e_run(
         ),
         thread_sensitive=True,
     )()
-
-
-async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dict[str, Any]:
-    """Set a plain config setting (JSON value) — safety-gate keys are refused.
-
-    Wraps ``t3 <overlay> config_setting set`` (same registry validation, same
-    canonical-value storage). Gate keys (``*_gate_enabled``, ``require_*``,
-    feature flags, cold-hook wires, registry rows, and the cold-read leak-scrub
-    lists / fail-open switch / agent-routing tables) are refused: flipping a
-    safety gate — or emptying a leak-scrub list — stays a human/CLI act. Refused
-    ALSO by declared EFFECT (F9.1): the :data:`~teatree.config.SAFETY_POSTURE_KEYS`
-    delegation / authorization / fail-closed-allowlist fields (e.g.
-    ``substrate_auto_merge_authorized_by``, ``trusted_issue_authors``) whose write
-    IS the authorization, which no name-glob would catch.
-    """
-    if reason := refuse_reason(key):
-        msg = f"refused: {key} is not MCP-settable ({reason})"
-        raise ToolError(msg)
-
-    def _set() -> dict[str, Any]:
-        run_command("config_setting", "set", key, value, overlay=overlay)
-        return {"ok": True, "key": key, "overlay": overlay}
-
-    return await sync_to_async(_set, thread_sensitive=True)()
 
 
 async def _task_create(
@@ -491,6 +450,22 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "a JSON object or its JSON string. live=true requires the recorded LivePostApproval + "
         "on-behalf verdict, same as the CLI; without evidence a 'X is wrong/broken/missing' "
         "body is refused.",
+        ApprovalTier.POSTURE,
+    ),
+    _WriteTool(
+        "review_approve",
+        _review_approve,
+        _WRITE,
+        "teatree.mcp.review_seam (ReviewService.approve; review-first + on-behalf gate)",
+        "- review_approve(repo, mr): approve a reviewed GitLab MR through the review-first and on-behalf gates.",
+        ApprovalTier.POSTURE,
+    ),
+    _WriteTool(
+        "review_unapprove",
+        _review_unapprove,
+        _WRITE,
+        "teatree.mcp.review_seam (ReviewService.unapprove; on-behalf gate)",
+        "- review_unapprove(repo, mr): revoke your GitLab MR approval through the on-behalf gate.",
         ApprovalTier.POSTURE,
     ),
     _WriteTool(

@@ -56,6 +56,12 @@ class GatedReviewPoster:
 
     service: ReviewService
 
+    def approve(self, repo: str, mr: int) -> tuple[str, int]:
+        return self.service.approve(repo, mr)
+
+    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
+        return self.service.unapprove(repo, mr)
+
     def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]:
         finding, refusal = _finding(note)
         if finding is None:
