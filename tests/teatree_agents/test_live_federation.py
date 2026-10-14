@@ -69,7 +69,7 @@ def test_discovery_removes_stale_sockets_before_enforcing_the_worker_limit(tmp_p
     with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
         sender = broker.register(room="first", harness="claude_sdk", label="sender")
         peer = broker.register(room="second", harness="codex_app_server", label="peer")
-        for index in range(33):
+        for index in range(1_025):
             path = tmp_path / f"w-junk{index}.sock"
             with socket.socket(socket.AF_UNIX) as abandoned:
                 abandoned.bind(str(path))

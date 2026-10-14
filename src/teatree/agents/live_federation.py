@@ -21,7 +21,6 @@ _MAX_RESPONSE_BYTES = 2_000_000
 _CONNECT_SECONDS = 2.0
 _MAX_SOCKET_PATH_BYTES = 100
 _MAX_WORKERS = 32
-_MAX_DISCOVERY_CANDIDATES = 1_024
 _PROOF_FIELDS = ("action", "source_socket", "source_address", "to", "text", "key")
 MAX_RELAYED_KEYS = 10_000
 logger = logging.getLogger(__name__)
@@ -59,11 +58,7 @@ class FederationRefusedError(Exception):
 
 
 def workers(directory: Path, own_socket: Path) -> list[Path]:
-    found = [path for path in sorted(directory.glob("w-*.sock")) if path != own_socket]
-    if len(found) > _MAX_DISCOVERY_CANDIDATES:
-        msg = "Live worker directory exceeds the discovery limit"
-        raise FederationUnavailableError(msg)
-    return found
+    return [path for path in sorted(directory.glob("w-*.sock")) if path != own_socket]
 
 
 async def remote_peers(
