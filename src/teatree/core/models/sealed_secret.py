@@ -18,6 +18,10 @@ TABLE_NAME = "teatree_sealed_secret"
 _VERIFIED_ROWS: dict[tuple[str, str, str, bytes], tuple[str, ...]] = {}
 
 
+def reset_sealed_key_health_cache() -> None:
+    _VERIFIED_ROWS.clear()
+
+
 @dataclass(frozen=True, slots=True)
 class KeyHealth:
     source: str

@@ -89,7 +89,10 @@ class TestStaleRemoteDetection:
 
     def test_mismatched_glab_base_remote_is_stale(self, repo: Path):
         _git(repo, "remote", "add", BASE_REMOTE, _OTHER_URL)
-        assert stale_base_remote(repo, _TARGET) == _OTHER_URL
+        effective = subprocess.run(
+            [_GIT, "-C", str(repo), "remote", "get-url", BASE_REMOTE], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        assert stale_base_remote(repo, _TARGET) == effective
 
     def test_non_git_directory_is_not_stale(self, tmp_path: Path):
         assert stale_base_remote(tmp_path, _TARGET) is None

@@ -28,6 +28,7 @@ from teatree.core.admission import machine_load
 from teatree.core.backend_factory import reset_backend_caches
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
+from teatree.core.models.sealed_secret import reset_sealed_key_health_cache
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
@@ -197,11 +198,13 @@ def pinned_clock() -> Iterator[dt.datetime]:
 def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     reset_backend_caches()
     reset_overlay_cache()
+    reset_sealed_key_health_cache()
     monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
     with use_store(MemoryStore()):
         yield
     reset_backend_caches()
     reset_overlay_cache()
+    reset_sealed_key_health_cache()
 
 
 @pytest.fixture

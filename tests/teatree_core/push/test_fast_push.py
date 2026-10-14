@@ -1293,7 +1293,7 @@ class TestGlabForgeAuthorsUnderTheRepoCredential:
         with patch("teatree.core.push.fast_push.run_checked", glab), pytest.raises(UnapprovableAuthorError) as refusal:
             forge.create_pr(branch="b", title="t", body="d")
 
-        assert FACTORY_REMOTE in str(refusal.value)
+        assert run_checked(["git", "remote", "get-url", "origin"], cwd=repo).stdout.strip() in str(refusal.value)
         assert glab.calls == []
 
     def test_a_bot_slot_that_authenticates_as_an_approver_is_refused_before_the_create(self, repo: Path) -> None:
@@ -1335,7 +1335,7 @@ class TestGlabForgeAuthorsUnderTheRepoCredential:
 
         assert outcome.pushed
         assert outcome.pr_action == UNAPPROVABLE_AUTHOR_PR_REFUSAL
-        assert FACTORY_REMOTE in outcome.pr_skip_reason
+        assert run_checked(["git", "remote", "get-url", "origin"], cwd=repo).stdout.strip() in outcome.pr_skip_reason
         assert glab.calls == []
 
     def test_conflicting_declarations_are_a_named_outcome_not_a_traceback_after_the_push(
