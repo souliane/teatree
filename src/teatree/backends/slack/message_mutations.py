@@ -4,6 +4,7 @@ from collections.abc import Callable
 from functools import partial
 
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 type Getter = Callable[[str, dict[str, str | int]], RawAPIDict]
@@ -29,7 +30,8 @@ def read_for_write(get: TokenGetter, *, token: str, channel: str, ts: str, threa
 def update_routed(poster: Poster, *, token: str, channel: str, ts: str, text: str) -> RawAPIDict:
     if not token:
         return {}
-    return poster("chat.update", {"channel": channel, "ts": ts, "text": text, "blocks": []}, token=token)
+    payload = {"channel": channel, "ts": ts, "text": wrap_slack_message(text), "blocks": []}
+    return poster("chat.update", payload, token=token)
 
 
 def delete_routed(poster: Poster, *, token: str, channel: str, ts: str) -> RawAPIDict:

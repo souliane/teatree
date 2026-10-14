@@ -19,6 +19,8 @@ class ToolContractError(RuntimeError):
 
 
 class _NoShadowServer(MCPServer):
+    """Refuse duplicate names that MCPServer would otherwise silently discard."""
+
     def __init__(
         self,
         name: str,
@@ -50,7 +52,7 @@ class _NoShadowServer(MCPServer):
         is_read = bool(annotations and annotations.read_only_hint)
         if self.read_only and not is_read and tool_name not in self.allowed_writes:
             return
-        if tool_name in self.registered_names:
+        if tool_name and tool_name in self.registered_names:
             msg = f"MCP tool name {tool_name!r} is already registered; a second registration would be silently dropped."
             raise ToolNameCollisionError(msg)
         tier = ApprovalTier.READ if is_read else self._write_tier(tool_name)
@@ -61,7 +63,8 @@ class _NoShadowServer(MCPServer):
         if dry_run is not None and dry_run.default is False:
             msg = f"MCP tool {tool_name!r} defaults dry_run to false"
             raise ToolContractError(msg)
-        self.registered_names.add(tool_name)
+        if tool_name:
+            self.registered_names.add(tool_name)
         super().add_tool(
             fn,
             name=name,

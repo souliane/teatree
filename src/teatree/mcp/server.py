@@ -40,6 +40,7 @@ than core can.
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from inspect import signature
 from typing import Any
 
 from asgiref.sync import sync_to_async
@@ -49,7 +50,7 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
-from teatree.core.mcp_tool_group import WriteSeam
+from teatree.core.mcp_tool_group import ApprovalTier, WriteSeam
 from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
@@ -137,10 +138,26 @@ def _admits(name: str, group: McpToolGroup, declared: frozenset[Service]) -> boo
     unguarded = group.undeclared_write_tools
     if unguarded:
         logger.error(
-            "overlay %r: mcp tool(s) %s are not read-only and declare no gated seam; group not registered",
+            "overlay %r: mcp tool(s) %s lack a gated seam or approval tier; group not registered",
             name,
             ", ".join(unguarded),
         )
+        return False
+    invalid: list[str] = []
+    for tool in group.tools:
+        try:
+            dry_run = signature(tool.handler).parameters.get("dry_run")
+        except (TypeError, ValueError):
+            invalid.append(tool.name)
+            continue
+        unsafe_posture = bool(tool.is_write and tool.annotations and tool.annotations.destructive_hint) and (
+            tool.tier is ApprovalTier.POSTURE
+        )
+        unsafe_default = dry_run is not None and dry_run.default is False
+        if unsafe_posture or unsafe_default:
+            invalid.append(tool.name)
+    if invalid:
+        logger.error("overlay %r: unsafe mcp tool contract(s) %s; group not registered", name, ", ".join(invalid))
         return False
     return True
 

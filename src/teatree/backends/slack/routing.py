@@ -48,7 +48,7 @@ def assert_owner_call(
         return
     if method in _CHANNEL_REACH_METHODS:
         raise OwnerDmOnlyError(str(payload.get("channel") or payload.get("name") or ""), method=method)
-    if method in {"chat.postMessage", "chat.update"}:
+    if method in {"chat.postMessage", "chat.update", "chat.delete"}:
         channel = str(payload.get("channel") or "")
         if not is_self_dm(channel, dm_channel_id=dm_channel_id, user_id=user_id):
             raise OwnerDmOnlyError(channel, method=method)

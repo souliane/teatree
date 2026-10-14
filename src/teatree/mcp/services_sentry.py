@@ -10,9 +10,11 @@ declaring overlay with a configured ``sentry_org`` (token via the
 """
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import httpx
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -67,27 +69,44 @@ def _links_issue(body: str, permalink: str) -> bool:
     return False
 
 
+def _names_short_id(body: str, short_id: object) -> bool:
+    return (
+        isinstance(short_id, str)
+        and bool(short_id)
+        and bool(re.search(rf"(?<![\w-]){re.escape(short_id)}(?![\w-])", body))
+    )
+
+
+async def _read[T](operation: Callable[[], T]) -> T:
+    try:
+        return await sync_to_async(operation, thread_sensitive=True)()
+    except httpx.HTTPError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 async def _sentry_top_issues(project: str, *, limit: int = 10) -> list[dict[str, Any]]:
     """The most frequent unresolved Sentry issues for *project*, sorted by frequency."""
-    return await sync_to_async(lambda: _client().get_top_issues(project=project, limit=limit), thread_sensitive=True)()
+    return await _read(lambda: _client().get_top_issues(project=project, limit=limit))
 
 
 async def _sentry_issue_get(issue_id: str) -> dict[str, Any]:
     """One Sentry issue's summary (title, culprit, counts, status) by issue id."""
-    return await sync_to_async(lambda: _client().get_issue(issue_id), thread_sensitive=True)()
+    return await _read(lambda: _client().get_issue(issue_id))
 
 
 async def _sentry_issue_events(issue_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
     """Recent events for one Sentry issue — stack traces and context for triage."""
-    return await sync_to_async(lambda: _client().get_issue_events(issue_id, limit=limit), thread_sensitive=True)()
+    return await _read(lambda: _client().get_issue_events(issue_id, limit=limit))
 
 
 async def _sentry_projects() -> list[dict[str, Any]]:
     """The declaring org's Sentry projects."""
-    return await sync_to_async(lambda: _client().list_projects(), thread_sensitive=True)()
+    return await _read(lambda: _client().list_projects())
 
 
 async def _sentry_issue_resolve(issue_id: str, forge: str, repo: str, pr_iid: int) -> dict[str, Any]:
+    """Resolve an issue only when a merged PR links its permalink or short ID."""
+
     def _resolve() -> dict[str, Any]:
         try:
             service = Service(forge)
@@ -106,12 +125,14 @@ async def _sentry_issue_resolve(issue_id: str, forge: str, repo: str, pr_iid: in
         issue = client.get_issue(issue_id)
         permalink = issue.get("permalink")
         message = forge_client.fetch_pr_message(slug=repo, pr_id=pr_iid)
-        if not isinstance(permalink, str) or message is None or not _links_issue(message.body, permalink):
+        if message is None or not (
+            (isinstance(permalink, str) and _links_issue(message.body, permalink))
+            or _names_short_id(message.body, issue.get("shortId"))
+        ):
             msg = "the merged PR body does not link this Sentry issue; resolution is refused"
             raise ToolError(msg)
         outcome = client.resolve_issue(issue_id)
-        verified = client.get_issue(issue_id)
-        if verified.get("status") != "resolved":
+        if outcome.get("status") != "resolved":
             msg = "Sentry issue did not read back as resolved"
             raise ToolError(msg)
         return {
@@ -120,7 +141,10 @@ async def _sentry_issue_resolve(issue_id: str, forge: str, repo: str, pr_iid: in
             "fixing_pr_merge_oid": merge.merge_commit_oid,
         }
 
-    return await sync_to_async(_resolve, thread_sensitive=True)()
+    try:
+        return await sync_to_async(_resolve, thread_sensitive=True)()
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def register(server: MCPServer) -> None:

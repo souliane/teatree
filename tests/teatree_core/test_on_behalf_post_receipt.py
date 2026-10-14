@@ -111,6 +111,21 @@ class TestAfterReceiptDm(TestCase):
         # URL must be present in the rendered Slack link.
         assert "https://gitlab.example/org/repo/-/merge_requests/7#note_42" in sent
 
+    def test_delete_receipt_describes_deletion(self) -> None:
+        _cfg(self.tmp_path)
+        backend = _stub_backend()
+        self._set_messaging(backend)
+        notify_user_on_behalf_post(
+            target="C_REVIEW:42",
+            action="mcp_slack_delete",
+            destination="C_REVIEW",
+            artifact_url="C_REVIEW/1.2",
+            summary="removed the old post",
+        )
+        text = _post_message_text(backend.post_message.call_args)
+        assert "Deleted under your identity" in text
+        assert "Posted under your identity" not in text
+
     def test_non_url_artifact_id_is_not_leaked_as_a_dead_link(self) -> None:
         # C3: when the artifact is a non-URL internal id (a raw Slack channel id, a
         # note_id/discussion_id/line_code), the receipt must NOT emit it as a dead

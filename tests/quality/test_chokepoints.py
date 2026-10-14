@@ -264,6 +264,7 @@ _FORGE_WRITE_BODY_METHODS = frozenset(
         "create_issue",
         "create_sub_issue",
         "update_issue",
+        "update_pr_message",
     }
 )
 

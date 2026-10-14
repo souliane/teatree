@@ -18,6 +18,7 @@ classification, and the ``chat.postMessage`` wrap seam — matching how
 import dataclasses
 from typing import Protocol
 
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 type SlackPayload = dict[str, object]
@@ -98,7 +99,7 @@ class ChatUpdate:
 
 def update(poster: Poster, *, token: str, message: ChatUpdate) -> RawAPIDict:
     """Replace the message at (*message.channel*, *message.ts*) under the Connect-membership-chosen *token*."""
-    return poster("chat.update", message.payload(), token=token)
+    return poster("chat.update", {**message.payload(), "text": wrap_slack_message(message.text)}, token=token)
 
 
 def add_reaction(poster: Poster, *, token: str, channel: str, ts: str, emoji: str) -> RawAPIDict:

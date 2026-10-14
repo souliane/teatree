@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.mcp.write_tool_run import run_command
 
+# F9.1: this local cache bound delegates no authority despite its allowlist name.
 MCP_SETTABLE_OK: frozenset[str] = frozenset({"disk_cache_allowlist"})
 
 
@@ -16,6 +17,7 @@ def refuse_reason(key: str) -> str:
 
 
 async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dict[str, Any]:
+    """Set a plain config value; authorization, posture, and leak-scrub keys are refused."""
     if reason := refuse_reason(key):
         msg = f"refused: {key} is not MCP-settable ({reason})"
         raise ToolError(msg)

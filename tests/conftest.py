@@ -135,7 +135,12 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--affected-lane", action="store_true", default=False)
+    parser.addoption(
+        "--affected-lane",
+        action="store_true",
+        default=False,
+        help="Allow the affected-test selector's flags-only FULL escalation; explicit whole-tree paths remain refused.",
+    )
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

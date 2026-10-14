@@ -16,7 +16,7 @@ from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
 from teatree.core.failed_e2e_watcher import FailedE2EWatcher
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.identity_wiring import AuthoringIdentity, classify_authoring_identity
-from teatree.core.mcp_tool_group import McpTool, McpToolGroup
+from teatree.core.mcp_tool_group import ApprovalTier, McpTool, McpToolGroup
 from teatree.core.modelkit.phases import canonicalize_phase_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.overlays.connectors import OverlayConnectors
@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
+    "ApprovalTier",
     "BaseImageConfig",
     "Capture",
     "DbImportStrategy",

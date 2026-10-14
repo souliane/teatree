@@ -163,6 +163,14 @@ _BLOCKS = [{"type": "context", "elements": [{"type": "mrkdwn", "text": "ref: que
 
 
 class TestChatUpdateReachesOnlyTheOwnerDm:
+    def test_chat_delete_wire_call_reaches_only_owner_dm(self) -> None:
+        bot = _dm_only_bot()
+        with patch.object(bot._http, "post", return_value={"ok": True}) as transport:
+            with pytest.raises(OwnerDmOnlyError):
+                bot._post("chat.delete", {"channel": "C-public", "ts": "1.0"})
+            assert bot._post("chat.delete", {"channel": _OWNER_DM, "ts": "1.0"})["ok"] is True
+        transport.assert_called_once()
+
     def test_chat_update_reaches_only_the_owner_dm(self) -> None:
         bot = _dm_only_bot()
         with patch.object(bot._http, "post", return_value={"ok": True}) as transport:

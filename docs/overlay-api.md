@@ -200,7 +200,7 @@ The third-party services an overlay needs are declared as data, in `OverlayConfi
 | Method | Default | Purpose |
 |--------|---------|---------|
 | `preflight()` | `[]` | Zero-arg probes run before service-dependent loop work; one raising `RuntimeError` refuses the tick. `teatree.core.connector_probes.reachability_probe` and `teatree.core.connector_preflight.assert_slack_scope` are the shipped building blocks. |
-| `mcp_tool_group()` | `None` | The overlay's own tools for the teatree MCP server, as an `McpToolGroup`. The server registers the group only on the terms it declares: every `Service` in `requires` declared by some overlay, and every non-read-only `McpTool` naming the gated `seam` it wraps. Either missing, and the whole group is refused. |
+| `mcp_tool_group()` | `None` | The overlay's own tools for the teatree MCP server, as an `McpToolGroup`. Every `Service` in `requires` must be declared; every write `McpTool` needs a gated `seam` and an `ApprovalTier` other than `READ`. A destructive write cannot use `POSTURE`, and a `dry_run` parameter cannot default to `False`. An invalid group is refused without stopping the server. |
 
 ## Supporting types
 

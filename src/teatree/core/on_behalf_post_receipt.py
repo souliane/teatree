@@ -35,8 +35,7 @@ def notify_user_on_behalf_post(
 ) -> None:
     """DM the user that a colleague-visible post published under their identity.
 
-    ``target``/``action``/``artifact_url`` form the idempotency key
-    ``on_behalf_post:{target}:{action}:{artifact_url}`` — one DM per
+    ``target``/``action``/``artifact_url`` form the idempotency key — one DM per
     PUBLICATION, not per (target, action): a retry re-posts the same
     artifact and dedups, while a second comment on the same MR is a second
     post under the user's identity and gets its own receipt.
@@ -64,7 +63,8 @@ def notify_user_on_behalf_post(
         link_line = f"[{short}]({artifact_url})\n"
     else:
         link_line = ""
-    text = f"Posted under your identity to {destination}.\n{link_line}{summary}"
+    verb = "Deleted" if action.endswith("_delete") else "Updated" if action.endswith("_update") else "Posted"
+    text = f"{verb} under your identity in {destination}.\n{link_line}{summary}"
     notify_user(
         text,
         kind=NotifyKind.INFO,

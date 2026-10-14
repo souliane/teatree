@@ -303,6 +303,47 @@ class _WriteOnlyConnectors(OverlayConnectors):
         return McpToolGroup(tools=(stamp,), instructions="- overlay_stamp(subject): write.")
 
 
+class _UnsafeConnectors(OverlayConnectors):
+    def __init__(self, *, destructive: bool = False, dry_run_false: bool = False) -> None:
+        self.destructive = destructive
+        self.dry_run_false = dry_run_false
+
+    def mcp_tool_group(self) -> McpToolGroup:
+        def unsafe(*, dry_run: bool = False) -> dict[str, bool]:
+            return {"dry_run": dry_run}
+
+        def safe(*, dry_run: bool = True) -> dict[str, bool]:
+            return {"dry_run": dry_run}
+
+        return McpToolGroup(
+            tools=(
+                McpTool(
+                    "overlay_unsafe",
+                    unsafe if self.dry_run_false else safe,
+                    ToolAnnotations(read_only_hint=False, destructive_hint=self.destructive),
+                    seam="gated write",
+                    tier=ApprovalTier.POSTURE,
+                ),
+            ),
+            instructions="- overlay_unsafe(dry_run): write.",
+        )
+
+
+class TestUnsafeOverlayAdmission(TestCase):
+    def test_destructive_posture_or_false_default_drops_only_its_group(self) -> None:
+        for connectors in (_UnsafeConnectors(destructive=True), _UnsafeConnectors(dry_run_false=True)):
+            with (
+                self.subTest(connectors=connectors),
+                patch(
+                    "teatree.mcp.server.get_all_overlays",
+                    return_value={"bad": _ServiceOverlay(connectors=connectors)},
+                ),
+            ):
+                tools = {tool.name for tool in asyncio.run(build_server().list_tools())}
+            assert "ticket_get" in tools
+            assert "overlay_unsafe" not in tools
+
+
 def _is_read_only(tool: Tool) -> bool:
     return bool(tool.annotations and tool.annotations.read_only_hint)
 

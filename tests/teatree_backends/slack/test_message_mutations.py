@@ -2,6 +2,7 @@ import pytest
 
 from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.message_mutations import delete_routed, read_for_write, read_message, update_routed
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 
@@ -63,3 +64,17 @@ def test_mutations_route_token_and_clear_old_blocks() -> None:
         ("chat.update", {"channel": "C1", "ts": "1.0", "text": "new", "blocks": []}, "xoxp", True),
         ("chat.delete", {"channel": "C1", "ts": "1.0"}, "xoxp", False),
     ]
+
+
+def test_update_wraps_text_before_the_wire_call() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def post(method: str, payload: dict[str, object], *, token: str) -> RawAPIDict:
+        assert method == "chat.update"
+        assert token == "xoxp"
+        payloads.append(payload)
+        return {"ok": True}
+
+    text = "A long sentence that should wrap before this update reaches Slack, preserving its natural word breaks."
+    update_routed(post, token="xoxp", channel="C1", ts="1.0", text=text)
+    assert payloads[0]["text"] == wrap_slack_message(text)

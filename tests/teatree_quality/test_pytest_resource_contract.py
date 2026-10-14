@@ -28,6 +28,7 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
 
 def test_affected_lane_full_escalation_is_allowed(tmp_path: Path) -> None:
     assert whole_tree_refusal([], root=tmp_path, sharded=False, affected_lane=True) == ""
+    assert "unsharded whole-tree" in whole_tree_refusal(["tests"], root=tmp_path, sharded=False, affected_lane=True)
     assert "unsharded whole-tree" in whole_tree_refusal([], root=tmp_path, sharded=False)
 
 

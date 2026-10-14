@@ -118,6 +118,7 @@
     - create_issue
     - create_sub_issue
     - update_issue
+    - update_pr_message
   allowed_modules:
     - teatree.backends.github.client
     - teatree.backends.gitlab.client

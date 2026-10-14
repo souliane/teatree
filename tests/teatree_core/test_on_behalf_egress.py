@@ -74,6 +74,9 @@ class _RouteAwareFake:
     react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     message_text: str = "before"
+    message_user: str = _USER_ID
+    api_app_id: str = "A_SELF"
+    read_error: Exception | None = None
     update_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     delete_routed_calls: list[tuple[str, str]] = field(default_factory=list)
 
@@ -93,7 +96,20 @@ class _RouteAwareFake:
 
     def fetch_message_for_write(self, *, channel: str, ts: str, thread_ts: str = "") -> RawAPIDict:
         _ = thread_ts
-        return {"channel": channel, "ts": ts, "text": self.message_text} if self.message_text else {}
+        if self.read_error:
+            raise self.read_error
+        if not self.message_text:
+            return {}
+        return {
+            "channel": channel,
+            "ts": ts,
+            "text": self.message_text,
+            "user": self.message_user,
+            "api_app_id": self.api_app_id,
+        }
+
+    def auth_test(self) -> RawAPIDict:
+        return {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
 
     def update_routed(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.update_routed_calls.append((channel, ts, text))
@@ -184,6 +200,95 @@ class TestColleagueGate(TestCase):
         assert replay["already_updated"] is True
         assert len(fake.update_routed_calls) == 1
 
+    def test_mutation_refuses_human_typed_or_foreign_app_message(self) -> None:
+        seed_permitting_posture()
+        for user, app in ((_USER_ID, ""), ("U_COLLEAGUE", "A_SELF")):
+            fake = _RouteAwareFake(message_user=user, api_app_id=app)
+            with self.subTest(user=user, app=app), pytest.raises(ValueError, match="own app-posted"):
+                OnBehalfSlackEgress(fake).update(channel=_COLLEAGUE, ts="1.1", expected_text="before", text="after")
+            assert fake.update_routed_calls == []
+            assert fake.delete_routed_calls == []
+
+    def test_delete_without_thread_root_never_calls_a_missing_reply_deleted(self) -> None:
+        fake = _RouteAwareFake(message_text="")
+        with pytest.raises(ValueError, match="thread_ts"):
+            OnBehalfSlackEgress(fake).delete(channel=_COLLEAGUE, ts="1.2", expected_text="before")
+        assert fake.delete_routed_calls == []
+
+    def test_delete_does_not_send_removed_text_through_send_proxy(self) -> None:
+        fake = _RouteAwareFake(message_text="SECRETCORP")
+        with patch("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"]):
+            preview = OnBehalfSlackEgress(fake).delete(channel=_COLLEAGUE, ts="1.1", expected_text="SECRETCORP")
+            approval = preview["approval"]
+            assert isinstance(approval, dict)
+            target = approval["target"]
+            assert isinstance(target, str)
+            OnBehalfApproval.record(target, "mcp_slack_delete", _APPROVER)
+            result = OnBehalfSlackEgress(fake).delete(
+                channel=_COLLEAGUE, ts="1.1", expected_text="SECRETCORP", dry_run=False
+            )
+        assert result["ok"] is True
+        assert fake.delete_routed_calls == [(_COLLEAGUE, "1.1")]
+
+    def test_exact_approval_survives_refused_delete(self) -> None:
+        fake = _RouteAwareFake(routed_response={"ok": False, "error": "cant_delete_message"})
+        egress = OnBehalfSlackEgress(fake)
+        preview = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before")
+        approval_payload = preview["approval"]
+        assert isinstance(approval_payload, dict)
+        target = approval_payload["target"]
+        assert isinstance(target, str)
+        approval = OnBehalfApproval.record(target, "mcp_slack_delete", _APPROVER)
+        assert egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=False)["ok"] is False
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+
+    def test_each_update_has_its_own_receipt_key(self) -> None:
+        seed_permitting_posture()
+        fake = _RouteAwareFake()
+        with patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post") as notify:
+            egress = OnBehalfSlackEgress(fake)
+            egress.update(channel=_COLLEAGUE, ts="1.1", expected_text="before", text="first")
+            egress.update(channel=_COLLEAGUE, ts="1.1", expected_text="first", text="second")
+        assert notify.call_count == 2
+        assert notify.call_args_list[0].kwargs["target"] != notify.call_args_list[1].kwargs["target"]
+
+    def test_update_accepts_slack_escaped_read_back(self) -> None:
+        seed_permitting_posture()
+        fake = _RouteAwareFake()
+
+        def update(*, channel: str, ts: str, text: str) -> RawAPIDict:
+            fake.update_routed_calls.append((channel, ts, text))
+            fake.message_text = "A &amp; B &lt; C &gt; D"
+            return {"ok": True}
+
+        with patch.object(fake, "update_routed", side_effect=update):
+            result = OnBehalfSlackEgress(fake).update(
+                channel=_COLLEAGUE, ts="1.1", expected_text="before", text="A & B < C > D"
+            )
+        assert result["ok"] is True
+        assert fake.update_routed_calls == [(_COLLEAGUE, "1.1", "A & B < C > D")]
+
+    def test_delete_accepts_slack_thread_tombstone(self) -> None:
+        fake = _RouteAwareFake()
+        egress = OnBehalfSlackEgress(fake)
+        preview = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before")
+        approval = preview["approval"]
+        assert isinstance(approval, dict)
+        target = approval["target"]
+        assert isinstance(target, str)
+        OnBehalfApproval.record(target, "mcp_slack_delete", _APPROVER)
+        original_fetch = fake.fetch_message_for_write
+
+        def fetch(*, channel: str, ts: str, thread_ts: str = "") -> RawAPIDict:
+            if fake.delete_routed_calls:
+                return {"channel": channel, "ts": ts, "text": "This message was deleted.", "subtype": "tombstone"}
+            return original_fetch(channel=channel, ts=ts, thread_ts=thread_ts)
+
+        with patch.object(fake, "fetch_message_for_write", side_effect=fetch):
+            result = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=False)
+        assert result["ok"] is True
+
     def test_delete_needs_exact_approval_and_rechecks_absence(self) -> None:
         fake = _RouteAwareFake()
         egress = OnBehalfSlackEgress(fake)
@@ -245,6 +350,32 @@ class TestColleagueGate(TestCase):
         assert len(fake.post_routed_calls) == 1
         assert OutboundClaim.objects.get(idempotency_key="slack-post:k3").drift_detected is True
 
+    def test_post_once_read_error_marks_drift_instead_of_in_flight(self) -> None:
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake(routed_response={"ok": True, "ts": "9.9"}, read_error=PermissionError("read refused"))
+        with pytest.raises(RuntimeError, match="read refused"):
+            OnBehalfSlackEgress(fake).post_once(idempotency_key="read-error", channel=_COLLEAGUE, text="hi")
+        claim = OutboundClaim.objects.get(idempotency_key="slack-post:read-error")
+        assert claim.drift_detected is True
+
+    def test_post_once_missing_ts_keeps_claim_and_reports_error(self) -> None:
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake(routed_response={"ok": True})
+        response = OnBehalfSlackEgress(fake).post_once(idempotency_key="missing-ts", channel=_COLLEAGUE, text="hi")
+        assert response == {"ok": False, "error": "Slack accepted the post without a timestamp"}
+        assert OutboundClaim.objects.get(idempotency_key="slack-post:missing-ts").drift_detected is True
+
+    def test_post_once_resolves_self_user_id_before_verification_read(self) -> None:
+        fake = _RouteAwareFake()
+        egress = OnBehalfSlackEgress(fake)
+        with (
+            patch.object(egress, "post", return_value={"ok": True, "ts": "9.9"}),
+            patch.object(fake, "fetch_message_for_write", wraps=fake.fetch_message_for_write) as read,
+        ):
+            response = egress.post_once(idempotency_key="self-user-id", channel=_USER_ID, text="hi")
+        assert response["ok"] is True
+        assert read.call_args.kwargs["channel"] == _DM_CHANNEL
+
     def test_react_fires_once_and_audits_with_recorded_approval(self) -> None:
         OnBehalfApproval.record(target=_TARGET, action="merge_reaction", approver_id=_APPROVER)
         fake = _RouteAwareFake()
@@ -274,6 +405,18 @@ class TestColleagueGate(TestCase):
         assert BotPing.objects.filter(
             idempotency_key__startswith=f"on_behalf_post:{_TARGET}:review_nag_post",
         ).exists()
+
+    def test_two_posts_to_same_channel_get_two_receipts(self) -> None:
+        fake = _RouteAwareFake(routed_response={"ok": True, "ts": "1.1"})
+        egress = OnBehalfSlackEgress(fake)
+        for ts in ("1.1", "1.2"):
+            OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+            fake.routed_response = {"ok": True, "ts": ts}
+            egress.post(channel=_COLLEAGUE, text="status", target=_COLLEAGUE, action="mcp_slack_post")
+        assert (
+            BotPing.objects.filter(idempotency_key__startswith=f"on_behalf_post:{_COLLEAGUE}:mcp_slack_post").count()
+            == 2
+        )
 
     def test_approval_consumed_single_use(self) -> None:
         OnBehalfApproval.record(target=_TARGET, action="merge_reaction", approver_id=_APPROVER)

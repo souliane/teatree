@@ -12,6 +12,7 @@ import dataclasses
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
@@ -65,6 +66,56 @@ class TestSentryClientResolution(TestCase):
 
 
 class TestSentryToolCalls(TestCase):
+    def test_issue_read_maps_transport_error(self) -> None:
+        sentry = MagicMock()
+        sentry.get_issue.side_effect = httpx.ConnectError("Sentry unavailable")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            pytest.raises(ToolError, match="Sentry unavailable"),
+        ):
+            async_to_sync(build_server().call_tool)("sentry_issue_get", {"issue_id": "9"})
+
+    def test_resolve_accepts_short_id_and_uses_backends_verified_result(self) -> None:
+        sentry = MagicMock()
+        sentry.get_issue.return_value = {
+            "id": "9",
+            "status": "unresolved",
+            "shortId": "ACME-9",
+            "permalink": "https://sentry.io/acme/issues/9/",
+        }
+        sentry.resolve_issue.return_value = {"id": "9", "status": "resolved"}
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        forge.fetch_pr_message.return_value = PrMessage("Fix error", "Fixes ACME-9")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+        ):
+            result = structured(
+                async_to_sync(build_server().call_tool)(
+                    "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
+                )
+            )
+        assert result["status"] == "resolved"
+        sentry.get_issue.assert_called_once_with("9")
+
+    def test_resolve_maps_sentry_transport_error(self) -> None:
+        sentry = MagicMock()
+        sentry.get_issue.side_effect = httpx.ConnectError("Sentry unavailable")
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+            pytest.raises(ToolError, match="Sentry unavailable"),
+        ):
+            async_to_sync(build_server().call_tool)(
+                "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
+            )
+
     def test_resolve_requires_a_live_merged_pr_and_verifies_the_issue(self) -> None:
         class Sentry:
             def __init__(self) -> None:

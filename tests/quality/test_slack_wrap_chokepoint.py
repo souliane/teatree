@@ -45,6 +45,7 @@ _WRAP_ROUTED_MODULES = frozenset(
     {
         "backends/slack/audio_upload.py",
         "backends/slack/egress.py",
+        "backends/slack/message_mutations.py",
     }
 )
 

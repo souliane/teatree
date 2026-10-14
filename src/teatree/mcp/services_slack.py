@@ -158,6 +158,8 @@ async def _slack_react(channel: str, ts: str, emoji: str) -> dict[str, Any]:
 
 
 async def _slack_post(channel: str, text: str, idempotency_key: str, *, thread_ts: str = "") -> dict[str, Any]:
+    """Post once to a channel or thread; an accepted post needs a verifiable timestamp."""
+
     def _post() -> dict[str, Any]:
         try:
             response = OnBehalfSlackEgress(_client()).post_once(
@@ -190,6 +192,8 @@ async def _slack_conversations(*, cursor: str = "", limit: int = 100) -> dict[st
 
 
 async def _slack_update(channel: str, ts: str, expected_text: str, text: str, *, thread_ts: str = "") -> dict[str, Any]:
+    """Edit an own app-posted message after an exact live-text check and on-behalf approval."""
+
     def perform() -> dict[str, Any]:
         try:
             response = OnBehalfSlackEgress(_client()).update(
@@ -207,6 +211,8 @@ async def _slack_update(channel: str, ts: str, expected_text: str, text: str, *,
 async def _slack_delete(
     channel: str, ts: str, expected_text: str, *, thread_ts: str = "", dry_run: bool = True
 ) -> dict[str, Any]:
+    """Preview or delete an own app-posted message with exact approval; provide thread_ts for replies."""
+
     def perform() -> dict[str, Any]:
         try:
             response = OnBehalfSlackEgress(_client()).delete(

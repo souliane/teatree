@@ -9,13 +9,15 @@ also spend exact approval. Both verify by re-read and record a verified
 outbound claim. The backend owns token routing and wire calls.
 """
 
-import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import unescape
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 from django.apps import apps
+from django.db import transaction
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.egress_transport import (
@@ -30,10 +32,13 @@ from teatree.core.egress_transport import (
     suppress_on_behalf_egress,
 )
 from teatree.core.gates import exact_approval
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
 from teatree.on_behalf_gate import OnBehalfContext
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -119,15 +124,24 @@ class OnBehalfSlackEgress:
             raise ValueError(msg)
         return self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts)
 
-    def _message_for_mutation(self, channel: str, ts: str, expected_text: str, thread_ts: str) -> RawAPIDict:
-        message = self._live_message(channel, ts, thread_ts)
+    def _message_for_mutation(self, message: RawAPIDict, ts: str, expected_text: str) -> None:
         if not message or str(message.get("ts", "")) != ts:
             msg = "the Slack message is absent; nothing was written"
             raise ValueError(msg)
         if message.get("text") != expected_text:
             msg = "the Slack message changed since the expected text was read; nothing was written"
             raise ValueError(msg)
-        return message
+        app_id = message.get("api_app_id")
+        author = str(message.get("user") or "")
+        bot = str(message.get("bot_id") or "")
+        author_ids = {str(getattr(self._messaging, "user_id", "") or "")}
+        if author not in author_ids:
+            identity = self._messaging.auth_test()
+            if identity.get("ok"):
+                author_ids.update(str(identity.get(key) or "") for key in ("user_id", "bot_id"))
+        if not isinstance(app_id, str) or not app_id or not ({author, bot} & author_ids - {""}):
+            msg = "only an own app-posted Slack message may be changed"
+            raise ValueError(msg)
 
     def _mutate(self, mutation: SlackMutation, publish: Callable[[str], RawAPIDict]) -> RawAPIDict:
         channel, ts, payload, action, kind, exact_target = (
@@ -141,12 +155,13 @@ class OnBehalfSlackEgress:
         destination = EgressDestination(channel=channel, thread=ts)
         with observe_egress_errors(channel, action, kind, destination=destination):
             colleague = not self._is_self_dm(channel)
+            policy_text = "Slack message deletion" if kind is EgressKind.DELETE else payload
             routed = (
-                _route_colleague_send(channel=channel, payload=payload, action=action, target=channel)
+                _route_colleague_send(channel=channel, payload=policy_text, action=action, target=channel)
                 if colleague
-                else payload
+                else policy_text
             )
-            if routed != payload:
+            if routed != policy_text:
                 msg = "the send gate changed the message preview; nothing was written"
                 raise ValueError(msg)
 
@@ -157,7 +172,7 @@ class OnBehalfSlackEgress:
 
             try:
                 if exact_target:
-                    with exact_approval.spent_approval(exact_target, action):
+                    with transaction.atomic(), exact_approval.spent_approval(exact_target, action):
                         response = attempt()
                 elif colleague:
                     response = require_on_behalf_approval(target=channel, action=action, publish=attempt)
@@ -170,31 +185,35 @@ class OnBehalfSlackEgress:
     def _confirm_mutation(self, mutation: SlackMutation) -> None:
         claim_model = cast("type[OutboundClaim]", apps.get_model("core", "OutboundClaim"))
 
-        digest = hashlib.sha256(
-            f"{mutation.action}:{mutation.channel}:{mutation.thread_ts}:{mutation.ts}:{mutation.payload}".encode()
-        ).hexdigest()
-        claim, _created = claim_model.objects.get_or_create(
-            idempotency_key=f"slack-message:{digest}",
-            defaults={
-                "kind": claim_model.Kind.SLACK_MESSAGE,
-                "extra": {
-                    "channel": mutation.channel,
-                    "ts": mutation.ts,
-                    "thread_ts": mutation.thread_ts,
-                    "action": mutation.action,
-                },
+        claim = claim_model.objects.create(
+            idempotency_key=f"slack-message:{uuid4().hex}",
+            kind=claim_model.Kind.SLACK_MESSAGE,
+            extra={
+                "channel": mutation.channel,
+                "ts": mutation.ts,
+                "thread_ts": mutation.thread_ts,
+                "action": mutation.action,
             },
         )
-        if claim.verified_at is None:
-            claim.mark_verified()
+        claim.mark_verified()
         if not self._is_self_dm(mutation.channel):
             notify_user_on_behalf_post(
-                target=mutation.channel,
+                target=f"{mutation.channel}:{claim.pk}",
                 action=mutation.action,
                 destination=mutation.channel,
-                artifact_url=mutation.channel,
+                artifact_url=f"{mutation.channel}/{mutation.ts}",
                 summary=mutation.payload[:120],
             )
+
+    @staticmethod
+    def _record_post_drift(claim: "OutboundClaim", reason: str) -> None:
+        claim.record_drift(reason)
+        notify_user(
+            f"Slack accepted a post but verification failed: {reason}",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"outbound_drift:{claim.idempotency_key}",
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
 
     def post_once(self, *, idempotency_key: str, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         if not idempotency_key.strip():
@@ -218,28 +237,43 @@ class OnBehalfSlackEgress:
             claim.delete()
             raise
         ts = str(response.get("ts") or "")
-        if not response.get("ok") or not ts:
+        if not response.get("ok"):
             claim.delete()
             return response
-        if not self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts):
-            claim.record_drift("Slack accepted the post but a live read did not find it")
+        if not ts:
+            reason = "Slack accepted the post without a timestamp"
+            self._record_post_drift(claim, reason)
+            return {"ok": False, "error": reason}
+        actual_channel = str(response.get("channel") or channel)
+        try:
+            if actual_channel.startswith("U") and self._is_self_dm(channel):
+                actual_channel = self._messaging.open_dm(channel) or actual_channel
+            landed = self._messaging.fetch_message_for_write(channel=actual_channel, ts=ts, thread_ts=thread_ts)
+        except Exception as exc:
+            self._record_post_drift(claim, f"Slack post verification failed: {exc}")
+            raise RuntimeError(claim.drift_reason) from exc
+        if not landed:
+            self._record_post_drift(claim, "Slack accepted the post but a live read did not find it")
             raise RuntimeError(claim.drift_reason)
-        claim.mark_verified(ts=ts)
+        claim.mark_verified(ts=ts, channel=actual_channel)
         return response
 
     def update(self, *, channel: str, ts: str, expected_text: str, text: str, thread_ts: str = "") -> RawAPIDict:
         current = self._live_message(channel, ts, thread_ts)
-        if current and str(current.get("ts", "")) == ts and current.get("text") == text:
+        wrapped = wrap_slack_message(text)
+        if current and str(current.get("ts", "")) == ts and unescape(str(current.get("text", ""))) == wrapped:
             return {"ok": True, "already_updated": True}
-        self._message_for_mutation(channel, ts, expected_text, thread_ts)
+        self._message_for_mutation(current, ts, expected_text)
         mutation = SlackMutation(channel, ts, text, "mcp_slack_update", EgressKind.UPDATE, thread_ts=thread_ts)
         response = self._mutate(
             mutation, lambda routed: self._messaging.update_routed(channel=channel, ts=ts, text=routed)
         )
-        if (
-            response.get("ok")
-            and self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts).get("text") != text
-        ):
+        read_back = (
+            self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts)
+            if response.get("ok")
+            else {}
+        )
+        if response.get("ok") and unescape(str(read_back.get("text", ""))) != wrapped:
             msg = "Slack accepted the update but a live read did not confirm the new text"
             raise RuntimeError(msg)
         if response.get("ok"):
@@ -251,8 +285,20 @@ class OnBehalfSlackEgress:
     ) -> RawAPIDict:
         current = self._live_message(channel, ts, thread_ts)
         if not current:
+            if not thread_ts:
+                claim_model = cast("type[OutboundClaim]", apps.get_model("core", "OutboundClaim"))
+                deleted = claim_model.objects.filter(
+                    kind=claim_model.Kind.SLACK_MESSAGE,
+                    verified_at__isnull=False,
+                    extra__channel=channel,
+                    extra__ts=ts,
+                    extra__action="mcp_slack_delete",
+                ).exists()
+                if not deleted:
+                    msg = "message not found in channel history; supply thread_ts for a reply"
+                    raise ValueError(msg)
             return {"ok": True, "already_deleted": True}
-        self._message_for_mutation(channel, ts, expected_text, thread_ts)
+        self._message_for_mutation(current, ts, expected_text)
         object_path = f"{channel}/{thread_ts}/{ts}" if thread_ts else f"{channel}/{ts}"
         target = exact_approval.write_target("slack", object_path, expected_text)
         if dry_run:
@@ -265,7 +311,12 @@ class OnBehalfSlackEgress:
             }
         mutation = SlackMutation(channel, ts, expected_text, "mcp_slack_delete", EgressKind.DELETE, target, thread_ts)
         response = self._mutate(mutation, lambda _routed: self._messaging.delete_routed(channel=channel, ts=ts))
-        if response.get("ok") and self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts):
+        read_back = (
+            self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts)
+            if response.get("ok")
+            else {}
+        )
+        if read_back and read_back.get("subtype") != "tombstone":
             msg = "Slack accepted the delete but a live read still found the message"
             raise RuntimeError(msg)
         if response.get("ok"):
@@ -430,7 +481,7 @@ class OnBehalfSlackEgress:
                     target=target,
                     action=action,
                     destination=destination or channel,
-                    artifact_url=channel,
+                    artifact_url=f"{channel}/{response.get('ts') or uuid4().hex}",
                     summary=summary or text[:120],
                 )
             return observe_egress(target, action, EgressKind.POST, response, destination=egress_location)

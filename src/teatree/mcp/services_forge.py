@@ -26,6 +26,7 @@ its ``Service`` is declared, so an undeclared forge exposes no write tool
 
 from itertools import starmap
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
@@ -33,13 +34,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import CodeHostBackend, PrMessage, rollup_query_failed
+from teatree.core.backend_protocols import CodeHostBackend, PrMessage, PrOpenState, rollup_query_failed
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.core.send_proxy import route_forge_write
 from teatree.hooks.ai_signature_scan import scan_text, summary
 from teatree.mcp import services_gitlab_ci
 from teatree.mcp.service_resolver import FORGE_CLIENTS
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -151,16 +153,23 @@ def _register(server: MCPServer, service: Service, prefix: str) -> None:
 
 def _register_pr_update(server: MCPServer, service: Service, prefix: str) -> None:
     async def pr_update(repo: str, pr_iid: int, expected: PrMessage, message: PrMessage) -> dict[str, Any]:
+        """Update the authenticated author's open PR after a live compare and forge write gates."""
+
         def _update() -> dict[str, Any]:
             client = _forge_client(service)
-            host = "github.com" if service is Service.GITHUB else "gitlab.com"
+            origin = "https://github.com" if service is Service.GITHUB else "https://gitlab.com"
+            if service is Service.GITLAB:
+                owner = get_all_overlays().get(owning_overlay_for_repo(repo, forge=prefix))
+                if owner is not None:
+                    configured = urlsplit(owner.config.gitlab_url)
+                    origin = f"{configured.scheme}://{configured.netloc}{configured.path.removesuffix('/api/v4').rstrip('/')}"
             marker = "pull" if service is Service.GITHUB else "-/merge_requests"
-            pr_url = f"https://{host}/{repo}/{marker}/{pr_iid}"
+            pr_url = f"{origin}/{repo}/{marker}/{pr_iid}"
             actor, author = client.current_user(), client.get_pr_author(pr_url=pr_url)
             if not actor or actor.casefold() != author.casefold():
                 msg = "Only an authenticated author's own PR can be updated"
                 raise ToolError(msg)
-            if client.fetch_pr_merge_state(slug=repo, pr_id=pr_iid).state.upper() != "OPEN":
+            if client.get_pr_open_state(pr_url=pr_url) is not PrOpenState.OPEN:
                 msg = "Only an open PR can be updated; a merged or closed PR's message is history"
                 raise ToolError(msg)
             current = client.fetch_pr_message(slug=repo, pr_id=pr_iid)
@@ -181,7 +190,10 @@ def _register_pr_update(server: MCPServer, service: Service, prefix: str) -> Non
             verified = client.update_pr_message(slug=repo, pr_id=pr_iid, message=routed)
             return {"updated": True, "title": verified.title, "body": verified.body}
 
-        return await _run_hygiene_write(_update)
+        try:
+            return await _run_hygiene_write(_update)
+        except (RuntimeError, CommandFailedError) as exc:
+            raise ToolError(str(exc)) from exc
 
     server.add_tool(pr_update, name=f"{prefix}_pr_update", annotations=_WRITE)
 

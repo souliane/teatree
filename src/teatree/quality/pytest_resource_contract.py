@@ -39,10 +39,12 @@ def whole_tree_refusal(
     this guards against; ``--tach`` deselects at collection time regardless of what
     positionals are given, so it is scoped independently of them.
     """
-    if sharded or tach_active or affected_lane:
+    if sharded or tach_active:
         return ""
     tests_root = (root / "tests").resolve()
     selected = [Path(arg) for arg in args if not arg.startswith("-")]
+    if affected_lane and not selected:
+        return ""
     whole_roots = {root.resolve(), tests_root}
     if not selected or any((path if path.is_absolute() else root / path).resolve() in whole_roots for path in selected):
         return (

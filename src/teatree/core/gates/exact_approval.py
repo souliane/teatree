@@ -35,6 +35,7 @@ def approval_hint(target: str, action: str) -> dict[str, str]:
 
 @contextlib.contextmanager
 def spent_approval(target: str, action: str) -> Iterator[None]:
+    """Keep the claim and audit outside the outbound request's potentially long transaction."""
     approval = _claim(target, action)
     try:
         yield
