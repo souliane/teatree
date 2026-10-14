@@ -1,5 +1,7 @@
 """Tests for teatree.agents.phase_blocks — the per-phase trailing context blocks."""
 
+import json
+from typing import cast
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -10,6 +12,8 @@ from teatree.agents.phase_blocks import (
     intake_survey_json,
     phase_specific_lines,
 )
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, JSONSchema
+from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_envelope_recorder import _RUBRIC_GRADED_PHASES
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
@@ -99,6 +103,30 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
 
 class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
+    def _brief_and_block(self) -> tuple[str, dict[str, object]]:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+        line = next(line for line in brief.splitlines() if line.startswith("Return `anti_vacuity`: "))
+        return brief, json.loads(line.removeprefix("Return `anti_vacuity`: "))
+
+    def test_the_shown_block_has_exactly_the_schema_keys(self) -> None:
+        brief, block = self._brief_and_block()
+        schema_properties = cast("JSONSchema", RESULT_JSON_SCHEMA["properties"])
+        block_schema = cast("JSONSchema", schema_properties["anti_vacuity"])
+        properties = cast("JSONSchema", block_schema["properties"])
+
+        assert set(block) == set(properties)
+        assert "proven_tests" in brief
+        assert "no_new_tests" in brief
+        assert "other keys are dropped" in brief
+        assert "revert-fix -> RED" not in brief
+        assert "a `hold` owes none" in brief
+
+    def test_the_shown_block_passes_the_recorder(self) -> None:
+        _brief, block = self._brief_and_block()
+
+        assert anti_vacuity_refusal(block) == ""
+        assert anti_vacuity_refusal({**block, "proven_tests": [{"test": "x"}]})
+
     def test_a_hold_is_told_it_owes_no_anti_vacuity(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
 

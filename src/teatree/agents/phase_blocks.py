@@ -342,9 +342,14 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
             "and analysis; the phase cannot complete without it."
         ),
         (
-            "Return `anti_vacuity` with AC coverage and each revert-fix -> RED test "
-            "(or an honest no_new_tests claim); a merge_safe maker review of shippable work cannot complete "
-            "without it, while a `hold` owes none."
+            'Return `anti_vacuity`: {"ac_coverage":"AC covered",'
+            '"proven_tests":["tests/test_example.py::test_case"],"no_new_tests":false}'
+        ),
+        (
+            "`proven_tests` lists test ID strings observed failing on the pre-fix code; "
+            "`no_new_tests` is true with an empty list only when the diff adds no regression test. "
+            "other keys are dropped before recording; a merge_safe maker review of shippable work "
+            "cannot complete without it, while a `hold` owes none."
         ),
         (
             "For a multi-repo ticket, inspect the combined changeset and return "
