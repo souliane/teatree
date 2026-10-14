@@ -160,3 +160,19 @@ class TestCurlOptionGrammar:
         assert [row for row in json.loads(generator.generate())["options"] if row[0] == "form"] == [
             ["form", expected, "F"]
         ]
+
+    @pytest.mark.parametrize("name", ["anyauth", "ftp-pasv"])
+    def test_no_value_kind_disagreement_stays_a_switch(self, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        sources = {
+            "curl-8_5_0": f'aliases[] = {{\n{{"a", "{name}", ARG_BOOL}},\n{{":", "next", ARG_NONE}},\n}};'.encode(),
+            "curl-8_18_0": (
+                f"aliases[] = {{\n{{\"{name}\", ARG_NONE, ' ', C_OPT}},\n{{\"next\", ARG_NONE, ':', C_NEXT}},\n}};"
+            ).encode(),
+        }
+        monkeypatch.setattr(
+            generator, "SOURCES", {tag: hashlib.sha256(source).hexdigest() for tag, source in sources.items()}
+        )
+        monkeypatch.setattr(
+            generator.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(sources[url.split("/")[-3]])
+        )
+        assert [row[1] for row in json.loads(generator.generate())["options"] if row[0] == name] == ["switch"]

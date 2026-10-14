@@ -62,7 +62,7 @@ def generate() -> str:
     for name in names:
         definitions = [version[name] for version in versions if name in version]
         kinds = {kind for kind, _ in definitions}
-        kind = kinds.pop() if len(kinds) == 1 else "unknown"
+        kind = kinds.pop() if len(kinds) == 1 else "switch" if kinds <= {"boolean", "switch"} else "unknown"
         letters = {letter for _, letter in definitions if letter}
         options.append((name, kind, letters.pop() if len(letters) == 1 else ""))
     lines = ["{", f'  "sources": {json.dumps(sources, sort_keys=True)},', '  "options": [']

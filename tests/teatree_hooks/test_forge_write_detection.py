@@ -516,6 +516,14 @@ class TestCurlOptionBoundaries:
         assert handle_banned_terms_pretool(_bash(command)) is False
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize("option", ["--anyauth -u a:b", "--ftp-pasv"])
+    @pytest.mark.usefixtures("public_gate")
+    def test_no_value_options_keep_a_forge_read_clean(self, option: str, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f"curl {option} https://api.github.com/user"
+        assert is_publish_command(command) is False
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
     def test_unknown_option_reason_is_one_quote_scanner_finding(self) -> None:
         payload = _payload(f"curl --frobnicate -d 'body=routine' {_GH_COMMENTS}") or ""
         assert [finding.name for finding in quote_scanner.scan_text(payload).findings] == [
