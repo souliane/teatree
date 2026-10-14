@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -63,6 +64,102 @@ def test_a_source_socket_outside_the_live_dir_is_refused(tmp_path: Path) -> None
 
     with pytest.raises(FederationRefusedError, match="outside the live directory"):
         asyncio.run(verified_sender(request, own_socket=tmp_path / "live" / "w-own.sock", connected_pid=0))
+
+
+def test_a_broker_cannot_claim_its_own_socket_as_another_worker(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        sender = broker.register(room="first", harness="claude_sdk", label="sender")
+        request = {
+            "action": "peers",
+            "source_socket": str(broker.socket_path),
+            "source_address": sender.address,
+            "to": "",
+            "text": "",
+            "key": "",
+        }
+        request["proof"] = proof(broker._relay.secret, request)
+
+        with pytest.raises(FederationRefusedError, match="outside the live directory"):
+            asyncio.run(verified_sender(request, own_socket=broker.socket_path, connected_pid=os.getpid()))
+
+
+def test_relay_action_must_match_the_proved_method(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as source,
+        LiveMailboxBroker(runtime_dir=tmp_path) as recipient,
+    ):
+        sender = source.register(room="first", harness="claude_sdk", label="sender")
+        request = {
+            "method": "relay.peers",
+            "action": "send",
+            "source_socket": str(source.socket_path),
+            "source_address": sender.address,
+            "to": "",
+            "text": "",
+            "key": "",
+        }
+        request["proof"] = proof(source._relay.secret, request)
+
+        with pytest.raises(FederationRefusedError, match="action does not match"):
+            asyncio.run(call(recipient.socket_path, request, wait=1))
+
+
+def test_a_source_broker_rejects_a_proof_for_another_socket(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as source,
+        LiveMailboxBroker(runtime_dir=tmp_path) as other,
+    ):
+        sender = source.register(room="first", harness="claude_sdk", label="sender")
+        request = {
+            "method": "relay.verify",
+            "action": "peers",
+            "source_socket": str(other.socket_path),
+            "source_address": sender.address,
+            "to": "",
+            "text": "",
+            "key": "",
+        }
+        request["proof"] = proof(source._relay.secret, request)
+
+        with pytest.raises(FederationRefusedError, match="source could not be verified"):
+            asyncio.run(call(source.socket_path, request, wait=1))
+
+
+def test_a_verified_source_cannot_substitute_another_sender_address(tmp_path: Path) -> None:
+    request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
+    identity = {"pid": 7, "sender": {"address": "other", "ticket": "first", "harness": "claude_sdk", "label": "peer"}}
+
+    with (
+        patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),
+        pytest.raises(FederationRefusedError, match="sender is not active"),
+    ):
+        asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
+
+
+def test_a_relay_key_cannot_be_reused_for_different_text(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as source,
+        LiveMailboxBroker(runtime_dir=tmp_path) as recipient,
+    ):
+        sender = source.register(room="first", harness="claude_sdk", label="sender")
+        target = recipient.register(room="second", harness="claude_sdk", label="target")
+        request = {
+            "method": "relay.send",
+            "action": "send",
+            "source_socket": str(source.socket_path),
+            "source_address": sender.address,
+            "to": target.address,
+            "text": "first",
+            "key": "same",
+            "timeout_seconds": 0.01,
+        }
+        request["proof"] = proof(source._relay.secret, request)
+        asyncio.run(call(recipient.socket_path, request, wait=1))
+        request["text"] = "changed"
+        request["proof"] = proof(source._relay.secret, request)
+
+        with pytest.raises(FederationRefusedError, match="already used"):
+            asyncio.run(call(recipient.socket_path, request, wait=1))
 
 
 def test_discovery_removes_stale_sockets_before_enforcing_the_worker_limit(tmp_path: Path) -> None:

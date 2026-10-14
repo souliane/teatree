@@ -291,6 +291,16 @@ def test_a_send_nobody_accepts_in_time_is_rejected_and_stays_queued(broker: Live
     assert [row["id"] for row in inbox["messages"]] == [receipt["id"]]
 
 
+def test_send_wait_cannot_exceed_twenty_seconds(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="first", harness="claude_sdk", label="sender")
+    recipient = broker.register(room="second", harness="pydantic_ai", label="recipient")
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    with pytest.raises(ToolError, match="acceptance timeout"):
+        invoke(client, "send", to=recipient.address, text="review", key="long", timeout_seconds=21)
+    assert invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")["messages"] == []
+
+
 def test_a_timed_out_send_retried_with_its_key_is_accepted_without_a_second_message(
     broker: LiveMailboxBroker,
 ) -> None:
@@ -380,6 +390,23 @@ def test_an_acknowledgement_outside_the_readers_own_inbox_accepts_nothing(broker
     assert (receipt["outcome"], receipt["code"]) == ("rejected", "not_accepted_in_time")
 
 
+def test_acknowledgement_rejects_more_than_one_page_of_ids(broker: LiveMailboxBroker) -> None:
+    reader = broker.register(room="first", harness="claude_sdk", label="reader")
+    client = MailboxClient(reader.socket_path, reader.token)
+
+    with pytest.raises(ToolError, match="up to 100 positive"):
+        asyncio.run(client._request("ack", ids=list(range(1, 102))))
+
+
+def test_revoked_reader_cannot_acknowledge_mail(broker: LiveMailboxBroker) -> None:
+    reader = broker.register(room="first", harness="claude_sdk", label="reader")
+    participant = broker._by_token[reader.token]
+    broker.unregister(reader.address)
+
+    with pytest.raises(ValueError, match="Invalid mailbox identity"):
+        broker._ack(participant, {"ids": [1]})
+
+
 def _credentials(identity: MailboxIdentity) -> tuple[Path, str]:
     return identity.socket_path, identity.token
 
@@ -416,6 +443,26 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
     assert [
         row["text"] for row in invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")["messages"]
     ] == ["the schema moved"]
+
+
+def test_a_push_finishing_just_after_the_wait_returns_its_real_outcome(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    class LateSession:
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            await asyncio.sleep(0.08)
+
+        async def interrupt(self) -> None:
+            return None
+
+    sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    client = MailboxClient(sender.socket_path, sender.token)
+
+    with OwnerLoop(registry, _TASK, LateSession()):
+        receipt = invoke(client, "send", to=recipient.address, text="review", key="late", timeout_seconds=0.02)
+
+    assert (receipt["outcome"], receipt["code"]) == ("accepted_current_turn", None)
 
 
 def test_push_refusals_return_their_codes_without_waiting_for_the_inbox(
@@ -583,6 +630,31 @@ def test_a_cross_worker_send_retried_after_its_timeout_is_accepted_without_a_sec
     assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
 
 
+def test_remote_timeout_is_replaced_by_the_final_receipt_for_later_retries(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+    ):
+        sender = first_broker.register(room="first", harness="claude_sdk", label="sender")
+        recipient = second_broker.register(room="second", harness="claude_sdk", label="recipient")
+        sender_client = MailboxClient(sender.socket_path, sender.token)
+        reader = MailboxClient(recipient.socket_path, recipient.token)
+
+        async def exchange() -> tuple[SendReceipt, SendReceipt]:
+            first = await sender_client.send(recipient.address, "review", "same", timeout_seconds=0.01)
+            retry = asyncio.create_task(sender_client.send(recipient.address, "review", "same", timeout_seconds=1))
+            await reader.inbox()
+            return first, await retry
+
+        first, settled = asyncio.run(exchange())
+        second_broker.unregister(recipient.address)
+        final = invoke(sender_client, "send", to=recipient.address, text="review", key="same")
+
+    assert first["code"] == "not_accepted_in_time"
+    assert settled["outcome"] == "accepted_inbox_read"
+    assert final == settled
+
+
 def test_local_and_cross_worker_sends_share_one_key_budget_per_task(tmp_path: Path) -> None:
     with (
         LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
@@ -597,6 +669,38 @@ def test_local_and_cross_worker_sends_share_one_key_budget_per_task(tmp_path: Pa
         invoke(client, "send", to=remote.address, text="review", key="remote", timeout_seconds=0.05)
         with pytest.raises(ToolError, match="send limit reached"):
             invoke(client, "send", to=local.address, text="review", key="local", timeout_seconds=0.05)
+
+
+def test_local_send_uses_the_shared_key_budget_before_a_remote_send(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+        patch("teatree.agents.live_delivery.MAX_SENT_KEYS", 1),
+    ):
+        sender = first_broker.register(room="first", harness="claude_sdk", label="sender")
+        local = first_broker.register(room="first", harness="claude_sdk", label="local")
+        remote = second_broker.register(room="second", harness="claude_sdk", label="remote")
+        client = MailboxClient(sender.socket_path, sender.token)
+
+        invoke(client, "send", to=local.address, text="first", key="local", timeout_seconds=0.01)
+        with pytest.raises(ToolError, match="send limit reached"):
+            invoke(client, "send", to=remote.address, text="second", key="remote", timeout_seconds=0.01)
+
+
+def test_relay_refuses_a_new_key_when_its_budget_is_full(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as first_broker,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second_broker,
+        patch("teatree.agents.live_federation.MAX_RELAYED_KEYS", 1),
+    ):
+        sender = first_broker.register(room="first", harness="claude_sdk", label="sender")
+        first = second_broker.register(room="second", harness="claude_sdk", label="first")
+        second = second_broker.register(room="third", harness="claude_sdk", label="second")
+        client = MailboxClient(sender.socket_path, sender.token)
+
+        invoke(client, "send", to=first.address, text="first", key="first", timeout_seconds=0.01)
+        with pytest.raises(ToolError, match="Peer relay is full"):
+            invoke(client, "send", to=second.address, text="second", key="second", timeout_seconds=0.01)
 
 
 def test_a_recipient_leaving_frees_its_relay_records_for_later_senders(tmp_path: Path) -> None:
