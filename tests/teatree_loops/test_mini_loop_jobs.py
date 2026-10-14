@@ -248,10 +248,10 @@ class TestInboxLoopBuildJobs:
         catch_ups = [job for job in jobs if isinstance(job.scanner, SlackCatchUpJob)]
         assert sorted((job.overlay, job.scanner.overlay) for job in catch_ups) == [("a", "a"), ("b", "b")]
 
-    def test_single_slack_messaging_gets_one_catchup_job(self) -> None:
+    def test_unnamed_single_slack_messaging_has_no_unstamped_catchup_job(self) -> None:
         jobs = INBOX_LOOP.build_jobs(messaging=SlackBotBackend(bot_token="xoxb-single", user_id="U"))
 
-        assert [job.scanner.overlay for job in jobs if isinstance(job.scanner, SlackCatchUpJob)] == [""]
+        assert [job.scanner.overlay for job in jobs if isinstance(job.scanner, SlackCatchUpJob)] == []
 
 
 class TestFollowupLoopBuildJobs:

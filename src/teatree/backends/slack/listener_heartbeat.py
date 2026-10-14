@@ -31,7 +31,7 @@ RETRY_BACKOFF_SECONDS = (5.0, 15.0, 45.0, 120.0)
 
 _write_lock = threading.Lock()
 
-#: Called with ``(overlay_name, alive_at)`` while a hello's catch-up is owed; raising retries it.
+#: Called with ``(overlay_name, alive_at, seen)`` while a hello's catch-up is owed; raising retries it.
 type OnConnect = Callable[[str, float, DeliveredEvents], None]
 
 
@@ -46,6 +46,7 @@ class ListenerBeat:
     updated_at: float
     interval_seconds: int
     stamps: Mapping[str, float] | None = None
+    legacy_updated_at: float | None = None
 
     @property
     def stale_after(self) -> int:
@@ -54,7 +55,7 @@ class ListenerBeat:
     def stamp_for(self, overlay: str) -> float | None:
         if self.stamps is None:
             return self.updated_at
-        return self.stamps.get(overlay)
+        return self.stamps.get(overlay, self.legacy_updated_at)
 
 
 def read_heartbeat(path: Path | None = None) -> ListenerBeat | None:
@@ -68,6 +69,7 @@ def read_heartbeat(path: Path | None = None) -> ListenerBeat | None:
             updated_at=float(raw["updated_at"]),
             interval_seconds=int(raw.get("interval_seconds", 0)),
             stamps=stamps,
+            legacy_updated_at=float(raw["legacy_updated_at"]) if "legacy_updated_at" in raw else None,
         )
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
@@ -86,6 +88,10 @@ def write_heartbeat(overlay: str, path: Path | None = None) -> float:
             "interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
             "overlays": stamps,
         }
+        if current is not None:
+            legacy_at = current.legacy_updated_at or (current.updated_at if current.stamps is None else None)
+            if legacy_at is not None:
+                payload["legacy_updated_at"] = legacy_at
         scratch = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,8 +136,6 @@ class ConnectionLiveness:
     def greet(self, session_id: str | None) -> None:
         with self._lock:
             candidate = self.last_stamped_at if self._greeted else self.seed
-            if candidate is None and self.on_connect is not None:
-                candidate = 0.0
             self._greeted = True
             self._greeted_during_pass = True
             self.greeted_session = session_id

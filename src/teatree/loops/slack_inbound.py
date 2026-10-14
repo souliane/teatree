@@ -69,10 +69,11 @@ def catch_up_on_connect(overlay: str, alive_at: float, seen: DeliveredEvents | N
         overlay,
         alive_at=max(alive_at, state.caught_up_at) if state.caught_up_at is not None else alive_at,
         seen=seen,
-        record=record_slack_dm,
+        record_dm=record_slack_dm,
         wake=wake_slack_answer.enqueue,
     ):
-        pass
+        CatchUpState.save_memo(overlay, seen.as_mapping())
+    seen.on_delivery(lambda values: CatchUpState.save_memo(overlay, values))
 
 
 def slack_catch_up_job(overlay: str) -> SlackCatchUpJob:

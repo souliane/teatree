@@ -26,6 +26,7 @@ type Getter = Callable[[str, dict[str, str | int]], RawAPIDict]
 class PageLimit:
     cap: int
     subject: str
+    items_key: str = "messages"
 
 
 # 40 pages * 200 replies bounds a runaway walk at ~8000 replies; a hit is logged,
@@ -36,10 +37,10 @@ _MAX_THREAD_PAGES = 40
 _BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
-def _messages(data: RawAPIDict) -> list[RawAPIDict]:
+def _messages(data: RawAPIDict, key: str = "messages") -> list[RawAPIDict]:
     if not data.get("ok"):
         return []
-    messages = data.get("messages")
+    messages = data.get(key)
     return [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
 
 
@@ -69,7 +70,7 @@ def walk_pages(
         data = get(method, page)
         if not data.get("ok"):
             raise SlackReadRefusedError(method, limit.subject, str(data.get("error") or "unknown_error"))
-        collected.extend(_messages(data))
+        collected.extend(_messages(data, limit.items_key))
         cursor = next_cursor(data)
         if cursor is None:
             return collected

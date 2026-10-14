@@ -64,6 +64,7 @@ _TAP_PAYLOAD_TYPE = "block_actions"
 @dataclass(slots=True)
 class DeliveredEvents:
     events: dict[str, float] = field(default_factory=dict)
+    _on_delivery: Callable[[dict[str, float]], None] | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     @staticmethod
@@ -95,7 +96,15 @@ class DeliveredEvents:
             delivered = deliver()
             if delivered:
                 self.events[key] = stamp
+                if self._on_delivery is not None:
+                    floor = time.time() - 9 * 86400
+                    self.events = {item: at for item, at in self.events.items() if at >= floor}
+                    self._on_delivery(dict(self.events))
             return delivered
+
+    def on_delivery(self, callback: Callable[[dict[str, float]], None]) -> None:
+        with self._lock:
+            self._on_delivery = callback
 
     def prune(self, *, before: float) -> None:
         with self._lock:

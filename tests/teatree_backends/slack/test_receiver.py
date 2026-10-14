@@ -1,6 +1,7 @@
 """Live and replayed events share one per-overlay queue memo."""
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -60,3 +61,40 @@ def test_reaction_identity_includes_channel_timestamp_reaction_and_user() -> Non
 
     assert seen.as_mapping() == {}
     assert DeliveredEvents.from_mapping({"message:D1:4.0": 4.0}).as_mapping() == {"message:D1:4.0": 4.0}
+
+
+def test_concurrent_delivery_claims_one_event() -> None:
+    seen = DeliveredEvents()
+    event = {"type": "message", "channel": "D1", "ts": "1.0"}
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    results: list[bool] = []
+
+    def deliver() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_entered.set()
+            return release.wait(timeout=2)
+        second_entered.set()
+        return True
+
+    def claim() -> None:
+        results.append(seen.deliver_once(event, deliver))
+
+    first = threading.Thread(target=claim)
+    second = threading.Thread(target=claim)
+    first.start()
+    assert first_entered.wait(timeout=2)
+    second.start()
+    second_entered.wait(timeout=0.2)
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert calls == 1
+    assert sorted(results) == [False, True]

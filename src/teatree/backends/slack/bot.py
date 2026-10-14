@@ -173,10 +173,6 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def user_token(self) -> str:
         return self._user_token
 
-    @property
-    def owner_dm_only(self) -> bool:
-        return self._owner_dm_only
-
     def resolve_channel_token(self, channel: str) -> str:
         """The token an outbound post to *channel* would use (#1084).
 

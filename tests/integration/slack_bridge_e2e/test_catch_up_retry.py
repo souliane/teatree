@@ -64,7 +64,7 @@ def _refuse_first(handler: Handler, on_call: Callable[[], None]) -> Handler:
         nonlocal calls
         calls += 1
         on_call()
-        return {"ok": False, "error": "ratelimited"} if calls == 1 else handler(params, headers)
+        return {"ok": False, "error": "access_denied"} if calls == 1 else handler(params, headers)
 
     return respond
 

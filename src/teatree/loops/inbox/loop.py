@@ -57,8 +57,6 @@ def _build_jobs(
         jobs.append(_ScannerJob(scanner=gitlab_events, overlay=""))
     if not backends and messaging is not None:
         jobs.extend(single_overlay_messaging_jobs(messaging))
-        if isinstance(messaging, SlackBotBackend):
-            jobs.append(_ScannerJob(scanner=slack_catch_up_job(""), overlay=""))
     return jobs
 
 

@@ -5,9 +5,13 @@ observed on the ``conversations.history`` call it makes.
 """
 
 import json
+import os
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TextIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -116,6 +120,76 @@ def test_completed_slices_are_saved_before_the_job_budget_stops(transport: FakeS
     assert _window_oldests(transport)[1] > _window_oldests(transport)[0] + _DAY - 120
 
 
+def test_finished_slice_survives_a_later_refused_slice(transport: FakeSlackTransport, heartbeat: Path) -> None:
+    _ = heartbeat
+    reads = 0
+
+    def history(_params: dict, _headers: dict) -> dict:
+        nonlocal reads
+        reads += 1
+        return {"ok": True, "messages": []} if reads == 1 else {"ok": False, "error": "access_denied"}
+
+    transport.handlers["conversations.history"] = history
+    with pytest.raises(SlackReadRefusedError):
+        _job("demo").scan()
+
+    assert reads == 2
+    assert CatchUpState.load("demo").caught_up_at == pytest.approx(time.time() - 6 * _DAY, abs=120)
+
+
+def test_state_save_flushes_and_replaces_atomically(heartbeat: Path) -> None:
+    _ = heartbeat
+    state = CatchUpState(caught_up_at=1000.0)
+    with patch("teatree.loops.slack_catchup_job.os.fsync", wraps=os.fsync) as sync:
+        state.save("demo")
+    sync.assert_called_once()
+
+    path = CatchUpState.path("demo")
+    before = path.read_text(encoding="utf-8")
+
+    def partial_dump(_data: dict, stream: TextIO) -> None:
+        stream.write("{")
+        message = "interrupted"
+        raise RuntimeError(message)
+
+    with (
+        patch("teatree.loops.slack_catchup_job.json.dump", side_effect=partial_dump),
+        pytest.raises(RuntimeError, match="interrupted"),
+    ):
+        CatchUpState(caught_up_at=2000.0).save("demo")
+
+    assert path.read_text(encoding="utf-8") == before
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_state_save_reports_an_unwritable_destination(heartbeat: Path, tmp_path: Path) -> None:
+    _ = heartbeat
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file", encoding="utf-8")
+    with (
+        patch.object(CatchUpState, "path", return_value=blocker / "state.json"),
+        pytest.raises(FileExistsError, match="File exists"),
+    ):
+        CatchUpState(caught_up_at=1000.0).save("demo")
+
+
+def test_checkpoint_loads_in_a_second_interpreter(heartbeat: Path, tmp_path: Path) -> None:
+    _ = heartbeat
+    state = CatchUpState(caught_up_at=1000.0)
+    state.seen.update({"message:D:1.0": 1.0})
+    state.save("demo")
+    code = (
+        "from pathlib import Path; import os, sys; "
+        "os.environ['DJANGO_SETTINGS_MODULE'] = 'tests.django_settings'; import django; django.setup(); "
+        "import teatree.paths as paths; paths.DATA_DIR = Path(sys.argv[1]); "
+        "from teatree.loops.slack_catchup_job import CatchUpState; "
+        "s = CatchUpState.load('demo'); print(s.caught_up_at, s.seen.as_mapping()['message:D:1.0'])"
+    )
+    result = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1000.0 1.0"
+
+
 def test_unreadable_state_is_warned_and_restarts_from_empty(heartbeat: Path, caplog: pytest.LogCaptureFixture) -> None:
     _ = heartbeat
     state_file = CatchUpState.path("demo")
@@ -158,9 +232,12 @@ def test_a_dm_in_the_window_reaches_the_recorder(transport: FakeSlackTransport, 
     assert [(e["ts"], e["channel"], e["channel_type"]) for e in recorded] == [(ts, "D-USER", "im")]
 
 
-def test_an_overlay_without_a_slack_backend_is_skipped(transport: FakeSlackTransport, heartbeat: Path) -> None:
+def test_an_overlay_without_a_slack_backend_refuses_catch_up(transport: FakeSlackTransport, heartbeat: Path) -> None:
     _ = heartbeat
-    with patch("teatree.loops.slack_catchup_job.messaging_from_overlay", return_value=None):
-        assert _job("demo").scan() == []
+    with (
+        patch("teatree.loops.slack_catchup_job.messaging_from_overlay", return_value=None),
+        pytest.raises(RuntimeError, match="Slack backend"),
+    ):
+        _job("demo").scan()
 
     assert transport.calls == []

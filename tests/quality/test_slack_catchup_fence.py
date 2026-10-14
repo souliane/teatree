@@ -25,6 +25,12 @@ _PACKAGE = "teatree.slack_catchup"
 _ONLY_IMPORTER = _SRC / "loops" / "slack_catchup_job.py"
 
 
+def test_loop_topology_has_no_deleted_dm_poller_row() -> None:
+    topology = (_REPO_ROOT / "docs" / "blueprint" / "loop-topology.md").read_text(encoding="utf-8")
+    assert "SlackDmInboundScanner" not in topology
+    assert "| `slack_catchup` |" in topology
+
+
 def _src_files() -> Iterator[Path]:
     package_dir = _SRC / "slack_catchup"
     for path in sorted(_SRC.rglob("*.py")):

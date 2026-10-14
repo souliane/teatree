@@ -37,6 +37,17 @@ def test_a_legacy_payload_applies_to_every_overlay(tmp_path: Path) -> None:
     assert heartbeat_is_stale(beat, "any", now=1000 + 121) is True
 
 
+def test_stamping_one_overlay_preserves_the_legacy_stamp_for_other_overlays(tmp_path: Path) -> None:
+    path = tmp_path / "beat.json"
+    path.write_text(json.dumps({"updated_at": 1000, "interval_seconds": 15}), encoding="utf-8")
+
+    write_heartbeat("a", path)
+
+    beat = read_heartbeat(path)
+    assert beat is not None
+    assert beat.stamp_for("b") == 1000
+
+
 def test_absent_file_or_missing_stamp_is_stale(tmp_path: Path) -> None:
     path = tmp_path / "beat.json"
     assert read_heartbeat(path) is None

@@ -95,6 +95,7 @@ def _running(tmp_path: Path, socket: FakeSocket, liveness: ConnectionLiveness) -
         )
         thread.start()
         try:
+            assert _wait_for(lambda: bool(socket.message_listeners))
             yield
         finally:
             stop.set()
@@ -112,7 +113,7 @@ def test_no_stamp_before_the_current_session_greets(tmp_path: Path) -> None:
         assert _wait_for(lambda: _stamp(beat) is not None)
 
 
-def test_no_prior_heartbeat_owes_the_full_catch_up_window(tmp_path: Path) -> None:
+def test_no_prior_heartbeat_allows_the_first_stamp_without_catch_up(tmp_path: Path) -> None:
     beat = tmp_path / "beat.json"
     socket = FakeSocket()
     on_connect = MagicMock()
@@ -121,8 +122,7 @@ def test_no_prior_heartbeat_owes_the_full_catch_up_window(tmp_path: Path) -> Non
         socket.hello()
         assert _wait_for(lambda: _stamp(beat) is not None)
 
-    assert on_connect.call_args.args[:2] == ("ov", 0.0)
-    assert isinstance(on_connect.call_args.args[2], DeliveredEvents)
+    on_connect.assert_not_called()
 
 
 def test_a_hello_message_reaches_greet(tmp_path: Path) -> None:
@@ -136,6 +136,21 @@ def test_a_hello_message_reaches_greet(tmp_path: Path) -> None:
 
     assert on_connect.call_args.args[:2] == ("ov", 1000.0)
     assert isinstance(on_connect.call_args.args[2], DeliveredEvents)
+
+
+def test_hello_receives_the_live_delivery_memo(tmp_path: Path) -> None:
+    beat = tmp_path / "beat.json"
+    socket = FakeSocket()
+    on_connect = MagicMock()
+    event = {"type": "message", "channel": "D1", "channel_type": "im", "ts": "1001.0", "user": "U1"}
+
+    with _running(tmp_path, socket, ConnectionLiveness(seed=1000.0, on_connect=on_connect, heartbeat_path=beat)):
+        request = MagicMock(type="events_api", payload={"event": event}, envelope_id="e1")
+        socket.socket_mode_request_listeners[0](socket, request)
+        socket.hello()
+        assert _wait_for(lambda: on_connect.call_count == 1)
+
+    assert on_connect.call_args.args[2].as_mapping() == {"message:D1:1001.0": 1001.0}
 
 
 def test_a_routine_refresh_stops_stamping_until_the_new_hello(tmp_path: Path) -> None:

@@ -6,17 +6,22 @@ callback records through the shared recorder first, so the woken cycle has a row
 hello hook and the inbox job bind the catch-up to the same recorder and wake.
 """
 
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 import django.test
+import pytest
 from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
+from teatree.backends.slack.receiver import DeliveredEvents
 from teatree.core.models import PendingChatInjection
 from teatree.loops import slack_inbound, timer_reconciler
-from teatree.loops.slack_catchup_job import SlackCatchUpJob
+from teatree.loops.slack_catchup_job import CatchUpState, SlackCatchUpJob
 from teatree.loops.slack_inbound import catch_up_on_connect, record_slack_dm, reset_dm_recorders, slack_catch_up_job
+from teatree.slack_catchup import CatchUpSlice
 from teatree.types import RawAPIDict
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
@@ -178,7 +183,7 @@ class TestCatchUpWiring:
             catch_up_on_connect("demo", 5.0)
 
         run.assert_called_once_with(
-            "demo", alive_at=5.0, seen=ANY, record=record_slack_dm, wake=timer_reconciler.wake_slack_answer.enqueue
+            "demo", alive_at=5.0, seen=ANY, record_dm=record_slack_dm, wake=timer_reconciler.wake_slack_answer.enqueue
         )
 
     def test_the_inbox_job_binds_the_recorder_and_the_wake(self) -> None:
@@ -187,3 +192,24 @@ class TestCatchUpWiring:
         assert job == SlackCatchUpJob(
             overlay="demo", record=record_slack_dm, wake=timer_reconciler.wake_slack_answer.enqueue
         )
+
+    def test_hello_preloads_and_persists_only_the_delivery_memo(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        with patch.object(CatchUpState, "path", return_value=path):
+            state = CatchUpState(caught_up_at=8.0)
+            state.seen.update({"message:D:1.0": 1.0})
+            state.save("demo")
+            seen = DeliveredEvents()
+            with (
+                patch.object(slack_inbound, "run_catch_up", return_value=iter([CatchUpSlice(9.0, 0.0, 1)])) as run,
+                patch.object(CatchUpState, "save", side_effect=AssertionError("hello must not advance the cursor")),
+            ):
+                catch_up_on_connect("demo", 5.0, seen)
+
+            assert run.call_args.kwargs["alive_at"] == pytest.approx(8.0)
+            assert run.call_args.kwargs["seen"] is seen
+            assert seen.as_mapping() == {"message:D:1.0": 1.0}
+            assert CatchUpState.load_memo("demo") == {"message:D:1.0": 1.0}
+            stamp = f"{time.time():.6f}"
+            seen.deliver_once({"type": "message", "channel": "D", "ts": stamp}, lambda: True)
+            assert CatchUpState.load_memo("demo") == {f"message:D:{stamp}": float(stamp)}
