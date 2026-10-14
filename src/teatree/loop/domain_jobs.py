@@ -64,7 +64,6 @@ from teatree.loop.scanners import (
     ReviewRequestResumeScanner,
     ReviewRequestSendScanner,
     ScanSignal,
-    SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
     StaleTicketsScanner,
@@ -374,7 +373,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Inbound Slack scanners (mentions/DM/review-intent/red-card), sans review-nag."""
+    """Inbound Slack scanners (mentions/review-intent/red-card), sans review-nag."""
     if backend.messaging is None:
         return []
     return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
@@ -463,10 +462,9 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
 
 
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
-    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag."""
+    """The inbound-messaging scanner jobs (mentions / ask-reply / review-intent / red-card), sans nag."""
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1174 applies each Slack reply to its live DeferredQuestion — the
         # scanner the two single-overlay builders had silently dropped (#23).
         _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),

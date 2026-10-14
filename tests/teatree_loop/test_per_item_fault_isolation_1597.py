@@ -15,7 +15,7 @@ Covered scanners:
 - SlackReviewIntentScanner (reaction loop + mention loop)
 - TaskSweepScanner
 - IssueIntakeScanner
-- SlackDmInboundScanner
+- SlackDmRecorder
 """
 
 from dataclasses import dataclass, field
@@ -26,7 +26,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
-from teatree.core.models import ImplementedIssueMarker
+from teatree.core.models import ImplementedIssueMarker, PendingChatInjection
+from teatree.core.models.pending_chat_injection import DmContext
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -36,7 +37,7 @@ from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
-from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
+from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
@@ -126,7 +127,6 @@ class _FakeMessaging:
     user_id: str = "U0DEMOUSER1"
     reactions: list[RawAPIDict] = field(default_factory=list)
     mentions: list[RawAPIDict] = field(default_factory=list)
-    dms: list[RawAPIDict] = field(default_factory=list)
     messages_by_ts: dict[tuple[str, str], RawAPIDict] = field(default_factory=dict)
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
     react_raises: BaseException | None = None
@@ -134,11 +134,6 @@ class _FakeMessaging:
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         events, self.mentions = self.mentions, []
-        return events
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        events, self.dms = self.dms, []
         return events
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
@@ -458,8 +453,10 @@ def _reaction_event(ts: str, channel: str = RC_CHANNEL) -> RawAPIDict:
     }
 
 
-def _dm_event(ts: str, text: str = "RED CARD") -> RawAPIDict:
-    return {"ts": ts, "text": text, "channel": DM_CHANNEL, "user": USER}
+def _record_dm(ts: str, text: str = "RED CARD") -> None:
+    PendingChatInjection.record(
+        channel=DM_CHANNEL, slack_ts=ts, text=text, overlay="acme", context=DmContext(user_id=USER)
+    )
 
 
 class TestRedCardReactionIsolation(TestCase):
@@ -497,11 +494,9 @@ class TestRedCardDmIsolation(TestCase):
     """Second DM event still produces a signal when the first raises."""
 
     def test_failing_first_dm_does_not_suppress_second_dm_signal(self) -> None:
-        backend = _FakeMessaging(
-            user_id=USER,
-            dms=[_dm_event("1779.001"), _dm_event("1779.002")],
-        )
-        scanner = RedCardScanner(backend=backend, overlay="acme")
+        _record_dm("1779.001")
+        _record_dm("1779.002")
+        scanner = RedCardScanner(backend=_FakeMessaging(user_id=USER), overlay="acme")
 
         call_count = [0]
         original_handle = RedCardScanner._handle_dm
@@ -751,30 +746,20 @@ class TestIssueImplementerIsolation(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# SlackDmInboundScanner
+# SlackDmRecorder
 # ---------------------------------------------------------------------------
 
 
-class TestSlackDmInboundIsolation(TestCase):
-    """Second DM still produces a signal when processing the first raises."""
+class TestSlackDmRecorderIsolation(TestCase):
+    """The second DM is still recorded when recording the first raises."""
 
-    def test_failing_first_dm_does_not_suppress_second_dm_signal(self) -> None:
+    def test_failing_first_dm_does_not_suppress_second_dm_row(self) -> None:
         dm_ts_a = "1779180560.000100"
         dm_ts_b = "1779180560.000200"
         dm_ch = "D0DIRECT"
-
-        backend = _FakeMessaging(
-            user_id=USER,
-            dms=[
-                {"ts": dm_ts_a, "text": "hello agent", "channel": dm_ch, "user": USER},
-                {"ts": dm_ts_b, "text": "another message", "channel": dm_ch, "user": USER},
-            ],
-        )
-        scanner = SlackDmInboundScanner(backend=backend, overlay="acme")
+        recorder = SlackDmRecorder(backend=_FakeMessaging(user_id=USER), overlay="acme")
 
         call_count = [0]
-        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
-
         original_record = PendingChatInjection.record
 
         def _raising_record(**kwargs: Any) -> Any:
@@ -787,15 +772,20 @@ class TestSlackDmInboundIsolation(TestCase):
         with (
             patch.object(PendingChatInjection, "record", _raising_record),
             patch(
-                "teatree.loop.scanners.slack_dm_inbound.resolve_own_identity",
+                "teatree.loop.scanners.slack_dm_recorder.resolve_own_identity",
                 return_value=None,
             ),
             patch(
-                "teatree.loop.scanners.slack_dm_inbound.filter_self_messages",
+                "teatree.loop.scanners.slack_dm_recorder.filter_self_messages",
                 side_effect=lambda events, identity: events,
             ),
         ):
-            signals = scanner.scan()
+            recorded = recorder.record_events(
+                [
+                    {"ts": dm_ts_a, "text": "hello agent", "channel": dm_ch, "user": USER},
+                    {"ts": dm_ts_b, "text": "another message", "channel": dm_ch, "user": USER},
+                ]
+            )
 
-        assert len(signals) == 1, "second DM must still produce its signal"
-        assert signals[0].payload["ts"] == dm_ts_b
+        assert recorded == 1, "second DM must still be recorded"
+        assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [dm_ts_b]

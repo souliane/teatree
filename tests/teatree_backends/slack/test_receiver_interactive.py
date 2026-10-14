@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.backends.slack.receiver import QueuePaths, _run_single_overlay
+from teatree.backends.slack.receiver import ListenerCallbacks, QueuePaths, _run_single_overlay
 
 _CLICK = {
     "type": "block_actions",
@@ -47,7 +47,7 @@ def _drive(
             overlay=("ov", "xapp", "xoxb"),
             queues=QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl"),
             stop_event=stop,
-            on_action=on_action,
+            callbacks=ListenerCallbacks(on_action=on_action),
         )
     return client
 

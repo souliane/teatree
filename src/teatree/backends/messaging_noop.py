@@ -26,11 +26,6 @@ class NoopMessagingBackend:
         return []
 
     @staticmethod
-    def fetch_dms(*, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
-    @staticmethod
     def fetch_reactions(*, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []

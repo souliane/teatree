@@ -29,10 +29,6 @@ class FakeMessaging:
         del since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        del since
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         del since
         return []

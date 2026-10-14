@@ -241,3 +241,23 @@ def test_public_mode_worker_is_rejected_before_connect(tmp_path: Path) -> None:
             assert not select.select([listener], [], [], 0)[0]
         finally:
             WorkerSocketOwner.retire(path)
+
+
+def test_cancelled_client_read_closes_server_transport(tmp_path: Path) -> None:
+    async def cancelled_read() -> bool:
+        server_socket, client_socket = socket.socketpair()
+        reader, writer = await asyncio.open_connection(sock=server_socket)
+        try:
+            broker = LiveMailboxBroker(runtime_dir=tmp_path)
+            task = asyncio.create_task(broker._handle(reader, writer))
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return writer.is_closing()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            client_socket.close()
+
+    assert asyncio.run(cancelled_read())

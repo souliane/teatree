@@ -23,7 +23,14 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL, read_file_arg
+from teatree.hooks._parser_primitives import (
+    FAIL_CLOSED_SENTINEL,
+    NAMED_FAIL_CLOSED_PREFIX,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    is_fail_closed_sentinel,
+    read_file_arg,
+    short_cluster_values,
+)
 from teatree.hooks._shell_lexer import raw_substitution_sees_live
 
 # A body value that IS exactly a ``$(cat <path>)`` command substitution. Agents
@@ -206,3 +213,23 @@ def resolve_attached_value(value: str, base: Path | None, raw: str, prefix: str)
         return resolve_inline_body_value(value, base)
     separator = 1 if raw[len(prefix) :].startswith("=") and not prefix.endswith("=") else 0
     return resolve_inline_body_value(value, base, raw, len(prefix) + separator)
+
+
+def resolve_short_cluster(words: list[str], raws: list[str], flags: frozenset[str], base: Path | None) -> list[str]:
+    """Resolve every candidate body value in a short cluster."""
+    token, raw = words[0], raws[0]
+    values: list[str] = []
+    for candidate in short_cluster_values(token, flags, raw):
+        if candidate.value:
+            resolved = resolve_attached_value(candidate.value, base, candidate.raw, candidate.prefix)
+        elif token[1:].isalpha() and len(words) > 1:
+            resolved = resolve_inline_body_value(words[1], base, raws[1])
+        else:
+            continue
+        values.append(resolved)
+        if candidate.later and is_fail_closed_sentinel(resolved):
+            values.append(
+                f"{NAMED_FAIL_CLOSED_PREFIX}a clustered short flag takes the next word or the rest of the token; "
+                "the gate cannot resolve it; spell the options apart or give a literal value"
+            )
+    return values

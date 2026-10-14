@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import teatree.loop.global_scanner_factories as gsf
+from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.domain_jobs import _messaging_jobs_for_backend, single_overlay_messaging_jobs
 from teatree.loop.global_scanner_factories import build_default_jobs
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
@@ -62,7 +63,7 @@ def _domains_requested_by_every_miniloop() -> set[Domain]:
         stack.enter_context(patch("teatree.loop.domain_jobs.jobs_for_domain", side_effect=_record))
         for loop in iter_loops():
             loop.build_jobs(
-                backends=[object()],
+                backends=[OverlayBackends(name="stub")],
                 host=None,
                 messaging=None,
                 notion_client=None,

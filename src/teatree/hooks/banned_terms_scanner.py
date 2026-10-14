@@ -36,6 +36,7 @@ from typing import TypedDict
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import extract_secret_scan_text as _extract_secret_scan_text
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._parser_primitives import NAMED_FAIL_CLOSED_PREFIX
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._parser_primitives import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
@@ -219,6 +220,8 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     """
     if not text:
         return None
+    if named := next((line for line in text.splitlines() if line.startswith(NAMED_FAIL_CLOSED_PREFIX)), None):
+        return named
     if _is_unavailable_body_source_sentinel(text):
         return UNAVAILABLE_BODY_SOURCE_MARKER
     if _is_fail_closed_sentinel(text):
@@ -481,5 +484,7 @@ def marker_deny_message(term: str) -> str | None:
     routed here: an unrouted one would be mistaken for a configured term and pick
     up that path's private-destination downgrade, failing OPEN.
     """
+    if term.startswith(NAMED_FAIL_CLOSED_PREFIX):
+        return f"BLOCKED: banned-terms posting gate (#1415). {term.removeprefix(NAMED_FAIL_CLOSED_PREFIX)}."
     renderer = _MARKER_DENY_RENDERERS.get(term)
     return renderer() if renderer is not None else None
