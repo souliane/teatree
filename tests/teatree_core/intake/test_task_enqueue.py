@@ -6,8 +6,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts
+from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task, enqueue_phase_task_once
 from teatree.core.models import LandscapeArtifact, Task, Ticket
-from teatree.core.task_enqueue import TaskEnqueueError, enqueue_phase_task, enqueue_phase_task_once
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 
 _SURVEY = {"open_prs": [{"url": "https://github.com/example/repo/pull/1"}], "worktrees": [], "warnings": []}

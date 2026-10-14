@@ -10,6 +10,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
 from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
+from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
 from teatree.core.management.commands.tasks_session_view import (
@@ -26,7 +27,6 @@ from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
-from teatree.core.task_enqueue import TaskEnqueueError, enqueue_phase_task
 
 logger = logging.getLogger(__name__)
 
