@@ -646,7 +646,9 @@ class TestFinalizeTicketProvision(TestCase):
     def test_placement_refusal_keeps_new_ticket(self) -> None:
         ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-keep"})
         provisioner = MagicMock()
-        provisioner.run.return_value = RunnerResult(ok=False, detail="outside_allowed_roots: fix workspace_dir")
+        provisioner.run.return_value = RunnerResult(
+            ok=False, detail="outside_allowed_roots: fix workspace_dir", code="outside_allowed_roots"
+        )
         errs: list[str] = []
         with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
             rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
@@ -654,6 +656,18 @@ class TestFinalizeTicketProvision(TestCase):
         assert rc == 0
         assert Ticket.objects.filter(pk=ticket.pk).exists()
         assert any("outside_allowed_roots" in line for line in errs)
+
+    def test_detail_prefix_without_placement_code_does_not_claim_placement(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-prefix"})
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=False, detail="outside_allowed_roots: unrelated failure")
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(pk=ticket.pk).exists()
+        assert any("Provisioning failed" in line for line in errs)
 
 
 class TestWorkspaceTicket(TestCase):

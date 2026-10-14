@@ -84,22 +84,24 @@ def _apply_uncommitted_delta(patch: str, into: Path) -> str | None:
     return result.stderr.strip() or f"git apply exited {result.returncode}"
 
 
-def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> str | None:
-    """``git worktree remove`` + ``add`` from *old_path* to *new_path*; ``None`` on success."""
+def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> tuple[str | None, bool]:
     if not git.worktree_remove(str(clone), str(old_path)):
-        return f"git worktree remove failed for {old_path} — nothing was moved"
+        return f"git worktree remove failed for {old_path} — nothing was moved", False
     if git.worktree_add(str(clone), str(new_path), branch, create_branch=False):
-        return None
+        return None, False
     # The branch is now free but unchecked-out anywhere; recreate at the OLD
     # path so the checkout — and the row, still pointing at it — survive.
     recovered = git.worktree_add(str(clone), str(old_path), branch, create_branch=False)
     if recovered and (error := _apply_uncommitted_delta(patch, old_path)):
         return (
-            f"git worktree add failed for {new_path} "
-            f"(recreated at the original path, but delta reapply failed: {error})"
+            (
+                f"git worktree add failed for {new_path} "
+                f"(recreated at the original path, but delta reapply failed: {error})"
+            ),
+            True,
         )
     reason = "recreated at the original path" if recovered else "COULD NOT be recreated — inspect the clone"
-    return f"git worktree add failed for {new_path} ({reason})"
+    return f"git worktree add failed for {new_path} ({reason})", not recovered
 
 
 def _restore_hint(prefix: str, overlay: str, target: Path | None) -> str:
@@ -135,6 +137,20 @@ def _verified_bundle(checkout: Path, branch: str, overlay: str, work: UnshippedW
     return prefix, ""
 
 
+def _retire_verified_bundle(old_path: Path, prefix: str) -> str:
+    if not prefix:
+        return ""
+    UnshippedWorkRecord.objects.filter(checkout_path=str(old_path), artifact_prefix=prefix).delete()
+    root = Path(prefix).parent
+    try:
+        for suffix in (UNCOMMITTED_SUFFIX, COMMITS_SUFFIX, FILES_SUFFIX, ".meta"):
+            bundle_path(prefix, suffix).unlink(missing_ok=True)
+        root.rmdir()
+    except OSError as exc:
+        return f"retired the salvage record but could not remove {root} ({exc})"
+    return ""
+
+
 def _source_clone(worktree: Worktree, old_path: Path) -> Path | str:
     clone = git_common_clone_dir(str(old_path))
     if clone is None:
@@ -163,9 +179,12 @@ def _relocate_verified(
     except OSError as exc:
         hint = _restore_hint(prefix, worktree.overlay, old_path)
         return f"{worktree.repo_path}: could not create {new_path.parent} ({exc}) — nothing moved{hint}"
-    if relocate_error := _relocate_checkout(clone, old_path, new_path, worktree.branch, work.uncommitted_patch):
+    relocate_error, needs_restore = _relocate_checkout(
+        clone, old_path, new_path, worktree.branch, work.uncommitted_patch
+    )
+    if relocate_error:
         target = old_path if old_path.is_dir() else new_path if new_path.is_dir() else None
-        hint = _restore_hint(prefix, worktree.overlay, target)
+        hint = _restore_hint(prefix, worktree.overlay, target) if needs_restore else ""
         prior = f"; previous salvage: {previous}" if prefix and previous else ""
         return f"{worktree.repo_path}: {relocate_error}{hint}{prior}"
 
@@ -178,6 +197,8 @@ def _relocate_verified(
         )
 
     worktree.merge_extra(set_keys={"worktree_path": str(new_path)})
+    if cleanup_error := _retire_verified_bundle(old_path, prefix):
+        return f"{worktree.repo_path}: moved to {new_path}, but {cleanup_error}"
     return None
 
 

@@ -2,6 +2,10 @@
 
 # test-path: cross-cutting
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +32,31 @@ def _event(command: str, clone: Path) -> dict[str, object]:
 
 def test_router_registers_gate() -> None:
     assert handle_block_worktree_checkout in _HANDLERS["PreToolUse"]
+
+
+@pytest.mark.parametrize("case", ["direct", "assigned", "cd_after_mktemp"])
+def test_live_run_hook_denies_with_django_settings_exported(case: str) -> None:
+    root = Path(__file__).resolve().parents[2]
+    target = Path.home() / "stray-probe-5247-subprocess"
+    command = {
+        "direct": f"git worktree add {target} main",
+        "assigned": "WT=$HOME/stray-probe-5247-subprocess; git worktree add $WT main",
+        "cd_after_mktemp": f"X=$(mktemp -d); cd {root} && git worktree add {target} main",
+    }[case]
+    cwd = root.parent if case == "cd_after_mktemp" else root
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+    env = dict(os.environ, DJANGO_SETTINGS_MODULE="teatree.settings", T3_HOOK_PYTHON=sys.executable)
+    result = subprocess.run(
+        [str(root / "hooks/scripts/run-hook.sh"), str(root / "hooks/scripts/hook_router.py"), "--event", "PreToolUse"],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    assert "AppRegistryNotReady" not in result.stderr
+    assert ("unresolved target" if case == "assigned" else str(target)) in result.stdout
+    assert "deny" in result.stdout
 
 
 def test_denies_outside_target_and_names_remedies(managed_clone: tuple[Path, Path]) -> None:

@@ -7,6 +7,7 @@ class RunnerResult:
     ok: bool
     detail: str = ""
     retryable: bool = False
+    code: str = ""
 
 
 class RunnerBase(ABC):

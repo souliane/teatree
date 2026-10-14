@@ -32,11 +32,13 @@ class CheckoutRoots:
         allowed = ", ".join(str(root) for root in roots)
         dropped = f"; ignored unsafe workspace_dir: {', '.join(self.dropped)}" if self.dropped else ""
         degraded = f"; settings store unreadable ({self.read_error}); using worktree base" if self.read_error else ""
-        return (
-            f"{path} is outside allowed worktree roots ({allowed}){dropped}{degraded}. "
-            "Use a path under the worktree base, set workspace_dir to a safe durable root, "
-            "or use a temp root for a disposable review checkout."
-        )
+        advice = "Use a path under the worktree base or set workspace_dir to a safe durable root."
+        if not durable:
+            advice = (
+                "Use a path under the worktree base, set workspace_dir to a safe durable root, "
+                "or use a temp root for a disposable review checkout."
+            )
+        return f"{path} is outside allowed worktree roots ({allowed}){dropped}{degraded}. {advice}"
 
 
 def _stored_workspace_dirs() -> tuple[tuple[str, ...], str]:
@@ -47,14 +49,22 @@ def _stored_workspace_dirs() -> tuple[tuple[str, ...], str]:
         django_conf = None
         django_db = None
     if django_conf is not None and django_db is not None and django_conf.settings.configured:
+        django_apps = import_module("django.apps")
+        django_exceptions = import_module("django.core.exceptions")
         try:
-            model = import_module("django.apps").apps.get_model("core", "ConfigSetting")
-            alias = django_db.router.db_for_read(model)
-            with django_db.connections[alias].cursor() as cursor:
-                cursor.execute("SELECT value FROM teatree_config_setting WHERE key=%s", ["workspace_dir"])
-                rows = cursor.fetchall()
-            return tuple(value for (raw,) in rows if isinstance((value := json.loads(raw)), str)), ""
-        except (django_db.DatabaseError, RuntimeError, ValueError, TypeError, LookupError):
+            if django_apps.apps.ready:
+                model = django_apps.apps.get_model("core", "ConfigSetting")
+                alias = django_db.router.db_for_read(model)
+                values = model.objects.using(alias).filter(key="workspace_dir").values_list("value", flat=True)
+                return tuple(value for value in values if isinstance(value, str)), ""
+        except (
+            django_db.DatabaseError,
+            django_exceptions.AppRegistryNotReady,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            LookupError,
+        ):
             pass
     db = cold_db.canonical_config_db()
     if db.exists():
@@ -98,7 +108,7 @@ def checkout_roots(
         except ModuleNotFoundError as exc:
             if exc.name is None or not exc.name.startswith("django"):
                 raise
-            clone_dir = Path(os.environ.get("T3_WORKSPACE_DIR", str(home_root / "workspace")))
+            clone_dir = Path(os.environ.get("T3_WORKSPACE_DIR") or str(home_root / "workspace"))
     clone = clone_dir.expanduser().resolve()
     temporary = tuple(root.resolve() for root in (disposable if disposable is not None else disposable_roots()))
     base = (home_root / "workspace" / "t3-workspaces").resolve()

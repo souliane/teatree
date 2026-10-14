@@ -182,6 +182,12 @@ class TestPlacement:
         assert findings[0].line_no == 4
         assert "worktree-placement: allow" in findings[0].message
 
+    def test_home_variable_recipe_is_flagged_as_unresolved(self) -> None:
+        findings = scan_placement_source(
+            _fence("git worktree add $HOME/workspace/t3-workspaces/review HEAD"), "skills/example.md"
+        )
+        assert len(findings) == 1
+
     @pytest.mark.parametrize(
         "command",
         [

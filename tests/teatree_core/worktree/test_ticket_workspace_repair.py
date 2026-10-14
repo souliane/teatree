@@ -21,7 +21,7 @@ from teatree.core.cleanup.unshipped_work import (
     capture_unshipped_work,
     probe_unshipped_work,
 )
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dirs
 from teatree.core.worktree.ticket_workspace_repair import repair_split_workspace
 from teatree.utils import git
@@ -128,8 +128,45 @@ class TestRepairSplitWorkspace(TestCase):
             outcome = repair_split_workspace(ticket)
         assert not outcome.ok
         assert (frontend / "work.txt").read_text(encoding="utf-8") == "original\n"
-        assert "t3 teatree workspace restore" in outcome.render()
+        assert "workspace restore" not in outcome.render()
+
+    def test_failed_new_add_and_failed_old_reapply_names_bundle(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        new_path = self.workspace / _BRANCH / "frontend"
+        actual_add = git.worktree_add
+
+        def fail_new_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            return False if Path(path) == new_path else actual_add(repo, path, branch, create_branch=create_branch)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add", side_effect=fail_new_add),
+            patch("teatree.core.worktree.ticket_workspace_repair._apply_uncommitted_delta", return_value="failed"),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert frontend.is_dir()
         assert f"--into {frontend}" in outcome.render()
+        prefix = outcome.render().split("workspace restore ", 1)[1].split(" --into", 1)[0]
+        assert restore_bundle(prefix, frontend).ok
+        assert (frontend / "work.txt").read_text(encoding="utf-8") == "original\n"
+
+    def test_failed_new_add_for_clean_checkout_has_no_restore_hint(self) -> None:
+        ticket, _, frontend = self._split_ticket(dirty=False)
+        new_path = self.workspace / _BRANCH / "frontend"
+        actual_add = git.worktree_add
+
+        def fail_new_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            return False if Path(path) == new_path else actual_add(repo, path, branch, create_branch=create_branch)
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add", side_effect=fail_new_add),
+        ):
+            outcome = repair_split_workspace(ticket)
+        assert not outcome.ok
+        assert frontend.is_dir()
+        assert "workspace restore" not in outcome.render()
 
     def test_failed_recovery_add_names_bundle_without_nonexistent_restore_target(self) -> None:
         ticket, _, frontend = self._split_ticket()
@@ -234,6 +271,19 @@ class TestRepairSplitWorkspace(TestCase):
         assert (self.workspace / _BRANCH / "frontend").is_dir()
         assert list((self.tmp / "artifacts").iterdir()) == []
 
+    def test_bundle_retirement_failure_is_reported_after_move(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("pathlib.Path.rmdir", side_effect=OSError("busy")),
+        ):
+            outcome = repair_split_workspace(ticket)
+        moved = self.workspace / _BRANCH / "frontend"
+        assert not outcome.ok
+        assert "could not remove" in outcome.render()
+        assert (moved / "work.txt").read_text(encoding="utf-8") == "original\n"
+        assert not UnshippedWorkRecord.objects.filter(checkout_path=str(frontend)).exists()
+
     def test_refuses_unwritable_bundle_root(self) -> None:
         ticket, _, frontend = self._split_ticket()
         with (
@@ -313,6 +363,8 @@ class TestRepairSplitWorkspace(TestCase):
         assert (new_path / "wip.py").read_text(encoding="utf-8") == "uncommitted = True\n", "uncommitted work lost"
         assert git.current_branch(str(new_path)) == _BRANCH
         assert not frontend.exists(), "the old foreign-root checkout must be gone, not duplicated"
+        assert not UnshippedWorkRecord.objects.filter(checkout_path=str(frontend)).exists()
+        assert list((self.tmp / "artifacts").iterdir()) == []
 
     def test_a_ticket_with_one_workspace_dir_is_a_no_op(self) -> None:
         backend_clone = self._clone("backend")

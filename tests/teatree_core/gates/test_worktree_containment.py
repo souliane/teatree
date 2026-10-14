@@ -96,6 +96,36 @@ def test_bare_mktemp_assignment_has_unknown_target(tmp_path: Path) -> None:
     assert calls[0].target is None
 
 
+def test_assigned_unresolved_variable_stays_unknown(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("WT=$HOME/stray; git worktree add $WT main", tmp_path)
+    assert len(calls) == 1
+    assert calls[0].target is None
+
+
+def test_variable_names_are_replaced_by_exact_spans(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("A=inside; AB=outside; git worktree add $A/$AB main", tmp_path)
+    assert calls[0].target == tmp_path / "inside" / "outside"
+
+
+def test_assignment_does_not_shift_later_segment_cwds(tmp_path: Path) -> None:
+    source = tmp_path / "managed"
+    source.mkdir()
+    calls = scan_worktree_checkouts(f"X=$(mktemp -d); cd {source} && git worktree add ../stray main", tmp_path)
+    assert calls[0].source == source
+    assert calls[0].target == tmp_path / "stray"
+
+
+def test_env_does_not_consume_git_chdir(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts("env git -C sub worktree add ../stray main", tmp_path)
+    assert calls[0].source == tmp_path / "sub"
+    assert calls[0].target == tmp_path / "stray"
+
+
+def test_quoted_commit_message_does_not_create_a_pipe(tmp_path: Path) -> None:
+    command = "git commit -m 'echo git worktree add /outside/x | sh more words'"
+    assert scan_worktree_checkouts(command, tmp_path) == []
+
+
 def test_mktemp_assignment_inside_quoted_shell_script_is_scanned(tmp_path: Path) -> None:
     command = "bash -c 'D=$(mktemp -d /tmp/review.XXXX); git worktree add $D/new'"
     calls = scan_worktree_checkouts(command, tmp_path)

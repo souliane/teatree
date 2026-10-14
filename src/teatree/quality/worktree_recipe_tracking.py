@@ -153,8 +153,10 @@ def _recipe_target(verb: str, argv: str) -> str | None:
 def _allowed_recipe_target(target: str) -> bool:
     if re.fullmatch(r"<[A-Za-z][^>]*>", target):
         return True
-    if target.startswith(("~/", "$HOME/")):
-        return target.startswith(("~/workspace/t3-workspaces/", "$HOME/workspace/t3-workspaces/"))
+    if target.startswith("$HOME/"):
+        return False
+    if target.startswith("~/"):
+        return target.startswith("~/workspace/t3-workspaces/")
     if not target.startswith(("/", "~/")):
         return False
     location = Path(target).expanduser().resolve()

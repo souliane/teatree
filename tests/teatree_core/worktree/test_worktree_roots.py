@@ -16,6 +16,8 @@ from teatree.core.worktree.worktree_roots import (
     CheckoutState,
     canonical_worktree_root,
     probe_checkout,
+    recorded_checkout_is_live,
+    recorded_checkout_unreadable_reason,
     registered_worktree_roots,
     scanned_worktree_roots,
     worktrees_outside_the_canonical_root,
@@ -54,6 +56,7 @@ class ProbeCheckoutTest(_RootsTestCase):
         checkout.mkdir()
         git.run(repo=str(checkout), args=["init", "--quiet", "--initial-branch=main"])
         assert probe_checkout(checkout) is CheckoutState.CHECKOUT
+        assert recorded_checkout_is_live(str(checkout), clone=None)
 
     def test_a_non_repo_dir_is_proven_not_a_checkout(self) -> None:
         plain = self.tmp / "plain"
@@ -68,6 +71,8 @@ class ProbeCheckoutTest(_RootsTestCase):
         unresolvable.mkdir()
         (unresolvable / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
         assert probe_checkout(unresolvable) is CheckoutState.INCONCLUSIVE
+        assert not recorded_checkout_is_live(str(unresolvable), clone=None)
+        assert "execution context" in recorded_checkout_unreadable_reason(unresolvable)
 
     def test_an_absent_path_proves_nothing(self) -> None:
         # "cannot change to <path>" says nothing about whether a repo lives there.

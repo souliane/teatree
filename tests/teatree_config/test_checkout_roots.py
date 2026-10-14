@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from django.core.exceptions import AppRegistryNotReady
 from django.db import router
 from django.test import TestCase
 
@@ -35,6 +36,29 @@ print(checkout_roots().durable[0])
     result = subprocess.run([sys.executable, "-c", script], env=env, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(tmp_path / "home" / "workspace" / "t3-workspaces")
+
+
+def test_configured_but_unready_django_uses_cold_reader(tmp_path: Path) -> None:
+    with patch("django.apps.apps.get_model", side_effect=AppRegistryNotReady("not ready")):
+        roots = checkout_roots(home=tmp_path / "home", clone_dir=tmp_path / "clone", disposable=())
+    assert roots.durable[0] == tmp_path / "home" / "workspace" / "t3-workspaces"
+    assert "not ready" not in roots.read_error
+
+
+def test_empty_workspace_env_uses_default_clone_root(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = home / "workspace"
+    with (
+        patch.dict(os.environ, {"T3_WORKSPACE_DIR": ""}),
+        patch("teatree.config.checkout_roots.clone_root", side_effect=ModuleNotFoundError("django", name="django")),
+    ):
+        roots = checkout_roots(home=home, stored=(str(workspace),), disposable=())
+    assert str(workspace) in roots.dropped
+
+
+def test_durable_refusal_omits_disposable_remedy(tmp_path: Path) -> None:
+    roots = checkout_roots(home=tmp_path / "home", clone_dir=tmp_path / "clone", stored=(), disposable=())
+    assert "temp root" not in roots.refusal(tmp_path / "outside", durable=True)
 
 
 def test_allowed_checkout_roots_resolve_symlinks_and_include_stored_roots(tmp_path: Path) -> None:

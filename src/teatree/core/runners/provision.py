@@ -18,7 +18,6 @@ from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.checkout_disposal import disposal_refusal
-from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
 from teatree.core.worktree.clone_provision import ensure_clone
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -30,9 +29,10 @@ from teatree.core.worktree.ticket_workspace import (
 from teatree.core.worktree.venue_safe_registry import WorkPresence, prune_worktrees, unsalvageable_work_state
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
+from teatree.core.worktree.worktree_roots import recorded_checkout_is_live as _recorded_checkout_is_live
+from teatree.core.worktree.worktree_roots import recorded_checkout_unreadable_reason as _unreadable_checkout_reason
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_remote_project_path
-from teatree.utils.git_run import git_env_without_overrides, run_with_status
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -49,34 +49,6 @@ def _clone_dir_from_worktree(worktree_path: str) -> Path | None:
     so the adopt path falls back to the checkout itself.
     """
     return git_common_clone_dir(worktree_path)
-
-
-def _recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
-    """Is the checkout a row records still THERE? Positive proof only.
-
-    The provisioning half of the liveness question the reaper asks in
-    :mod:`teatree.core.worktree.checkout_liveness`, and the answer it needs is the
-    opposite one. A reaper deletes, so it may act only on proof of DEATH; the
-    preflight refuses to re-materialise a checkout on this answer, so it may act
-    only on proof of LIFE. Anything less falls through and re-provisions, which
-    adds a checkout and removes nothing.
-
-    *clone* is the source clone as THIS context reaches it: a checkout records its
-    admin dir as an absolute path written by whatever context created it, so git
-    answers "not a git repository" here for a checkout that is alive elsewhere. The
-    clone's own admin entry, looked up by name, proves that checkout live, and the
-    preflight then refuses it rather than re-provisioning over it.
-    """
-    return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
-
-
-def _unreadable_checkout_reason(checkout: Path) -> str:
-    """Why a checkout git cannot read HERE is refused — never re-created, never removed."""
-    cause = wrong_venue_reason(checkout)
-    if not cause:
-        probe = run_with_status(repo=str(checkout), args=["rev-parse", "--git-dir"], env=git_env_without_overrides())
-        cause = f"{checkout} is a live checkout git cannot read in this execution context ({probe.stderr.strip()})"
-    return f"{cause}; re-provision or remove it from the context that owns it"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +74,17 @@ class _RepoPlan:
 class _Refusal:
     reason: str
     retryable: bool = False
+
+
+def _recorded_plan(repo_name: str, existing: Worktree | None, clones_root: Path) -> _LiveCheckout | _Refusal | None:
+    recorded = existing.worktree_path if existing else ""
+    if not recorded:
+        return None
+    if probe_checkout(Path(recorded)) is CheckoutState.CHECKOUT:
+        return _LiveCheckout(repo_name, recorded)
+    if _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
+        return _Refusal(f"{repo_name}: {_unreadable_checkout_reason(Path(recorded))}")
+    return None
 
 
 def _refused(refusals: list[_Refusal]) -> RunnerResult:
@@ -364,27 +347,37 @@ class WorktreeProvisioner(RunnerBase):
         except TicketWorkspaceDivergenceError as exc:
             logger.exception("Ticket workspace is already split")
             return RunnerResult(ok=False, detail=str(exc))
+        recorded_worktrees = {worktree.repo_path: worktree for worktree in self.ticket.worktrees.all()}
+        recorded_plans = {
+            repo_name: _recorded_plan(repo_name, recorded_worktrees.get(repo_name), clone_root_path)
+            for repo_name in repos
+        }
         for repo_name in repos:
             if repo_name in adopt:
                 continue
-            existing = Worktree.objects.filter(ticket=ticket, repo_path=repo_name).first()
-            if (
-                existing
-                and (recorded := existing.worktree_path)
-                and _recorded_checkout_is_live(recorded, clone=find_clone_path(clone_root_path, repo_name))
-            ):
+            existing = recorded_worktrees.get(repo_name)
+            recorded = existing.worktree_path if existing else ""
+            if recorded_plans[repo_name] is not None:
                 continue
             if reason := checkout_roots().refusal(ticket_dir, durable=True):
+                remedy = " Run `workspace relocate` for the recorded checkout before retrying." if recorded else ""
                 return RunnerResult(
                     ok=False,
                     detail=(
                         f"outside_allowed_roots: {reason} Set workspace_dir to a safe root or use the default "
-                        "worktree base before retrying."
+                        f"worktree base before retrying.{remedy}"
                     ),
+                    code="outside_allowed_roots",
                 )
             break
         preflight = [
-            self._preflight(clone_root_path, repo_name, branches.get(repo_name, branch), adopt.get(repo_name, ""))
+            self._preflight(
+                clone_root_path,
+                repo_name,
+                branches.get(repo_name, branch),
+                adopt.get(repo_name, ""),
+                recorded_plans[repo_name],
+            )
             for repo_name in repos
         ]
         if refusals := [outcome for outcome in preflight if isinstance(outcome, _Refusal)]:
@@ -424,19 +417,19 @@ class WorktreeProvisioner(RunnerBase):
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
 
     def _preflight(
-        self, clones_root: Path, repo_name: str, branch: str, adopt_path: str
+        self,
+        clones_root: Path,
+        repo_name: str,
+        branch: str,
+        adopt_path: str,
+        recorded_plan: _LiveCheckout | _Refusal | None,
     ) -> _RepoPlan | _LiveCheckout | _Refusal:
         """Every check that can refuse *repo_name*, run before any directory, row or worktree exists.
 
         A checkout only the clone vouches for is refused: every git command run inside it fails.
         """
-        existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
-        recorded = existing.worktree_path if existing else ""
-        if recorded:
-            if probe_checkout(Path(recorded)) is CheckoutState.CHECKOUT:
-                return _LiveCheckout(repo_name, recorded)
-            if _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
-                return _Refusal(f"{repo_name}: {_unreadable_checkout_reason(Path(recorded))}")
+        if recorded_plan is not None:
+            return recorded_plan
 
         if refusal := self._single_branch_refusal(repo_name, branch):
             return _Refusal(refusal)

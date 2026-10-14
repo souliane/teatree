@@ -57,9 +57,11 @@ def handle_block_worktree_checkout(data: dict) -> bool:
                 call.target.is_relative_to(root) for root in (*roots.durable, *roots.disposable)
             ):
                 continue
-            router = import_module("hooks.scripts.hook_router")
-            deny = vars(router)["_fail_open_or_deny"]
-            return deny(data, _deny_reason(call.raw_target, call.target, roots), gate_id="worktree_containment")
+            from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred router back-import
+
+            return _fail_open_or_deny(
+                data, _deny_reason(call.raw_target, call.target, roots), gate_id="worktree_containment"
+            )
     return False
 
 

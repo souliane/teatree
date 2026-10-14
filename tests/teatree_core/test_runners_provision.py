@@ -1038,6 +1038,8 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
 
         assert not result.ok
         assert "workspace_dir" in result.detail
+        assert "workspace relocate" in result.detail
+        assert result.code == "outside_allowed_roots"
         assert self._recorded_path(ticket) == str(hollow)
         assert hollow.is_dir()
         assert not (hollow / ".git").exists()
