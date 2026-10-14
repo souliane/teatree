@@ -22,7 +22,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval, PendingChatInjection
+from teatree.core.gates.exact_approval import write_target
+from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval, OutboundClaim, PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.send_proxy import SendBlockedError
 from teatree.on_behalf_gate import OnBehalfContext
@@ -72,6 +73,9 @@ class _RouteAwareFake:
     routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
     react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    message_text: str = "before"
+    update_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    delete_routed_calls: list[tuple[str, str]] = field(default_factory=list)
 
     def _is_self_dm(self, channel: str) -> bool:
         return bool(channel) and channel in {self.dm_channel_id, self.user_id}
@@ -85,6 +89,22 @@ class _RouteAwareFake:
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         self.post_routed_calls.append((channel, text, thread_ts))
+        return dict(self.routed_response)
+
+    def fetch_message_for_write(self, *, channel: str, ts: str, thread_ts: str = "") -> RawAPIDict:
+        _ = thread_ts
+        return {"channel": channel, "ts": ts, "text": self.message_text} if self.message_text else {}
+
+    def update_routed(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        self.update_routed_calls.append((channel, ts, text))
+        if self.routed_response.get("ok"):
+            self.message_text = text
+        return dict(self.routed_response)
+
+    def delete_routed(self, *, channel: str, ts: str) -> RawAPIDict:
+        self.delete_routed_calls.append((channel, ts))
+        if self.routed_response.get("ok"):
+            self.message_text = ""
         return dict(self.routed_response)
 
     def open_dm(self, user_id: str) -> str:
@@ -147,6 +167,44 @@ class TestColleagueGate(TestCase):
         with pytest.raises(OnBehalfPostBlockedError):
             egress.post(channel=_COLLEAGUE, text="nag", target=_TARGET, action="review_nag_post")
         assert fake.post_routed_calls == []
+
+    def test_update_requires_posture_approval_and_rechecks_text(self) -> None:
+        fake = _RouteAwareFake()
+        egress = OnBehalfSlackEgress(fake)
+        with pytest.raises(OnBehalfPostBlockedError):
+            egress.update(channel=_COLLEAGUE, ts="1.1", expected_text="before", text="after")
+        assert fake.update_routed_calls == []
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_update", approver_id=_APPROVER)
+        result = egress.update(channel=_COLLEAGUE, ts="1.1", expected_text="before", text="after")
+        assert result["ok"] is True
+        assert fake.update_routed_calls == [(_COLLEAGUE, "1.1", "after")]
+        assert fake.message_text == "after"
+        assert OutboundClaim.objects.get(kind=OutboundClaim.Kind.SLACK_MESSAGE).verified_at is not None
+        replay = egress.update(channel=_COLLEAGUE, ts="1.1", expected_text="before", text="after")
+        assert replay["already_updated"] is True
+        assert len(fake.update_routed_calls) == 1
+
+    def test_delete_needs_exact_approval_and_rechecks_absence(self) -> None:
+        fake = _RouteAwareFake()
+        egress = OnBehalfSlackEgress(fake)
+        preview = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=True)
+        approval = preview["approval"]
+        assert isinstance(approval, dict)
+        target = approval["target"]
+        assert isinstance(target, str)
+        assert target == write_target("slack", f"{_COLLEAGUE}/1.1", "before")
+        assert fake.delete_routed_calls == []
+        with pytest.raises(ValueError, match="no recorded approval"):
+            egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=False)
+        OnBehalfApproval.record(target=target, action="mcp_slack_delete", approver_id=_APPROVER)
+        result = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=False)
+        assert result["ok"] is True
+        assert fake.delete_routed_calls == [(_COLLEAGUE, "1.1")]
+        assert fake.message_text == ""
+        assert OutboundClaim.objects.get(kind=OutboundClaim.Kind.SLACK_MESSAGE).verified_at is not None
+        replay = egress.delete(channel=_COLLEAGUE, ts="1.1", expected_text="before", dry_run=False)
+        assert replay["already_deleted"] is True
+        assert len(fake.delete_routed_calls) == 1
 
     def test_react_fires_once_and_audits_with_recorded_approval(self) -> None:
         OnBehalfApproval.record(target=_TARGET, action="merge_reaction", approver_id=_APPROVER)

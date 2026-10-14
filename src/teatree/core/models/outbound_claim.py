@@ -40,6 +40,7 @@ class OutboundClaim(models.Model):
     class Kind(models.TextChoices):
         SLACK_DM = "slack_dm", "Slack DM"
         SLACK_REACTION = "slack_reaction", "Slack reaction"
+        SLACK_MESSAGE = "slack_message", "Slack message"
         GITLAB_NOTE = "gitlab_note", "GitLab note"
         GITLAB_APPROVE = "gitlab_approve", "GitLab approve"
         GITHUB_NOTE = "github_note", "GitHub note"

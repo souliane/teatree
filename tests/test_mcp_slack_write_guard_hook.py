@@ -53,6 +53,8 @@ class TestDeniesSlackMcpWrites:
         deny = _parse_deny(capsys)
         assert deny is not None
         assert "t3" in json.dumps(deny)
+        assert "slack_update" in json.dumps(deny)
+        assert "slack_delete" in json.dumps(deny)
 
 
 class TestDeniesUnrecognisedSlackTools:

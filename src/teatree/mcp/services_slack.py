@@ -22,11 +22,13 @@ from mcp.types import ToolAnnotations
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.send_proxy import SendBlockedError
 from teatree.mcp.service_resolver import SLACK
 from teatree.types import ChannelReadRefusedError
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+_DELETE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 INSTRUCTIONS = (
     "- slack_mentions(since): queued @-mentions. Errors (never returns an empty list) when "
@@ -44,7 +46,9 @@ INSTRUCTIONS = (
     "returns ok=false + a `blocked` remediation when no approval is recorded.\n"
     "- slack_post(channel, text, thread_ts): post through the on-behalf gate; "
     "a colleague/channel post needs recorded approval.\n"
-    "- slack_conversations(cursor, limit): one page of visible conversations and the next cursor; read failures error."
+    "- slack_conversations(cursor, limit): visible conversations, next cursor; read failures error.\n"
+    "- slack_update(channel, ts, expected_text, text): edit after a live compare and on-behalf gate.\n"
+    "- slack_delete(channel, ts, expected_text, dry_run): preview by default; exact approval is required to delete."
 )
 
 
@@ -180,6 +184,36 @@ async def _slack_conversations(*, cursor: str = "", limit: int = 100) -> dict[st
         raise ToolError(str(exc)) from exc
 
 
+async def _slack_update(channel: str, ts: str, expected_text: str, text: str, *, thread_ts: str = "") -> dict[str, Any]:
+    def perform() -> dict[str, Any]:
+        try:
+            response = OnBehalfSlackEgress(_client()).update(
+                channel=channel, ts=ts, expected_text=expected_text, text=text, thread_ts=thread_ts
+            )
+        except OnBehalfPostBlockedError as blocked:
+            return {"ok": False, "blocked": str(blocked)}
+        except (ValueError, RuntimeError, SendBlockedError) as exc:
+            raise ToolError(str(exc)) from exc
+        return {"ok": bool(response.get("ok")), "channel": channel, "ts": ts, "response": response}
+
+    return await sync_to_async(perform, thread_sensitive=True)()
+
+
+async def _slack_delete(
+    channel: str, ts: str, expected_text: str, *, thread_ts: str = "", dry_run: bool = True
+) -> dict[str, Any]:
+    def perform() -> dict[str, Any]:
+        try:
+            response = OnBehalfSlackEgress(_client()).delete(
+                channel=channel, ts=ts, expected_text=expected_text, thread_ts=thread_ts, dry_run=dry_run
+            )
+        except (ValueError, RuntimeError, SendBlockedError) as exc:
+            raise ToolError(str(exc)) from exc
+        return {"ok": bool(response.get("ok")), **response}
+
+    return await sync_to_async(perform, thread_sensitive=True)()
+
+
 def register(server: MCPServer) -> None:
     server.add_tool(_slack_mentions, name="slack_mentions", annotations=_READ_ONLY)
     server.add_tool(_slack_channel_history, name="slack_channel_history", annotations=_READ_ONLY)
@@ -188,3 +222,5 @@ def register(server: MCPServer) -> None:
     server.add_tool(_slack_react, name="slack_react", annotations=_WRITE)
     server.add_tool(_slack_post, name="slack_post", annotations=_WRITE)
     server.add_tool(_slack_conversations, name="slack_conversations", annotations=_READ_ONLY)
+    server.add_tool(_slack_update, name="slack_update", annotations=_WRITE)
+    server.add_tool(_slack_delete, name="slack_delete", annotations=_DELETE)

@@ -14,6 +14,7 @@ stamped here for downstream consumers (#1043).
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from typing import cast
 
@@ -40,6 +41,13 @@ _DM_PAGE_SIZE = 20
 _BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
+@dataclass(frozen=True, slots=True)
+class PageWalk:
+    cap: int
+    subject: str
+    strict_complete: bool = False
+
+
 def _messages(data: RawAPIDict) -> list[RawAPIDict]:
     if not data.get("ok"):
         return []
@@ -51,9 +59,7 @@ def _walk_pages(
     get: Getter,
     method: str,
     params: dict[str, str | int],
-    *,
-    cap: int,
-    subject: str,
+    walk: PageWalk,
 ) -> list[RawAPIDict]:
     """Cursor-follow *method* across every page, bounded by *cap*.
 
@@ -66,18 +72,20 @@ def _walk_pages(
     """
     collected: list[RawAPIDict] = []
     cursor: str | None = None
-    for _ in range(cap):
+    for _ in range(walk.cap):
         page = dict(params)
         if cursor:
             page["cursor"] = cursor
         data = get(method, page)
         if not data.get("ok"):
-            raise SlackReadRefusedError(method, subject, str(data.get("error") or "unknown_error"))
+            raise SlackReadRefusedError(method, walk.subject, str(data.get("error") or "unknown_error"))
         collected.extend(_messages(data))
         cursor = next_cursor(data)
         if cursor is None:
             return collected
-    logger.warning("Slack %s hit the %d-page cap on %s; the read is truncated", method, cap, subject)
+    logger.warning("Slack %s hit the %d-page cap on %s; the read is truncated", method, walk.cap, walk.subject)
+    if walk.strict_complete:
+        raise SlackReadRefusedError(method, walk.subject, "page_cap_exceeded")
     return collected
 
 
@@ -90,18 +98,17 @@ def _read_or_abandon(walk: Callable[[], list[RawAPIDict]]) -> list[RawAPIDict]:
         return []
 
 
-def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
+def _walk_thread(get: Getter, channel: str, thread_ts: str, *, strict_complete: bool = False) -> list[RawAPIDict]:
     params: dict[str, str | int] = {"channel": channel, "ts": thread_ts, "limit": 200}
     return _walk_pages(
         get,
         "conversations.replies",
         params,
-        cap=_MAX_THREAD_PAGES,
-        subject=f"thread {thread_ts} in {channel}",
+        PageWalk(_MAX_THREAD_PAGES, f"thread {thread_ts} in {channel}", strict_complete),
     )
 
 
-def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
+def read_single_message(*, get: Getter, channel: str, ts: str, refuse: bool = False) -> RawAPIDict:
     """Fetch one message by ``(channel, ts)`` via ``conversations.history``.
 
     Returns the message dict (with ``channel`` stamped on) or ``{}`` on any
@@ -111,15 +118,25 @@ def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
     if not channel or not ts:
         return {}
     params: dict[str, str | int] = {"channel": channel, "latest": ts, "inclusive": "true", "limit": 1}
-    messages = _messages(get("conversations.history", params))
+    data = get("conversations.history", params)
+    if refuse and not data.get("ok"):
+        method = "conversations.history"
+        subject = f"message {ts} in {channel}"
+        error_code = str(data.get("error") or "unknown_error")
+        raise SlackReadRefusedError(method, subject, error_code)
+    messages = _messages(data)
     if not messages:
         return {}
     first = messages[0]
+    if refuse and str(first.get("ts", "")) != ts:
+        return {}
     first.setdefault("channel", channel)
     return first
 
 
-def read_thread_replies(*, get: TokenGetter, channel: str, thread_ts: str, user_token: str = "") -> list[RawAPIDict]:
+def read_thread_replies(
+    *, get: TokenGetter, channel: str, thread_ts: str, user_token: str = "", strict_complete: bool = False
+) -> list[RawAPIDict]:
     """Return every message in the thread rooted at ``thread_ts`` (#2061), ``channel`` stamped.
 
     The canonical thread-root read used by the answer pipeline's pre-post
@@ -132,11 +149,11 @@ def read_thread_replies(*, get: TokenGetter, channel: str, thread_ts: str, user_
     if not channel or not thread_ts:
         return []
     try:
-        replies = _walk_thread(get, channel, thread_ts)
+        replies = _walk_thread(get, channel, thread_ts, strict_complete=strict_complete)
     except SlackReadRefusedError as refused:
         if not user_token or refused.error_code not in _BOT_NOT_A_MEMBER:
             raise
-        replies = _walk_thread(partial(get, token=user_token), channel, thread_ts)
+        replies = _walk_thread(partial(get, token=user_token), channel, thread_ts, strict_complete=strict_complete)
     for reply in replies:
         reply.setdefault("channel", channel)
     return replies
@@ -164,9 +181,7 @@ def read_user_dms(
         # cursor message would drop replies landing under the newest known root.
         params["inclusive"] = "true"
         history = _read_or_abandon(
-            partial(
-                _walk_pages, get, "conversations.history", params, cap=_MAX_DM_PAGES, subject=f"DM channel {channel}"
-            )
+            partial(_walk_pages, get, "conversations.history", params, PageWalk(_MAX_DM_PAGES, f"DM channel {channel}"))
         )
     else:
         history = _messages(get("conversations.history", params))

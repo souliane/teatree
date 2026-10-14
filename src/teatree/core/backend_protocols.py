@@ -627,6 +627,10 @@ class MessagingBackend(Protocol):
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def fetch_message_for_write(  # pragma: no branch
+        self, *, channel: str, ts: str, thread_ts: str = ""
+    ) -> RawAPIDict: ...
+
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
@@ -667,6 +671,10 @@ class MessagingBackend(Protocol):
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
+
+    def update_routed(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def delete_routed(self, *, channel: str, ts: str) -> RawAPIDict: ...  # pragma: no branch
 
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 

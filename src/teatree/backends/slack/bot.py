@@ -41,9 +41,9 @@ re-probed on the next call so a transient failure that recovers
 resolves correctly.
 """
 
-from teatree.backends.slack import egress
+from teatree.backends.slack import egress, message_mutations
 from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
-from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
+from teatree.backends.slack.dm_history import read_thread_replies, read_user_dms
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
@@ -358,17 +358,12 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return self._inbound.snapshot_reactions()
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
-        """Fetch a single message by ``(channel, ts)``.
+        return message_mutations.read_message(self._get, self._strip_own_tts_audio, channel=channel, ts=ts)
 
-        ``{}`` on a Slack ``ok:false`` or no match; a missing token raises. Read
-        body in :mod:`~teatree.backends.slack.dm_history`; own TTS audio
-        stripped at the backend read chokepoint.
-        """
-        message = read_single_message(get=self._get, channel=channel, ts=ts)
-        if not message:
-            return {}
-        [stripped] = self._strip_own_tts_audio([message])
-        return stripped
+    def fetch_message_for_write(self, *, channel: str, ts: str, thread_ts: str = "") -> RawAPIDict:
+        return message_mutations.read_for_write(
+            self._get, token=self._route_token(channel), channel=channel, ts=ts, thread_ts=thread_ts
+        )
 
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
         """Return every message in the thread rooted at ``thread_ts`` (#2061); a refused read raises.
@@ -545,6 +540,14 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return egress.add_reaction_routed(
             self._post, token=self._route_token(channel), channel=channel, ts=ts, emoji=emoji
         )
+
+    def update_routed(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        return message_mutations.update_routed(
+            self._post, token=self._route_token(channel), channel=channel, ts=ts, text=text
+        )
+
+    def delete_routed(self, *, channel: str, ts: str) -> RawAPIDict:
+        return message_mutations.delete_routed(self._post, token=self._route_token(channel), channel=channel, ts=ts)
 
     def open_dm(self, user_id: str) -> str:
         """Return the IM channel id for *user_id*; short-circuit to the cached id when set (#1342)."""

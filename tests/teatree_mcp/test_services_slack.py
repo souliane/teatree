@@ -120,3 +120,35 @@ def test_slack_conversations_returns_a_page_and_cursor() -> None:
         "cursor": "first",
         "limit": 25,
     }
+
+
+def test_slack_update_delegates_expected_text_to_egress() -> None:
+    with (
+        patch.object(services_slack, "_client", return_value=_RefusingBackend()),
+        patch.object(services_slack, "OnBehalfSlackEgress") as egress,
+    ):
+        egress.return_value.update.return_value = {"ok": True}
+        result = asyncio.run(
+            _server().call_tool("slack_update", {"channel": "C123", "ts": "1.2", "expected_text": "old", "text": "new"})
+        )
+    assert result.structured_content["ok"] is True
+    assert egress.return_value.update.call_args.kwargs == {
+        "channel": "C123",
+        "ts": "1.2",
+        "expected_text": "old",
+        "text": "new",
+        "thread_ts": "",
+    }
+
+
+def test_slack_delete_defaults_to_preview() -> None:
+    with (
+        patch.object(services_slack, "_client", return_value=_RefusingBackend()),
+        patch.object(services_slack, "OnBehalfSlackEgress") as egress,
+    ):
+        egress.return_value.delete.return_value = {"ok": True, "dry_run": True, "approval": {"target": "slack:x"}}
+        result = asyncio.run(
+            _server().call_tool("slack_delete", {"channel": "C123", "ts": "1.2", "expected_text": "old"})
+        )
+    assert result.structured_content["approval"]["target"] == "slack:x"
+    assert egress.return_value.delete.call_args.kwargs["dry_run"] is True

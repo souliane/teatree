@@ -234,6 +234,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return PrMergeState(state="", merge_commit_oid="")
 
+    def update_pr_message(self, *, slug: str, pr_id: int, message: PrMessage) -> PrMessage:
+        _ = (slug, pr_id)
+        return message
+
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         _ = (slug, pr_id)
         return DraftState.NOT_DRAFT
@@ -294,6 +298,10 @@ class _FakeMessaging:
         _ = (channel, ts)
         return {}
 
+    def fetch_message_for_write(self, *, channel: str, ts: str, thread_ts: str = "") -> dict[str, object]:
+        _ = (channel, ts, thread_ts)
+        return {}
+
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[dict[str, object]]:
         _ = (channel, thread_ts)
         return []
@@ -305,6 +313,10 @@ class _FakeMessaging:
     def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
         _ = (channel, limit)
         return []
+
+    def list_conversations(self, *, cursor: str = "", limit: int = 100) -> dict[str, object]:
+        _ = cursor, limit
+        return {"channels": []}
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
         _ = (channel, text, thread_ts)
@@ -332,6 +344,14 @@ class _FakeMessaging:
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
         _ = (channel, text, thread_ts)
+        return {}
+
+    def update_routed(self, *, channel: str, ts: str, text: str) -> dict[str, object]:
+        _ = channel, ts, text
+        return {}
+
+    def delete_routed(self, *, channel: str, ts: str) -> dict[str, object]:
+        _ = channel, ts
         return {}
 
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:

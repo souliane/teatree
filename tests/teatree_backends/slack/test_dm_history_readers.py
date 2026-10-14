@@ -57,6 +57,18 @@ class TestReadSingleMessage:
         message = read_single_message(get=lambda *_: {"ok": False}, channel="D1", ts="1.0")
         assert message == {}
 
+    def test_strict_read_refuses_instead_of_reporting_absence(self) -> None:
+        with pytest.raises(SlackReadRefusedError, match="not_in_channel"):
+            read_single_message(
+                get=lambda *_: {"ok": False, "error": "not_in_channel"}, channel="C1", ts="1.0", refuse=True
+            )
+
+    def test_strict_read_does_not_mistake_previous_message_for_deleted_target(self) -> None:
+        message = read_single_message(
+            get=lambda *_: _ok([{"ts": "0.9", "text": "previous"}]), channel="C1", ts="1.0", refuse=True
+        )
+        assert message == {}
+
     def test_no_matching_message_returns_empty(self) -> None:
         message = read_single_message(get=lambda *_: _ok([]), channel="D1", ts="1.0")
         assert message == {}

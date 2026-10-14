@@ -46,15 +46,25 @@ here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
 /``teatree.types`` — no edge into ``teatree.backends``.
 """
 
+import hashlib
 import logging
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.egress_transport import EgressKind, run_egress_transport, suppress_on_behalf_egress
+from teatree.core.gates import exact_approval
+from teatree.core.on_behalf_egress_observation import (
+    EgressAttempt,
+    EgressDestination,
+    EgressOutcome,
+    observe_egress,
+    observe_egress_errors,
+    observe_on_behalf_egress,
+)
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
@@ -63,101 +73,19 @@ from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
-
-class EgressOutcome(StrEnum):
-    POSTED = "posted"
-    REFUSED = "refused"
+if TYPE_CHECKING:
+    from teatree.core.models import OutboundClaim
 
 
 @dataclass(frozen=True, slots=True)
-class EgressDestination:
-    """Where a Slack call landed — bundled so ``_observe_egress`` stays under the arg-count cap."""
-
-    channel: str = ""
-    thread: str = ""
-
-
-_NO_DESTINATION = EgressDestination()
-
-
-@dataclass(frozen=True, slots=True)
-class EgressAttempt:
-    target: str
+class SlackMutation:
+    channel: str
+    ts: str
+    payload: str
     action: str
     kind: EgressKind
-    outcome: EgressOutcome
-    reason: str
-    channel: str = ""
-    thread: str = ""
-
-
-type EgressObserver = Callable[[EgressAttempt], None]
-
-_EGRESS_OBSERVER: ContextVar[EgressObserver | None] = ContextVar("on_behalf_egress_observer", default=None)
-
-
-@contextmanager
-def observe_on_behalf_egress(observer: EgressObserver) -> Iterator[None]:
-    token = _EGRESS_OBSERVER.set(observer)
-    try:
-        yield
-    finally:
-        _EGRESS_OBSERVER.reset(token)
-
-
-def _observe_egress(
-    target: str,
-    action: str,
-    kind: EgressKind,
-    response: RawAPIDict,
-    *,
-    destination: EgressDestination = _NO_DESTINATION,
-) -> RawAPIDict:
-    landed = bool(response.get("ok")) or response.get("error") == "already_reacted"
-    if observer := _EGRESS_OBSERVER.get():
-        reason = (
-            "all live checks passed; final transport suppressed"
-            if landed
-            else str(response.get("error") or "no response")
-        )
-        observer(
-            EgressAttempt(
-                target=target,
-                action=action,
-                kind=kind,
-                outcome=EgressOutcome.POSTED if landed else EgressOutcome.REFUSED,
-                reason=reason,
-                channel=destination.channel,
-                thread=destination.thread,
-            ),
-        )
-    return response
-
-
-@contextmanager
-def _observe_egress_errors(
-    target: str,
-    action: str,
-    kind: EgressKind,
-    *,
-    destination: EgressDestination = _NO_DESTINATION,
-) -> Iterator[None]:
-    try:
-        yield
-    except Exception as exc:
-        if observer := _EGRESS_OBSERVER.get():
-            observer(
-                EgressAttempt(
-                    target=target,
-                    action=action,
-                    kind=kind,
-                    outcome=EgressOutcome.REFUSED,
-                    reason=" ".join(str(exc).splitlines()),
-                    channel=destination.channel,
-                    thread=destination.thread,
-                ),
-            )
-        raise
+    exact_target: str = ""
+    thread_ts: str = ""
 
 
 def routed_channel_text(*, target: str, action: str, channel: str, text: str) -> str:
@@ -165,16 +93,16 @@ def routed_channel_text(*, target: str, action: str, channel: str, text: str) ->
 
     Outside the gate's transaction on purpose: a refusal raised inside it rolls the ``SendAudit`` row back.
     """
-    with _observe_egress_errors(target, action, EgressKind.POST, destination=EgressDestination(channel=channel)):
+    with observe_egress_errors(target, action, EgressKind.POST, destination=EgressDestination(channel=channel)):
         return _route_colleague_send(channel=channel, payload=text, action=action, target=target)
 
 
 def observed_channel_post(*, target: str, action: str, channel: str, publish: Callable[[], RawAPIDict]) -> RawAPIDict:
     """A gated caller's own channel post, suppressed and reported by a preview exactly as this egress's are."""
     destination = EgressDestination(channel=channel)
-    with _observe_egress_errors(target, action, EgressKind.POST, destination=destination):
+    with observe_egress_errors(target, action, EgressKind.POST, destination=destination):
         response = run_egress_transport(target, action, EgressKind.POST, publish)
-    return _observe_egress(target, action, EgressKind.POST, response, destination=destination)
+    return observe_egress(target, action, EgressKind.POST, response, destination=destination)
 
 
 class _PublishDidNotLandError(Exception):
@@ -220,6 +148,134 @@ class OnBehalfSlackEgress:
     def __init__(self, messaging: MessagingBackend) -> None:
         self._messaging = messaging
 
+    def _live_message(self, channel: str, ts: str, thread_ts: str) -> RawAPIDict:
+        if not channel or not ts:
+            msg = "a channel and message timestamp are required"
+            raise ValueError(msg)
+        return self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts)
+
+    def _message_for_mutation(self, channel: str, ts: str, expected_text: str, thread_ts: str) -> RawAPIDict:
+        message = self._live_message(channel, ts, thread_ts)
+        if not message or str(message.get("ts", "")) != ts:
+            msg = "the Slack message is absent; nothing was written"
+            raise ValueError(msg)
+        if message.get("text") != expected_text:
+            msg = "the Slack message changed since the expected text was read; nothing was written"
+            raise ValueError(msg)
+        return message
+
+    def _mutate(self, mutation: SlackMutation, publish: Callable[[str], RawAPIDict]) -> RawAPIDict:
+        channel, ts, payload, action, kind, exact_target = (
+            mutation.channel,
+            mutation.ts,
+            mutation.payload,
+            mutation.action,
+            mutation.kind,
+            mutation.exact_target,
+        )
+        destination = EgressDestination(channel=channel, thread=ts)
+        with observe_egress_errors(channel, action, kind, destination=destination):
+            colleague = not self._is_self_dm(channel)
+            routed = (
+                _route_colleague_send(channel=channel, payload=payload, action=action, target=channel)
+                if colleague
+                else payload
+            )
+            if routed != payload:
+                msg = "the send gate changed the message preview; nothing was written"
+                raise ValueError(msg)
+
+            def attempt() -> RawAPIDict:
+                return _publish_or_rollback(
+                    lambda: run_egress_transport(channel, action, kind, lambda: publish(routed))
+                )
+
+            try:
+                if exact_target:
+                    with exact_approval.spent_approval(exact_target, action):
+                        response = attempt()
+                elif colleague:
+                    response = require_on_behalf_approval(target=channel, action=action, publish=attempt)
+                else:
+                    response = attempt()
+            except _PublishDidNotLandError as unlanded:
+                return observe_egress(channel, action, kind, unlanded.response, destination=destination)
+            return observe_egress(channel, action, kind, response, destination=destination)
+
+    def _confirm_mutation(self, mutation: SlackMutation) -> None:
+        claim_model = cast("type[OutboundClaim]", apps.get_model("core", "OutboundClaim"))
+
+        digest = hashlib.sha256(
+            f"{mutation.action}:{mutation.channel}:{mutation.thread_ts}:{mutation.ts}:{mutation.payload}".encode()
+        ).hexdigest()
+        claim, _created = claim_model.objects.get_or_create(
+            idempotency_key=f"slack-message:{digest}",
+            defaults={
+                "kind": claim_model.Kind.SLACK_MESSAGE,
+                "extra": {
+                    "channel": mutation.channel,
+                    "ts": mutation.ts,
+                    "thread_ts": mutation.thread_ts,
+                    "action": mutation.action,
+                },
+            },
+        )
+        if claim.verified_at is None:
+            claim.mark_verified()
+        if not self._is_self_dm(mutation.channel):
+            notify_user_on_behalf_post(
+                target=mutation.channel,
+                action=mutation.action,
+                destination=mutation.channel,
+                artifact_url=mutation.channel,
+                summary=mutation.payload[:120],
+            )
+
+    def update(self, *, channel: str, ts: str, expected_text: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        current = self._live_message(channel, ts, thread_ts)
+        if current and str(current.get("ts", "")) == ts and current.get("text") == text:
+            return {"ok": True, "already_updated": True}
+        self._message_for_mutation(channel, ts, expected_text, thread_ts)
+        mutation = SlackMutation(channel, ts, text, "mcp_slack_update", EgressKind.UPDATE, thread_ts=thread_ts)
+        response = self._mutate(
+            mutation, lambda routed: self._messaging.update_routed(channel=channel, ts=ts, text=routed)
+        )
+        if (
+            response.get("ok")
+            and self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts).get("text") != text
+        ):
+            msg = "Slack accepted the update but a live read did not confirm the new text"
+            raise RuntimeError(msg)
+        if response.get("ok"):
+            self._confirm_mutation(mutation)
+        return response
+
+    def delete(
+        self, *, channel: str, ts: str, expected_text: str, thread_ts: str = "", dry_run: bool = True
+    ) -> RawAPIDict:
+        current = self._live_message(channel, ts, thread_ts)
+        if not current:
+            return {"ok": True, "already_deleted": True}
+        self._message_for_mutation(channel, ts, expected_text, thread_ts)
+        object_path = f"{channel}/{thread_ts}/{ts}" if thread_ts else f"{channel}/{ts}"
+        target = exact_approval.write_target("slack", object_path, expected_text)
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "channel": channel,
+                "ts": ts,
+                "approval": exact_approval.approval_hint(target, "mcp_slack_delete"),
+            }
+        mutation = SlackMutation(channel, ts, expected_text, "mcp_slack_delete", EgressKind.DELETE, target, thread_ts)
+        response = self._mutate(mutation, lambda _routed: self._messaging.delete_routed(channel=channel, ts=ts))
+        if response.get("ok") and self._messaging.fetch_message_for_write(channel=channel, ts=ts, thread_ts=thread_ts):
+            msg = "Slack accepted the delete but a live read still found the message"
+            raise RuntimeError(msg)
+        if response.get("ok"):
+            self._confirm_mutation(mutation)
+        return response
+
     def _is_self_dm(self, channel: str) -> bool:
         """True when *channel* is the user's own DM, via the backend's #1750 classifier.
 
@@ -262,7 +318,7 @@ class OnBehalfSlackEgress:
         on ``already_reacted`` or ``ok:false``). Returns the raw Slack body.
         """
         egress_location = EgressDestination(channel=channel, thread=ts)
-        with _observe_egress_errors(target, action, EgressKind.REACTION, destination=egress_location):
+        with observe_egress_errors(target, action, EgressKind.REACTION, destination=egress_location):
             if self._is_self_dm(channel):
                 response = run_egress_transport(
                     target,
@@ -270,7 +326,7 @@ class OnBehalfSlackEgress:
                     EgressKind.REACTION,
                     lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji),
                 )
-                return _observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
+                return observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
             _route_colleague_send(channel=channel, payload=f":{emoji}:", action=action, target=target)
             try:
                 response = require_on_behalf_approval(
@@ -287,7 +343,7 @@ class OnBehalfSlackEgress:
                     ),
                 )
             except _PublishDidNotLandError as unlanded:
-                return _observe_egress(
+                return observe_egress(
                     target,
                     action,
                     EgressKind.REACTION,
@@ -302,7 +358,7 @@ class OnBehalfSlackEgress:
                     artifact_url=artifact_url or channel,
                     summary=summary or f":{emoji}:",
                 )
-            return _observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
+            return observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post(  # noqa: PLR0913 — colleague-egress chokepoint; each kwarg is a documented gate/route/audit input, kwargs-only.
@@ -342,7 +398,7 @@ class OnBehalfSlackEgress:
         so callers keep inspecting ``ok`` / ``error`` / ``ts``.
         """
         egress_location = EgressDestination(channel=channel, thread=thread_ts)
-        with _observe_egress_errors(target, action, EgressKind.POST, destination=egress_location):
+        with observe_egress_errors(target, action, EgressKind.POST, destination=egress_location):
             if self._is_self_dm(channel):
 
                 def publish_self_dm() -> RawAPIDict:
@@ -355,7 +411,7 @@ class OnBehalfSlackEgress:
                 response = run_egress_transport(target, action, EgressKind.POST, publish_self_dm)
                 if response.get("ok") and response.get("ts"):
                     _retire_threaded_answer(thread_ts)
-                return _observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
+                return observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
             text = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
             try:
                 response = require_on_behalf_approval(
@@ -372,7 +428,7 @@ class OnBehalfSlackEgress:
                     ),
                 )
             except _PublishDidNotLandError as unlanded:
-                return _observe_egress(target, action, EgressKind.POST, unlanded.response, destination=egress_location)
+                return observe_egress(target, action, EgressKind.POST, unlanded.response, destination=egress_location)
             if response.get("ok"):
                 notify_user_on_behalf_post(
                     target=target,
@@ -381,7 +437,7 @@ class OnBehalfSlackEgress:
                     artifact_url=channel,
                     summary=summary or text[:120],
                 )
-            return _observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
+            return observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
 
 
 def _route_colleague_send(*, channel: str, payload: str, action: str, target: str) -> str:

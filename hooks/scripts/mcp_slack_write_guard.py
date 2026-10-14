@@ -65,8 +65,10 @@ _ESCAPE_RE = re.compile(r"\[slack-mcp-ok:\s*(\S[^\]]*)\]")
 
 _DENY_REASON = (
     "BLOCKED: a direct MCP Slack write bypasses teatree's Slack egress chokepoint "
-    "(on-behalf gate, voice classifier, verify-by-re-read). Route it through the "
-    "`t3` CLI instead: DM the user with `t3 teatree notify send -` (bot token); post to "
+    "(on-behalf gate, voice classifier, verify-by-re-read). Use teatree MCP: "
+    "`slack_post`, `slack_update`, `slack_delete`, or `slack_react` for colleague messages; "
+    "`notify_user` for a DM to the owner. If teatree MCP is unavailable, use the "
+    "`t3` CLI: DM the user with `t3 teatree notify send -` (bot token); post to "
     "a colleague channel with `t3 <overlay> notify post --channel <id> --text <body>` "
     "(on-behalf gated); react with `t3 slack react`; comment on an MR/PR with "
     "`t3 review post-comment <repo> <mr> --body-file <abspath>` (top-level `t3 review`, "

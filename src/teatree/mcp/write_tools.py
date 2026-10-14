@@ -511,6 +511,12 @@ _CROSS_MODULE_SEAMS: dict[str, WriteSeam] = {
         "SentryIssueClient.resolve_issue after CodeHostBackend.fetch_pr_merge_state", ApprovalTier.AGENT
     ),
     "slack_post": WriteSeam("OnBehalfSlackEgress.post — send-proxy + on-behalf gate + receipt", ApprovalTier.POSTURE),
+    "slack_update": WriteSeam(
+        "OnBehalfSlackEgress.update — live compare + send-proxy + posture + read-back", ApprovalTier.POSTURE
+    ),
+    "slack_delete": WriteSeam(
+        "OnBehalfSlackEgress.delete — live compare + exact approval + read-back", ApprovalTier.EXACT
+    ),
     "github_pr_update": WriteSeam(
         "CodeHostBackend.update_pr_message + send-proxy + own-author check", ApprovalTier.AGENT
     ),

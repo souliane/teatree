@@ -9,6 +9,8 @@ from teatree.types import RawAPIDict
 class EgressKind(StrEnum):
     POST = "post"
     REACTION = "reaction"
+    UPDATE = "update"
+    DELETE = "delete"
 
 
 type EgressSuppressor = Callable[[str, str, EgressKind], RawAPIDict]

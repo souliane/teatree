@@ -25,6 +25,8 @@ def test_noop_returns_empty_for_inbound() -> None:
     assert backend.fetch_mentions(since="x") == []
     assert backend.fetch_dms(since="x") == []
     assert backend.fetch_thread_replies(channel="D1", thread_ts="root.ts") == []
+    with pytest.raises(PermissionError, match="no Slack backend"):
+        backend.fetch_message_for_write(channel="D1", ts="1.0")
 
 
 def test_noop_returns_empty_dict_for_outbound() -> None:

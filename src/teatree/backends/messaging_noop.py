@@ -41,6 +41,12 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def fetch_message_for_write(*, channel: str, ts: str, thread_ts: str = "") -> RawAPIDict:
+        _ = channel, ts, thread_ts
+        msg = "no Slack backend is configured for a live mutation read"
+        raise PermissionError(msg)
+
+    @staticmethod
     def fetch_thread_replies(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
         _ = channel, thread_ts
         return []
@@ -54,6 +60,12 @@ class NoopMessagingBackend:
     def fetch_channel_history_or_refuse(*, channel: str, limit: int = 50) -> list[RawAPIDict]:
         _ = limit
         raise ChannelReadRefusedError(channel, "noop_messaging_backend")
+
+    @staticmethod
+    def list_conversations(*, cursor: str = "", limit: int = 100) -> RawAPIDict:
+        _ = cursor, limit
+        msg = "no Slack backend is configured for conversation listing"
+        raise PermissionError(msg)
 
     @staticmethod
     def post_message(
@@ -94,6 +106,16 @@ class NoopMessagingBackend:
     @staticmethod
     def post_routed(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = channel, text, thread_ts
+        return {}
+
+    @staticmethod
+    def update_routed(*, channel: str, ts: str, text: str) -> RawAPIDict:
+        _ = channel, ts, text
+        return {}
+
+    @staticmethod
+    def delete_routed(*, channel: str, ts: str) -> RawAPIDict:
+        _ = channel, ts
         return {}
 
     @staticmethod
