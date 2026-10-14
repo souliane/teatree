@@ -356,6 +356,11 @@ class TestPushBranch:
         )
         recorder = _RecordingRun()
         with (
+            patch.dict(
+                os.environ,
+                {"GH_TOKEN": FAKE_TOKEN, "GITHUB_TOKEN": FAKE_TOKEN, "GITLAB_TOKEN": "hostile-gitlab"},
+                clear=False,
+            ),
             patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(gitlab_token=routed)),
             patch("teatree.core.forge_push.run_bounded_group", recorder),
         ):
@@ -363,7 +368,30 @@ class TestPushBranch:
 
         seen = recorder.envs[-1]
         assert seen["GITLAB_TOKEN"] == FAKE_GITLAB_TOKEN
-        assert "GH_TOKEN" not in seen
+        leaked = {"GH_TOKEN", "GITHUB_TOKEN", "TEATREE_GH_TOKEN"} & seen.keys()
+        assert not leaked
+
+    def test_github_push_excludes_other_ambient_forge_tokens(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+        routed = ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token=FAKE_TOKEN, pass_key="owner/github"
+        )
+        recorder = _RecordingRun()
+        with (
+            patch.dict(
+                os.environ,
+                {"GITLAB_TOKEN": FAKE_GITLAB_TOKEN, "GITHUB_TOKEN": "hostile-github", "TEATREE_GH_TOKEN": "bootstrap"},
+                clear=False,
+            ),
+            patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(github_token=routed)),
+            patch("teatree.core.forge_push.run_bounded_group", recorder),
+        ):
+            push_branch(repo=clone_with_origin)
+
+        seen = recorder.envs[-1]
+        assert seen["GH_TOKEN"] == FAKE_TOKEN
+        leaked = {"GITLAB_TOKEN", "GITHUB_TOKEN", "TEATREE_GH_TOKEN"} & seen.keys()
+        assert not leaked
 
     @pytest.mark.parametrize("state", [ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE])
     def test_gitlab_push_refuses_hostile_ambient_when_owner_route_is_empty(
