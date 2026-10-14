@@ -82,10 +82,11 @@ def test_write_phases_never_bind_the_executor(phase: str) -> None:
 
 
 @pytest.mark.usefixtures("worker")
-def test_planning_binds_the_executor_without_the_teatree_mcp_server() -> None:
-    harness = codex_app_server_spec().factory(HarnessBuildContext(phase="planning"))
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+def test_served_phases_bind_the_executor_without_the_teatree_mcp_server(phase: str) -> None:
+    harness = codex_app_server_spec().factory(HarnessBuildContext(phase=phase))
 
-    assert harness.read_only_phase == "planning"
+    assert harness.read_only_phase == phase
     assert (harness.capabilities.read_only_venue, harness.capabilities.mcp) == (True, False)
 
 
@@ -98,8 +99,9 @@ def test_a_host_planning_harness_keeps_codex_own_read_only_sandbox() -> None:
 
 
 @pytest.mark.usefixtures("worker")
-def test_open_reprobes_before_spawning(fake: FakeExecutor) -> None:
-    context = HarnessBuildContext(phase="planning")
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+def test_open_reprobes_before_spawning(fake: FakeExecutor, phase: str) -> None:
+    context = HarnessBuildContext(phase=phase)
     assert select_harness(["codex_app_server"], context).spec.name == "codex_app_server"
     harness = codex_app_server_spec().factory(context)
     fake.probe["writes"]["/"] = "OK"

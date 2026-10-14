@@ -118,11 +118,14 @@
   anti_pattern: >-
     Deciding whether a forge command is a read or a write by the literal
     verb/tool-name or the mere presence of a method flag, so a last-wins
-    -X/--method override (gh/glab) bypasses the write gate.
+    -X/--method override (gh/glab) bypasses the write gate. The same holds for
+    option spellings: a parser that knows only `-d` and `--data` reads
+    `curl -sd x`, `gh pr create -dt x` or `--data-ascii x` as carrying no body.
   preferred_pattern: >-
     Classify by EFFECTIVE HTTP method — last -X/--method wins; body/field flags
     default to POST — mirroring the transcript-conformance effective-method
-    classifier.
+    classifier. Read the argv as the tool does (clusters, aliases, attached
+    values), through one reader that detection and extraction both consume.
   consumers: [architecture-design, architectural-review, eval]
   refs: ["effective-method-classifier", "gh-glab-last-wins-finding"]
   linter: null
@@ -343,6 +346,26 @@
     the finding, not proof of the code it wraps.
   consumers: [architecture-design, architectural-review, eval]
   refs: ["souliane/teatree#4215", "anti-vacuous-eval"]
+  linter: null
+  eval_invariant: null
+
+- id: test-reads-the-ambient-venue
+  name: Test that claims isolation but reads the venue it runs in
+  severity: medium
+  detection: judgement
+  anti_pattern: >-
+    A test whose premise is an empty world — no token, no term registry, no
+    control DB — that clears only the inputs its author knew of, so the code
+    under test resolves the missing value from the venue instead: a mounted
+    control DB, an exported token, a git insteadOf rewrite. It is green in CI,
+    where the venue is empty, and red in the worker container every agent runs
+    it in, so each local run pays a control run against main to attribute it.
+  preferred_pattern: >-
+    Pin every input the path resolves, not only HOME: point each resolver at an
+    absent tmp_path location, as CI's empty venue does, and prove the
+    isolation by running the test inside the worker container.
+  consumers: [architecture-design, architectural-review]
+  refs: ["test-writing-doctrine"]
   linter: null
   eval_invariant: null
 

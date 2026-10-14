@@ -24,7 +24,7 @@ _ONE_GATE_SPLIT_OVER_HELPERS = {
         }
     ),
     "mr_metadata": frozenset(
-        {("hook_router.py", "_handle_broken_validate_env"), ("hook_router.py", "_mr_validator_verdict")}
+        {("mr_validator.py", "_handle_broken_validate_env"), ("mr_validator.py", "_mr_validator_verdict")}
     ),
 }
 

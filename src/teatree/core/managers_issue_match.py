@@ -30,3 +30,10 @@ def matching_issue_q(issue_url: str) -> Q:
     if ns_key:
         predicate |= Q(repo_namespaced_key=ns_key)
     return predicate
+
+
+def reference_issue_q(ref: str) -> Q:
+    bare, sep, fragment = ref.partition("#")
+    if not sep or "=" in fragment:
+        return matching_issue_q(ref)
+    return matching_issue_q(ref) | matching_issue_q(bare)

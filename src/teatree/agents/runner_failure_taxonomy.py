@@ -24,6 +24,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     CLI_TOO_OLD_PREFIX,
     CONTEXT_EXHAUSTED_MARKER,
     RESULT_ERROR_MARKER,
+    RESUME_REFUSED_PHRASE,
 )
 from teatree.llm.anthropic_limits import (
     LimitCause,
@@ -118,10 +119,7 @@ def is_refused_resume(message: ResultMessage | None) -> TypeGuard[ResultMessage]
 
 def refused_resume_reason(message: ResultMessage) -> str:
     """The recorded reason for a declined resume: an exhausted conversation, so the retry starts fresh."""
-    return (
-        f"{RESULT_ERROR_PREFIX}{CONTEXT_EXHAUSTED_MARKER} — subtype={message.subtype} — "
-        "the resumed conversation ended without taking a turn"
-    )
+    return f"{RESULT_ERROR_PREFIX}{CONTEXT_EXHAUSTED_MARKER} — subtype={message.subtype} — {RESUME_REFUSED_PHRASE}"
 
 
 def cli_too_old_fallback(fallbacks: Iterable[Mapping[str, object]]) -> Mapping[str, object] | None:

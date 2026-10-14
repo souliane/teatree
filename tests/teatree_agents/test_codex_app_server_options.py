@@ -202,3 +202,24 @@ def test_an_attested_mutation_denied_phase_runs_unsandboxed_in_the_executor(
     assert options.config["projects"] == {"/work/main": {"trust_level": "untrusted"}}
     assert options.config["plugins"] == {CODEX_PLUGIN_ID: {"enabled": False}}
     assert options.executor is attestation
+
+
+def test_an_attested_shell_denied_phase_uses_the_executor_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    attestation = attested(FakeExecutor(tmp_path), monkeypatch)
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    denied = ["Write", "Edit", "NotebookEdit", "Bash", "BashOutput", "KillBash", "KillShell"]
+
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work/main", permission_mode="bypassPermissions", disallowed_tools=denied),
+        executor=attestation,
+    )
+
+    assert options.sandbox_mode == "danger-full-access"
+    assert options.executor is attestation
+
+    with pytest.raises(CodexAppServerError, match="cannot enforce tool denials for: Bash"):
+        CodexAppServerOptions.from_sdk_options(
+            ClaudeAgentOptions(cwd="/work/main", permission_mode="bypassPermissions", disallowed_tools=denied)
+        )

@@ -26,9 +26,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.owner_threads import OwnerThread, open_owner_threads, resolve_owner_thread
-from teatree.url_classify import find_forge_urls
+from teatree.url_classify import find_forge_refs
 
 logger = logging.getLogger(__name__)
 
@@ -121,13 +122,14 @@ def subject_closed_locally(question_text: str) -> bool:
     """
     from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    urls = find_forge_urls(question_text)
+    urls = find_forge_refs(question_text)
     if not urls:
         return False
     landed = {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED}
     for url in urls:
-        states = set(Ticket.objects.filter(pull_requests__url=url).values_list("state", flat=True)) | set(
-            Ticket.objects.filter(issue_url=url).values_list("state", flat=True)
+        bare = url.partition("#")[0].rstrip("/")
+        states = set(Ticket.objects.filter(pull_requests__url=bare).values_list("state", flat=True)) | set(
+            Ticket.objects.filter(reference_issue_q(url)).values_list("state", flat=True)
         )
         if not states or not states <= landed:
             return False

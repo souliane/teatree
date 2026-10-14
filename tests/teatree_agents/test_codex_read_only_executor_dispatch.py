@@ -1,4 +1,4 @@
-"""A planning task routed to Codex runs inside the read-only executor and its plan is recorded."""
+"""Read-only Codex turns record their phase results through the worker."""
 
 import contextlib
 import json
@@ -18,7 +18,16 @@ from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabili
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt
+from teatree.core.models import (
+    AutoReviewDispatch,
+    CriticDispatch,
+    CriticVerdict,
+    LandscapeArtifact,
+    ReviewVerdict,
+    Session,
+    Task,
+    TaskAttempt,
+)
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.types import SkillMetadata
 from teatree.utils import run, secrets
@@ -86,7 +95,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
             return run_agent(self._task(), phase="planning", overlay_skill_metadata=SkillMetadata())
 
     @contextlib.contextmanager
-    def _world(self, config: AgentConfig, host: SimpleNamespace) -> Iterator[None]:
+    def _world(self, config: AgentConfig, host: SimpleNamespace, *, skills: list[str] | None = None) -> Iterator[None]:
         with (
             patch.dict("os.environ", {**self.env, "T3_CODEX_HOME": str(self.fake.root / "worker-codex-home")}),
             patch.object(secrets, "run_bounded_group", run.run_bounded_group),
@@ -94,7 +103,10 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
             patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=True),
             patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
             patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config),
-            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=["architecture-design"]),
+            patch(
+                "teatree.agents.runner_skill_staging.resolve_skill_bundle",
+                return_value=skills or ["architecture-design"],
+            ),
             patch(
                 "teatree.agents.read_only_venue_brief.get_backend_provider",
                 return_value=SimpleNamespace(get_code_host_for_url=lambda overlay, url: host),
@@ -136,3 +148,91 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert "the issue body could not be read" in attempt.fallback_reason
         assert self.built == ["claude_like"]
         assert not [call for call in self.fake.calls if "setsid" in call]
+
+    def test_remote_review_runs_on_codex_and_records_a_verdict_at_the_dispatched_head(self) -> None:
+        head = "a" * 40
+        pr_url = "https://github.com/example-org/example-repo/pull/5"
+        dispatch = AutoReviewDispatch.enqueue(
+            slug="example-org/example-repo",
+            pr_id=5,
+            head_sha=head,
+            pr_url=pr_url,
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        assert dispatch.task is not None
+        task = dispatch.task
+        task.claim(claimed_by="headless-reviewer")
+        self.fake.reply = json.dumps(
+            {
+                "summary": "Reviewed the dispatched pull request head.",
+                "review_context": {
+                    "work_item": pr_url,
+                    "documents": ["src/example.py"],
+                    "analysis": "Checked the complete worker diff.",
+                },
+                "review_verdict": {
+                    "verdict": "merge_safe",
+                    "reviewed_sha": head,
+                    "reviewer_identity": "cold-reviewer-agent",
+                    "gh_verify_result": "green",
+                    "blast_class": "logic",
+                    "findings": [],
+                },
+            }
+        )
+        self.fake.install()
+        config = AgentConfig(skill_models={"review": (AgentRouteCandidate("codex_app_server", "codex-model"),)})
+        host = SimpleNamespace(
+            get_issue=lambda url: {"body": "Review this pull request."},
+            list_issue_comments=lambda *, issue_url: [],
+            get_pr_file_diffs=lambda *, repo, pr_iid: {"src/example.py": "@@ -1 +1 @@\n-old\n+new"},
+        )
+        with (
+            self._world(config, host, skills=["review"]),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="CI green"),
+            ),
+        ):
+            attempt = run_agent(task, phase="reviewing", overlay_skill_metadata=SkillMetadata())
+
+        assert attempt.error == "", attempt.error
+        assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
+        assert ReviewVerdict.objects.filter(
+            slug="example-org/example-repo", pr_id=5, reviewed_sha=head, verdict="merge_safe"
+        ).exists()
+
+    def test_critic_runs_on_codex_and_records_a_verdict_at_the_dispatched_head(self) -> None:
+        head = "b" * 40
+        ticket = planned_ticket(issue_url=_ISSUE_URL)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=head, contract="c")
+        assert dispatch is not None
+        assert dispatch.task is not None
+        task = dispatch.task
+        task.claim(claimed_by="headless-critic")
+        self.fake.reply = json.dumps(
+            {
+                "summary": "Critic reviewed the dispatched head.",
+                "critic_verdict": {
+                    "grader_identity": "critic-agent-7",
+                    "items": [{"slug": "coherence", "status": "fail", "citation": "src/example.py:1"}],
+                },
+            }
+        )
+        self.fake.install()
+        config = AgentConfig(skill_models={"review": (AgentRouteCandidate("codex_app_server", "codex-model"),)})
+        host = SimpleNamespace(
+            get_issue=lambda url: {"body": "Critic review."}, list_issue_comments=lambda *, issue_url: []
+        )
+
+        with self._world(config, host, skills=["review"]):
+            attempt = run_agent(task, phase="critic_reviewing", overlay_skill_metadata=SkillMetadata())
+
+        assert attempt.error == "", attempt.error
+        assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
+        assert CriticVerdict.objects.filter(ticket=ticket, transition="mark_delivered", head_sha=head).exists()

@@ -99,6 +99,10 @@ _LEAK_DENY_MESSAGES: dict[str, tuple[str, str]] = {
         ai_signature_gate.format_scanner_error_message("Traceback"),
         "ai_signature",
     ),
+    "ai_signature_gate.format_venue_fault_message": (
+        ai_signature_gate.format_venue_fault_message("launcher exit 69"),
+        "ai_signature",
+    ),
     "gate._BANNED_TERMS_CREDENTIAL_DENY": (banned_terms_gate._BANNED_TERMS_CREDENTIAL_DENY, "banned_terms"),
 }
 
