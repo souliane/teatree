@@ -1,3 +1,4 @@
+import base64
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -7,9 +8,10 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from teatree.core.models.sealed_secret import SealedSecret, SealedStoreReadBackError
-from teatree.core.sealed_store import DbStore
+from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 from teatree.utils.sealing import SealedValueTamperedError
+from teatree.utils.secrets import SecretStoreError
 
 
 class TestSealedSecret(TestCase):
@@ -26,11 +28,28 @@ class TestSealedSecret(TestCase):
     def test_store_roundtrips_with_same_bytes_at_new_source(self) -> None:
         assert self.store.write("alpha/token", "canary") is True
         assert self.source.path.stat().st_mode & 0o777 == 0o600
+        assert len(base64.b64decode(self.source.path.read_text(), validate=True)) == 32
+        before = self._row_bytes("alpha/token")
         copy = self.source.path.with_name("copy.key")
         copy.write_bytes(self.source.path.read_bytes() + b"\n")
         copy.chmod(0o600)
         assert DbStore(KeyFileSource(copy)).read("alpha/token") == "canary"
-        assert SealedSecret.objects.get(name="alpha/token").updated_at
+        assert self._row_bytes("alpha/token") == before
+
+    def test_first_write_warns_once_with_key_id(self) -> None:
+        with self.assertLogs("teatree.utils.master_key", "WARNING") as logs:
+            self.store.write("alpha/token", "canary")
+        (message,) = logs.output
+        assert self.source.load().key_id in message
+        assert "keep a copy of this key" in message
+        assert self.source.path.read_text() not in message
+        with self.assertNoLogs("teatree.utils.master_key", "WARNING"):
+            self.store.write("beta/token", "another")
+
+    @staticmethod
+    def _row_bytes(name: str) -> tuple[object, ...]:
+        row = SealedSecret.objects.get(name=name)
+        return (row.key_id, bytes(row.nonce), bytes(row.ciphertext), row.updated_at)
 
     def test_unicode_roundtrip_and_failed_read_back_preserves_timestamp(self) -> None:
         assert self.store.write("alpha/token", "pässwörd") is True
@@ -53,7 +72,7 @@ class TestSealedSecret(TestCase):
     def test_existing_rows_refuse_missing_key_without_creating_one(self) -> None:
         self.store.write("alpha/token", "canary")
         self.source.path.unlink()
-        with pytest.raises(ValueError, match="unreadable"):
+        with pytest.raises(SecretStoreError, match="unreadable"):
             self.store.write("beta/token", "another")
         assert not self.source.path.exists()
         assert not SealedSecret.objects.filter(name="beta/token").exists()

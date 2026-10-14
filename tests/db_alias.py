@@ -66,9 +66,11 @@ def register_sqlite_alias(
     }
 
 
-def register_migrated_sqlite_alias(alias: str, db_file: Path, template: Path | None) -> None:
+def register_migrated_sqlite_alias(
+    alias: str, db_file: Path, template: Path | None, *, options: dict[str, object] | None = None
+) -> None:
     """Register ``alias`` at head: a copy of the session's from-zero ``template``, else a migrate from zero."""
-    register_sqlite_alias(alias, db_file)
+    register_sqlite_alias(alias, db_file, options=options)
     if template is None:
         with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
             call_command("migrate", "--no-input", database=alias, verbosity=0)

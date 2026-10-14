@@ -155,9 +155,18 @@ def _first_line(value: str | None) -> str:
 
 
 def read_pass(key: str) -> str:
-    """Return the first secret line, or empty for an absent entry or missing pass binary.
+    """Read a secret from the ``pass`` password store.
 
-    An unreadable entry raises SecretStoreError, so callers never mistake an unknown value for absence.
+    Returns the first line of the stored value, or an empty string when the key
+    is not in the store or ``pass`` is not installed. A read that FAILED — a
+    wedged gpg agent, an undecryptable entry — raises :class:`SecretStoreError`
+    instead: an unknown value is not an absent one, and a caller that cannot tell
+    them apart posts with no token and reports success.
+
+    This reader cannot distinguish an absent secret from an empty one — both are
+    ``""``. When the caller cannot function without the value, use
+    :func:`read_pass_required`; for a genuinely-optional secret with a fallback,
+    use :func:`read_pass_or_default`.
     """
     try:
         return _first_line(_store().read(key))
@@ -166,9 +175,13 @@ def read_pass(key: str) -> str:
 
 
 def read_pass_required(key: str) -> str:
-    """Require a nonempty first line, distinguishing absence from an unreadable store.
+    """Read a required secret, raising :class:`SecretNotFoundError` when absent.
 
-    A missing pass binary raises SecretNotFoundError; read failures raise SecretStoreError.
+    The fail-loud variant of :func:`read_pass`. Distinguishes the operator's fix
+    in the raised message: a missing ``pass`` binary (``FileNotFoundError`` →
+    install it) from an absent or empty entry (→ ``pass insert <key>``). A read
+    that FAILED propagates as :class:`SecretStoreError` — naming a wedged keyring
+    as such rather than as a missing entry.
     """
     try:
         raw = _store().read(key)

@@ -5,12 +5,13 @@ from django.db import DatabaseError
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.models.sealed_secret import SealedSecret
 from teatree.utils.master_key import master_key_source
+from teatree.utils.secrets import SecretStoreError
 
 
 def secret_key_signals() -> SignalCollection:
     try:
         health = SealedSecret.objects.key_health(master_key_source())
-    except (DatabaseError, OSError, ValueError) as exc:
+    except (DatabaseError, SecretStoreError) as exc:
         return SignalCollection(
             (
                 HealthSignal(

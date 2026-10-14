@@ -45,6 +45,11 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
             if name.startswith(root) and "/" not in name[len(root) :]
         )
 
+    def names_starting(self, prefix: str) -> list[str]:
+        if self.table_missing():
+            return []
+        return sorted(name for name in self.values_list("name", flat=True) if name.startswith(prefix))
+
     def reveal(self, name: str, key: MasterKey) -> str | None:
         row = self.filter(name=name).first()
         return row.reveal(key) if row is not None else None
@@ -68,7 +73,7 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
     def key_census(self) -> dict[str, int]:
         return {row["key_id"]: row["count"] for row in self.values("key_id").annotate(count=models.Count("id"))}
 
-    def key_health(self, source: MasterKeySource, *, verify_rows: bool = False) -> KeyHealth:
+    def key_health(self, source: MasterKeySource) -> KeyHealth:
         try:
             census = self.key_census()
         except OperationalError:
@@ -91,13 +96,18 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
                 f"stored key_ids {', '.join(sorted(ids))}; active key_id {key.key_id}",
                 row_count,
             )
-        if verify_rows:
-            try:
-                for row in self.all().iterator():
-                    row.reveal(key)
-            except SealedValueTamperedError as exc:
-                return KeyHealth(source.label, "TAMPERED", str(exc), row_count)
+        if tampered := self._tampered_names(key):
+            return KeyHealth(source.label, "TAMPERED", f"rows failed authentication: {', '.join(tampered)}", row_count)
         return KeyHealth(source.label, "OK", f"key_id {key.key_id}; {row_count} sealed rows", row_count)
+
+    def _tampered_names(self, key: MasterKey) -> list[str]:
+        tampered: list[str] = []
+        for row in self.order_by("name").iterator():
+            try:
+                row.reveal(key)
+            except SealedValueTamperedError:
+                tampered.append(row.name)
+        return tampered
 
 
 class SealedSecret(models.Model):

@@ -5,7 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.utils.sealing import InvalidMasterKeyError, MasterKey, SealedValueTamperedError, WrongMasterKeyError, aad
+from teatree.utils.sealing import (
+    InvalidMasterKeyError,
+    MasterKey,
+    SealedValue,
+    SealedValueTamperedError,
+    WrongMasterKeyError,
+    aad,
+)
 from teatree.utils.secrets import SecretStoreError
 
 KEY_BYTES = bytes((index * 23 + 41) % 256 for index in range(32))
@@ -24,19 +31,43 @@ def test_seal_opens_and_binds_name() -> None:
     row = key.seal("canary", aad=aad("instance", "alpha/token"))
     assert key.open(row, aad=aad("instance", "alpha/token")) == "canary"
     assert KEY_TEXT not in repr(key)
+    assert KEY_BYTES.hex() not in repr(key)
     with pytest.raises(SealedValueTamperedError):
         key.open(row, aad=aad("instance", "beta/token"))
 
 
-def test_fixed_vector_and_unique_nonces() -> None:
+def test_key_id_is_the_hkdf_derivation_not_key_bytes() -> None:
     key = MasterKey.from_text(KEY_TEXT, source="test")
     assert key.key_id == "12122fbb02ee264d"
-    with patch("teatree.utils.sealing.os.urandom", return_value=bytes(range(12))):
-        vector = key.seal("pässwörd", aad=aad("instance", "alpha/token"))
-    assert vector.nonce == bytes(range(12))
-    assert vector.ciphertext.hex() == "eac389ca28f62fdf9aa9bbcc9c319fdf9700b8a5bd66b62b5476"
+    assert key.key_id not in KEY_BYTES.hex()
+
+
+def test_fixed_vector_opens_to_its_known_plaintext() -> None:
+    key = MasterKey.from_text(KEY_TEXT, source="test")
+    vector = SealedValue(
+        key.key_id, bytes(range(12)), bytes.fromhex("eac389ca28f62fdf9aa9bbcc9c319fdf9700b8a5bd66b62b5476")
+    )
     assert key.open(vector, aad=aad("instance", "alpha/token")) == "pässwörd"
-    assert key.seal("same", aad=b"name").nonce != key.seal("same", aad=b"name").nonce
+    with patch("teatree.utils.sealing.os.urandom", return_value=bytes(range(12))):
+        assert key.seal("pässwörd", aad=aad("instance", "alpha/token")) == vector
+
+
+def test_resealing_uses_a_fresh_nonce() -> None:
+    key = MasterKey.from_text(KEY_TEXT, source="test")
+    first = key.seal("same", aad=aad("instance", "alpha/token"))
+    second = key.seal("same", aad=aad("instance", "alpha/token"))
+    assert len(first.nonce) == len(second.nonce) == 12
+    assert first.nonce != second.nonce
+    assert first.ciphertext != second.ciphertext
+
+
+def test_flipped_ciphertext_bit_is_tampering() -> None:
+    key = MasterKey.from_text(KEY_TEXT, source="test")
+    row = key.seal("canary", aad=aad("instance", "alpha/token"))
+    flipped = bytearray(row.ciphertext)
+    flipped[-1] ^= 1
+    with pytest.raises(SealedValueTamperedError):
+        key.open(SealedValue(row.key_id, row.nonce, bytes(flipped)), aad=aad("instance", "alpha/token"))
 
 
 def test_crypto_errors_are_store_errors() -> None:
@@ -77,10 +108,12 @@ def test_wrong_key_names_both_ids(wrong: bytes) -> None:
         "not base64",
     ],
 )
-def test_invalid_key_names_source_without_leaking_key(bad: str) -> None:
-    with pytest.raises(ValueError, match="source:test") as exc:
+def test_invalid_key_names_source_without_leaking_key(bad: str, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("DEBUG"), pytest.raises(InvalidMasterKeyError, match="source:test") as exc:
         MasterKey.from_text(bad, source="source:test")
     assert bad not in str(exc.value)
+    assert bad not in repr(exc.value)
+    assert bad not in caplog.text
 
 
 def test_same_bytes_with_trailing_newline_reopen() -> None:

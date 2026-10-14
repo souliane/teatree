@@ -1,10 +1,12 @@
 """Inspect sealed rows and plan a read-only password-store import."""
 
+from typing import Annotated
+
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.models.sealed_secret import SealedSecret
-from teatree.core.secret_import import build_import_plan
+from teatree.core.sealed.pass_import import build_import_plan
 from teatree.utils.master_key import master_key_source
 
 
@@ -17,7 +19,7 @@ class Command(TyperCommand):
     def status(self) -> None:
         """Report key health without disclosing stored values."""
         source = master_key_source()
-        health = SealedSecret.objects.key_health(source, verify_rows=True)
+        health = SealedSecret.objects.key_health(source)
         typer.echo(f"source {source.label}")
         typer.echo(f"health {health.status}: {health.detail}")
         if health.row_count:
@@ -25,10 +27,9 @@ class Command(TyperCommand):
                 typer.echo(f"key_id {key_id}: {count} rows")
 
     @command()
-    def ls(self, prefix: str = "") -> None:
+    def ls(self, prefix: Annotated[str, typer.Argument(help="Only names starting with this prefix.")] = "") -> None:
         """List sealed row names without decrypting values."""
-        names = SealedSecret.objects.values_list("name", flat=True)
-        for name in sorted(name for name in names if name.startswith(prefix)):
+        for name in SealedSecret.objects.names_starting(prefix):
             typer.echo(name)
 
     @command(name="import-pass")

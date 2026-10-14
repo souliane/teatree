@@ -1,6 +1,7 @@
 """The one configured source of the database sealing key."""
 
 import base64
+import logging
 import os
 import secrets as std_secrets
 import stat
@@ -9,8 +10,10 @@ from pathlib import Path
 from typing import Protocol
 
 from teatree.paths import control_db_dir
-from teatree.utils.sealing import MasterKey
+from teatree.utils.sealing import MASTER_KEY_BYTES, MasterKey
 from teatree.utils.secrets import SecretStoreError
+
+logger = logging.getLogger(__name__)
 
 SOURCE_ENV = "T3_MASTER_KEY_SOURCE"
 PRIVATE_FILE_MODE = 0o600
@@ -59,10 +62,16 @@ class KeyFileSource:
     def create(self) -> MasterKey:
         try:
             return self.load()
-        except ValueError as exc:
+        except MasterKeySourceError as exc:
             if not isinstance(exc.__cause__, FileNotFoundError):
                 raise
-        text = base64.b64encode(os.urandom(32)).decode()
+        if not self._link_new_key():
+            return self.load()
+        created = self.load()
+        logger.warning("created master key %s with key_id %s; keep a copy of this key", self.label, created.key_id)
+        return created
+
+    def _link_new_key(self) -> bool:
         temporary = self.path.with_name(f".{self.path.name}.{std_secrets.token_hex(8)}.tmp")
         try:
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE)
@@ -70,22 +79,21 @@ class KeyFileSource:
             raise MasterKeySourceError(self.label, f"could not be created: {type(exc).__name__}") from exc
         try:
             with os.fdopen(fd, "w") as stream:
-                stream.write(text)
+                stream.write(base64.b64encode(os.urandom(MASTER_KEY_BYTES)).decode())
                 stream.flush()
                 os.fsync(stream.fileno())
             try:
                 os.link(temporary, self.path)
             except FileExistsError:
-                pass
-            else:
-                directory = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
+                return False
+            directory = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return True
         finally:
             temporary.unlink(missing_ok=True)
-        return self.load()
 
 
 def master_key_source(env: Mapping[str, str] = os.environ) -> KeyFileSource:

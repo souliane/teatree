@@ -141,9 +141,10 @@ install `MemoryStore` so they cannot read an operator's `pass` store. The new
 `DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
 DB, with the installation master key in a mode-0600 file beside that database.
 `T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
-it is never a `ConfigSetting` row. `t3 secrets status`, `ls`, and `import-pass
---plan` provide read-only inventory and key-health diagnostics. Import and
-production cutover require a later change after the plan has been reviewed.
+it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
+`import-pass` provide read-only key-health diagnostics and a names-only import
+inventory. No production reader or writer reaches the sealed rows: `DbStore` is
+not installed, and `import-pass` copies nothing.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 

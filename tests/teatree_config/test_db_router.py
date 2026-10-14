@@ -30,9 +30,10 @@ from django.test import override_settings
 from teatree.cli.doctor.checks_secret_store import check_secret_store
 from teatree.config.db_router import CONFIG_DB_ALIAS, CONFIG_MODEL_LABEL, ConfigSettingRouter, pinned_config_db
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
+from teatree.core.factory.operational_health import collect_signals
 from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.models import ConfigSetting, SealedSecret, SecretCutover, Ticket
-from teatree.core.sealed_store import DbStore
+from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 from teatree.utils.secrets import SecretStoreError
 from tests.db_alias import register_sqlite_alias, teardown_sqlite_alias
@@ -179,6 +180,9 @@ class TestConfigWritesReachCanonicalFromAWorktree:
             health = SealedSecret.objects.key_health(KeyFileSource(tmp_path / "absent.key"))
             assert health.row_count == 0
             assert secret_key_signals().signals == ()
+            collection = collect_signals()
+            assert [signal for signal in collection.signals if signal.kind == "secret_key"] == []
+            assert "secret_key_signals" not in collection.unread
             store = DbStore(KeyFileSource(tmp_path / "absent.key"))
             assert store.read("alpha/token") is None
             assert store.names("alpha") == frozenset()
@@ -209,19 +213,19 @@ class TestConfigWritesReachCanonicalFromAWorktree:
                 with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
                     editor.delete_model(SecretCutover)
 
-    def test_sealed_row_and_key_files_contain_no_plaintext(
+    def test_sealed_rows_read_and_write_through_canonical_file(
         self, canonical_db: Path, django_db_blocker: pytest.FixtureRequest, tmp_path: Path
     ) -> None:
-        source = KeyFileSource(tmp_path / "master.key")
-        plaintext = "disk-scan-canary-5052"
+        store = DbStore(KeyFileSource(tmp_path / "master.key"))
         with django_db_blocker.unblock(), override_settings(DATABASE_ROUTERS=[_ROUTER_PATH]):
             with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
                 editor.create_model(SealedSecret)
             try:
-                SealedSecret.objects.store("scan/token", plaintext, source.create())
+                store.write("alpha/token", "canary")
+                assert store.read("alpha/token") == "canary"
                 connections[CONFIG_DB_ALIAS].close()
-                for path in (canonical_db, source.path):
-                    assert plaintext.encode() not in path.read_bytes()
+                with closing(sqlite3.connect(canonical_db)) as db:
+                    assert db.execute("SELECT name FROM teatree_sealed_secret").fetchall() == [("alpha/token",)]
             finally:
                 with connections[CONFIG_DB_ALIAS].schema_editor() as editor:
                     editor.delete_model(SealedSecret)

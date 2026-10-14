@@ -8,7 +8,7 @@ from django.test import TestCase
 from teatree.core.factory.operational_health import HealthStatus, collect_signals, read_health, reconcile_health
 from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.models.sealed_secret import SealedSecret
-from teatree.core.sealed_store import DbStore
+from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 
 
@@ -42,14 +42,33 @@ class TestSecretKeyHealth(TestCase):
         self.source.path.unlink()
         replacement = self.source.create().key_id
         assert replacement != original
-        (signal,) = secret_key_signals().signals
+        collection = collect_signals()
+        (signal,) = [signal for signal in collection.signals if signal.kind == "secret_key"]
+        assert signal.severity == "critical"
         assert original in signal.summary
         assert replacement in signal.summary
+        assert "secret_key_signals" not in collection.unread
 
-    def test_tick_uses_key_ids_without_decrypting_rows(self) -> None:
+    def test_tampered_row_is_one_critical_naming_the_row(self) -> None:
         DbStore(self.source).write("alpha/token", "canary")
-        with patch("teatree.core.models.sealed_secret.SealedSecret.reveal", side_effect=AssertionError("decrypted")):
-            assert secret_key_signals().signals == ()
+        DbStore(self.source).write("beta/token", "intact")
+        row = SealedSecret.objects.get(name="alpha/token")
+        flipped = bytearray(row.ciphertext)
+        flipped[0] ^= 1
+        SealedSecret.objects.filter(pk=row.pk).update(ciphertext=bytes(flipped))
+
+        collection = collect_signals()
+        (signal,) = [signal for signal in collection.signals if signal.kind == "secret_key"]
+        assert signal.severity == "critical"
+        assert "alpha/token" in signal.summary
+        assert "beta/token" not in signal.summary
+        assert "secret_key_signals" not in collection.unread
+
+    def test_good_key_with_rows_is_silent(self) -> None:
+        DbStore(self.source).write("alpha/token", "canary")
+        collection = collect_signals()
+        assert [signal for signal in collection.signals if signal.kind == "secret_key"] == []
+        assert "secret_key_signals" not in collection.unread
 
     def test_mode_error_is_unreadable_even_when_path_mentions_base64(self) -> None:
         source = KeyFileSource(self.source.path.parent / "base64-key")

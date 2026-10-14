@@ -10,30 +10,53 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_secret_store import check_secret_store
-from teatree.core.sealed_store import DbStore
+from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 
 
 class TestSecretStoreDoctor(TestCase):
-    def test_doctor_reports_key_source_on_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            source = KeyFileSource(Path(temporary) / "master.key")
-            with patch.dict(os.environ, {"T3_MASTER_KEY_SOURCE": source.label}):
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    assert check_secret_store() is True
-                assert "WARN" in output.getvalue()
-                DbStore(source).write("alpha/token", "canary")
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    assert check_secret_store() is True
-                assert source.load().key_id in output.getvalue()
-                source.path.unlink()
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    assert check_secret_store() is False
-                assert "FAIL" in output.getvalue()
-                assert source.label in output.getvalue()
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.source = KeyFileSource(Path(temporary.name) / "master.key")
+        environment = patch.dict(os.environ, {"T3_MASTER_KEY_SOURCE": self.source.label})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def _doctor(self, *, healthy: bool) -> str:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert check_secret_store() is healthy
+        return output.getvalue()
+
+    def test_no_key_yet_is_a_warning_and_creates_none(self) -> None:
+        assert self._doctor(healthy=True).startswith("WARN")
+        assert not self.source.path.exists()
+
+    def test_ok_line_carries_the_active_key_id(self) -> None:
+        key_id = self.source.create().key_id
+        assert (
+            self._doctor(healthy=True)
+            == f"OK    Sealed secret key {self.source.label}: key_id {key_id}; no sealed rows\n"
+        )
+        DbStore(self.source).write("alpha/token", "canary")
+        report = self._doctor(healthy=True)
+        assert report.startswith("OK")
+        assert f"key_id {key_id}" in report
+
+    def test_removed_key_fails_naming_the_source(self) -> None:
+        DbStore(self.source).write("alpha/token", "canary")
+        self.source.path.unlink()
+        report = self._doctor(healthy=False)
+        assert report.startswith("FAIL")
+        assert self.source.label in report
+
+    def test_unloadable_key_without_rows_fails(self) -> None:
+        self.source.path.write_text("not base64")
+        self.source.path.chmod(0o600)
+        report = self._doctor(healthy=False)
+        assert report.startswith("FAIL")
+        assert self.source.label in report
 
 
 def test_cold_cli_import_is_safe() -> None:

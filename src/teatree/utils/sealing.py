@@ -52,6 +52,7 @@ def _derive(value: bytes, info: bytes, length: int) -> bytes:
 class MasterKey:
     _value: bytes = field(repr=False)
     key_id: str = field(init=False)
+    _aead: AESGCM = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if len(self._value) != MASTER_KEY_BYTES:
@@ -59,6 +60,7 @@ class MasterKey:
             reason = "must decode to 32 bytes"
             raise InvalidMasterKeyError(source, reason)
         object.__setattr__(self, "key_id", _derive(self._value, b"teatree/key-id/v1", 8).hex())
+        object.__setattr__(self, "_aead", AESGCM(_derive(self._value, b"teatree/seal/v1", 32)))
 
     @classmethod
     def from_text(cls, text: str, *, source: str) -> "MasterKey":
@@ -75,14 +77,13 @@ class MasterKey:
 
     def seal(self, plaintext: str, *, aad: bytes) -> SealedValue:
         nonce = os.urandom(12)
-        ciphertext = AESGCM(_derive(self._value, b"teatree/seal/v1", 32)).encrypt(nonce, plaintext.encode(), aad)
-        return SealedValue(self.key_id, nonce, ciphertext)
+        return SealedValue(self.key_id, nonce, self._aead.encrypt(nonce, plaintext.encode(), aad))
 
     def open(self, value: SealedValue, *, aad: bytes) -> str:
         if value.key_id != self.key_id:
             raise WrongMasterKeyError(value.key_id, self.key_id)
         try:
-            plaintext = AESGCM(_derive(self._value, b"teatree/seal/v1", 32)).decrypt(value.nonce, value.ciphertext, aad)
+            plaintext = self._aead.decrypt(value.nonce, value.ciphertext, aad)
         except InvalidTag as exc:
             raise SealedValueTamperedError from exc
         return plaintext.decode()

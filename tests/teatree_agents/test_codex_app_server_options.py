@@ -189,6 +189,7 @@ def test_mutation_denied_phase_needs_an_attestation(monkeypatch: pytest.MonkeyPa
         CodexAppServerOptions.from_sdk_options(_PLANNING_OPTIONS, executor=impostor)
 
 
+@pytest.mark.usefixtures("pass_store")
 def test_an_attested_mutation_denied_phase_runs_unsandboxed_in_the_executor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

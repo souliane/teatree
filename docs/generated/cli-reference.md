@@ -8974,13 +8974,15 @@ Usage: t3 teatree secrets status [OPTIONS]
 ##### `t3 teatree secrets ls`
 
 ```
-Usage: t3 teatree secrets ls [OPTIONS]
+Usage: t3 teatree secrets ls [OPTIONS] [PREFIX]
 
  List sealed row names without decrypting values.
 
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   prefix      [PREFIX]  Only names starting with this prefix.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --prefix        TEXT                                                         │
-│ --help                Show this message and exit.                            │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

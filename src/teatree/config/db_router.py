@@ -14,7 +14,9 @@ The Django-free cold path already encodes the right rule —
 DB — the named volume for the canonical data dir — even from inside a worktree. This module is
 its ORM twin: a database router that pins the ``ConfigSetting`` model, on READ as
 well as WRITE, to a :data:`CONFIG_DB_ALIAS` connection bound to that same file,
-so the two tiers can no longer disagree about where config lives.
+so the two tiers can no longer disagree about where config lives. The sealed
+instance credentials (``SealedSecret``) and their one-shot cutover marker
+(``SecretCutover``) are install-wide for the same reason and are pinned with it.
 
 The alias is registered by the settings module ONLY when the default connection
 resolves somewhere else — i.e. an auto-isolated worktree. In a primary clone (and
@@ -82,7 +84,7 @@ def pinned_config_db(
 
 
 class ConfigSettingRouter:
-    """Route ``ConfigSetting`` reads and writes to :data:`CONFIG_DB_ALIAS` when it exists.
+    """Route the :data:`PINNED_MODEL_LABELS` models to :data:`CONFIG_DB_ALIAS` when it exists.
 
     Returning ``None`` for other models leaves their database selection unchanged.
     """
