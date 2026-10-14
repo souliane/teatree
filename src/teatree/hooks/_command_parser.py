@@ -222,11 +222,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if leader == "glab"
         else _primitives.BODY_SHORT_FLAGS
     )
-    cluster_publishes = (
-        (leader in {"gh", "glab"} and segment_is_forge_cli_write(words))
-        or (leader == "git" and _segment_is_git_message_publish(words))
-        or (leader == "t3" and _segment_is_t3_publish(words))
-    )
+    cluster_publishes = _segment_publishes_cluster(words, leader)
     i = 0
     n = len(words)
     while i < n:
@@ -248,6 +244,14 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if word in short_flags or cluster_publishes:
             payloads.extend(resolve_short_cluster(words[i:], raws[i:], short_flags, base))
         i += 2 if word in short_flags and i + 1 < n else 1
+
+
+def _segment_publishes_cluster(words: list[str], leader: str) -> bool:
+    return (
+        (leader in {"gh", "glab"} and segment_is_forge_cli_write(words))
+        or (leader == "git" and _segment_is_git_message_publish(words))
+        or (leader == "t3" and _segment_is_t3_publish(words))
+    )
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:
@@ -429,7 +433,9 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # walker so the anchored source is never scanned (#2278/#2270/#32).
     if append_t3_review_note_payload(words, raws, payloads, ctx):
         return
-    walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
+    walk_body_file_flags(
+        words, payloads, leader=first, ctx=ctx, cluster_publishes=_segment_publishes_cluster(words, first)
+    )
     if first in {"gh", "glab"}:
         _walk_api_fields(words, raws, payloads, ctx.base)
         if segment_is_forge_cli_write(words):

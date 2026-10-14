@@ -622,6 +622,18 @@ class TestClusteredShortFlagsCarryFreeText:
         assert handle_banned_terms_pretool(_bash(f"gh pr create {_PUB} -t routine -b routine && {tail}")) is False
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize(
+        "tail",
+        ["git grep -nF TODO", "git grep -iF needle src", "git log -iF --grep=fix"],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_git_read_cluster_does_not_resolve_as_body_file(
+        self, tail: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        command = f"gh pr create {_PUB} -t routine -b routine && {tail}"
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
     @pytest.mark.usefixtures("public_gate")
     def test_unresolved_later_cluster_value_explains_remedy(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

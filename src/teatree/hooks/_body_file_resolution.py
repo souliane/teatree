@@ -374,7 +374,9 @@ class _ShortFileFlag:
     fail_closed: bool
 
 
-def _short_f_body_file(leader: str, words: list[str], i: int, *, fail_closed: bool) -> _ShortFileFlag | None:
+def _short_f_body_file(
+    leader: str, words: list[str], i: int, *, fail_closed: bool, cluster_publishes: bool
+) -> _ShortFileFlag | None:
     """Resolve the file a short ``-F`` at ``words[i]`` references, or ``None``.
 
     The short ``-F`` is overloaded across leaders:
@@ -396,6 +398,8 @@ def _short_f_body_file(leader: str, words: list[str], i: int, *, fail_closed: bo
     is_gh_glab = leader in {"gh", "glab"}
     if not (is_git or is_gh_glab):
         return None
+    if not cluster_publishes and not word.startswith("-F"):
+        return None
     flag_fail_closed = True if is_git else fail_closed
     for candidate in short_cluster_values(word, frozenset({"-F"})):
         path = candidate.value or (words[i + 1] if i + 1 < len(words) else "")
@@ -404,7 +408,9 @@ def _short_f_body_file(leader: str, words: list[str], i: int, *, fail_closed: bo
     return None
 
 
-def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, ctx: BodyFileContext) -> None:
+def walk_body_file_flags(
+    words: list[str], payloads: list[str], *, leader: str, ctx: BodyFileContext, cluster_publishes: bool = False
+) -> None:
     """Extract ``--body-file``/``--file``/``-F`` style file payloads.
 
     The long ``--body-file`` / ``--description-file`` / ``--file`` forms apply to
@@ -434,7 +440,7 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, 
         if attached is not None:
             i += 1
             continue
-        short = _short_f_body_file(leader, words, i, fail_closed=fail_closed)
+        short = _short_f_body_file(leader, words, i, fail_closed=fail_closed, cluster_publishes=cluster_publishes)
         if short is not None:
             append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed, leader=leader)
             i += short.consumed
