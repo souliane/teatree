@@ -466,7 +466,7 @@ jobs:
       # private report and the publish-safe summary artifact.
       - name: Upload the benchmark matrix HTML dashboard
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
@@ -481,7 +481,7 @@ jobs:
       # credential redaction it is unsanitized, so it stays out of the public dashboard.
       - name: Upload the raw eval run log
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
@@ -531,7 +531,7 @@ jobs:
       # flattens the per-artifact subdirs). Only the publish-safe `eval-benchmark-*`
       # HTML artifacts (verdicts + tally, no reasoning/tool transcript).
       - name: Download every shard's benchmark matrix HTML
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: ${{ runner.temp }}/benchmarks
           pattern: eval-benchmark-*
