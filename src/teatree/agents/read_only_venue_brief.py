@@ -1,6 +1,7 @@
 """Facts a phase in the read-only executor receives inline: it reaches no forge, no data dir and no ``t3``."""
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -10,7 +11,11 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.review_target import review_target_for_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.live_head import live_head_at
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
 
@@ -20,11 +25,14 @@ if TYPE_CHECKING:
 ISSUE_BODY_CAP_BYTES: Final = 64 * 1024
 ISSUE_COMMENTS_CAP_BYTES: Final = 64 * 1024
 SURVEY_CAP_BYTES: Final = 32 * 1024
+REVIEW_DIFF_CAP_BYTES: Final = 128 * 1024
+REVIEW_CHECKS_CAP_BYTES: Final = 4 * 1024
 HANDOFF_CAP_BYTES: Final = 32 * 1024
 TICKET_CONTEXT_CAP_BYTES: Final = 32 * 1024
 ABSENT_TOOL: Final = "`<teatree tool, absent here>`"
 _TEATREE_COMMAND: Final = re.compile(r"(?<![\w/:.-])t3 ")
 _TEATREE_TOOL_SPAN: Final = re.compile(r"`[^`\n]*(?:(?<![\w/:.-])t3 |mcp__teatree__)[^`\n]*`")
+_TEATREE_CODE_FENCE: Final = re.compile(r"^[ \t]*```[^\n]*\n.*?^[ \t]*```[ \t]*$", re.MULTILINE | re.DOTALL)
 
 READ_ONLY_DIRECTIVE: Final = (
     "READ-ONLY VENUE: every checkout here is mounted read-only; only $TMPDIR is writable, and it is discarded.",
@@ -41,19 +49,26 @@ class ReadOnlyFacts:
     ticket_context: str
     handoff: str
     survey: str
+    review_head: str
+    review_diff: str
+    review_checks: str
 
     @classmethod
     def gather(cls, task: "Task", handoff: Path | None) -> "ReadOnlyFacts":
         """Read everything the brief inlines in the worker, or refuse: nothing is truncated on this venue."""
         issue_body, issue_comments = _issue(task.ticket)
+        review_head, review_diff, review_checks = _review_diff(task)
         facts = cls(
             issue_body=issue_body,
             issue_comments=issue_comments,
             ticket_context=task.ticket.context.strip(),
             handoff=handoff.read_text(encoding="utf-8") if handoff is not None else "",
-            survey=intake_survey_json(task),
+            survey=intake_survey_json(task) if normalize_phase(task.phase) == "planning" else "",
+            review_head=review_head,
+            review_diff=review_diff,
+            review_checks=review_checks,
         )
-        if not facts.survey:
+        if normalize_phase(task.phase) == "planning" and not facts.survey:
             reason = "no intake landscape survey is recorded for this ticket"
             raise _refused(reason)
         for name, text, cap in (
@@ -62,6 +77,8 @@ class ReadOnlyFacts:
             ("ticket context", facts.ticket_context, TICKET_CONTEXT_CAP_BYTES),
             ("handoff", facts.handoff, HANDOFF_CAP_BYTES),
             ("survey", facts.survey, SURVEY_CAP_BYTES),
+            ("review diff", facts.review_diff, REVIEW_DIFF_CAP_BYTES),
+            ("review checks", facts.review_checks, REVIEW_CHECKS_CAP_BYTES),
         ):
             if (size := len(text.encode())) > cap:
                 reason = f"read-only brief over budget: {name} {size} bytes > {cap}"
@@ -72,7 +89,10 @@ class ReadOnlyFacts:
 
 def read_only_system_context(context: str) -> str:
     """*context* with every teatree command or tool it names rewritten, or refused: none of them runs here."""
-    rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, context)
+    rewritten_fences = _TEATREE_CODE_FENCE.sub(
+        lambda fence: _TEATREE_COMMAND.sub(f"{ABSENT_TOOL} ", fence.group()), context
+    )
+    rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, rewritten_fences)
     if command := _TEATREE_COMMAND.search(rewritten):
         reason = (
             f"the system context still names a teatree command: {rewritten[command.start() : command.end() + 40]!r}"
@@ -120,6 +140,46 @@ def _comment_block(comment: object) -> str:
     author = comment.get("user") or comment.get("author")
     name = (author.get("login") or author.get("username")) if isinstance(author, dict) else None
     return f"--- comment by {name or 'unknown'} at {comment.get('created_at', '')} ---\n{body}"
+
+
+def _review_diff(task: "Task") -> tuple[str, str, str]:
+    if normalize_phase(task.phase) != "reviewing" or task.ticket.role != task.ticket.Role.REVIEWER:
+        return "", "", ""
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        reason = "the review has no dispatched pull request head"
+        raise _refused(reason)
+    head = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
+    if head.unreadable or head.sha != target.head_sha:
+        reason = "the dispatched pull request head is unreadable or moved"
+        raise _refused(reason)
+    try:
+        host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(task.ticket), task.ticket.issue_url)
+        diffs = host.get_pr_file_diffs(repo=target.slug, pr_iid=target.pr_id) if host is not None else None
+    except Exception as exc:
+        reason = f"the review diff could not be read ({type(exc).__name__})"
+        raise _refused(reason) from exc
+    if (
+        not isinstance(diffs, Mapping)
+        or not diffs
+        or any(
+            not isinstance(path, str) or not path or not isinstance(patch, str) or not patch.strip()
+            for path, patch in diffs.items()
+        )
+    ):
+        reason = "the review diff is empty or has an unreadable file"
+        raise _refused(reason)
+    current = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
+    if current.unreadable or current.sha != target.head_sha:
+        reason = "the pull request head moved while its diff was read"
+        raise _refused(reason)
+    checks = live_checks_at(slug=target.slug, head_sha=target.head_sha)
+    status = checks.status if checks.status in {"green", "pending", "failed"} else "unreadable"
+    return (
+        target.head_sha,
+        "\n".join(f"--- {path} ---\n{patch}" for path, patch in diffs.items()),
+        f"{status} — {checks.detail}",
+    )
 
 
 def _fetch_target(task: "Task") -> None:

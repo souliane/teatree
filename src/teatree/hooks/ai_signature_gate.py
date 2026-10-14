@@ -31,11 +31,8 @@ from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 def extract_forge_post_body(command: str, cwd: Path | None = None) -> str | None:
     """Return the scannable forge-post body of a Bash ``command``, or ``None``.
 
-    ``None`` ⇒ ``command`` is not a forge-post / commit surface, or its body
-    source is unresolvable (a missing / binary / unreadable ``-F`` file). The
-    AI-signature gate's contract is fail-OPEN: an unresolvable body must never
-    hard-block a forge post, so the parser's fail-closed sentinel is mapped back
-    to ``None`` here (no scan, no block) instead of being scanned as text.
+    ``None`` means no readable forge-post body remains. Parser reasons are
+    removed line by line so readable fragments still reach the signature scan.
 
     :func:`is_publish_command` recognises the whole forge-post command class
     (``gh pr/issue create/edit/comment``, ``glab mr/issue create/update/note``,
@@ -48,9 +45,7 @@ def extract_forge_post_body(command: str, cwd: Path | None = None) -> str | None
     if not is_publish_command(command):
         return None
     payload = extract_bash_payload(command, fail_closed_body_file=False, cwd=cwd)
-    if is_fail_closed_sentinel(payload):
-        return None
-    return payload
+    return "\n".join(line for line in payload.split("\n") if not is_fail_closed_sentinel(line)) or None
 
 
 def format_block_message(finding: str) -> str:

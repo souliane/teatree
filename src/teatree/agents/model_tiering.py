@@ -69,6 +69,7 @@ configured default applies unchanged.
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES
 from teatree.config import AgentHarness, cold_reader, get_effective_settings
 from teatree.config.agent_spawn import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
 from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_rank
@@ -171,8 +172,7 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 # without an active escalation these phases resolve exactly as today.
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
-# Phases PINNED to a specific harness regardless of the overlay's ``agent_harness``
-# setting — the cheap-model verifier backstop.
+# Phases PINNED to a specific harness for candidates without a live-probed executor.
 # When a MAKER phase runs on a cheap open-source model via ``pydantic_ai``,
 # the VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
 # trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
@@ -192,14 +192,14 @@ def resolve_phase_harness(configured: str, phase: str | None) -> str:
         (:attr:`~teatree.config.agent_spawn.AgentConfig.phase_harness`): a named
         harness FLIPS the pin, an explicit unpin (``None``) drops the phase back
         to *configured* even when the shipped default below would pin it.
-    2.  The shipped :data:`PHASE_HARNESS` default — a verification phase forces
+    2.  A configured Codex candidate keeps an executor-served phase; its live probe
+        decides admission. The shipped :data:`PHASE_HARNESS` default otherwise forces
         ``claude_sdk`` even when the overlay configured ``pydantic_ai`` (so the
         checker stays on the trusted lane while the maker rides the cheap one).
     3.  Otherwise (and for an absent *phase*) *configured*, unchanged.
 
-    An EMPTY ``agent_phase_harness`` (the shipped state) is byte-identical to the
-    pre-override behaviour: a full swap of the verification checker onto
-    ``pydantic_ai`` becomes one DB row instead of a code edit (§3a #3).
+    An EMPTY ``agent_phase_harness`` keeps the verification pin for non-Codex
+    candidates; a full swap onto ``pydantic_ai`` still takes one DB row (§3a #3).
     """
     if phase is None:
         return configured
@@ -207,6 +207,8 @@ def resolve_phase_harness(configured: str, phase: str | None) -> str:
     if phase in overrides:
         pinned = overrides[phase]
         return pinned.value if pinned is not None else configured
+    if configured == "codex_app_server" and phase in EXECUTOR_PHASES:
+        return configured
     if phase in PHASE_HARNESS:
         return PHASE_HARNESS[phase]
     return configured

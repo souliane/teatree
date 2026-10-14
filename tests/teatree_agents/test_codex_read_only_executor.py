@@ -13,6 +13,7 @@ import pytest
 
 from teatree.agents import harness_registry
 from teatree.agents.codex_read_only_executor import (
+    EXECUTOR_PHASES,
     EXECUTOR_SERVICE,
     ExecutorAttestation,
     ExecutorRefusalError,
@@ -432,6 +433,22 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
     assert [call[2] for call in probes] == [EXECUTOR_ID, EXECUTOR_ID]
 
 
+@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing"])
+def test_review_phases_are_probed_on_each_selection(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, managed: str, phase: str
+) -> None:
+    _applied(fake, monkeypatch)
+
+    assert phase in EXECUTOR_PHASES
+    assert select_harness([managed], HarnessBuildContext(phase=phase)).spec.name == managed
+    fake.probe["writes"]["/"] = "OK"
+    fake.install()
+    with pytest.raises(NoAvailableHarnessError, match="/ accepted a write"):
+        select_harness([managed], HarnessBuildContext(phase=phase))
+
+    assert len(fake.probe_requests) == 2
+
+
 def _no_login(fake: FakeExecutor) -> None:
     fake.with_login = False
 
@@ -470,9 +487,8 @@ class _BarCase(NamedTuple):
         _BarCase("planning", _no_container, f"0 running {EXECUTOR_SERVICE} containers"),
         _BarCase("planning", _two_containers, f"2 running {EXECUTOR_SERVICE} containers"),
         _BarCase("planning", _probe_fails, f"{EXECUTOR_SERVICE} is not read-only: / accepted a write"),
-        _BarCase("bughunt", _unchanged, "the read-only executor serves only planning"),
-        _BarCase("critic_reviewing", _unchanged, "the read-only executor serves only planning"),
-        _BarCase("reviewing", _unchanged, "the read-only executor serves only planning"),
+        _BarCase("bughunt", _unchanged, "the read-only executor serves only"),
+        _BarCase("shipping", _unchanged, "the read-only executor serves only"),
     ],
     ids=[
         "no-login",
@@ -481,8 +497,7 @@ class _BarCase(NamedTuple):
         "two-containers",
         "probe-fails",
         "bughunt",
-        "critic_reviewing",
-        "reviewing",
+        "shipping",
     ],
 )
 def test_barred_without_a_passing_executor(

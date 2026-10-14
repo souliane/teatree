@@ -3,19 +3,16 @@
 import logging
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import typer
 
-from teatree.backends.slack.receiver import default_queue_path, run_listener
+from teatree.backends.slack.receiver import QueuePaths, default_queue_path, default_reactions_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
-
-if TYPE_CHECKING:
-    from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 
 slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_args_is_help=True)
 
@@ -56,69 +53,6 @@ def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
     return result
 
 
-#: Per-overlay DM recorders, memoised for the listener process's lifetime so an
-#: inbound DM does not re-probe the bot's own Slack identity on every event.
-_dm_recorders: dict[str, "SlackDmInboundScanner"] = {}
-
-
-def _dm_recorder(overlay: str) -> "SlackDmInboundScanner | None":
-    """The recorder for *overlay*, or ``None`` when it has no messaging backend.
-
-    An unresolvable backend is deliberately NOT memoised, so a transient
-    resolution failure is re-probed on the next event instead of wedging the
-    hot path for the process's lifetime.
-    """
-    from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner  # noqa: PLC0415 — deferred: ORM-backed
-
-    recorder = _dm_recorders.get(overlay)
-    if recorder is not None:
-        return recorder
-    backend = messaging_from_overlay(overlay or None)
-    if backend is None:
-        return None
-    recorder = SlackDmInboundScanner(backend=backend, overlay=overlay)
-    _dm_recorders[overlay] = recorder
-    return recorder
-
-
-def reset_dm_recorders() -> None:
-    """Drop the per-overlay recorders. Test-only.
-
-    A recorder holds the backend ``messaging_from_overlay`` resolved, plus the bot
-    identity it probed through that backend — so keeping one outlives
-    ``reset_backend_caches``, which conftest already runs, and hands a later test
-    the earlier test's backend under the same overlay name.
-    """
-    _dm_recorders.clear()
-
-
-def _record_and_wake_slack_answer(overlay: str, event: dict) -> None:
-    """Record an inbound DM, then enqueue an immediate Slack-answer wake.
-
-    Recording FIRST is what makes the wake worth firing: the answer cycle reads
-    ``PendingChatInjection.loop_unreplied()``, whose only other writer is the
-    ~60s inbox sweep, so a wake that lands before the row finds an empty queue
-    and stops without re-arming. Recording goes through the sweep's own
-    ``record_events`` seam, so the hot path inherits its write-side filters
-    rather than reimplementing them.
-
-    Nothing is posted to Slack here — every outbound reply stays in the answer
-    cycle. Deferred imports: the receiver's ``backends`` layer cannot reach the
-    orchestration layer, so the CLI composition root injects this.
-    """
-    from teatree.loops.timer_reconciler import wake_slack_answer  # noqa: PLC0415 — deferred import
-
-    if event.get("type") == "message" and event.get("channel_type") == "im":
-        recorder = _dm_recorder(overlay)
-        if recorder is None:
-            logging.getLogger(__name__).warning(
-                "No slack backend for overlay %r — the inbox sweep will record this DM", overlay
-            )
-        else:
-            recorder.record_events([event])
-    wake_slack_answer.enqueue()
-
-
 def _answer_click(overlay: str, payload: dict) -> None:
     """Record a tapped owner-question option; the receiver has already acknowledged the envelope."""
     from teatree.loop.question_binding import answer_from_click  # noqa: PLC0415 — deferred: ORM-backed
@@ -143,7 +77,9 @@ def listen_command(
     """Run the Socket Mode receiver for all (or one) slack-enabled overlays.
 
     Maintains one WebSocket per overlay, writes events to a JSONL queue
-    file that the worker's mention scanner drains. Runs until SIGTERM or SIGINT.
+    file that the worker's mention scanner drains, records each DM and wakes the
+    answer cycle, and on every ``hello`` replays what Slack holds since the
+    listener was last alive. Runs until SIGTERM or SIGINT.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -151,6 +87,11 @@ def listen_command(
     )
     # Bootstrap Django so the per-event wake callback can enqueue onto the task DB.
     ensure_django()
+    from teatree.loops.slack_inbound import (  # noqa: PLC0415 — deferred: needs the Django app registry
+        catch_up_on_connect,
+        record_and_wake_slack_answer,
+    )
+
     pid_path = default_queue_path().with_name("slack-listener.pid")
     try:
         with singleton("slack-listener", pid_path=pid_path):
@@ -160,8 +101,13 @@ def listen_command(
                 raise typer.Exit(code=1)
             for name, _app, _bot in overlays:
                 typer.echo(f"OK    Listening on {name}")
+            paths = QueuePaths(events=queue_file or default_queue_path(), reactions=default_reactions_queue_path())
             run_listener(
-                overlays, queue_path=queue_file, on_event=_record_and_wake_slack_answer, on_action=_answer_click
+                overlays,
+                paths=paths,
+                on_event=record_and_wake_slack_answer,
+                on_action=_answer_click,
+                on_connect=catch_up_on_connect,
             )
     except AlreadyRunningError as exc:
         typer.echo(f"WARN  {exc} Stop it before starting another.")

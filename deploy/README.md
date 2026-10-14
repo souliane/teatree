@@ -229,7 +229,7 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
-| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs a phase that bars write tools (planning); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
+| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
@@ -1532,7 +1532,7 @@ recreates it inside the drained window, when no executor run is in flight and no
 waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
-with a message naming the executor. Until the executor deploys, planning on Codex is refused and runs on Claude.
+with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.

@@ -97,10 +97,6 @@ class FakeSlack:
         _ = since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         _ = channel
         if self.raise_on_message_read is not None:

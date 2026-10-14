@@ -1,5 +1,6 @@
 """Tests for the loop scanners — pure-Python signal collectors."""
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
+from teatree.backends.slack import receiver
 from teatree.core.backend_protocols import PrMergeState, PrOpenState, ReviewState
 from teatree.core.models import Ticket
 from teatree.loop.scanners.my_prs import MyPrsScanner
@@ -110,15 +112,10 @@ class FakeMessaging:
     """In-memory MessagingBackend conforming to the protocol."""
 
     mentions: list[RawAPIDict] = field(default_factory=list)
-    dms: list[RawAPIDict] = field(default_factory=list)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return self.mentions
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return self.dms
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = (channel, text, thread_ts)
@@ -710,57 +707,31 @@ class TestReviewerPrsScanner(TestCase):
 
 
 class TestSlackMentionsScanner:
-    def test_emits_one_signal_per_event(self, tmp_path: Path) -> None:
-        backend = FakeMessaging(
-            mentions=[{"ts": "1.0", "text": "hey"}],
-            dms=[{"ts": "2.0", "text": "DM"}],
+    def test_emits_one_signal_per_event(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        queue = tmp_path / "slack-events.jsonl"
+        queue.write_text(
+            json.dumps({"overlay": "", "event": {"type": "message", "channel_type": "im", "ts": "2.0", "text": "DM"}})
+            + "\n",
+            encoding="utf-8",
         )
-        signals = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cur.json").scan()
+        monkeypatch.setattr(receiver, "default_queue_path", lambda: queue)
+        backend = FakeMessaging(mentions=[{"ts": "1.0", "text": "hey"}])
+
+        signals = SlackMentionsScanner(backend=backend).scan()
+
         kinds = sorted(s.kind for s in signals)
         assert kinds == ["slack.dm", "slack.mention"]
 
-    def test_empty_when_no_events(self, tmp_path: Path) -> None:
+    def test_empty_when_no_events(self) -> None:
         backend = FakeMessaging()
-        assert SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cur.json").scan() == []
+        assert SlackMentionsScanner(backend=backend).scan() == []
 
-    def test_persists_cursor_after_emitting_events(self, tmp_path: Path) -> None:
-        cursor = tmp_path / "cur.json"
-        backend = FakeMessaging(
-            mentions=[{"ts": "5.0", "text": "first"}, {"ts": "9.0", "text": "second"}],
-        )
-        SlackMentionsScanner(backend=backend, cursor_path=cursor).scan()
-        assert "9.0" in cursor.read_text(encoding="utf-8")
-
-    def test_event_ts_fallback_when_ts_absent(self, tmp_path: Path) -> None:
+    def test_event_ts_fallback_when_ts_absent(self) -> None:
         backend = FakeMessaging(
             mentions=[{"event_ts": "11.0", "text": "without ts"}],
         )
-        signals = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cur.json").scan()
+        signals = SlackMentionsScanner(backend=backend).scan()
         assert signals[0].payload["ts"] == "11.0"
-
-    def test_corrupt_cursor_file_treated_as_empty(self, tmp_path: Path) -> None:
-        cursor = tmp_path / "cur.json"
-        cursor.write_text("not-json", encoding="utf-8")
-        backend = FakeMessaging(mentions=[{"ts": "1.0", "text": "x"}])
-        signals = SlackMentionsScanner(backend=backend, cursor_path=cursor).scan()
-        assert len(signals) == 1
-
-    def test_cursor_with_non_string_values_filtered(self, tmp_path: Path) -> None:
-        cursor = tmp_path / "cur.json"
-        cursor.write_text(
-            '{"mentions": "1.0", "dms": 99, "extra": null}',
-            encoding="utf-8",
-        )
-        backend = FakeMessaging(mentions=[{"ts": "2.0", "text": "x"}])
-        signals = SlackMentionsScanner(backend=backend, cursor_path=cursor).scan()
-        assert len(signals) == 1
-
-    def test_default_cursor_path_used_when_omitted(self) -> None:
-        from teatree.loop.scanners.slack_mentions import _default_cursor_path  # noqa: PLC0415
-
-        backend = FakeMessaging()
-        scanner = SlackMentionsScanner(backend=backend)
-        assert scanner.cursor_path == _default_cursor_path()
 
 
 class TestNotionViewScanner:
