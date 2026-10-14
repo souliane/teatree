@@ -93,6 +93,19 @@ class CheckoutFenceTests(TestCase):
         with pytest.raises(CheckoutFenceError, match="exactly one"):
             verify_task_checkout(self.task, str(self.checkout))
 
+    def test_second_repository_edit_refuses_whole_ticket(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        other = Path(temporary.name) / "other"
+        _init_repo_with_branch(other, branch="feature", commits_ahead=0)
+        WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(other)})
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            (other / "in_session.py").write_text("foreign edit\n")
+            with pytest.raises(CheckoutFenceError, match="attested"):
+                verify_task_checkout(self.task, str(self.checkout))
+
     def test_worker_completion_releases_and_attests_before_handoff(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         with patch(

@@ -43,6 +43,16 @@ def writes_checkout(task: Task) -> bool:
 def verify_task_checkout(task: Task, path: str) -> None:
     if not path or not writes_checkout(task):
         return
+    paths = [path]
+    for row in Worktree.objects.filter(ticket=task.ticket).only("extra"):
+        recorded = row.worktree_path
+        if recorded and not any(paths_match(recorded, candidate) for candidate in paths):
+            paths.append(recorded)
+    for candidate in paths:
+        _verify_one_checkout(task, candidate)
+
+
+def _verify_one_checkout(task: Task, path: str) -> None:
     rows = [
         row
         for row in Worktree.objects.exclude(extra__worktree_path__isnull=True).only("ticket_id", "extra")
