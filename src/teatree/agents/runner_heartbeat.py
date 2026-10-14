@@ -82,13 +82,7 @@ async def drive_with_heartbeat(
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
     """Drive one session while renewing ownership and enforcing watchdog ceilings."""
-    live_task = _live_task(task, options, harness)
-    with bound_task_mailbox(
-        options,
-        room=str(live_task.ticket),
-        harness=live_task.harness,
-        label=f"{task.phase} task {task.pk}",
-    ):
+    with bound_task_mailbox(options, _live_task(task, options, harness)):
         return await _drive_bound_session(task, prompt, options, harness, runtime=runtime)
 
 

@@ -23,8 +23,17 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
 from teatree.hooks import _repo_visibility, quote_scanner
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX, is_fail_closed_sentinel
 from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
+
+
+def test_named_fail_closed_reason_is_not_scanned_as_user_content() -> None:
+    body = (
+        f"{NAMED_FAIL_CLOSED_PREFIX}unreadable option with $(x), `x`, "
+        'and the user said: "ship the export endpoint to production now"'
+    )
+    result = scan_text(body)
+    assert [finding.name for finding in result.findings] == [quote_scanner.FAIL_CLOSED_FINDING_NAME]
 
 
 @pytest.fixture(autouse=True)

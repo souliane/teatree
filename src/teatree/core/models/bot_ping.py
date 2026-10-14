@@ -32,6 +32,13 @@ class DeliveryClaim(enum.StrEnum):
     IN_FLIGHT = "in_flight"
 
 
+class BotPingQuerySet(models.QuerySet):
+    def sent_text_prunable(self, cutoff: datetime) -> "BotPingQuerySet":
+        return self.filter(
+            status__in=(BotPing.Status.SENT, BotPing.Status.SENT_UNVERIFIED), posted_at__lt=cutoff
+        ).exclude(text="")
+
+
 class BotPing(models.Model):
     """One bot→user Slack notification (answer / question / info)."""
 
@@ -116,6 +123,7 @@ class BotPing(models.Model):
     transport = models.CharField(max_length=16, choices=Transport.choices, blank=True, default="")
     attempts = models.PositiveIntegerField(default=0)
     posted_at = models.DateTimeField(default=timezone.now)
+    objects = BotPingQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_bot_ping"

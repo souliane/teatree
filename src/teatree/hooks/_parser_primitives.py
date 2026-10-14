@@ -14,6 +14,7 @@ on.
 """
 
 import re
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -59,7 +60,11 @@ _STRUCTURAL_LEADERS: Final[frozenset[str]] = frozenset(
 # sentinel is recognised explicitly by :func:`is_fail_closed_sentinel`
 # so a scanner can fail closed on a NAMED reason instead of an
 # accidental content-pattern self-match.
-FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+# Every user-derived text source drops NUL (command, file, JSON field, ANSI-C escape), so only the parser writes one.
+REASON_MARKER: Final[str] = "\x00"
+FAIL_CLOSED_SENTINEL: Final[str] = (
+    REASON_MARKER + "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+)
 
 
 # A SECOND fail-closed sentinel for the body sources that are FUNDAMENTALLY
@@ -73,8 +78,10 @@ FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not
 # closed -- only the operator-facing reason differs. It too must not self-match
 # any quote-scanner HIGH pattern.
 UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
-    "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
+    REASON_MARKER + "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
 )
+NAMED_FAIL_CLOSED_PREFIX: Final[str] = REASON_MARKER + "[teatree-gate] fail closed: "
+BODY_SOURCE_SENTINELS: Final[frozenset[str]] = frozenset({FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL})
 
 
 def is_fail_closed_sentinel(text: str) -> bool:
@@ -96,8 +103,7 @@ def is_fail_closed_sentinel(text: str) -> bool:
     so the line-exact test allows it while every genuine injection (the
     sentinel on its own line) still fails closed (#1213).
     """
-    sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
-    return any(line.strip() in sentinels for line in text.split("\n"))
+    return any(line in BODY_SOURCE_SENTINELS or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
 
 
 def is_unavailable_body_source_sentinel(text: str) -> bool:
@@ -130,7 +136,7 @@ def read_file_arg(path: str, base: Path | None = None) -> str | None:
         candidates.append(base / path)
     for candidate in candidates:
         try:
-            return candidate.read_text(encoding="utf-8")
+            return candidate.read_text(encoding="utf-8").replace(REASON_MARKER, "")
         except (OSError, UnicodeDecodeError):
             continue
     return None
@@ -146,6 +152,36 @@ def attached_value(token: str, prefix: str) -> str | None:
     if token.startswith(prefix) and len(token) > len(prefix):
         return token[len(prefix) :].removeprefix("=")
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterValue:
+    prefix: str
+    value: str
+    raw: str
+    offset: int
+    later: bool
+
+
+def short_cluster_values(token: str, flags: frozenset[str], raw: str = "") -> list[ClusterValue]:
+    """Every candidate value letter in a short cluster, with its source span."""
+    if token.startswith("--") or not token.startswith("-"):
+        return []
+    candidates: list[ClusterValue] = []
+    for at in range(1, len(token)):
+        if not token[at].isalpha():
+            break
+        if f"-{token[at]}" in flags:
+            candidates.append(
+                ClusterValue(
+                    token[: at + 1],
+                    token[at + 1 :].removeprefix("="),
+                    raw or token,
+                    at + 1 + (token[at + 1 :].startswith("=")),
+                    at > 1,
+                )
+            )
+    return candidates
 
 
 # THE catalogue of body-bearing names, in the snake_case spelling a ``gh``/``glab

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.loops.arch_review.loop import MINI_LOOP as ARCH_REVIEW_LOOP
 from teatree.loops.audit.loop import MINI_LOOP as AUDIT_LOOP
 from teatree.loops.dispatch.loop import MINI_LOOP as DISPATCH_LOOP
@@ -24,14 +25,13 @@ from teatree.loops.news.loop import MINI_LOOP as NEWS_LOOP
 from teatree.loops.resource_pressure.loop import MINI_LOOP as RESOURCE_PRESSURE_LOOP
 from teatree.loops.review.loop import MINI_LOOP as REVIEW_LOOP
 from teatree.loops.ship.loop import MINI_LOOP as SHIP_LOOP
+from teatree.loops.slack_catchup_job import SlackCatchUpJob
 from teatree.loops.tickets.loop import MINI_LOOP as TICKETS_LOOP
 
 
-@pytest.fixture
-def stub_backend() -> Any:
-    """A backend stub matching the shape ``teatree.loop.domain_jobs`` expects."""
+def _stub_backend(name: str = "stub-overlay", messaging: Any = None) -> Any:
     backend = MagicMock()
-    backend.name = "stub-overlay"
+    backend.name = name
     backend.hosts = ()  # no hosts → most per-host scanners skip
     backend.identities = ("alice",)
     backend.ready_labels = ()
@@ -40,15 +40,20 @@ def stub_backend() -> Any:
     backend.stale_threshold_days = 3
     backend.external_db = None
     backend.overlay = None
-    backend.messaging = None
+    backend.messaging = messaging
     return backend
+
+
+@pytest.fixture
+def stub_backend() -> Any:
+    """A backend stub matching the shape ``teatree.loop.domain_jobs`` expects."""
+    return _stub_backend()
 
 
 @pytest.fixture
 def stub_messaging() -> Any:
     messaging = MagicMock()
     messaging.fetch_mentions = MagicMock(return_value=[])
-    messaging.fetch_dms = MagicMock(return_value=[])
     messaging.fetch_reactions = MagicMock(return_value=[])
     return messaging
 
@@ -213,8 +218,8 @@ class TestInboxLoopBuildJobs:
 
     def test_single_overlay_messaging_path(self, stub_messaging: Any) -> None:
         jobs = INBOX_LOOP.build_jobs(messaging=stub_messaging)
-        # mentions, dms, ask-reply, review_intent, red_card, pr_approvals — the shared #23 SSOT
-        assert len(jobs) == 6
+        # mentions, ask-reply, review_intent, red_card, pr_approvals — the shared #23 SSOT
+        assert len(jobs) == 5
         names = {j.scanner.name for j in jobs}
         assert "slack_mentions" in names
         assert "askuserquestion_reply" in names
@@ -230,6 +235,23 @@ class TestInboxLoopBuildJobs:
     def test_backends_branch_skipped_when_messaging_none(self, stub_backend: Any) -> None:
         jobs = INBOX_LOOP.build_jobs(backends=[stub_backend])
         assert isinstance(jobs, list)
+
+    def test_inbox_builds_one_slack_catchup_job_per_slack_overlay(self, stub_messaging: Any) -> None:
+        backends = [
+            _stub_backend("a", SlackBotBackend(bot_token="xoxb-a", user_id="U_A")),
+            _stub_backend("b", SlackBotBackend(bot_token="xoxb-b", user_id="U_B")),
+            _stub_backend("c", stub_messaging),
+        ]
+
+        jobs = INBOX_LOOP.build_jobs(backends=backends)
+
+        catch_ups = [job for job in jobs if isinstance(job.scanner, SlackCatchUpJob)]
+        assert sorted((job.overlay, job.scanner.overlay) for job in catch_ups) == [("a", "a"), ("b", "b")]
+
+    def test_unnamed_single_slack_messaging_has_no_unstamped_catchup_job(self) -> None:
+        jobs = INBOX_LOOP.build_jobs(messaging=SlackBotBackend(bot_token="xoxb-single", user_id="U"))
+
+        assert [job.scanner.overlay for job in jobs if isinstance(job.scanner, SlackCatchUpJob)] == []
 
 
 class TestFollowupLoopBuildJobs:

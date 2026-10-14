@@ -57,9 +57,6 @@ class FakeMessaging:
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         return []
 

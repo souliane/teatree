@@ -137,6 +137,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
     "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
+    "teatree.agents.live_federation:_published": "reset_shared_brokers",
     "teatree.agents.live_registry:_shared_registries": "reset_shared_registries",
     "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
     "teatree.agents.codex_read_only_server:_managers": "reset_executor_app_servers",
@@ -201,7 +202,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # resolved and the bot identity probed through it. Derived from `_messaging_cache`,
     # which conftest already resets — so leaving this one alone defeats that reset and
     # answers a later test's overlay with the earlier test's backend.
-    "teatree.cli.slack.listen:_dm_recorders": "reset_dm_recorders",
+    "teatree.loops.slack_inbound:_dm_recorders": "reset_dm_recorders",
     # The GitHub receiver's per-target secrets and read outcomes; tests swap the fake store under it.
     "teatree.core.views._webhook_secrets:webhook_secrets": "reset_webhook_secrets",
 }

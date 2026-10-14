@@ -30,7 +30,12 @@ from django_typer.management import TyperCommand, command
 from teatree.core.gates.bulk_close_gate import check_bulk_close
 from teatree.core.gates.fold_preservation import check_fold_preserved, fold_body
 from teatree.core.models import Ticket
-from teatree.core.models.dream_gap_ledger import dream_umbrella_url, umbrella_ticket
+from teatree.core.models.dream_gap_ledger import (
+    DreamGapLedgerError,
+    dream_umbrella_url,
+    return_member_gaps,
+    umbrella_ticket,
+)
 from teatree.core.models.types import DreamGapEntry
 from teatree.loops.dream.gap_attach import GapAttachError, attach_dream_gaps
 from teatree.loops.dream.umbrella_ledger import code_host_for
@@ -41,6 +46,12 @@ class BulkCloseResult(TypedDict, total=False):
     closed_ids: list[int]
     refused: bool
     reason: str
+
+
+class ReturnGapsResult(TypedDict):
+    returned: bool
+    ticket_ids: list[int]
+    gap_keys: dict[int, list[str]]
 
 
 class FoldResult(TypedDict, total=False):
@@ -129,6 +140,44 @@ class CloseCommands(TyperCommand):
             return {"refused": True, "reason": refusal}
         self.stdout.write(f"  closed {len(closed)} ticket(s): {', '.join(str(cid) for cid in closed)}")
         return {"closed": True, "closed_ids": closed}
+
+    @command(name="return-gaps")
+    def return_gaps(
+        self,
+        *,
+        ids: Annotated[str, typer.Option("--ids", help="Comma-separated legacy member ticket ids.")] = "",
+        confirm: Annotated[str, typer.Option("--confirm", help="Per-id confirmation above the bulk threshold.")] = "",
+        advanced: Annotated[str, typer.Option("--advanced", help="Per-id permission for progressed tickets.")] = "",
+    ) -> ReturnGapsResult:
+        """Return guarded legacy gap members to the dream umbrella."""
+        target_ids = [chunk.strip() for chunk in ids.split(",") if chunk.strip()]
+        confirmed = [chunk.strip() for chunk in confirm.split(",") if chunk.strip()]
+        advanced_ids = {chunk.strip() for chunk in advanced.split(",") if chunk.strip()}
+        if not target_ids or any(not raw.isdigit() for raw in target_ids) or len(target_ids) != len(set(target_ids)):
+            self.stderr.write("  return-gaps refused: --ids needs unique numeric ticket ids")
+            raise SystemExit(1)
+        if any(not raw.isdigit() for raw in advanced_ids):
+            self.stderr.write("  return-gaps refused: --advanced needs numeric ticket ids")
+            raise SystemExit(1)
+        if not advanced_ids.issubset(target_ids):
+            self.stderr.write("  return-gaps refused: --advanced ids must appear in --ids")
+            raise SystemExit(1)
+        refusal = check_bulk_close(items=target_ids, confirmed_tokens=confirmed)
+        if refusal:
+            self.stderr.write(f"  return-gaps refused: {refusal}")
+            raise SystemExit(1)
+        try:
+            with transaction.atomic():
+                returned = {
+                    int(raw): return_member_gaps(self._resolve(int(raw)), advanced=raw in advanced_ids)
+                    for raw in target_ids
+                }
+        except (DreamGapLedgerError, TransitionNotAllowed) as exc:
+            self.stderr.write(f"  return-gaps refused: {exc}")
+            raise SystemExit(1) from None
+        self.print_result = False
+        self.stdout.write(f"  returned gaps from {len(returned)} ticket(s)")
+        return {"returned": True, "ticket_ids": list(returned), "gap_keys": returned}
 
     @command(name="fold")
     def fold(

@@ -203,6 +203,20 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.PENDING
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
+    def test_refused_resume_after_park_requeues_without_a_stall_question(self) -> None:
+        task = _failed_task()
+        reason = (
+            "result_error: context_exhausted — subtype=success — the resumed conversation ended without taking a turn"
+        )
+        _add_failed_attempt(task, error=reason)
+        _add_failed_attempt(task, error="limit_parked: deploy checkpoint")
+        _add_failed_attempt(task, error=reason)
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.filter(answered_at__isnull=True).exists()
+
     def test_budget_exhausted_is_escalated_not_reopened(self) -> None:
         cap = max_phase_iterations()
         task = _failed_task()

@@ -171,3 +171,48 @@ class TestTheInvocationCwdCrossesTheBoundary:
         ):
             t3_invocation.spawn_t3_detached(["t3", "speak", "hello"])
         assert popen.call_args.kwargs["env"]["TEATREE_INVOCATION_CWD"] == "/mnt/checkout"
+
+
+class TestVenueFault:
+    """Exit 69 is the launcher saying THIS venue cannot run the CLI — nothing was asked or answered."""
+
+    @staticmethod
+    def _exited(returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=["t3"], returncode=returncode, stdout="", stderr=stderr)
+
+    @pytest.mark.parametrize("returncode", [0, 1, 2, 75, 126, 127])
+    def test_any_other_exit_is_not_a_venue_fault(self, returncode: int) -> None:
+        assert t3_invocation.venue_fault(returncode, "deploy/t3: whatever") is None
+
+    def test_it_names_the_launchers_own_first_line(self) -> None:
+        stderr = (
+            "t3: WARNING dangling interpreter alias: /tmp/uv -> missing\n"
+            "deploy/t3: refusing to run — the teatree stack is not available on this host.\n"
+            "  more\n"
+        )
+        with patch.object(t3_invocation, "unreachable_reason", return_value=None):
+            fault = t3_invocation.venue_fault(69, stderr)
+        assert fault is not None
+        assert "deploy/t3: refusing to run — the teatree stack is not available on this host." in fault
+        assert "not a verdict" in fault
+        assert "dangling interpreter alias" not in fault
+        assert "more" not in fault
+
+    def test_it_adds_why_the_hook_could_not_declare_its_checkout(self) -> None:
+        reason = "compose project 'teatree' runs 2 teatree-worker containers (a, b)"
+        with patch.object(t3_invocation, "unreachable_reason", return_value=reason) as why:
+            fault = t3_invocation.venue_fault(69, "deploy/t3: refusing to run — this checkout is not visible")
+        assert fault is not None
+        assert reason in fault
+        assert why.call_args.args[0] == t3_invocation.hook_checkout_root()
+
+    def test_an_explicit_cwd_is_the_one_explained(self, tmp_path) -> None:
+        with patch.object(t3_invocation, "unreachable_reason", return_value=None) as why:
+            t3_invocation.venue_fault(69, "", cwd=tmp_path)
+        assert why.call_args.args[0] == Path(tmp_path)
+
+    def test_a_silent_launcher_is_still_named(self) -> None:
+        with patch.object(t3_invocation, "unreachable_reason", return_value=None):
+            fault = t3_invocation.venue_fault(69, "")
+        assert fault is not None
+        assert "printed no reason" in fault

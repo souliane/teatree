@@ -53,10 +53,6 @@ class FakeMessaging:
         events, self.mentions = self.mentions, []
         return events
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         events, self.reactions = self.reactions, []

@@ -115,6 +115,17 @@ class TestMustDenyInlineBody:
         assert out["permissionDecision"] == "deny"
         assert "AI-signature" in out["permissionDecisionReason"]
 
+    def test_user_typed_fail_closed_line_does_not_hide_commit_trailer(self, real_matcher, capsys):
+        body = _quote(f"fix: routine\n[teatree-gate] fail closed: see log\n\n{_COAUTHOR_CLAUDE}")
+        assert handle_block_ai_signature(_bash(f"git commit -m {body}")) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_parser_reason_in_another_segment_does_not_hide_commit_trailer(self, real_matcher, capsys):
+        body = _quote(f"fix: routine\n\n{_COAUTHOR_CLAUDE}")
+        command = f"git commit -m {body} && curl --frobnicate https://api.github.com/repos/souliane/teatree"
+        assert handle_block_ai_signature(_bash(command)) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
 
 class TestMustDenyBodyFile:
     """A banned trailer in a ``--body-file`` / ``--description-file`` is BLOCKED."""

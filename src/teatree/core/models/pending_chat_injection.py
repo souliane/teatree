@@ -15,6 +15,7 @@ heuristic :attr:`is_question` lives here so the model is the single source of
 truth for "this row needs a reply".
 """
 
+import datetime as dt
 import re
 from dataclasses import dataclass
 from functools import partial
@@ -88,6 +89,14 @@ class DmContext:
 NO_DM_CONTEXT = DmContext()
 
 
+class PendingChatInjectionQuerySet(models.QuerySet):
+    def recorded_since(self, since: dt.datetime, *, overlay: str = "") -> "PendingChatInjectionQuerySet":
+        return self.filter(overlay=overlay, received_at__gte=since)
+
+    def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
+        return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
+
+
 class PendingChatInjection(models.Model):
     """One Slack DM from the user, waiting for the reactive Slack-answer cycle.
 
@@ -136,6 +145,8 @@ class PendingChatInjection(models.Model):
         choices=AnswerKind.choices,
     )
     eyes_reacted_at = models.DateTimeField(null=True, blank=True)
+
+    objects = PendingChatInjectionQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_pending_chat_injection"
@@ -198,16 +209,6 @@ class PendingChatInjection(models.Model):
             transaction.on_commit(partial(record_lifecycle_transition, kind="message.received", entity_id=row.pk))
             return row
         return None
-
-    @classmethod
-    def latest_slack_ts(cls, *, overlay: str = "") -> str:
-        """The newest ``slack_ts`` recorded for *overlay*, or ``""`` when none is.
-
-        A Slack ``ts`` is a fixed-width epoch-seconds string, so the lexicographic
-        max is the chronological one; ``""`` reads as "no cursor yet".
-        """
-        newest = cls.objects.filter(overlay=overlay).aggregate(newest=models.Max("slack_ts"))["newest"]
-        return newest or ""
 
     @classmethod
     def loop_unreplied(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:

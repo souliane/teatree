@@ -1,6 +1,6 @@
 """One reactive Slack-answer cycle (#1014).
 
-Where ``slack_dm_inbound`` only records user DMs, this cycle *answers* them
+Where ``SlackDmRecorder`` only records user DMs, this cycle *answers* them
 out-of-band — event-driven off the inbound-event wake (~1s), with a 5m fallback
 timer — so a quick ack / status question gets a reply in seconds, not at the next
 slower per-loop tick, and at near-zero token cost.

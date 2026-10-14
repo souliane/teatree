@@ -66,6 +66,28 @@ class LifecycleIncidentTests(TestCase):
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
 
+    def test_newer_same_phase_task_supersedes_historical_failure(self) -> None:
+        old = TaskFactory()
+        old.fail(reason="result_error: old attempt", by_holder=True)
+        TaskFactory(ticket=old.ticket, phase=old.phase)
+        other_phase = TaskFactory(ticket=old.ticket, phase="reviewing")
+        other_phase.fail(reason="result_error: current attempt", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == [other_phase.pk]
+
+    def test_administrative_newer_failure_does_not_hide_old_failure(self) -> None:
+        for reason in ("cancelled: operator stopped", "superseded: rework", "plan_stale: base moved"):
+            old = TaskFactory()
+            old.fail(reason="result_error: old attempt", by_holder=True)
+            newer = TaskFactory(ticket=old.ticket, phase=old.phase)
+            newer.fail(reason=reason, by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert len(reports) == 1
+        assert reports[0].payload["count"] == 3
+
     def test_old_inbound_question_without_answer_is_an_incident(self) -> None:
         row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why did my task fail?")
         assert row is not None

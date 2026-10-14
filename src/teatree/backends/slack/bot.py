@@ -2,7 +2,7 @@
 
 Implements :class:`teatree.core.backend_protocols.MessagingBackend`. Outbound posts,
 reactions, and user-id resolution use the Web API directly via httpx; inbound
-``fetch_mentions`` / ``fetch_dms`` stream live events through Socket Mode and
+``fetch_mentions`` / ``fetch_reactions`` stream live events through Socket Mode and
 are wired up by the ``t3 setup slack-bot`` walkthrough (see BLUEPRINT § 3.6).
 
 The Phase 3 surface is intentionally minimal: enough for outbound routing
@@ -43,7 +43,7 @@ resolves correctly.
 
 from teatree.backends.slack import egress
 from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
-from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
+from teatree.backends.slack.dm_history import read_single_message, read_thread_replies
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
@@ -155,10 +155,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         self._ext_shared_cache: dict[str, bool] = {}
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
         # tick the loop scanners read them via ``fetch_mentions`` /
-        # ``fetch_dms`` / ``fetch_reactions``; the receiver calls
-        # ``inbound.enqueue_mention`` / ``inbound.enqueue_dm`` /
+        # ``fetch_reactions``; the receiver calls ``inbound.enqueue_mention`` /
         # ``inbound.enqueue_reaction``. Reads are non-destructive within a
-        # tick so the three scanners that share one backend each see the same
+        # tick so the scanners that share one backend each see the same
         # batch (#1655).
         self._inbound = SlackInbound()
 
@@ -173,6 +172,10 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     @property
     def user_token(self) -> str:
         return self._user_token
+
+    @property
+    def owner_dm_only(self) -> bool:
+        return self._owner_dm_only
 
     def resolve_channel_token(self, channel: str) -> str:
         """The token an outbound post to *channel* would use (#1084).
@@ -195,8 +198,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         """Socket Mode ingestion surface (#1655).
 
         The receiver pushes events via ``inbound.enqueue_mention`` /
-        ``enqueue_dm`` / ``enqueue_reaction``; ``fetch_mentions`` /
-        ``fetch_dms`` / ``fetch_reactions`` read the per-tick batches back.
+        ``enqueue_reaction``; ``fetch_mentions`` / ``fetch_reactions`` read the
+        per-tick batches back.
         """
         return self._inbound
 
@@ -233,7 +236,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
             payload = {**payload, "text": wrap_slack_message(str(payload.get("text", "")))}
         return self._http.post(method, token=auth, json=payload, idempotent=idempotent)
 
-    def _get(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+    def get(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
         if not auth:
             raise SlackTokenMissingError(method)
@@ -242,7 +245,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def _is_ext_shared(self, channel: str) -> bool | None:
         """Whether *channel* is Slack-Connect shared; only a confirmed answer is cached (#1110)."""
         cached = self._ext_shared_cache.get(channel)
-        if cached is None and (cached := read_ext_shared(self._get, channel)) is not None:
+        if cached is None and (cached := read_ext_shared(self.get, channel)) is not None:
             self._ext_shared_cache[channel] = cached
         return cached
 
@@ -294,45 +297,6 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         _ = since
         return self._inbound.snapshot_mentions()
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        """Return new DMs from the user, including thread replies.
-
-        Reads the Socket Mode queue first (populated by a running
-        receiver). The read is non-destructive within a tick so the three
-        scanners that share one backend — ``SlackDmInboundScanner``,
-        ``SlackMentionsScanner``, ``RedCardScanner`` — each see the same
-        batch instead of racing a destructive drain that left the losers on
-        degraded polling and could miss a RED CARD (#1655).
-
-        When the queue is empty, falls back to polling
-        ``conversations.history`` on the bot's DM channel with the
-        configured user, then for every top-level bot message also polls
-        ``conversations.replies`` so thread replies are picked up (#1044).
-
-        Slack's ``conversations.history`` and ``conversations.replies``
-        do not stamp the ``channel`` field on each message — it is the
-        request parameter, not part of the response. We stamp it here so
-        downstream consumers (``SlackDmInboundScanner`` →
-        ``PendingChatInjection.record``) have it (#1043).
-
-        Only messages FROM the user are returned (bot's own messages are
-        filtered out).
-        """
-        queued = self._inbound.snapshot_dms()
-        if queued:
-            # Real-time Socket-Mode events: the bot's own posts are already
-            # dropped downstream (receiver drops bot_message; the inbound
-            # scanner applies filter_self_messages). The queue short-circuit
-            # must not call Slack (#1655), so no auth.test probe here.
-            return queued
-        if not self._user_id or not self._bot_token:
-            return []
-        channel = self.open_dm(self._user_id)
-        if not channel:
-            return []
-        collected = read_user_dms(get=self._get, channel=channel, since=since, identity=self._own_identity())
-        return self._strip_own_tts_audio(collected)
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         """Return queued Socket Mode ``reaction_added`` events, non-destructively.
 
@@ -353,7 +317,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         body in :mod:`~teatree.backends.slack.dm_history`; own TTS audio
         stripped at the backend read chokepoint.
         """
-        message = read_single_message(get=self._get, channel=channel, ts=ts)
+        message = read_single_message(get=self.get, channel=channel, ts=ts)
         if not message:
             return {}
         [stripped] = self._strip_own_tts_audio([message])
@@ -365,7 +329,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         Keyed on the thread ROOT, where a reply re-parents. Read body and the
         user-token retry live in :mod:`~teatree.backends.slack.dm_history`.
         """
-        replies = read_thread_replies(get=self._get, channel=channel, thread_ts=thread_ts, user_token=self._user_token)
+        replies = read_thread_replies(get=self.get, channel=channel, thread_ts=thread_ts, user_token=self._user_token)
         return self._strip_own_tts_audio(replies)
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
@@ -393,7 +357,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         if not channel:
             return []
         token = self._channel_token(channel, op=SlackOp.WRITE)
-        messages = read_channel_history(get=self._get, channel=channel, token=token, limit=limit)
+        messages = read_channel_history(get=self.get, channel=channel, token=token, limit=limit)
         return self._strip_own_tts_audio(messages)
 
     def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
@@ -408,16 +372,15 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         if not channel:
             raise ChannelReadRefusedError(channel, "empty_channel_argument")
         token = self._channel_token(channel, op=SlackOp.READ)
-        messages = read_channel_history_or_refuse(get=self._get, channel=channel, token=token, limit=limit)
+        messages = read_channel_history_or_refuse(get=self.get, channel=channel, token=token, limit=limit)
         return self._strip_own_tts_audio(messages)
 
     def _own_identity(self) -> OwnSlackIdentity | None:
         """The bot's own ``(user_id, bot_id)``, resolved once via ``auth.test``.
 
-        The single bot-identity resolver for the backend: the #1346 DM
-        self-drop (``_collect_user_dms``) and the #2089 own-TTS-audio strip
-        (``_strip_own_tts_audio``) both read it, so the bot's identity costs at
-        most one ``auth.test`` call per backend. ``False`` is the
+        The single bot-identity resolver for the backend: the #2089
+        own-TTS-audio strip (``_strip_own_tts_audio``) reads it, so the bot's
+        identity costs at most one ``auth.test`` call per backend. ``False`` is the
         resolved-to-unknown sentinel so a failed probe is not re-run every
         read; an unresolved identity fails open.
         """
@@ -550,7 +513,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""
-        return read_permalink(self._get, channel, ts)
+        return read_permalink(self.get, channel, ts)
 
     def post_audio_dm(
         self,
@@ -581,7 +544,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""
         return read_reactions(
-            get=self._get,
+            get=self.get,
             channel=channel,
             ts=ts,
             token=self._channel_token(channel, op=SlackOp.WRITE),
@@ -589,7 +552,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
     def resolve_user_id(self, handle: str) -> str:
         """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
-        return resolve_slack_user_id(get=self._get, handle=handle)
+        return resolve_slack_user_id(get=self.get, handle=handle)
 
     def resolve_usergroup_id(self, handle: str) -> str:
-        return resolve_slack_usergroup_id(get=self._get, handle=handle)
+        return resolve_slack_usergroup_id(get=self.get, handle=handle)
