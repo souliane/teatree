@@ -541,6 +541,105 @@ class TestCurlOptionBoundaries:
         ]
 
 
+_EXAMPLE_GITLAB_NOTES = "https://gitlab.example.com/api/v4/projects/1/issues/2/notes"
+_EXAMPLE_GH_COMMENTS = "https://api.github.com/repos/example/example/issues/1/comments"
+
+
+class TestCurlApiPathWrites:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"curl -X POST {_EXAMPLE_GITLAB_NOTES} -d 'body={{text}}'",
+            f"curl -X POST {_EXAMPLE_GITLAB_NOTES} -F 'body={{text}}'",
+            "curl -X POST gitlab.example.com/api/v4/projects/1/issues/2/notes -d 'body={text}'",
+            "curl -d '-s {text}' " + _EXAMPLE_GH_COMMENTS,
+            "curl -d '-x {text}' " + _EXAMPLE_GH_COMMENTS,
+            "curl --data '-x' --data 'body={text}' " + _EXAMPLE_GH_COMMENTS,
+        ],
+        ids=[
+            "self-hosted-gitlab-data",
+            "self-hosted-gitlab-form",
+            "schemeless-gitlab-data",
+            "data-short-s",
+            "data-short-x",
+            "data-then-x",
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_inline_body_is_denied_and_clean_twin_allowed(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(command.format(text=_TERM))) is True
+        assert _TERM in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert handle_banned_terms_pretool(_bash(command.format(text="routine update"))) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"curl -X POST {_EXAMPLE_GITLAB_NOTES} -d @{{path}}",
+            'curl "$SLACK_API/chat.postMessage" -d @{path}',
+            "curl slack.com/api/chat.postMessage -d @{path}",
+            "curl slack.com/api/files.upload -d @{path}",
+            "curl -sS https://slack.com/api/chat.postMessage -d @{path}",
+            "curl -T {path} https://slack.com/api/chat.postMessage",
+            "curl -F file=@{path} https://slack.com/api/chat.postMessage",
+        ],
+        ids=[
+            "self-hosted-gitlab-file",
+            "unset-slack-api-file",
+            "schemeless-slack-file",
+            "schemeless-slack-upload-file",
+            "https-slack-data-file",
+            "https-slack-upload-file",
+            "https-slack-form-file",
+        ],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_file_body_is_denied_with_named_reason_even_when_clean(
+        self,
+        command: str,
+        files: tuple[Path, Path],
+        seeded_gate: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        seeded_gate.delenv("SLACK_API", raising=False)
+        for path in files:
+            assert handle_banned_terms_pretool(_bash(command.format(path=path))) is True
+            reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+            assert "fail closed" in reason.lower() or "could not be read" in reason.lower()
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_https_slack_inline_body_is_denied_and_clean_twin_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "curl -sS https://slack.com/api/chat.postMessage -d 'text={text}'"
+        assert handle_banned_terms_pretool(_bash(command.format(text=_TERM))) is True
+        assert _TERM in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert handle_banned_terms_pretool(_bash(command.format(text="routine update"))) is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_unreadable_body_file_still_fails_closed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        command = f"curl -X POST {_EXAMPLE_GITLAB_NOTES} -d @{tmp_path / 'missing.txt'}"
+        assert handle_banned_terms_pretool(_bash(command)) is True
+        assert "could not be read" in json.loads(capsys.readouterr().out)["permissionDecisionReason"].lower()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"curl {_EXAMPLE_GITLAB_NOTES}",
+            f"curl {_EXAMPLE_GITLAB_NOTES}?q={_TERM}",
+            f"curl --anyauth {_EXAMPLE_GITLAB_NOTES}?q={_TERM}",
+            f"curl --ftp-pasv {_EXAMPLE_GITLAB_NOTES}?q={_TERM}",
+            f"curl -X POST https://paste.example.com/new -d 'body={_TERM}'",
+        ],
+        ids=["self-hosted-gitlab-plain-get", "self-hosted-gitlab-get", "anyauth-get", "ftp-pasv-get", "paste-post"],
+    )
+    @pytest.mark.usefixtures("public_gate")
+    def test_read_and_other_host_stay_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_banned_terms_pretool(_bash(command)) is False
+        assert capsys.readouterr().out == ""
+
+
 _CLUSTERED_FREE_TEXT = [
     f"gh pr create {_PUB} -dt '{{text}}' --body 'clean body'",
     f"gh pr create {_PUB} -dt'{{text}}' --body 'clean body'",

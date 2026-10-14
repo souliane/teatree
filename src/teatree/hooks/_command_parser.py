@@ -48,8 +48,7 @@ from teatree.hooks._body_file_resolution import (
 from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args, curl_groups
 from teatree.hooks._forge_write_detection import (
     _curl_urls,
-    _is_forge_host,
-    _url_host,
+    _is_curl_forge_url,
     command_has_forge_free_text_publish,
     graphql_document_is_read,
     segment_is_forge_cli_write,
@@ -445,7 +444,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         forge_groups = {
             index
             for index, (_, positions) in enumerate(transfers)
-            if any(_is_forge_host(_url_host(url)) for url in _curl_urls(positions))
+            if any(_is_curl_forge_url(url) for url in _curl_urls(positions))
         }
         publish_groups = forge_groups | {
             index

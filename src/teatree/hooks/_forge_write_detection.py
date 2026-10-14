@@ -74,6 +74,10 @@ _FORGE_HOSTS: Final[tuple[str, ...]] = ("github.com", "gitlab.com")
 _URL_HOST_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:https?://)?(?:[^/@\s]+@)?(?P<host>[A-Za-z0-9.-]+)(?::\d+)?(?:[/?#]|$)", re.IGNORECASE
 )
+_GITLAB_API_URL_RE: Final[re.Pattern[str]] = re.compile(r"^https?://[^/\s]+/api/v4/", re.IGNORECASE)
+_SLACK_API_PATH_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:/api/|\$[A-Za-z_][A-Za-z0-9_]*/)(?:chat\.postMessage|files\.upload)(?:[?#]|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -211,15 +215,21 @@ def _is_forge_host(host: str) -> bool:
     return any(host == forge or host.endswith(f".{forge}") for forge in _FORGE_HOSTS)
 
 
+def _is_curl_forge_url(url: str) -> bool:
+    return _is_forge_host(_url_host(url)) or _GITLAB_API_URL_RE.match(url) is not None
+
+
 def _curl_urls(args: list[str]) -> list[str]:
-    """Every URL a ``curl`` names; a scheme-less one only when its host is a forge."""
+    """Every URL a ``curl`` names on a known host or distinctive publish API path."""
     urls: list[str] = []
     for word in args:
         candidate = word.removeprefix("--url=")
         if candidate.lower().startswith(("http://", "https://")):
             urls.append(candidate)
-        elif _is_forge_host(_url_host(candidate)):
+        elif _is_curl_forge_url(f"https://{candidate}"):
             urls.append(f"https://{candidate}")
+        elif _SLACK_API_PATH_RE.search(candidate):
+            urls.append(candidate)
     return urls
 
 
@@ -241,7 +251,7 @@ def _segment_is_curl_forge_write(words: list[str]) -> bool:
         return False
     groups = curl_groups(rest[1:])
     forge_groups = [
-        options for options, positions in groups if any(_is_forge_host(_url_host(url)) for url in _curl_urls(positions))
+        options for options, positions in groups if any(_is_curl_forge_url(url) for url in _curl_urls(positions))
     ]
     return bool(forge_groups) and (
         any(curl_method(options) not in _READ_METHODS for options in forge_groups)
