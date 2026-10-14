@@ -38,12 +38,11 @@ this route is neither an Anthropic provider nor a metered API-key provider.
 With this direct harness setting, Teatree omits `model` and lets Codex select its
 own default. An ordered per-skill route can instead pin an explicit Codex model.
 
-A verification phase never routes to Codex unless an explicit `agent_phase_harness` unpin lets it
-through. Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk`,
-and a route candidate naming another harness for a pinned phase is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
-write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
-those by sandbox only, with one exception: `planning` is admitted when the read-only executor passes a
-live probe on that very selection (see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
+A verification phase uses Codex only when its read-only executor serves that phase and passes a live probe.
+Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk` for other
+harnesses. A Codex candidate is rejected on every unserved phase that bars write tools.
+`planning`, `reviewing`, and `critic_reviewing` pass only after the live probe on that selection
+(see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
 `"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
@@ -241,9 +240,11 @@ into the error text.
 
 ## Read-only executor
 
-`teatree-ro-executor` is a separate container where Codex runs `planning`, the one phase that bars write
-tools and can still run on Codex. Codex's own read-only sandbox cannot start inside a container, so the
+`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, and `critic_reviewing`.
+Codex's own read-only sandbox cannot start inside a container, so the
 read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
+Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
+executor turn; the executor's mounts and missing forge credentials remain the enforced write boundary.
 
 - **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
   node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
@@ -254,7 +255,7 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   system git config trusts every repository owner. It drops every capability, sets `no-new-privileges`
   and sits on its own bridge network. It holds no forge or store credential, control DB, data dir or
   docker socket.
-- **The live probe.** On every selection of `planning`, and again when the session opens, the worker
+- **The live probe.** On every selection of a served phase, and again when the session opens, the worker
   (`codex_read_only_executor.attest`) resolves exactly one running executor in its own compose project,
   runs a stdlib probe program in it through `docker exec`, and judges the answer with `docker inspect` of
   both containers (`codex_read_only_verdict.evaluate`). A write is attempted on every mount except the
@@ -291,7 +292,7 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
 - **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
   app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
-  own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Under
+  own lease in `<data dir>/codex-ro-executor`, so a read-only run never waits on the worker's lease. Under
   the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
   every process outside PID 1's session except the worker's own `docker exec` programs that run no Codex
   home, the sweep among them; only `docker exec` gives a process a parent outside the container.
@@ -315,13 +316,17 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   fresh server.
 - **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
   comments (system notes left out, oldest first, each with its author and time), the ticket context, the
-  predecessor handoff and the intake survey and puts them in the task message under fixed caps (64 KiB for
+  predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
   the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
-  target ref in the ticket checkout first. An unreadable body or comment list, a missing survey, a failed
-  fetch or a part over its cap refuses the run before it opens, so the next route candidate plans instead.
+  target ref in the ticket checkout first. An unreadable body or comment list, a missing planning survey, a failed
+  fetch or a part over its cap refuses the run before it opens, so the next route candidate runs instead.
+  A remote reviewing task also gets the full PR file diff, its dispatched head, and the worker's live
+  workflow-run status at that head. The worker reads the
+  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
+  the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
   skill the phase requires, stack skills included, names the others as not available, and points at no
-  skill path. Each code span naming a `t3` command or a teatree MCP tool reads
+  skill path. Inline code spans naming a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
   `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
   context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
@@ -335,11 +340,9 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   checks the live verdict, the sweep against a detached env-cleared process, the tmpfs reset and the home
   mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
-- **Routing planning to Codex.** Once the executor login checks green, add an `architecture-design` row to
-  `agent_skill_models` that mirrors the `code` row (Codex first, Claude second). An owner another owner
-  requires yields to it, so reviews keep their `code` route and only `planning` and
-  `directive_interpreting` move; `directive_interpreting` is not an executor phase, so its Codex candidate
-  is rejected and Claude runs it.
+- **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
+  may run `planning`, `reviewing`, or `critic_reviewing` after the live probe. Other write-barring
+  phases still reject that candidate. The configured skill route and its fallback order remain in force.
 
 ## Rotation, recovery, and revocation
 

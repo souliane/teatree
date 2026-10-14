@@ -57,7 +57,7 @@ _ASSIGNED_IDENTITY_LINES: tuple[str, ...] = (
 # it server-side. The rubric grades ride the SAME envelope for a second reason —
 # prose that must be remembered across a long review is the failure mode, and one
 # envelope cannot record a verdict while forgetting the grades.
-def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
+def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The verdict-return directive; *identity* is the assigned one, ``""`` to self-name.
 
     An ASSIGNED identity is a literal to copy, so the agent chooses nothing and the value
@@ -76,7 +76,18 @@ def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
         '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
-        "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for (`git rev-parse HEAD`):",
+        (
+            (
+                "Use the dispatched head in the DIFF UNDER REVIEW block as the full 40-char `reviewed_sha`."
+                if identity
+                else "Use `git rev-parse HEAD` in the mounted checkout as the full 40-char `reviewed_sha`."
+            )
+            if read_only_venue
+            else (
+                "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for "
+                "(`git rev-parse HEAD`):"
+            )
+        ),
         "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
         "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
         "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
@@ -84,8 +95,35 @@ def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
         "dispatched one, so a verdict that names no head records nothing at all.",
         "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
         "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
-        "was cut, not what this PR did. Re-measure it on the MERGE RESULT — `t3 review merge-tree` extracts one",
-        'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
+        *(
+            (
+                "was cut, not what this PR did. This venue cannot build the MERGE RESULT;",
+                "return `hold` and state the unverified concern rather than claiming a retake.",
+            )
+            if read_only_venue
+            else (
+                (
+                    "was cut, not what this PR did. Re-measure it on the MERGE RESULT — "
+                    "`t3 review merge-tree` extracts one"
+                ),
+                'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
+            )
+        ),
+        *(
+            (
+                (
+                    "Set gh_verify_result green only when WORKER CI says green at the dispatched head; "
+                    "otherwise set pending or failed and return hold."
+                    if identity
+                    else (
+                        "Pre-PR self-review may return merge_safe with gh_verify_result pending; "
+                        "never claim green without worker CI."
+                    )
+                ),
+            )
+            if read_only_venue
+            else ()
+        ),
         "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
@@ -331,12 +369,20 @@ def _scanning_news_phase_lines() -> tuple[str, ...]:
     return ("", "PHASE: scanning_news", *_ARTICLE_SUGGESTIONS_RETURN_LINES)
 
 
-def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
+def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
     lines = [
         "",
         "PHASE: reviewing",
-        "1. Do a thorough code review of all changes on this ticket's branch.",
+        (
+            (
+                "1. Review the DIFF UNDER REVIEW at the dispatched head; hold if it is absent or incomplete."
+                if task.ticket.role == task.ticket.Role.REVIEWER
+                else "1. Review the DIFF UNDER REVIEW from the mounted branch; hold if it is absent or incomplete."
+            )
+            if read_only_venue
+            else "1. Do a thorough code review of all changes on this ticket's branch."
+        ),
         (
             "Return `review_context` with the fetched work_item URL, downloaded documents, "
             "and analysis; the phase cannot complete without it."
@@ -355,10 +401,10 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
             "For a multi-repo ticket, inspect the combined changeset and return "
             "`integration_review.repos` listing every reviewed repo."
         ),
-        "2. Run /t3:next when done — it handles retro + structured result + handoff.",
+        *(() if read_only_venue else ("2. Run /t3:next when done — it handles retro + structured result + handoff.",)),
         *_VERIFICATION_BRIEF_LINES,
-        *_green_proof_binding_lines(task),
-        *_review_verdict_return_lines(assigned_reviewer_identity_for(task)),
+        *(() if read_only_venue else _green_proof_binding_lines(task)),
+        *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),
         *rubric_brief_lines(task),
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
@@ -517,4 +563,5 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 #: The read-only executor gets its survey in the task message, in full, so its planning block carries none.
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": lambda _task: _PLAN_RETURN_LINES,
+    "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
 }
