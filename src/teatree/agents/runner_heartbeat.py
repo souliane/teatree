@@ -17,7 +17,6 @@ from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.managers_task_claim import drain_block_reason
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import LeaseLostError, Task
 from teatree.core.models.task_claim import describe_lease_loss
 from teatree.core.worktree.occupancy import WorktreeOccupancyLostError, renew_ticket_checkout, task_holder_id
@@ -116,7 +115,6 @@ class _Heartbeat:
     breach: list[str] = field(default_factory=list)
     lease_lost: bool = False
     checkpointed: bool = False
-    cancelled: bool = False
     deferred_beats: int = 0
 
     async def run(self) -> None:
@@ -124,9 +122,7 @@ class _Heartbeat:
             while True:
                 await asyncio.sleep(self.runtime.heartbeat_interval)
                 if await self._lost_the_lease():
-                    if self.cancelled:
-                        continue
-                    return
+                    continue
                 # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
                 if self.breach or await self._checkpointed():
                     continue
@@ -150,32 +146,16 @@ class _Heartbeat:
         try:
             await asyncio.to_thread(self.runtime.renew_lease, self.task)
         except LeaseLostError as exc:
-            try:
-                self.cancelled = await asyncio.to_thread(self._cancelled)
-            except Exception:
-                logger.warning("Could not read cancellation state for task %s", self.task.pk, exc_info=True)
-                self.cancelled = False
-            # The flags name what FIRST interrupted the run; a claim lost after that only ends the beat.
-            if not self.breach:
-                self.lease_lost = True
-            logger.warning("Task %s lease lost; interrupting run", self.task.pk)
-            if self.cancelled and self.breach:
+            # The flags name what FIRST interrupted the run; a lost claim re-interrupts every beat until the drive ends.
+            if self.breach:
                 await self.live.interrupt()
                 return True
+            self.lease_lost = True
+            logger.warning("Task %s lease lost; interrupting run", self.task.pk)
             return await self._interrupt(str(exc))
         except Exception:
             logger.warning("Heartbeat failed for task %s", self.task.pk, exc_info=True)
         return False
-
-    def _cancelled(self) -> bool:
-        if self.task.pk is None:
-            return False
-        try:
-            return Task.objects.filter(
-                pk=self.task.pk, status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED
-            ).exists()
-        finally:
-            close_thread_db_connections()
 
     async def _checkpointed(self) -> bool:
         try:

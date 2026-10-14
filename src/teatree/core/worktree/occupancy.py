@@ -40,7 +40,6 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 """
 
 import logging
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,9 +51,8 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
-from teatree.core.models.task_claim import CheckoutExit, _checkout_exit_scope
+from teatree.core.models.checkout_exit import CheckoutExit, CheckoutExitScope, checkout_exit_scope
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
     OccupancyHolder,
     WorktreeOccupancyLostError,
@@ -97,28 +95,32 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait: bool = True) -> CheckoutExit:
+    """Wait for the run's own processes, then say whether its checkout may be released and what it attests."""
+    path = Path(worktree.worktree_path)
+    if wait and wait_for_owned_checkout_processes(path):
+        return CheckoutExit(release=False)
+    table = read_process_table(exclude_ancestors=True)
+    if table.usable and table.holds(path):
+        return CheckoutExit(release=False)
+    if not (attest and table.usable and writes_checkout(task)):
+        return CheckoutExit(release=True)
+    try:
+        return CheckoutExit(release=True, attested_state=checkout_state(path, ticket=task.ticket).digest)
+    except (OSError, RuntimeError, ValueError):
+        logger.exception("Releasing checkout %s after task %s unattested: its state could not be read", path, task.pk)
+        return CheckoutExit(release=True)
+
+
 def _prepare_task_checkout_exit(
-    task: Task, worktree: Worktree, *, holder: str, holder_session: str, exclude_ancestors: bool = False
+    task: Task, worktree: Worktree, *, holder: str, holder_session: str
 ) -> CheckoutExit | None:
-    if holder != task_holder_id(task) or holder_session != task.claimed_by_session:
+    if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
     row = Worktree.objects.get(pk=worktree.pk)
-    if row.occupied_by != holder or row.occupied_by_session != holder_session:
+    if (row.occupied_by, row.occupied_by_session) != (holder, holder_session):
         return CheckoutExit(release=False)
-    path = Path(row.worktree_path)
-    if wait_for_owned_checkout_processes(path, beat_seconds=60):
-        return CheckoutExit(release=False)
-    table = read_process_table(exclude_ancestors=True) if exclude_ancestors else read_process_table()
-    if not table.usable or table.holds(path):
-        return CheckoutExit(release=False)
-    digest = None
-    if writes_checkout(task):
-        try:
-            digest = checkout_state(path).digest
-        except (OSError, RuntimeError, ValueError):
-            logger.exception("Keeping checkout %s occupied after task %s: state could not be attested", path, task.pk)
-            return CheckoutExit(release=False)
-    return CheckoutExit(release=True, attested_state=digest)
+    return _settle_checkout_exit(task, row, attest=True)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -134,106 +136,60 @@ def _release_if_finished_task(worktree: Worktree) -> None:
     if current is None or terminal_task_pk(current.holder) is None:
         return
     if worktree.get_extra().get("attested_state"):
-        table = read_process_table()
+        table = read_process_table(exclude_ancestors=True)
         if not table.usable or table.holds(Path(worktree.worktree_path)):
             return
     release(worktree, holder=current.holder, holder_session=current.holder_session)
 
 
-def _checkpointed_task(worktree: Worktree, holder: str) -> Task | None:
-    suffix = holder.removeprefix("task:")
-    if suffix == holder or not suffix.isdigit() or worktree.occupied_at is None:
-        return None
-    task = Task.objects.filter(pk=int(suffix), status=Task.Status.PENDING).first()
-    if task is None:
-        return None
-    attempt = task.attempts.filter(ended_at__gte=worktree.occupied_at).order_by("-pk").first()
-    if attempt is None or not attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}deploy checkpoint:"):
-        return None
-    return task
-
-
-def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> bool:
-    current = Worktree.objects.get(pk=worktree.pk)
-    if current.occupied_by != holder or current.occupied_by_session != holder_session:
-        return True
-    task_pk = terminal_holder_task_pk(holder)
-    task = (
-        Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).first()
-        if task_pk is not None
-        else _checkpointed_task(worktree, holder)
-    )
-    if task is None:
-        return False
-    task_pk = task.pk
-    table = read_process_table()
-    path = Path(worktree.worktree_path)
-    if table.usable and table.holds(path):
-        time.sleep(0.25)
-        table = read_process_table()
-    if not table.usable or table.holds(path):
+def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str, scope: CheckoutExitScope) -> None:
+    row = Worktree.objects.get(pk=worktree.pk)
+    if (row.occupied_by, row.occupied_by_session) != (holder, holder_session):
+        return
+    pk = holder.removeprefix("task:")
+    task = Task.objects.filter(pk=int(pk)).first() if pk.isdigit() else None
+    parked = task is not None and task.status == Task.Status.PENDING
+    if task is None or task.status == Task.Status.CLAIMED or (parked and not scope.park_attests):
+        release(row, holder=holder, holder_session=holder_session)
+        return
+    cancelled = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
+    settled = scope.settled or _settle_checkout_exit(task, row, attest=parked, wait=not cancelled)
+    if not settled.release:
         logger.warning(
-            "Keeping checkout %s occupied after task %s: process evidence is incomplete or live", path, task_pk
+            "Keeping checkout %s occupied after task %s: its processes are still live", row.worktree_path, task.pk
         )
         try:
-            page_surviving_checkout(task, path, holder_session=holder_session)
+            page_surviving_checkout(task, Path(row.worktree_path), holder_session=holder_session)
         except Exception:
-            logger.exception("Could not page owner for surviving checkout process on task %s", task_pk)
-        return True
-    state = None
-    if writes_checkout(task) and not (task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED):
-        try:
-            state = checkout_state(path)
-        except (OSError, RuntimeError, ValueError):
-            logger.exception("Keeping checkout %s occupied after task %s: state could not be attested", path, task_pk)
-            return True
+            logger.exception("Could not page owner for surviving checkout process on task %s", task.pk)
+        return
     with transaction.atomic():
-        row = Worktree.objects.select_for_update().get(pk=worktree.pk)
-        if row.occupied_by != holder or row.occupied_by_session != holder_session:
-            return True
-        extra = dict(row.extra or {})
-        if state is not None:
-            extra["attested_state"] = state.digest
-        Worktree.objects.filter(pk=row.pk, occupied_by=holder, occupied_by_session=holder_session).update(
-            extra=extra,
-            occupied_by="",
-            occupied_by_session="",
-            occupied_at=None,
-            occupancy_expires_at=None,
-        )
-        Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).update(**RELEASED_CLAIM)
-    return True
-
-
-def finish_recorded_task_checkout(task: Task) -> None:
-    path = dispatch_worktree_path(task.ticket)
-    worktree = _worktree_at(task.ticket, path) if path else None
-    if worktree is not None:
-        _finish_task_checkout(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+        if release(row, holder=holder, holder_session=holder_session, attested_state=settled.attested_state):
+            Task.objects.filter(pk=task.pk, claimed_by_session=holder_session).update(**RELEASED_CLAIM)
 
 
 @contextmanager
-def recording_task_checkout(task: Task) -> Iterator[None]:
+def _held_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> Iterator[None]:
+    with checkout_exit_scope(
+        lambda task: _prepare_task_checkout_exit(task, worktree, holder=holder, holder_session=holder_session)
+    ) as scope:
+        try:
+            yield
+        finally:
+            _finish_task_checkout(worktree, holder=holder, holder_session=holder_session, scope=scope)
+
+
+@contextmanager
+def recording_task_checkout(task: Task) -> Iterator[bool]:
+    """Settle a ``/loop`` record's checkout like a worker exit; yields whether the task held it."""
     path = dispatch_worktree_path(task.ticket)
     worktree = _worktree_at(task.ticket, path) if path else None
-    holder = occupancy_holder(worktree) if worktree is not None else None
-    if (
-        worktree is None
-        or holder is None
-        or (holder.holder, holder.holder_session)
-        != (
-            task_holder_id(task),
-            task.claimed_by_session,
-        )
-    ):
-        yield
+    holder, session = task_holder_id(task), task.claimed_by_session
+    if worktree is None or (worktree.occupied_by, worktree.occupied_by_session) != (holder, session):
+        yield False
         return
-    with _checkout_exit_scope(
-        lambda current: _prepare_task_checkout_exit(
-            current, worktree, holder=holder.holder, holder_session=holder.holder_session, exclude_ancestors=True
-        )
-    ):
-        yield
+    with _held_checkout(worktree, holder=holder, holder_session=session):
+        yield True
 
 
 @contextmanager
@@ -246,8 +202,8 @@ def occupy_ticket_checkout(
 ) -> Iterator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
-    Yields the on-disk path an agent should run in, and settles the claim on exit.
-    An unreadable process table or a surviving writer keeps it reserved for review.
+    Yields the on-disk path an agent should run in, and settles the claim on exit:
+    a surviving process of the run keeps it reserved and pages the owner.
 
     Yields ``""`` and claims nothing when the ticket has no materialised checkout:
     there is no shared resource yet, so there is nothing to contend on and a
@@ -261,14 +217,8 @@ def occupy_ticket_checkout(
 
     _release_if_finished_task(worktree)
     acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
-    with _checkout_exit_scope(
-        lambda task: _prepare_task_checkout_exit(task, worktree, holder=holder, holder_session=holder_session)
-    ):
-        try:
-            yield path
-        finally:
-            if not _finish_task_checkout(worktree, holder=holder, holder_session=holder_session):
-                release(worktree, holder=holder, holder_session=holder_session)
+    with _held_checkout(worktree, holder=holder, holder_session=holder_session):
+        yield path
 
 
 def renew_ticket_checkout(

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -207,30 +208,39 @@ def acquire(
     return OccupancyHolder(holder=holder, holder_session=holder_session, since=now, expires_at=expires)
 
 
-def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> bool:
+_UNOCCUPIED = {"occupied_by": "", "occupied_by_session": "", "occupied_at": None, "occupancy_expires_at": None}
+
+
+def release(worktree: Worktree, *, holder: str, holder_session: str = "", attested_state: str | None = None) -> bool:
     """Hand *worktree* back, iff ``(holder, holder_session)`` is the current occupant.
 
     Holder-scoped by CAS so a release can never steal: a caller that no longer
     owns the claim (or never did) updates zero rows and gets ``False``. Returns
-    whether this call is what freed it.
+    whether this call is what freed it. An *attested_state* lands in the same write.
     """
-    freed = (
-        Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session)
-        .exclude(occupied_by="")
-        .update(occupied_by="", occupied_by_session="", occupied_at=None, occupancy_expires_at=None)
+    held = Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session).exclude(
+        occupied_by=""
     )
+    with transaction.atomic():
+        if attested_state is None:
+            freed = held.update(**_UNOCCUPIED)
+        else:
+            extra = held.select_for_update().values_list("extra", flat=True).first() or {}
+            freed = held.update(**_UNOCCUPIED, extra={**extra, "attested_state": attested_state})
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1
 
 
-def release_task_occupancy(task: Task, *, defer_if_driving: bool = True, attested_state: str | None = None) -> bool:
+def release_task_occupancy(task: Task, *, attested_state: str | None = None) -> bool:
     """Release *task*'s occupancy claim on its ticket's checkout, iff it holds one (#4867).
 
-    Runs in the SAME transaction as the terminal status write unless the holder
-    is still driving its run; its exit then attests or keeps the checkout held.
-    A third-party fail of a confirmed-dead holder bypasses that marker and releases
-    the claim; a third-party fail of a live holder keeps it for the holder's unwind.
+    Runs in the SAME transaction as the terminal status write, so a process kill
+    before ``occupy_ticket_checkout``'s ``finally`` cannot strand the claim. The
+    callers are a holder's own report (``complete_claimed()``, ``fail(by_holder=True)``),
+    which skip it when their exit snapshot found survivors, and a third-party ``fail`` of
+    a confirmed-dead holder; any other third-party fail keeps the claim for the holder's
+    own unwind (#4872).
     Callers MUST run this BEFORE blanking ``claimed_by_session``: :func:`release`'s
     CAS matches on that exact session value, so calling this after clearing the claim
     would silently no-op.
@@ -239,24 +249,9 @@ def release_task_occupancy(task: Task, *, defer_if_driving: bool = True, atteste
     worktree = _worktree_at(task.ticket, path) if path else None
     if worktree is None:
         return False
-    if defer_if_driving and task_occupancy_release_deferred(task):
-        return False
-    if attested_state is not None:
-        extra = dict(worktree.extra or {})
-        extra["attested_state"] = attested_state
-        freed = Worktree.objects.filter(
-            pk=worktree.pk,
-            occupied_by=task_holder_id(task),
-            occupied_by_session=task.claimed_by_session,
-        ).update(
-            extra=extra,
-            occupied_by="",
-            occupied_by_session="",
-            occupied_at=None,
-            occupancy_expires_at=None,
-        )
-        return freed == 1
-    return release(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+    return release(
+        worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session, attested_state=attested_state
+    )
 
 
 def task_occupancy_release_deferred(task: Task) -> bool:

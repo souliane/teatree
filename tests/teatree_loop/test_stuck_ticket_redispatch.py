@@ -10,8 +10,10 @@ through the SAME #2009 repair budget, escalating LOUDLY via a ``DeferredQuestion
 when the budget is exhausted — so a stuck ticket is drained or surfaced, never silent.
 """
 
+import json
 from contextlib import ExitStack
 from datetime import timedelta
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -38,6 +40,7 @@ from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
@@ -51,6 +54,8 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.utils.git_run import run_strict
 from tests._pr_open_state_stub import pr_open_state
 from tests.factories import record_test_plan
+from tests.teatree_core._self_review_helpers import self_review_result
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
@@ -1048,10 +1053,21 @@ class TestCompletedReviewNoCoding(TestCase):
             )
             coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
             coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
-            review = _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED)
-            review.attempts.update(
-                result={"recording_source": "hand", "review_verdict": {"verdict": "merge_safe", "reviewed_sha": head}}
+            record_review_context_for_test(ticket)
+            record_maker_review_for_test(ticket, head)
+            review = Task.objects.create(
+                ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing"
             )
+            review.claim(claimed_by="operator")
+            call_command(
+                "tasks",
+                "record-attempt",
+                str(review.pk),
+                json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
+                claim_token=claim_generation(review),
+                stdout=StringIO(),
+            )
+            assert review.attempts.latest("pk").result["recording_source"] == "hand"
             guards = (
                 (Ticket, "newest_phase_task_was_cancelled"),
                 (stuck_ticket_redispatch, "_merge_safe_review_after_plan"),

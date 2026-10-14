@@ -25,11 +25,13 @@ from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
 from teatree.core.views._webhook_secrets import reset_webhook_secrets
+from teatree.core.worktree import checkout_fence, occupancy
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
@@ -364,6 +366,21 @@ def _inert_ambient_process_table() -> Iterator[None]:
     from teatree.core.retention import scratch  # noqa: PLC0415 — deferred: ORM import at fixture time
 
     with patch.object(scratch, "_VENUE_PROC", Path("/nonexistent-process-table-pin-your-own")):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _empty_checkout_process_table() -> Iterator[None]:
+    """Give the checkout fence and its exit an empty, usable host table, so no dispatch reads the live ``/proc``.
+
+    CI's container has no ``/host-proc``, so the unpinned read is unusable there and every
+    writing dispatch parks before its fake agent runs. Tests about the table pin their own.
+    """
+    empty = ProcessTable(frozenset(), "/proc")
+    with (
+        patch.object(checkout_fence, "read_process_table", return_value=empty),
+        patch.object(occupancy, "read_process_table", return_value=empty),
+    ):
         yield
 
 

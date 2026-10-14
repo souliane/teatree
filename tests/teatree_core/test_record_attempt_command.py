@@ -24,7 +24,6 @@ from django.utils import timezone
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.task_claim import claim_generation
-from teatree.core.worktree.occupancy import acquire, task_holder_id
 from teatree.utils.git import run_strict
 from tests.factories import WorktreeFactory, planned_ticket
 from tests.teatree_core._self_review_helpers import author_ticket, self_review_result
@@ -45,19 +44,21 @@ _HAND_PLAN = {
 
 
 class TestRecordAttemptCommand(TestCase):
-    def _factory_checkout(self, task: Task, checkout: Path) -> None:
-        worktree = WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
-        acquire(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+    def _claim_next(self, task: Task, checkout: Path) -> str:
+        WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+        claimed = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=claimed)
+        [entry] = json.loads(claimed.getvalue())
+        assert entry["task_id"] == task.pk
+        return entry["claim_token"]
 
     def test_loop_plan_schedules_one_coding_task_even_on_replay(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
-        task.claim(claimed_by="loop-slot")
-
         with tempfile.TemporaryDirectory() as temp:
             checkout = Path(temp) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
-            self._factory_checkout(task, checkout)
+            token = self._claim_next(task, checkout)
             with patch(
                 "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
             ):
@@ -66,7 +67,7 @@ class TestRecordAttemptCommand(TestCase):
                     "record-attempt",
                     str(task.pk),
                     json.dumps(_HAND_PLAN),
-                    claim_token=claim_generation(task),
+                    claim_token=token,
                     stdout=StringIO(),
                 )
 
@@ -80,12 +81,11 @@ class TestRecordAttemptCommand(TestCase):
     def test_loop_review_schedules_shipping_once_even_on_replay(self) -> None:
         ticket = author_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
-        task.claim(claimed_by="loop-slot")
         with tempfile.TemporaryDirectory() as temp:
             checkout = Path(temp) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
             head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
-            self._factory_checkout(task, checkout)
+            token = self._claim_next(task, checkout)
             record_maker_review_for_test(ticket, head)
             with (
                 patch.object(Ticket, "has_shippable_diff", return_value=True),
@@ -99,7 +99,7 @@ class TestRecordAttemptCommand(TestCase):
                     "record-attempt",
                     str(task.pk),
                     json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
-                    claim_token=claim_generation(task),
+                    claim_token=token,
                     stdout=StringIO(),
                 )
                 task.refresh_from_db()
@@ -116,12 +116,10 @@ class TestRecordAttemptCommand(TestCase):
     def test_loop_review_hold_schedules_one_rework_even_on_replay(self) -> None:
         ticket = author_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
-        task.claim(claimed_by="loop-slot")
-
         with tempfile.TemporaryDirectory() as temp:
             checkout = Path(temp) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
-            self._factory_checkout(task, checkout)
+            token = self._claim_next(task, checkout)
             with patch(
                 "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
             ):
@@ -130,7 +128,7 @@ class TestRecordAttemptCommand(TestCase):
                     "record-attempt",
                     str(task.pk),
                     json.dumps(self_review_result("hold")),
-                    claim_token=claim_generation(task),
+                    claim_token=token,
                     stdout=StringIO(),
                 )
         task._apply_phase_transition()
@@ -172,6 +170,29 @@ class TestRecordAttemptCommand(TestCase):
         task._apply_phase_transition()
         assert task.attempts.latest("pk").result["recording_source"] == "hand"
         assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+
+    def test_a_hand_record_with_a_process_in_the_checkout_pages_nobody(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="operator")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+            WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            busy = ProcessTable(frozenset({checkout}), "/proc")
+            with (
+                patch("teatree.core.worktree.occupancy.read_process_table", return_value=busy),
+                patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("hold")),
+                    claim_token=claim_generation(task),
+                    stdout=StringIO(),
+                )
+        page.assert_not_called()
 
     def test_manual_hand_review_merge_safe_keeps_shipping_unscheduled(self) -> None:
         ticket = author_ticket()

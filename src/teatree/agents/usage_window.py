@@ -37,6 +37,7 @@ from teatree.agents.harness_dispatch import another_lane_can_dispatch
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
+from teatree.core.models.checkout_exit import attest_checkout_on_park
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
@@ -460,5 +461,7 @@ def record_park(task: Task, *, reason: str, not_before: datetime, usage: "Attemp
         result=with_transport_records(None, usage),
         **usage_fields(usage),
     )
+    if usage is not None:
+        attest_checkout_on_park()
     task.park(not_before=not_before)
     return attempt
