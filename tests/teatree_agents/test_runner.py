@@ -1810,10 +1810,11 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()
@@ -1831,7 +1832,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
             with self.subTest(phase=phase):
                 attempt = self._dispatch(phase)
                 assert "not valid under agent_harness" not in attempt.error
-                assert attempt.exit_code == 0
+                assert attempt.exit_code == 0, attempt.error
 
     def test_the_flipped_layer_2_pin_is_dropped_loudly(self) -> None:
         # Never silent: the operator's Layer-2 pin was made for the CONFIGURED
