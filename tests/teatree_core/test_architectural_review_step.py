@@ -34,7 +34,7 @@ def _step_3a() -> str:
 def test_architectural_review_step_adopts_then_visits_coding_and_never_names_a_ticket() -> None:
     step = _step_3a()
 
-    assert "`t3 <overlay> worktree adopt <abs path> --json`" in step
+    assert "`t3 <overlay> worktree adopt <abs path> --json`, run from the main clone" in step
     assert "`mcp__teatree__ticket_visit_phase <ticket_id> coding`" in step
     assert "never pass `--ticket`" in step
 

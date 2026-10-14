@@ -43,7 +43,6 @@ from teatree.hooks import _dispatch_quote_ok
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.hooks._hook_state import hook_state_root
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._quote_normalize import normalize_quotes as _normalize_quotes
 
@@ -342,7 +341,7 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
         return result
     if _is_fail_closed_sentinel(text):
         result.findings.append(Finding(name=FAIL_CLOSED_FINDING_NAME, severity=HIGH, excerpt="unresolved body source"))
-        text = "\n".join(line for line in text.split("\n") if line.strip() != _FAIL_CLOSED_SENTINEL)
+        text = "\n".join(line for line in text.split("\n") if not _is_fail_closed_sentinel(line))
         if not text.strip():
             return result
     normalized = _normalize_quotes(text)
