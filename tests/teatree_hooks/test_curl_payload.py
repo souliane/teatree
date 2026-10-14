@@ -28,6 +28,8 @@ from teatree.hooks._curl_payload import (
 )
 from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX, is_fail_closed_sentinel
 
+_PINNED_CURL_RANGE = ((8, 5), (8, 18))
+
 
 class TestJsonBodyFields:
     """The shared JSON field extractor keeps ``text``/``message``/``body`` values."""
@@ -111,10 +113,12 @@ class TestCurlOptionGrammar:
         version_text = subprocess.run(
             [curl_binary, "--version"], capture_output=True, text=True, check=True, timeout=5
         ).stdout
-        version_match = re.search(r"curl (\d+)\.(\d+)\.(\d+)", version_text)
+        version_match = re.search(r"curl (\d+)\.(\d+)\.\d+", version_text)
         if version_match is None:
             pytest.skip("installed curl version is unreadable; cannot compare its options with the pinned table")
-        version = tuple(int(part) for part in version_match.groups())
+        version = (int(version_match[1]), int(version_match[2]))
+        if version < _PINNED_CURL_RANGE[0]:
+            pytest.skip(f"{version_match[0]} is older than the pinned 8.5 table; its options are not compared")
         help_text = subprocess.run(
             [curl_binary, "--help", "all"], capture_output=True, text=True, check=True, timeout=5
         ).stdout
@@ -125,10 +129,8 @@ class TestCurlOptionGrammar:
                 newer_options.append(f"--{name}")
             elif short and f"-{short}" not in CURL_SHORT_KINDS:
                 newer_options.append(f"-{short}")
-        if newer_options and version > (8, 18, 0):
-            pytest.skip(
-                f"curl {version_text.splitlines()[0]} has newer options beyond the pinned 8.18 table: {newer_options}"
-            )
+        if newer_options and version > _PINNED_CURL_RANGE[1]:
+            pytest.skip(f"{version_match[0]} is newer than the pinned 8.18 table; options outside it: {newer_options}")
         assert newer_options == []
 
     def test_both_upstream_alias_formats_preserve_short_letter_rules(self) -> None:
