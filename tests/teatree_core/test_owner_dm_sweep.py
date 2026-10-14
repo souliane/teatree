@@ -100,6 +100,15 @@ class TestSubjectClosedLocally(TestCase):
 
 
 class TestFragmentQualifiedSubject(TestCase):
+    def test_open_pr_keyed_reviewer_keeps_subpath_question_open(self) -> None:
+        author = Ticket.objects.create(issue_url="https://github.com/o/r/issues/56", state=Ticket.State.MERGED)
+        PullRequest.objects.create(ticket=author, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        Ticket.objects.create(issue_url=_PR_URL, state=Ticket.State.WORK_STARTED)
+
+        for suffix in ("/files", "/"):
+            with self.subTest(suffix=suffix):
+                assert subject_closed_locally(f"Review {_PR_URL}{suffix}") is False
+
     def test_open_member_under_merged_umbrella_stays_open(self) -> None:
         base = "https://github.com/o/r/issues/56"
         Ticket.objects.create(issue_url=base, state=Ticket.State.MERGED)

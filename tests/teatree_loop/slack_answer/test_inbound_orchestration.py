@@ -492,6 +492,19 @@ class TestADivergedLaneOverlayIsRepairedSoCoverageStillFindsIt:
 
 
 class TestFragmentSubjectCoverage(TestCase):
+    def test_pr_subpath_finds_live_pr_keyed_ticket(self) -> None:
+        pr = "https://github.com/souliane/teatree/pull/5"
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=pr, state=Ticket.State.WORK_STARTED)
+
+        for suffix in ("/files", "/"):
+            with self.subTest(suffix=suffix):
+                coverage = find_coverage(
+                    fingerprint="", slack_ts="new", coalesced_ts=(), overlay="t3-teatree", text=f"Review {pr}{suffix}"
+                )
+                assert coverage is not None
+                assert coverage.kind is CoverageKind.SAME_SUBJECT
+                assert str(ticket.pk) in coverage.reference
+
     def test_live_fragment_member_covers_its_subject_under_ignored_umbrella(self) -> None:
 
         base = "https://github.com/souliane/teatree/issues/3009"

@@ -98,7 +98,7 @@ def find_forge_urls(text: str) -> list[str]:
 
 
 def find_forge_refs(text: str) -> list[str]:
-    return [match.rstrip(".,;") for match in _FORGE_REF_RE.findall(text)]
+    return [match.rstrip(".,;") if "#" in match else match.rstrip(".,;/") for match in _FORGE_REF_RE.findall(text)]
 
 
 def first_pr_url(text: str) -> str:

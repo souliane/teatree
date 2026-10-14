@@ -70,6 +70,10 @@ class TestPrRefAndRepoAndIid:
 
 
 class TestForgeReferences:
+    def test_pr_subpath_and_trailing_slash_resolve_to_pr_url(self) -> None:
+        pr = "https://github.com/o/r/pull/5"
+        assert find_forge_refs(f"See {pr}/files and {pr}/") == [pr, pr]
+
     def test_keeps_member_fragments_and_trims_sentence_punctuation(self) -> None:
         member = f"{_ISSUE}#dream-gap=abc.123/dm"
         assert find_forge_refs(f"Review `{member}`: then {_ISSUE}#issuecomment-1.") == [
