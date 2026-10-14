@@ -14,6 +14,8 @@ trustworthy: an unreadable history reports UNKNOWN rather than clean.
 import json
 from pathlib import Path
 
+import pytest
+
 from teatree.hooks import banned_terms_scanner
 from teatree.hooks import verbatim_paste as vp
 from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX
@@ -153,6 +155,10 @@ class TestAnUnresolvableBodyIsUnknownNotClean:
         verdict = vp.scan_body(FAIL_CLOSED_SENTINEL, operator_messages=_SAID)
         assert verdict.outcome == vp.UNKNOWN
         assert verdict.reason
+
+    @pytest.mark.parametrize("messages", [[], _SAID])
+    def test_empty_readable_body_is_clean(self, messages: list[str]) -> None:
+        assert vp.scan_body("", operator_messages=messages).outcome == vp.CLEAN
 
     def test_the_sentinel_alongside_real_text_is_still_unknown(self) -> None:
         body = f"Post-mortem\n{FAIL_CLOSED_SENTINEL}"

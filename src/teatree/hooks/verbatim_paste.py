@@ -156,7 +156,14 @@ def scan_body(body: str, *, operator_messages: Sequence[str] | None) -> Verdict:
     unreadable = _is_fail_closed_sentinel(body)
     body = "\n".join(line for line in body.split("\n") if not _is_fail_closed_sentinel(line))
     if not body:
-        return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
+        reason = (
+            "the publish body could not be resolved before the command runs"
+            if unreadable
+            else "this session's transcript could not be read"
+            if operator_messages is None
+            else ""
+        )
+        return Verdict(UNKNOWN if reason else CLEAN, reason=reason)
     if operator_messages is None:
         return Verdict(UNKNOWN, reason="this session's transcript could not be read")
     known = frozenset(
