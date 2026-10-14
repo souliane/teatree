@@ -1,17 +1,21 @@
-"""Inspect a cancelled run's checkout processes before releasing or stopping them."""
+"""Inspect a run's own checkout processes before releasing or stopping them."""
 
 import ctypes
 import errno
 import os
-import platform
 import signal
+import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from teatree.core.cleanup.process_table import venue_proc_root
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
+OWN_PROCESS_BEAT_SECONDS = 60
+# The uv-managed CPython builds ship without os.pidfd_open / signal.pidfd_send_signal; the numbers are arch-unified.
 _PIDFD_OPEN = 434
 _PIDFD_SEND_SIGNAL = 424
 
@@ -24,6 +28,16 @@ class CheckoutProcess:
     marker: bool
     writer: bool
     shared_server: bool
+
+    @property
+    def stoppable(self) -> bool:
+        return self.descendant and self.writer and not self.shared_server
+
+
+@dataclass(frozen=True, slots=True)
+class StopResult:
+    stopped: tuple[int, ...] = ()
+    refused: str = ""
 
 
 def _under(path: Path, checkout: Path) -> bool:
@@ -45,8 +59,7 @@ def _writer(pid_dir: Path, checkout: Path) -> bool:
         return False
     for fd in fds:
         try:
-            target = fd.readlink()
-            if not _under(target, checkout):
+            if not _under(fd.readlink(), checkout):
                 continue
             flags = next(
                 line.split(":", 1)[1].strip()
@@ -70,6 +83,24 @@ def _descends(pid: int, parents: dict[int, int], root_pid: int) -> bool:
     return False
 
 
+def _checkout_process(pid_dir: Path, checkout: Path, *, started: int, descendant: bool) -> CheckoutProcess | None:
+    try:
+        if not _under(pid_dir.joinpath("cwd").readlink(), checkout):
+            return None
+        marker = f"{DISPATCHED_AGENT_ENV}=1".encode() in (pid_dir / "environ").read_bytes().split(b"\0")
+        argv = (pid_dir / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    return CheckoutProcess(
+        pid=int(pid_dir.name),
+        started=started,
+        descendant=descendant,
+        marker=marker,
+        writer=_writer(pid_dir, checkout),
+        shared_server=Path(os.fsdecode(argv[0])).name == "codex" and argv[1:2] == [b"app-server"],
+    )
+
+
 def owned_checkout_processes(checkout: Path) -> tuple[CheckoutProcess, ...]:
     root = venue_proc_root()
     if root is None:
@@ -81,63 +112,24 @@ def owned_checkout_processes(checkout: Path) -> tuple[CheckoutProcess, ...]:
     details = {int(entry.name): detail for entry in entries if (detail := _details(entry)) is not None}
     parents = {pid: detail[0] for pid, detail in details.items()}
     checkout = checkout.resolve()
-    owned: list[CheckoutProcess] = []
+    owned = []
     for entry in entries:
         pid = int(entry.name)
-        detail = details.get(pid)
-        if detail is None or pid == os.getpid():
+        if pid not in details or pid == os.getpid():
             continue
-        try:
-            cwd = entry.joinpath("cwd").readlink()
-            if not _under(cwd, checkout):
-                continue
-            marker = f"{DISPATCHED_AGENT_ENV}=1".encode() in (entry / "environ").read_bytes().split(b"\0")
-            argv = (entry / "cmdline").read_bytes().split(b"\0")
-        except OSError:
-            continue
-        descendant = _descends(pid, parents, os.getpid())
-        if not (descendant or marker):
-            continue
-        shared_server = bool(
-            argv and Path(os.fsdecode(argv[0])).name == "codex" and len(argv) > 1 and argv[1] == b"app-server"
+        process = _checkout_process(
+            entry, checkout, started=details[pid][1], descendant=_descends(pid, parents, os.getpid())
         )
-        owned.append(
-            CheckoutProcess(
-                pid=pid,
-                started=detail[1],
-                descendant=descendant,
-                marker=marker,
-                writer=_writer(entry, checkout),
-                shared_server=shared_server,
-            )
-        )
+        if process is not None and (process.descendant or process.marker):
+            owned.append(process)
     return tuple(sorted(owned, key=lambda process: process.pid))
 
 
-def _syscall(number: int, *args: int | None) -> int:
-    if platform.system() != "Linux":
-        raise OSError(errno.ENOSYS, "pidfd requires Linux")
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.syscall.restype = ctypes.c_long
-    result = int(libc.syscall(number, *args))
-    if result == -1:
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code))
-    return result
-
-
-def _pidfd_open(pid: int) -> int:
-    return _syscall(_PIDFD_OPEN, pid, 0)
-
-
-def _pidfd_signal(descriptor: int) -> None:
-    _syscall(_PIDFD_SEND_SIGNAL, descriptor, signal.SIGTERM, None, 0)
-
-
-def wait_for_owned_checkout_processes(checkout: Path, *, beat_seconds: float) -> tuple[CheckoutProcess, ...]:
+def wait_for_owned_checkout_processes(
+    checkout: Path, *, beat_seconds: float = OWN_PROCESS_BEAT_SECONDS
+) -> tuple[CheckoutProcess, ...]:
     for _ in range(2):
-        remaining = owned_checkout_processes(checkout)
-        if not remaining:
+        if not owned_checkout_processes(checkout):
             return ()
         time.sleep(beat_seconds)
     return owned_checkout_processes(checkout)
@@ -153,64 +145,58 @@ def current_pid_namespace() -> str:
         return ""
 
 
-def _same_recorded_writer(pid_dir: Path, checkout: Path, started: int) -> bool:
-    detail = _details(pid_dir)
-    if detail is None or detail[1] != started:
-        return False
+def _syscall(number: int, *args: int | None) -> int:
+    if sys.platform != "linux":
+        raise OSError(errno.ENOSYS, "pidfd needs Linux")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    if (result := libc.syscall(number, *args)) == -1:
+        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+    return result
+
+
+def _stop_if(pid: int, still_stoppable: Callable[[], bool]) -> bool:
+    """SIGTERM *pid* through a pidfd, re-checked after opening, so a reused pid is never hit."""
     try:
-        cwd = pid_dir.joinpath("cwd").readlink()
-        argv = pid_dir.joinpath("cmdline").read_bytes().split(b"\0")
+        descriptor = _syscall(_PIDFD_OPEN, pid, 0)
     except OSError:
         return False
-    shared_server = bool(
-        argv and Path(os.fsdecode(argv[0])).name == "codex" and len(argv) > 1 and argv[1] == b"app-server"
-    )
-    return _under(cwd, checkout) and _writer(pid_dir, checkout) and not shared_server
+    try:
+        if still_stoppable():
+            _syscall(_PIDFD_SEND_SIGNAL, descriptor, signal.SIGTERM, None, 0)
+            return True
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+    return False
 
 
-def stop_recorded_writers(checkout: Path, candidates: tuple[tuple[int, int], ...], namespace: str) -> tuple[int, ...]:
+def stop_recorded_writers(checkout: Path, candidates: tuple[tuple[int, int], ...], namespace: str) -> StopResult:
     root = venue_proc_root()
     if root is None or not namespace or current_pid_namespace() != namespace:
-        return ()
-    stopped: list[int] = []
+        return StopResult(refused=f"the recorded pids belong to pid namespace {namespace or 'unknown'}, not this one")
     checkout = checkout.resolve()
-    for pid, started in candidates:
-        pid_dir = root / str(pid)
-        if not _same_recorded_writer(pid_dir, checkout, started):
-            continue
-        try:
-            descriptor = _pidfd_open(pid)
-        except OSError:
-            continue
-        try:
-            if _same_recorded_writer(pid_dir, checkout, started):
-                _pidfd_signal(descriptor)
-                stopped.append(pid)
-        except OSError:
-            continue
-        finally:
-            os.close(descriptor)
-    return tuple(stopped)
+
+    def recorded_writer(pid: int, started: int) -> bool:
+        detail = _details(root / str(pid))
+        process = _checkout_process(root / str(pid), checkout, started=started, descendant=True)
+        return detail is not None and detail[1] == started and process is not None and process.stoppable
+
+    return StopResult(
+        stopped=tuple(pid for pid, started in candidates if _stop_if(pid, partial(recorded_writer, pid, started)))
+    )
 
 
 def stop_owned_writers(checkout: Path) -> tuple[int, ...]:
-    """Signal only descendants still showing checkout write evidence after pidfd opens."""
-    signalled: list[int] = []
-    for process in owned_checkout_processes(checkout):
-        if not (process.descendant and process.writer) or process.shared_server:
-            continue
-        try:
-            descriptor = _pidfd_open(process.pid)
-        except OSError:
-            continue
-        try:
-            current = next((item for item in owned_checkout_processes(checkout) if item.pid == process.pid), None)
-            if current != process or not current.descendant or not current.writer or current.shared_server:
-                continue
-            _pidfd_signal(descriptor)
-            signalled.append(process.pid)
-        except OSError:
-            continue
-        finally:
-            os.close(descriptor)
-    return tuple(signalled)
+    """Signal only descendants still showing checkout write evidence after their pidfd opens."""
+
+    def unchanged(process: CheckoutProcess) -> bool:
+        current = next((item for item in owned_checkout_processes(checkout) if item.pid == process.pid), None)
+        return current == process and current.stoppable
+
+    return tuple(
+        process.pid
+        for process in owned_checkout_processes(checkout)
+        if _stop_if(process.pid, partial(unchanged, process))
+    )

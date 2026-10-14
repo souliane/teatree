@@ -14,7 +14,7 @@ from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import _worktree_at, occupancy_holder, task_holder_id
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.cancel_processes import stop_recorded_writers
+from teatree.core.worktree.cancel_processes import StopResult, stop_recorded_writers
 
 _STOP_QUESTION = "Should the verified child writers be stopped?"
 
@@ -87,23 +87,31 @@ def page_surviving_checkout(task: Task, path: Path, *, holder_session: str) -> N
     )
 
 
-def apply_stop_answer(question: DeferredQuestion) -> tuple[int, ...]:
+def apply_stop_answer(question: DeferredQuestion) -> StopResult:
     if (
         question.answer_text.strip() != "Stop verified writers"
         or question.resolved_via != DeferredQuestion.ResolvedVia.SLACK
         or not question.dedupe_marker.startswith("checkout-exit-held:")
     ):
-        return ()
+        return StopResult()
     target = _stop_target(question)
     if target is None:
-        return ()
+        return StopResult()
     task, path = target
     attempt = TaskAttempt.objects.filter(task=task, result__has_key="surviving_writers").order_by("-pk").first()
     snapshot = _current_writer_snapshot(task, attempt)
     if snapshot is None:
-        return ()
+        return StopResult()
     candidates = tuple((entry["pid"], entry["start_ticks"]) for entry in snapshot["processes"])
-    return stop_recorded_writers(Path(path), candidates, str(snapshot.get("namespace") or ""))
+    result = stop_recorded_writers(Path(path), candidates, snapshot["namespace"])
+    if result.refused:
+        notify_user(
+            f"Task {task.pk}'s writers in {path} were not stopped: {result.refused}",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"checkout-stop-refused:{question.pk}",
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
+    return result
 
 
 def _stop_target(question: DeferredQuestion) -> tuple[Task, str] | None:

@@ -324,7 +324,7 @@ def run_agent(
                     return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
                 finally:
                     if path:
-                        settle_cancelled_checkout(task, Path(path), beat_seconds=_HEARTBEAT_INTERVAL)
+                        settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
         return park_task_checkout(task, reason=str(exc))

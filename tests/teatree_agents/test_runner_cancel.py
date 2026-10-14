@@ -9,17 +9,19 @@ from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import DeferredQuestion, Task
 from teatree.core.models.task_claim import claim_generation
-from teatree.core.worktree.cancel_processes import CheckoutProcess
+from teatree.core.worktree.cancel_processes import CheckoutProcess, StopResult
 from teatree.core.worktree.occupancy import acquire, task_holder_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from tests.factories import TaskAttemptFactory, TaskFactory, WorktreeFactory
+
+_SURVIVOR = CheckoutProcess(pid=101, started=11, descendant=True, marker=False, writer=True, shared_server=False)
 
 
 class RunnerCancelTests(TestCase):
     def test_active_run_does_not_wait_or_signal(self) -> None:
         task = TaskFactory()
         with patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes") as wait:
-            settle_cancelled_checkout(task, Path("/checkout"), beat_seconds=0)
+            settle_cancelled_checkout(task, Path("/checkout"))
         wait.assert_not_called()
 
     def test_agent_cancel_waits_but_never_signals(self) -> None:
@@ -27,10 +29,10 @@ class RunnerCancelTests(TestCase):
         Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
         TaskAttemptFactory(task=task, result={"cancel_source": "agent"})
         with (
-            patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes", return_value=(object(),)) as wait,
+            patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes", return_value=(_SURVIVOR,)) as wait,
             patch("teatree.agents.runner_cancel.stop_owned_writers") as stop,
         ):
-            settle_cancelled_checkout(task, Path("/checkout"), beat_seconds=0)
+            settle_cancelled_checkout(task, Path("/checkout"))
         wait.assert_called_once()
         stop.assert_not_called()
 
@@ -48,7 +50,7 @@ class RunnerCancelTests(TestCase):
             patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes", return_value=survivors),
             patch("teatree.agents.runner_cancel.current_pid_namespace", return_value="pid:[1]"),
         ):
-            settle_cancelled_checkout(task, Path("/checkout"), beat_seconds=0)
+            settle_cancelled_checkout(task, Path("/checkout"))
         attempt.refresh_from_db()
         assert attempt.result["surviving_writers"] == {
             "namespace": "pid:[1]",
@@ -61,10 +63,10 @@ class RunnerCancelTests(TestCase):
         Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
         TaskAttemptFactory(task=task, result={"cancel_source": "owner"})
         with (
-            patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes", return_value=(object(),)) as wait,
+            patch("teatree.agents.runner_cancel.wait_for_owned_checkout_processes", return_value=(_SURVIVOR,)) as wait,
             patch("teatree.agents.runner_cancel.stop_owned_writers") as stop,
         ):
-            settle_cancelled_checkout(task, Path("/checkout"), beat_seconds=0)
+            settle_cancelled_checkout(task, Path("/checkout"))
         wait.assert_called_once()
         stop.assert_called_once_with(Path("/checkout"))
 
@@ -95,14 +97,16 @@ class RunnerCancelTests(TestCase):
             resolved_via=DeferredQuestion.ResolvedVia.SLACK,
         )
         with (
-            patch("teatree.core.worktree.survivor_notice.stop_recorded_writers", return_value=(101,)) as stop,
+            patch(
+                "teatree.core.worktree.survivor_notice.stop_recorded_writers", return_value=StopResult(stopped=(101,))
+            ) as stop,
         ):
-            assert apply_stop_answer(question) == (101,)
+            assert apply_stop_answer(question) == StopResult(stopped=(101,))
         stop.assert_called_once_with(checkout, ((101, 11),), "pid:[1]")
 
         question.resolved_via = DeferredQuestion.ResolvedVia.AGENT
         with patch("teatree.core.worktree.survivor_notice.stop_recorded_writers") as stop:
-            assert apply_stop_answer(question) == ()
+            assert apply_stop_answer(question) == StopResult()
         stop.assert_not_called()
 
     def test_owner_answer_does_not_stop_a_writer_captured_by_an_older_claim(self) -> None:
@@ -132,5 +136,5 @@ class RunnerCancelTests(TestCase):
             resolved_via=DeferredQuestion.ResolvedVia.SLACK,
         )
         with patch("teatree.core.worktree.survivor_notice.stop_recorded_writers") as stop:
-            assert apply_stop_answer(question) == ()
+            assert apply_stop_answer(question) == StopResult()
         stop.assert_not_called()
