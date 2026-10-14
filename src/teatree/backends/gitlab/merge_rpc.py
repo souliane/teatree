@@ -274,6 +274,15 @@ class GitLabApiMergeRpc:
             return None
         return PrMessage(title=title, body=description)
 
+    def update_pr_message(self, *, slug: str, pr_id: int, message: PrMessage) -> PrMessage:
+        endpoint = _mr_endpoint(slug, pr_id)
+        self._client.put_json(endpoint, {"title": message.title, "description": message.body})
+        updated = self.fetch_pr_message(slug=slug, pr_id=pr_id)
+        if updated != message:
+            msg = f"GitLab MR {slug}!{pr_id} did not retain the requested title and description"
+            raise RuntimeError(msg)
+        return updated
+
     def merge_pr_squash_bound(
         self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:

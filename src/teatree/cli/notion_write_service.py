@@ -16,6 +16,7 @@ from teatree.backends.notion.comments import CommentPoster, CommentPostResult
 from teatree.backends.notion.discussions import DiscussionEnumerator
 from teatree.backends.notion.errors import NotionDiscussionNotFoundError, NotionPageNotLiveError
 from teatree.backends.notion.liveness import Liveness, LivenessVerdict, title_of
+from teatree.backends.notion.markdown import BlockMarkdownRenderer
 from teatree.backends.notion.pages import PageCreator
 from teatree.backends.notion.properties import (
     PagePropertyWriter,
@@ -63,6 +64,12 @@ class NotionWrites:
     @classmethod
     def for_overlay(cls, overlay: str) -> "NotionWrites":
         return cls(notion_client(overlay))
+
+    def fetch(self, page: str) -> RawAPIDict:
+        page_id = live_page(self._client, page).page_id
+        blocks = self._client.list_block_children(page_id)
+        markdown = BlockMarkdownRenderer(self._client.list_block_children).render(blocks)
+        return {"page_id": page_id, "markdown": markdown}
 
     def replace(self, page: str, old: str, new: str, *, dry_run: bool) -> RawAPIDict:
         if not old:

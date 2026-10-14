@@ -25,6 +25,24 @@ class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
 
 
+def read_conversations(*, get: Getter, token: str, cursor: str = "", limit: int = 100) -> RawAPIDict:
+    max_page_size = 200
+    if not 1 <= limit <= max_page_size:
+        msg = f"limit must be between 1 and {max_page_size}"
+        raise ValueError(msg)
+    params: dict[str, str | int] = {"types": "public_channel,private_channel,mpim,im", "limit": limit}
+    if cursor:
+        params["cursor"] = cursor
+    data = get("conversations.list", params, token=token)
+    channels = data.get("channels")
+    if data.get("ok") is not True or not isinstance(channels, list):
+        msg = f"Slack conversations.list failed: {data.get('error') or 'malformed response'}"
+        raise ValueError(msg)
+    metadata = data.get("response_metadata")
+    next_page = metadata.get("next_cursor", "") if isinstance(metadata, dict) else ""
+    return {"channels": channels, "next_cursor": next_page}
+
+
 def read_channel_history_or_refuse(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
     """Like :func:`read_channel_history` but RAISES on a channel-scoped refusal.
 

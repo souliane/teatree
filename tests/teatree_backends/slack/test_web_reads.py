@@ -1,6 +1,8 @@
 """Branch coverage for the web_reads free functions: the paged user lookup (#3507) and the user-group lookup."""
 
-from teatree.backends.slack.web_reads import _MAX_USER_PAGES, resolve_user_id, resolve_usergroup_id
+import pytest
+
+from teatree.backends.slack.web_reads import _MAX_USER_PAGES, read_conversations, resolve_user_id, resolve_usergroup_id
 from teatree.types import RawAPIDict
 
 
@@ -9,6 +11,36 @@ def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDic
     if next_cursor:
         data["response_metadata"] = {"next_cursor": next_cursor}
     return data
+
+
+class TestReadConversations:
+    def test_returns_channels_and_next_page_with_selected_token(self) -> None:
+        calls: list[tuple[str, dict[str, str | int], str]] = []
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            calls.append((method, params, token))
+            return {"ok": True, "channels": [{"id": "C1"}], "response_metadata": {"next_cursor": "p2"}}
+
+        result = read_conversations(get=get, token="user-token", cursor="p1", limit=25)
+
+        assert result == {"channels": [{"id": "C1"}], "next_cursor": "p2"}
+        assert calls == [
+            (
+                "conversations.list",
+                {"types": "public_channel,private_channel,mpim,im", "limit": 25, "cursor": "p1"},
+                "user-token",
+            )
+        ]
+
+    def test_unreadable_page_raises_instead_of_looking_empty(self) -> None:
+        with pytest.raises(ValueError, match="missing_scope"):
+            read_conversations(
+                get=lambda method, params, *, token="": {"ok": False, "error": "missing_scope"}, token=""
+            )
+
+    def test_bad_page_size_is_refused_before_the_api(self) -> None:
+        with pytest.raises(ValueError, match="between 1 and 200"):
+            read_conversations(get=lambda method, params, *, token="": {}, token="", limit=201)
 
 
 class TestResolveUserId:

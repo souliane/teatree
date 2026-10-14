@@ -34,6 +34,9 @@ class _RefusingBackend:
         _ = limit
         raise ChannelReadRefusedError(channel, "not_in_channel")
 
+    def list_conversations(self, *, cursor: str = "", limit: int = 100) -> RawAPIDict:
+        return {"channels": [{"id": "C123"}], "next_cursor": "next", "limit": limit, "cursor": cursor}
+
 
 def _server() -> MCPServer:
     server = MCPServer(name="slack-refusal-probe")
@@ -93,3 +96,27 @@ def test_a_readable_channel_still_answers() -> None:
         result = asyncio.run(_server().call_tool("slack_channel_history", {"channel": "#dev"}))
 
     assert result.structured_content == {"result": messages}
+
+
+def test_slack_post_delegates_to_on_behalf_egress() -> None:
+    with (
+        patch.object(services_slack, "_client", return_value=_RefusingBackend()),
+        patch.object(services_slack, "OnBehalfSlackEgress") as egress,
+    ):
+        egress.return_value.post.return_value = {"ok": True, "ts": "1.2"}
+        result = asyncio.run(_server().call_tool("slack_post", {"channel": "C123", "text": "hello"}))
+
+    assert result.structured_content == {"ok": True, "channel": "C123", "ts": "1.2"}
+    assert egress.return_value.post.call_args.kwargs["action"] == "mcp_slack_post"
+    assert egress.return_value.post.call_args.kwargs["text"] == "hello"
+
+
+def test_slack_conversations_returns_a_page_and_cursor() -> None:
+    result = _call("slack_conversations", {"cursor": "first", "limit": 25})
+
+    assert result.structured_content == {
+        "channels": [{"id": "C123"}],
+        "next_cursor": "next",
+        "cursor": "first",
+        "limit": 25,
+    }

@@ -25,6 +25,9 @@ class _NotionWriter:
     def __init__(self, overlay: str) -> None:
         self._overlay = overlay
 
+    def fetch(self, page: str) -> dict[str, Any]:
+        return self._run(lambda writes: writes.fetch(page))
+
     def replace(self, page: str, old_text: str, new_text: str, *, dry_run: bool) -> dict[str, Any]:
         return self._run(lambda writes: writes.replace(page, old_text, new_text, dry_run=dry_run))
 

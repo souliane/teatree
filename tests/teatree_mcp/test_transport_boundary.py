@@ -30,6 +30,7 @@ from mcp.types import ToolAnnotations
 
 import teatree.mcp
 from teatree.backends.types import Service
+from teatree.core.mcp_tool_group import ApprovalTier
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server, declared_write_tool_seams
 
@@ -52,6 +53,7 @@ class _ContributingConnectors(OverlayConnectors):
                     _overlay_write,
                     ToolAnnotations(read_only_hint=False),
                     seam="call_command('demo', …) — the seam the `t3` CLI calls",
+                    tier=ApprovalTier.AGENT,
                 ),
             ),
             instructions="- overlay_demo_write(subject): the overlay's own gated write.",

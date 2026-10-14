@@ -592,6 +592,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
 
+    def update_pr_message(self, *, slug: str, pr_id: int, message: PrMessage) -> PrMessage:
+        return self._merge_rpc().update_pr_message(slug=slug, pr_id=pr_id, message=message)
+
     def merge_pr_squash_bound(
         self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:

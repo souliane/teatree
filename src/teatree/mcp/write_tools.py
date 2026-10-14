@@ -31,6 +31,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.config.setting_taxonomy import owner_only_reason
+from teatree.core.mcp_tool_group import ApprovalTier, WriteSeam
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
@@ -371,6 +372,7 @@ class _WriteTool:
     annotations: ToolAnnotations
     seam: str
     instruction: str
+    tier: ApprovalTier = ApprovalTier.AGENT
 
 
 _TOOLS: tuple[_WriteTool, ...] = (
@@ -391,6 +393,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "- pr_merge(clear_id): execute a sanctioned keystone merge for an ISSUED "
         "MergeClear — sha-bound, CI-rollup-checked, maker≠checker enforced. There is "
         "no raw-merge tool; issuing the CLEAR stays on the CLI.",
+        ApprovalTier.EXACT,
     ),
     _WriteTool(
         "ticket_visit_phase",
@@ -488,6 +491,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "a JSON object or its JSON string. live=true requires the recorded LivePostApproval + "
         "on-behalf verdict, same as the CLI; without evidence a 'X is wrong/broken/missing' "
         "body is refused.",
+        ApprovalTier.POSTURE,
     ),
     _WriteTool(
         "review_post_comments",
@@ -499,6 +503,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "object or its JSON string, every body gated exactly as review_post_comment, one "
         "authorization consume for the review. evidence / force_general / allow_bloat are "
         "per-COMMENT, because every gate they feed is. Prefer this over N single posts.",
+        ApprovalTier.POSTURE,
     ),
     _WriteTool(
         "review_request_check",
@@ -507,6 +512,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "",
         "- review_request_check(mr_url): race-safe pre-post dedup PEEK (takes no "
         "claim). Returns action=post|suppress; ABORT the post on suppress.",
+        ApprovalTier.READ,
     ),
     _WriteTool(
         "review_request_post",
@@ -517,6 +523,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "review request through the #1094 dedup + #960 on-behalf + review-state gate "
         "chain. Returns action=post|draft|suppress|refused; refused names the missing "
         "recorded approval / attestation.",
+        ApprovalTier.POSTURE,
     ),
 )
 
@@ -524,22 +531,45 @@ _TOOLS: tuple[_WriteTool, ...] = (
 # conditionally on their `Service` declaration), but their seams are declared here
 # so the transport-boundary fitness test pins EVERY write tool's seam in one map.
 _NOTION_WRITE_SEAM = "cli.notion_write_service.NotionWrites via the services_notion seam — WriteGuard + approval"
-_CROSS_MODULE_SEAMS: dict[str, str] = {
-    "slack_react": "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt",
-    "github_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "github_issue_note": "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub",
-    "github_issue_close": "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub",
-    "gitlab_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "gitlab_issue_note": "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub",
-    "gitlab_issue_close": "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub",
-    "notion_replace": _NOTION_WRITE_SEAM,
-    "notion_create": _NOTION_WRITE_SEAM,
-    "notion_comment": _NOTION_WRITE_SEAM,
-    "notion_archive": _NOTION_WRITE_SEAM,
-    "notion_property_set": _NOTION_WRITE_SEAM,
+_CROSS_MODULE_SEAMS: dict[str, WriteSeam] = {
+    "slack_post": WriteSeam("OnBehalfSlackEgress.post — send-proxy + on-behalf gate + receipt", ApprovalTier.POSTURE),
+    "github_pr_update": WriteSeam(
+        "CodeHostBackend.update_pr_message + send-proxy + own-author check", ApprovalTier.AGENT
+    ),
+    "gitlab_pr_update": WriteSeam(
+        "CodeHostBackend.update_pr_message + send-proxy + own-author check", ApprovalTier.AGENT
+    ),
+    "slack_react": WriteSeam(
+        "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt", ApprovalTier.POSTURE
+    ),
+    "github_issue_create": WriteSeam(
+        "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy", ApprovalTier.AGENT
+    ),
+    "github_issue_note": WriteSeam(
+        "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub", ApprovalTier.AGENT
+    ),
+    "github_issue_close": WriteSeam(
+        "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub", ApprovalTier.AGENT
+    ),
+    "gitlab_issue_create": WriteSeam(
+        "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy", ApprovalTier.AGENT
+    ),
+    "gitlab_issue_note": WriteSeam(
+        "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub", ApprovalTier.AGENT
+    ),
+    "gitlab_issue_close": WriteSeam(
+        "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub", ApprovalTier.AGENT
+    ),
+    "notion_replace": WriteSeam(_NOTION_WRITE_SEAM, ApprovalTier.EXACT),
+    "notion_create": WriteSeam(_NOTION_WRITE_SEAM, ApprovalTier.EXACT),
+    "notion_comment": WriteSeam(_NOTION_WRITE_SEAM, ApprovalTier.EXACT),
+    "notion_archive": WriteSeam(_NOTION_WRITE_SEAM, ApprovalTier.EXACT),
+    "notion_property_set": WriteSeam(_NOTION_WRITE_SEAM, ApprovalTier.EXACT),
 }
 
-TOOL_SEAMS: dict[str, str] = {tool.name: tool.seam for tool in _TOOLS if tool.seam} | _CROSS_MODULE_SEAMS
+TOOL_SEAMS: dict[str, WriteSeam] = {
+    tool.name: WriteSeam(tool.seam, tool.tier) for tool in _TOOLS if tool.seam
+} | _CROSS_MODULE_SEAMS
 
 INSTRUCTIONS = "\n".join(tool.instruction for tool in _TOOLS)
 

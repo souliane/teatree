@@ -41,7 +41,10 @@ INSTRUCTIONS = (
     "- slack_permalink(channel, ts): the permalink for one message.\n"
     "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
     "ungated; a colleague/channel reaction goes through the on-behalf gate and "
-    "returns ok=false + a `blocked` remediation when no approval is recorded."
+    "returns ok=false + a `blocked` remediation when no approval is recorded.\n"
+    "- slack_post(channel, text, thread_ts): post through the on-behalf gate; "
+    "a colleague/channel post needs recorded approval.\n"
+    "- slack_conversations(cursor, limit): one page of visible conversations and the next cursor; read failures error."
 )
 
 
@@ -150,9 +153,38 @@ async def _slack_react(channel: str, ts: str, emoji: str) -> dict[str, Any]:
     return await sync_to_async(_react, thread_sensitive=True)()
 
 
+async def _slack_post(channel: str, text: str, *, thread_ts: str = "") -> dict[str, Any]:
+    def _post() -> dict[str, Any]:
+        try:
+            response = OnBehalfSlackEgress(_client()).post(
+                channel=channel,
+                text=text,
+                thread_ts=thread_ts,
+                target=channel,
+                action="mcp_slack_post",
+                destination=channel,
+            )
+        except OnBehalfPostBlockedError as blocked:
+            return {"ok": False, "blocked": str(blocked)}
+        return {"ok": bool(response.get("ok")), "channel": channel, "ts": response.get("ts", "")}
+
+    return await sync_to_async(_post, thread_sensitive=True)()
+
+
+async def _slack_conversations(*, cursor: str = "", limit: int = 100) -> dict[str, Any]:
+    try:
+        return await sync_to_async(
+            lambda: _client().list_conversations(cursor=cursor, limit=limit), thread_sensitive=True
+        )()
+    except (PermissionError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
 def register(server: MCPServer) -> None:
     server.add_tool(_slack_mentions, name="slack_mentions", annotations=_READ_ONLY)
     server.add_tool(_slack_channel_history, name="slack_channel_history", annotations=_READ_ONLY)
     server.add_tool(_slack_thread_replies, name="slack_thread_replies", annotations=_READ_ONLY)
     server.add_tool(_slack_permalink, name="slack_permalink", annotations=_READ_ONLY)
     server.add_tool(_slack_react, name="slack_react", annotations=_WRITE)
+    server.add_tool(_slack_post, name="slack_post", annotations=_WRITE)
+    server.add_tool(_slack_conversations, name="slack_conversations", annotations=_READ_ONLY)

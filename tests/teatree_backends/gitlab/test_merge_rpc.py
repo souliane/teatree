@@ -161,6 +161,38 @@ class TestFetchPrMergeState:
         assert not state.is_merged
 
 
+class TestUpdatePrMessage:
+    def test_updates_encoded_mr_and_verifies_its_message(self) -> None:
+        class UpdatingClient(_FakeClient):
+            def put_json(self, endpoint: str, payload: dict[str, object]) -> dict[str, object]:
+                self.put_calls.append((endpoint, payload, True))
+                self._get = {"title": payload["title"], "description": payload["description"]}
+                return dict(self._get)
+
+        client = UpdatingClient(get={"title": "old", "description": "old"})
+
+        updated = GitLabApiMergeRpc(client).update_pr_message(slug=_SLUG, pr_id=_IID, message=_MESSAGE)
+
+        assert updated == _MESSAGE
+        assert client.put_calls == [
+            (
+                f"projects/{_ENCODED}/merge_requests/{_IID}",
+                {"title": _MESSAGE.title, "description": _MESSAGE.body},
+                True,
+            )
+        ]
+
+    def test_update_without_a_matching_read_back_fails(self) -> None:
+        class UnchangedClient(_FakeClient):
+            def put_json(self, endpoint: str, payload: dict[str, object]) -> dict[str, object]:
+                return {}
+
+        with pytest.raises(RuntimeError, match="did not retain"):
+            GitLabApiMergeRpc(UnchangedClient(get={"title": "old", "description": "old"})).update_pr_message(
+                slug=_SLUG, pr_id=_IID, message=_MESSAGE
+            )
+
+
 class TestFetchPrMergeStateConflictAxis:
     """The conflict axis must be READ, not left at its ``UNKNOWN`` default (#4193).
 

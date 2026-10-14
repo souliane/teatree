@@ -40,15 +40,16 @@ than core can.
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, override
+from typing import Any
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
-from mcp.types import Icon, ToolAnnotations
+from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
+from teatree.core.mcp_tool_group import WriteSeam
 from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
@@ -60,74 +61,17 @@ from teatree.mcp import (
     services_sentry,
     services_sharepoint,
     services_slack,
+    tool_surface,
     write_tools,
 )
+from teatree.mcp.tool_surface import _NoShadowServer, _read_only_instructions
+
+ToolContractError = tool_surface.ToolContractError
+ToolNameCollisionError = tool_surface.ToolNameCollisionError
 
 logger = logging.getLogger(__name__)
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
-
-
-class ToolNameCollisionError(RuntimeError):
-    """A second tool claimed a name already registered on this server."""
-
-
-class _NoShadowServer(MCPServer):
-    """An ``MCPServer`` that refuses a duplicate tool name instead of dropping it.
-
-    ``ToolManager.add_tool`` keeps the incumbent and logs a warning, so a second
-    registration of a name disappears with no signal — the contributed tool is
-    absent from the surface while its instruction line still advertises it, and
-    an overlay that believes it replaced a built-in has in fact replaced nothing.
-    Refusing at build time is loud, deterministic, and names both claimants.
-
-    Every tool reaches the surface through :meth:`add_tool`, so it is also where a
-    *read_only* server withholds each tool that is neither annotated
-    ``read_only_hint`` nor named in *allowed_writes*.
-    """
-
-    def __init__(self, name: str, *, instructions: str, read_only: bool, allowed_writes: frozenset[str]) -> None:
-        super().__init__(name, instructions=instructions)
-        self.registered_names: set[str] = set()
-        self.read_only = read_only
-        self.allowed_writes = allowed_writes
-
-    @override
-    def add_tool(
-        self,
-        fn: Callable[..., Any],
-        name: str | None = None,
-        title: str | None = None,
-        description: str | None = None,
-        annotations: ToolAnnotations | None = None,
-        icons: list[Icon] | None = None,
-        meta: dict[str, Any] | None = None,
-        structured_output: bool | None = None,
-    ) -> None:
-        # A callable carrying no ``__name__`` (a partial, a callable object) has no name
-        # to collide on here; mcp's own name derivation refuses it a line later.
-        tool_name = name or getattr(fn, "__name__", "")
-        is_read = bool(annotations and annotations.read_only_hint)
-        if self.read_only and not is_read and tool_name not in self.allowed_writes:
-            return
-        if tool_name:
-            if tool_name in self.registered_names:
-                msg = (
-                    f"MCP tool name {tool_name!r} is already registered; "
-                    "a second registration would be silently dropped."
-                )
-                raise ToolNameCollisionError(msg)
-            self.registered_names.add(tool_name)
-        super().add_tool(
-            fn,
-            name=name,
-            title=title,
-            description=description,
-            annotations=annotations,
-            icons=icons,
-            meta=meta,
-            structured_output=structured_output,
-        )
 
 
 # Per-service tool groups, registered iff the service is in the union of
@@ -215,19 +159,7 @@ def _write_tool_names(overlay_groups: list[tuple[str, McpToolGroup]]) -> frozens
     return frozenset(write_tools.TOOL_SEAMS).union(agent_mailbox.TOOL_SEAMS, overlay_writes)
 
 
-def _read_only_instructions(instructions: str, *, withheld: frozenset[str], allowed_writes: frozenset[str]) -> str:
-    withheld_lines = tuple(f"- {name}(" for name in withheld - allowed_writes)
-    sections: list[str] = []
-    for section in instructions.split("\n\n"):
-        lines = section.split("\n")
-        kept = [line for line in lines if not line.startswith(withheld_lines)]
-        # A section that lost every tool line would leave its header advertising nothing.
-        if len(kept) == len(lines) or any(line.startswith("- ") for line in kept):
-            sections.append("\n".join(kept))
-    return "\n\n".join(sections) + _READ_ONLY_NOTICE.format(writes=", ".join(sorted(allowed_writes)) or "none")
-
-
-def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
+def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, WriteSeam]:
     """Every write tool that names a gated seam — core's plus every admitted overlay's.
 
     The full seam allowlist for this surface: ``write_tools.TOOL_SEAMS`` is only
@@ -249,11 +181,6 @@ _PREAMBLE = (
     "(see the write-tool section at the end).\n"
     "\n"
     "Read tools:\n"
-)
-
-_READ_ONLY_NOTICE = (
-    "\n\nThis server is read-only for this dispatch. Write tools registered: {writes}. "
-    "Return anything you could not write here in your result envelope."
 )
 
 
@@ -566,6 +493,11 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
+    write_seams = dict(write_tools.TOOL_SEAMS)
+    if agent_mailbox.MailboxClient.from_env() is not None:
+        write_seams |= agent_mailbox.TOOL_SEAMS
+    for _, group in overlay_groups:
+        write_seams |= group.seams
     read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL)
 
     instructions = (
@@ -590,12 +522,20 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
             else ""
         )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
+        + "\n\nApproval tiers: read=read-only; agent=existing seam gates; posture=on-behalf posture or "
+        "single-use approval; exact=approval bound to this exact write."
     )
     if read_only:
         instructions = _read_only_instructions(
             instructions, withheld=_write_tool_names(overlay_groups), allowed_writes=allowed_writes
         )
-    server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only, allowed_writes=allowed_writes)
+    server = _NoShadowServer(
+        "teatree",
+        instructions=instructions,
+        read_only=read_only,
+        allowed_writes=allowed_writes,
+        write_seams=write_seams,
+    )
     for tool in read_tools:
         server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):

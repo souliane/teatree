@@ -59,6 +59,8 @@ class NotionComment:
 
 
 class NotionWriteSeam(Protocol):
+    def fetch(self, page: str) -> dict[str, Any]: ...
+
     def replace(self, page: str, old_text: str, new_text: str, *, dry_run: bool) -> dict[str, Any]: ...
 
     def create(self, page: NewNotionPage, *, dry_run: bool) -> dict[str, Any]: ...
@@ -103,6 +105,7 @@ _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 INSTRUCTIONS = (
+    "- notion_fetch(page, overlay): one live Notion page's Markdown body; an archived or unprovable page is refused.\n"
     "- notion_page_status(page_id, property_name): one Notion page's status property value.\n"
     "- notion_discussions(page, verify, overlay): every open discussion under a page or block; a part of "
     "the page that could not be read is an error naming it, never a shorter list.\n"
@@ -160,6 +163,10 @@ def _live_page_status(page_id: str, property_name: str) -> str | None:
 
 async def _notion_page_status(page_id: str, *, property_name: str = "Status") -> str | None:
     return await sync_to_async(lambda: _live_page_status(page_id, property_name), thread_sensitive=True)()
+
+
+async def _notion_fetch(page: str, *, overlay: str = "") -> dict[str, Any]:
+    return await sync_to_async(lambda: notion_write_seam(overlay).fetch(page), thread_sensitive=True)()
 
 
 async def _notion_discussions(page: str, *, verify: bool = False, overlay: str = "") -> dict[str, Any]:
@@ -230,6 +237,7 @@ async def _notion_property_set(
 
 def register(server: MCPServer) -> None:
     server.add_tool(_notion_page_status, name="notion_page_status", annotations=_READ_ONLY)
+    server.add_tool(_notion_fetch, name="notion_fetch", annotations=_READ_ONLY)
     server.add_tool(_notion_discussions, name="notion_discussions", annotations=_READ_ONLY)
     server.add_tool(_notion_replace, name="notion_replace", annotations=_DESTRUCTIVE)
     server.add_tool(_notion_create, name="notion_create", annotations=_WRITE)

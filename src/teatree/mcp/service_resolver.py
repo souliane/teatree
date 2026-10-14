@@ -23,6 +23,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.backend_factory import (
+    ci_service_from_overlay,
     code_host_from_overlay,
     configured_messaging_from_overlay,
     notion_client_from_overlay,
@@ -72,6 +73,7 @@ class ServiceClient[Client]:
 
 GITHUB = ServiceClient(Service.GITHUB, code_host_from_overlay, "github code host")
 GITLAB = ServiceClient(Service.GITLAB, code_host_from_overlay, "gitlab code host")
+GITLAB_CI = ServiceClient(Service.GITLAB, ci_service_from_overlay, "GitLab CI service")
 # The configured variant skips a noop-messaging overlay that declares Slack without credentials (#3299).
 SLACK = ServiceClient(Service.SLACK, configured_messaging_from_overlay, "Slack messaging backend")
 NOTION = ServiceClient(Service.NOTION, notion_client_from_overlay, "Notion client")

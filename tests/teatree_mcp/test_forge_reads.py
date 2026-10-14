@@ -50,6 +50,10 @@ class _FakeForge:
         self.calls.append(("fetch_pr_merge_state", {"slug": slug, "pr_id": pr_id}))
         return PrMergeState(state="OPEN", merge_commit_oid="")
 
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, Any]]:
+        self.calls.append(("fetch_required_checks_rollup", {"slug": slug, "pr_id": pr_id}))
+        return [{"name": "unit", "conclusion": "SUCCESS"}]
+
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         self.calls.append(("fetch_pr_draft_state", {"slug": slug, "pr_id": pr_id}))
         return DraftState.NOT_DRAFT
@@ -91,6 +95,14 @@ def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
 
 
 class TestForgeReadTools(TestCase):
+    def test_pr_checks_returns_the_live_backend_rollup(self) -> None:
+        fake = _FakeForge()
+
+        result = _call("github_pr_checks", {"repo": "acme/widgets", "pr_iid": 42}, fake)
+
+        assert result == [{"name": "unit", "conclusion": "SUCCESS"}]
+        assert fake.calls == [("fetch_required_checks_rollup", {"slug": "acme/widgets", "pr_id": 42})]
+
     def test_issue_search_forwards_repo_and_query(self) -> None:
         fake = _FakeForge()
         result = _call("github_issue_search", {"repo": "acme/widgets", "query": "flaky"}, fake)

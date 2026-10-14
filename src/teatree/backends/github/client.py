@@ -577,6 +577,14 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
 
+    def update_pr_message(self, *, slug: str, pr_id: int, message: PrMessage) -> PrMessage:
+        _gh_api_patch(f"repos/{slug}/pulls/{pr_id}", {"title": message.title, "body": message.body}, token=self._token)
+        updated = self.fetch_pr_message(slug=slug, pr_id=pr_id)
+        if updated != message:
+            msg = f"GitHub PR {slug}#{pr_id} did not retain the requested title and body"
+            raise RuntimeError(msg)
+        return updated
+
     def merge_pr_squash_bound(
         self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:

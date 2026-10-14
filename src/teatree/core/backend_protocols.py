@@ -576,6 +576,8 @@ class CodeHostBackend(Protocol):
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None: ...  # pragma: no branch
 
+    def update_pr_message(self, *, slug: str, pr_id: int, message: PrMessage) -> PrMessage: ...  # pragma: no branch
+
     def merge_pr_squash_bound(
         self,
         *,
@@ -640,6 +642,8 @@ class MessagingBackend(Protocol):
         channel: str,
         limit: int = 50,
     ) -> list[RawAPIDict]: ...
+
+    def list_conversations(self, *, cursor: str = "", limit: int = 100) -> RawAPIDict: ...  # pragma: no branch
 
     def post_message(  # pragma: no branch
         self,

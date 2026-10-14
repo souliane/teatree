@@ -101,6 +101,22 @@ class TestTheDefaultIsADryRun(NotionWriteCase):
         assert approval["record_command"].endswith(f" {_REPLACE} --approver <owner-id>")
 
 
+class TestNotionFetch(NotionWriteCase):
+    def test_fetch_returns_live_page_markdown(self) -> None:
+        self.paragraph("A requirement on the page.")
+
+        payload = self.call("notion_fetch", page=self.notion.page_id)
+
+        assert payload["page_id"] == self.notion.page_id
+        assert "A requirement on the page." in payload["markdown"]
+        assert self.mutations() == []
+
+    def test_fetch_refuses_an_archived_page(self) -> None:
+        self.notion.page_archived = True
+
+        assert "notion exit 14" in self.refused("notion_fetch", page=self.notion.page_id)
+
+
 class TestARealWriteNeedsARecordedApproval(NotionWriteCase):
     def replace(self, *, dry_run: bool, new: str = "every quarter, per the bank's mail") -> dict[str, Any]:
         return self.call(

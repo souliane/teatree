@@ -14,12 +14,26 @@ overlay seam declaration.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from teatree.backends.types import Service
 
 if TYPE_CHECKING:
     from mcp.types import ToolAnnotations
+
+
+class ApprovalTier(StrEnum):
+    READ = "read"
+    AGENT = "agent"
+    POSTURE = "posture"
+    EXACT = "exact"
+
+
+@dataclass(frozen=True, slots=True)
+class WriteSeam:
+    gate: str
+    tier: ApprovalTier
 
 
 @dataclass(frozen=True)
@@ -34,6 +48,7 @@ class McpTool:
     handler: Callable[..., Any]
     annotations: "ToolAnnotations"
     seam: str = ""
+    tier: ApprovalTier = ApprovalTier.READ
 
     @property
     def is_write(self) -> bool:
@@ -42,7 +57,7 @@ class McpTool:
 
     @property
     def declares_its_seam(self) -> bool:
-        return not self.is_write or bool(self.seam.strip())
+        return not self.is_write or (bool(self.seam.strip()) and self.tier is not ApprovalTier.READ)
 
 
 @dataclass(frozen=True)
@@ -71,6 +86,10 @@ class McpToolGroup:
         return tuple(tool.name for tool in self.tools if not tool.declares_its_seam)
 
     @property
-    def seams(self) -> dict[str, str]:
+    def seams(self) -> dict[str, WriteSeam]:
         """Every tool in this group that names a seam."""
-        return {tool.name: tool.seam for tool in self.tools if tool.seam.strip()}
+        return {
+            tool.name: WriteSeam(tool.seam, tool.tier)
+            for tool in self.tools
+            if tool.is_write and tool.declares_its_seam
+        }

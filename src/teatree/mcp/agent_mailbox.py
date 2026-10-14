@@ -12,12 +12,17 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.agents.live_mailbox import InboxPage, SendReceipt
+from teatree.core.mcp_tool_group import ApprovalTier, WriteSeam
 
 _READ = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _MAX_RESPONSE_BYTES = 2_000_000  # 100 valid 16-KiB messages plus envelope metadata
 
-TOOL_SEAMS = {"agent_mailbox_send": "LiveMailboxBroker._send — authenticated, room-scoped, live-only delivery"}
+TOOL_SEAMS = {
+    "agent_mailbox_send": WriteSeam(
+        "LiveMailboxBroker._send — authenticated, room-scoped, live-only delivery", ApprovalTier.AGENT
+    )
+}
 
 INSTRUCTIONS = (
     "- agent_mailbox_self(): your TeaTree-assigned address and harness.\n"

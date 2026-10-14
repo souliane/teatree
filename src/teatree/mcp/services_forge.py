@@ -33,7 +33,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend, PrMessage
+from teatree.core.send_proxy import route_forge_write
+from teatree.mcp import services_gitlab_ci
 from teatree.mcp.service_resolver import FORGE_CLIENTS
 
 if TYPE_CHECKING:
@@ -140,7 +142,44 @@ def _register(server: MCPServer, service: Service, prefix: str) -> None:
     server.add_tool(issue_comments, name=f"{prefix}_issue_comments", annotations=_READ_ONLY)
     _register_search_reads(server, service, prefix)
     _register_pr_reads(server, service, prefix)
+    _register_pr_update(server, service, prefix)
     _register_issue_writes(server, service, prefix)
+
+
+def _register_pr_update(server: MCPServer, service: Service, prefix: str) -> None:
+    async def pr_update(repo: str, pr_iid: int, expected: PrMessage, message: PrMessage) -> dict[str, Any]:
+        def _update() -> dict[str, Any]:
+            client = _forge_client(service)
+            host = "github.com" if service is Service.GITHUB else "gitlab.com"
+            marker = "pull" if service is Service.GITHUB else "-/merge_requests"
+            pr_url = f"https://{host}/{repo}/{marker}/{pr_iid}"
+            actor, author = client.current_user(), client.get_pr_author(pr_url=pr_url)
+            if not actor or actor.casefold() != author.casefold():
+                msg = "Only an authenticated author's own PR can be updated"
+                raise ToolError(msg)
+            current = client.fetch_pr_message(slug=repo, pr_id=pr_iid)
+            if current != expected:
+                msg = "PR title or body changed since the expected snapshot; read it again"
+                raise ToolError(msg)
+            if not message.title.strip():
+                msg = "PR title must not be blank"
+                raise ToolError(msg)
+            routed = PrMessage(
+                route_forge_write(
+                    forge=prefix, repo=repo, text=message.title, action=f"{prefix}_pr_update", target=pr_url
+                ),
+                route_forge_write(
+                    forge=prefix, repo=repo, text=message.body, action=f"{prefix}_pr_update", target=pr_url
+                ),
+            )
+            if routed == current:
+                return {"updated": False, "title": current.title, "body": current.body}
+            verified = client.update_pr_message(slug=repo, pr_id=pr_iid, message=routed)
+            return {"updated": True, "title": verified.title, "body": verified.body}
+
+        return await _run_hygiene_write(_update)
+
+    server.add_tool(pr_update, name=f"{prefix}_pr_update", annotations=_WRITE)
 
 
 def _candidate_summary(url: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -289,12 +328,19 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
             lambda: _forge_client(service).list_pr_commits(repo=repo, pr_iid=pr_iid), thread_sensitive=True
         )()
 
+    async def pr_checks(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).fetch_required_checks_rollup(slug=repo, pr_id=pr_iid),
+            thread_sensitive=True,
+        )()
+
     async def repo_get(repo: str) -> dict[str, Any]:
         return await sync_to_async(lambda: _forge_client(service).get_repo(repo=repo), thread_sensitive=True)()
 
     server.add_tool(pr_list, name=f"{prefix}_pr_list", annotations=_READ_ONLY)
     server.add_tool(pr_diff, name=f"{prefix}_pr_diff", annotations=_READ_ONLY)
     server.add_tool(pr_commits, name=f"{prefix}_pr_commits", annotations=_READ_ONLY)
+    server.add_tool(pr_checks, name=f"{prefix}_pr_checks", annotations=_READ_ONLY)
     server.add_tool(repo_get, name=f"{prefix}_repo_get", annotations=_READ_ONLY)
 
 
@@ -339,6 +385,9 @@ def _instructions(prefix: str) -> str:
         f"(open/closed/merged) and author.\n"
         f"- {prefix}_pr_diff(repo, pr_iid): the PR's changed files with per-file diffs.\n"
         f"- {prefix}_pr_commits(repo, pr_iid): the commits on the PR.\n"
+        f"- {prefix}_pr_checks(repo, pr_iid): live required-check or pipeline rollup for the PR.\n"
+        f"- {prefix}_pr_update(repo, pr_iid, expected, message): "
+        "update your own PR after matching its current title and body; the write is leak-screened and verified.\n"
         f"- {prefix}_repo_get(repo): *repo* metadata (default branch, path, id).\n"
         f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
         f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
@@ -366,7 +415,8 @@ def register_github(server: MCPServer) -> None:
 
 def register_gitlab(server: MCPServer) -> None:
     _register(server, Service.GITLAB, "gitlab")
+    services_gitlab_ci.register(server)
 
 
 INSTRUCTIONS_GITHUB = _instructions("github")
-INSTRUCTIONS_GITLAB = _instructions("gitlab")
+INSTRUCTIONS_GITLAB = _instructions("gitlab") + "\n" + services_gitlab_ci.INSTRUCTIONS

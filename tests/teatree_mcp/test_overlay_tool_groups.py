@@ -17,6 +17,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
+from teatree.core.mcp_tool_group import ApprovalTier
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
 from teatree.mcp.server import ToolNameCollisionError, build_server, declared_write_tool_seams
 from teatree.mcp.write_tools import TOOL_SEAMS
@@ -129,17 +130,17 @@ class TestWriteToolsDeclareTheirSeam(TestCase):
         assert "demo_overlay_unhinted" not in _tool_names(_Contributing(unhinted))
 
     def test_a_write_tool_that_names_its_seam_registers(self) -> None:
-        guarded = _group(McpTool("demo_overlay_write", _demo_write, _WRITE, seam=_SEAM))
+        guarded = _group(McpTool("demo_overlay_write", _demo_write, _WRITE, seam=_SEAM, tier=ApprovalTier.AGENT))
 
         assert "demo_overlay_write" in _tool_names(_Contributing(guarded))
 
     def test_an_admitted_group_extends_the_seam_allowlist_core_alone_cannot_see(self) -> None:
-        guarded = _group(McpTool("demo_overlay_write", _demo_write, _WRITE, seam=_SEAM))
+        guarded = _group(McpTool("demo_overlay_write", _demo_write, _WRITE, seam=_SEAM, tier=ApprovalTier.AGENT))
 
         with patch("teatree.mcp.server.get_all_overlays", return_value={"demo": _Overlay(_Contributing(guarded))}):
             seams = declared_write_tool_seams(frozenset())
 
-        assert seams["demo_overlay_write"] == _SEAM
+        assert seams["demo_overlay_write"].gate == _SEAM
         assert set(TOOL_SEAMS) <= set(seams)
 
 

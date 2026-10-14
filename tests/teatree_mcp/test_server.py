@@ -16,6 +16,7 @@ from mcp.types import Tool, ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
+from teatree.core.mcp_tool_group import ApprovalTier, WriteSeam
 from teatree.core.modelkit.phase_tools import (
     _MCP_WRITE_TOOLS_BY_PHASE,
     MCP_WRITE,
@@ -218,7 +219,13 @@ class _ContributingConnectors(OverlayConnectors):
         return McpToolGroup(
             tools=(
                 McpTool("overlay_peek", _overlay_note, ToolAnnotations(read_only_hint=True)),
-                McpTool("overlay_stamp", _overlay_note, ToolAnnotations(read_only_hint=False), seam="demo seam"),
+                McpTool(
+                    "overlay_stamp",
+                    _overlay_note,
+                    ToolAnnotations(read_only_hint=False),
+                    seam="demo seam",
+                    tier=ApprovalTier.AGENT,
+                ),
             ),
             instructions="- overlay_peek(subject): read.\n- overlay_stamp(subject): write.",
         )
@@ -273,7 +280,7 @@ _MAILBOX_ENV = {"T3_AGENT_MAILBOX_SOCKET": "/tmp/missing.sock", "T3_AGENT_MAILBO
 
 def _surface(
     *, read_only: bool, allowed_writes: frozenset[str] = frozenset(), connectors: OverlayConnectors | None = None
-) -> tuple[dict[str, Tool], str, dict[str, str]]:
+) -> tuple[dict[str, Tool], str, dict[str, WriteSeam]]:
     """Every tool, the instructions and the seamed writes of a server carrying each kind of tool."""
     overlays = {"a": _ServiceOverlay(*_EVERY_SURFACE_SERVICE, connectors=connectors or _ContributingConnectors())}
     with patch.dict("os.environ", _MAILBOX_ENV), patch("teatree.mcp.server.get_all_overlays", return_value=overlays):
@@ -284,7 +291,13 @@ def _surface(
 
 class _WriteOnlyConnectors(OverlayConnectors):
     def mcp_tool_group(self) -> McpToolGroup:
-        stamp = McpTool("overlay_stamp", _overlay_note, ToolAnnotations(read_only_hint=False), seam="demo seam")
+        stamp = McpTool(
+            "overlay_stamp",
+            _overlay_note,
+            ToolAnnotations(read_only_hint=False),
+            seam="demo seam",
+            tier=ApprovalTier.AGENT,
+        )
         return McpToolGroup(tools=(stamp,), instructions="- overlay_stamp(subject): write.")
 
 

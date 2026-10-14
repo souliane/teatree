@@ -61,7 +61,12 @@ from teatree.backends.slack.token_validation import (
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
 from teatree.backends.slack.web_ops import open_im_channel, read_ext_shared, read_permalink, run_auth_test
-from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
+from teatree.backends.slack.web_reads import (
+    read_channel_history,
+    read_channel_history_or_refuse,
+    read_conversations,
+    read_reactions,
+)
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
 from teatree.backends.slack.web_reads import resolve_usergroup_id as resolve_slack_usergroup_id
 from teatree.slack_mrkdwn import wrap_slack_message
@@ -238,6 +243,12 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         if not auth:
             raise SlackTokenMissingError(method)
         return self._http.get(method, token=auth, params=params)
+
+    def list_conversations(self, *, cursor: str = "", limit: int = 100) -> RawAPIDict:
+        if self._owner_dm_only:
+            msg = "this Slack credential is restricted to the owner's DM"
+            raise PermissionError(msg)
+        return read_conversations(get=self._get, token=self._user_token or self._bot_token, cursor=cursor, limit=limit)
 
     def _is_ext_shared(self, channel: str) -> bool | None:
         """Whether *channel* is Slack-Connect shared; only a confirmed answer is cached (#1110)."""
