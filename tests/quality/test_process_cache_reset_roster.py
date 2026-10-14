@@ -202,7 +202,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # resolved and the bot identity probed through it. Derived from `_messaging_cache`,
     # which conftest already resets — so leaving this one alone defeats that reset and
     # answers a later test's overlay with the earlier test's backend.
-    "teatree.cli.slack.listen:_dm_recorders": "reset_dm_recorders",
+    "teatree.loops.slack_inbound:_dm_recorders": "reset_dm_recorders",
     # The GitHub receiver's per-target secrets and read outcomes; tests swap the fake store under it.
     "teatree.core.views._webhook_secrets:webhook_secrets": "reset_webhook_secrets",
 }

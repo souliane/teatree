@@ -39,6 +39,13 @@
 # generations. Orchestration, beside teatree.loop, because it drives the loop's
 # per-generation drain; that same-layer edge is its one declared dependency.
 #
+# teatree.slack_catchup -- the Slack listener-downtime catch-up, deliberately
+# UNLAYERED. In layered mode any higher layer may import a lower one with no
+# declared edge, so visibility cannot fence a layered module; unlayered, every edge
+# must be declared, so visibility admits only teatree.loops.slack_catchup_job and
+# depends_on is the exact outbound allow-list. tests/quality/test_slack_catchup_fence.py
+# covers what tach cannot see (TYPE_CHECKING imports, root-module files, string paths).
+#
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only
 # SAME-layer edges bind here. teatree.mcp (integration), for example, also
@@ -47,7 +54,6 @@
 # implicitly -- so its minimal depends_on list is not an understatement of its
 # real surface.
 
-interfaces = []
 forbid_circular_dependencies = true
 exclude = [
   "**/*__pycache__",
@@ -65,6 +71,10 @@ layers = [
   "platform",
   "foundation"
 ]
+
+[[interfaces]]
+expose = ["catch_up", "CatchUpSlice"]
+from = ["teatree.slack_catchup"]
 
 [[modules]]
 path = "teatree.dream_constants"
@@ -1106,9 +1116,20 @@ depends_on = [
   "teatree.loop",
   "teatree.loop.loop_state_db",
   "teatree.loop.preset_resolution",
+  "teatree.loops.slack_catchup_job",
   "teatree.messaging",
   "teatree.utils"
 ]
+
+[[modules]]
+path = "teatree.loops.slack_catchup_job"
+layer = "orchestration"
+depends_on = ["teatree.slack_catchup"]
+
+[[modules]]
+path = "teatree.slack_catchup"
+depends_on = ["teatree.backends.slack", "teatree.types"]
+visibility = ["teatree.loops.slack_catchup_job"]
 
 [[modules]]
 path = "teatree.overlay_sdk"

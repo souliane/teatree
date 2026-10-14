@@ -1,12 +1,20 @@
-"""Slack-backend error paths exercised through the same fake transport."""
+"""Slack-backend and catch-up DM-read error paths exercised through the same fake transport."""
+
+import time
+from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
 
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.token_validation import SlackTokenMissingError
 from teatree.core.models import PendingChatInjection
-from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
+from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
+from teatree.slack_catchup import catch_up
+from teatree.slack_catchup.window import CatchUpRefusedError
+from teatree.types import RawAPIDict
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -21,70 +29,6 @@ class TestSlackBotBackendErrorPathsE2E:
     Together they push the backend's coverage to its `fail open` branches
     and ensure a future code change can't silently turn one into a raise.
     """
-
-    def test_fetch_dms_returns_empty_when_no_user_id(self, transport: FakeSlackTransport) -> None:
-        """RED if the ``not self._user_id`` early-return is removed.
-
-        Guard: removing the ``if not self._user_id … return []`` branch
-        in ``fetch_dms`` makes the backend call Slack with an empty
-        user id, which Slack would error on and the fake records.
-        """
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="")
-        assert backend.fetch_dms() == snapshot([])
-        assert transport.calls == snapshot([])
-
-    def test_fetch_dms_returns_empty_when_open_dm_fails(self, transport: FakeSlackTransport) -> None:
-        """RED if ``fetch_dms`` ignores ``open_dm`` failure.
-
-        Guard: removing the ``if not channel: return []`` check after
-        ``open_dm`` makes the backend call ``conversations.history``
-        with an empty channel id and crashes.
-        """
-        transport.default_responses["conversations.open"] = {"ok": False, "error": "user_not_found"}
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-        assert backend.fetch_dms() == snapshot([])
-
-    def test_fetch_dms_drained_queue_short_circuits_rest(self, transport: FakeSlackTransport) -> None:
-        """RED if the Socket-Mode queue read branch is removed.
-
-        Guard: skipping the ``self._dms.snapshot()`` short-circuit makes a
-        queued event invisible and the backend falls through to REST
-        polling — the queue contract is broken.
-        """
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-        backend.inbound.enqueue_dm({"ts": "1.0", "user": "U_HUMAN", "text": "queued"})
-
-        events = backend.fetch_dms()
-
-        assert len(events) == 1
-        assert events[0]["text"] == "queued"
-        # The queue path must NOT have called Slack.
-        assert transport.calls == snapshot([])
-
-    def test_poll_dm_history_handles_slack_error(self, transport: FakeSlackTransport) -> None:
-        """RED if ``_poll_dm_history`` stops returning ``[]`` on ``ok: false``.
-
-        Guard: removing the ``if not data.get("ok"): return []`` check
-        makes the helper return whatever was in the error body's
-        ``messages`` key, propagating bad data downstream.
-        """
-        transport.default_responses["conversations.history"] = {"ok": False, "error": "channel_not_found"}
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        assert backend.fetch_dms() == snapshot([])
-
-    def test_fetch_dms_with_since_passes_oldest_param(self, transport: FakeSlackTransport) -> None:
-        """RED if ``fetch_dms`` no longer forwards its ``since`` filter to Slack.
-
-        Guard: dropping the ``if since: params["oldest"] = since`` line
-        means thread polling re-fetches all history each tick.
-        """
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-        backend.fetch_dms(since="1700000000.000099")
-
-        history_calls = transport.calls_to("conversations.history")
-        assert len(history_calls) == 1
-        assert history_calls[0].payload.get("oldest") == snapshot("1700000000.000099")
 
     def test_open_dm_returns_empty_on_slack_error(self, transport: FakeSlackTransport) -> None:
         """RED if ``open_dm`` propagates the error body instead of returning ``""``.
@@ -185,7 +129,7 @@ class TestSlackBotBackendErrorPathsE2E:
         assert backend.post_message(channel="C", text="hi") == snapshot({})
 
     def test_get_when_no_token_fails_loud_before_calling_slack(self, transport: FakeSlackTransport) -> None:
-        """RED if ``_get`` reads a missing token as an empty answer, or calls Slack without one."""
+        """RED if ``get`` reads a missing token as an empty answer, or calls Slack without one."""
         backend = SlackBotBackend()
 
         with pytest.raises(SlackTokenMissingError, match="no Slack token configured"):
@@ -241,57 +185,6 @@ class TestSlackBotBackendErrorPathsE2E:
             ("xapp-app", "U_HUMAN", "xoxp-user")
         )
 
-    def test_resolve_bot_id_caches_and_filters_bot_authored_messages(
-        self,
-        transport: FakeSlackTransport,
-    ) -> None:
-        """RED if ``_resolve_bot_id`` stops caching or ``_collect_user_dms`` stops filtering.
-
-        End-to-end: the bot's own DM history contains a message authored
-        by the bot AND a user message. Only the user message should
-        reach the scanner. Subsequent calls hit the cached bot id (one
-        ``auth.test`` call total).
-        """
-        transport.default_responses["auth.test"] = {"ok": True, "user_id": "B_BOT"}
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                {"ts": "1.0", "bot_id": "B_BOT", "text": "previous bot post"},
-                {"ts": "2.0", "user": "U_HUMAN", "text": "human reply"},
-            ],
-        }
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        first = backend.fetch_dms()
-        second = backend.fetch_dms()
-
-        all_texts = [m["text"] for m in (first + second)]
-        # Only the human reply (twice — once per poll), never the bot's own message.
-        assert all_texts == snapshot(["human reply", "human reply"])
-        # The bot-id cache means exactly one ``auth.test`` call across both fetches.
-        assert len(transport.calls_to("auth.test")) == snapshot(1)
-
-    def test_thread_reply_helper_returns_empty_on_slack_error(self, transport: FakeSlackTransport) -> None:
-        """RED if ``_fetch_thread_replies`` propagates errors instead of swallowing them."""
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                {
-                    "ts": "1.0",
-                    "thread_ts": "1.0",
-                    "user": "U_HUMAN",
-                    "text": "top-level",
-                },
-            ],
-        }
-        transport.default_responses["conversations.replies"] = {"ok": False, "error": "thread_not_found"}
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        events = backend.fetch_dms()
-        texts = [m["text"] for m in events]
-        # Top-level message still arrives; the failed thread fan-out is silent.
-        assert texts == snapshot(["top-level"])
-
     def test_enqueue_mention_routes_to_fetch_mentions_queue(self, transport: FakeSlackTransport) -> None:
         """RED if the mention queue contract is broken.
 
@@ -310,72 +203,6 @@ class TestSlackBotBackendErrorPathsE2E:
         assert len(events) == 1
         assert events[0]["text"] == "@bot hi"
         assert again == events
-
-    def test_collect_user_dms_handles_non_thread_bot_message(self, transport: FakeSlackTransport) -> None:
-        """RED if the bot-authored filter in ``_collect_user_dms`` is dropped on non-thread-root posts.
-
-        Guard: a non-thread bot message should be filtered out AND not
-        trigger ``conversations.replies``. Removing either branch breaks
-        the contract.
-        """
-        transport.default_responses["auth.test"] = {"ok": True, "user_id": "B_BOT"}
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                # Bot-authored, NOT a thread root (no thread_ts equal to ts)
-                {"ts": "1.0", "user": "B_BOT", "text": "bot status"},
-                {"ts": "2.0", "user": "U_HUMAN", "text": "human follow-up"},
-            ],
-        }
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        events = backend.fetch_dms()
-
-        texts = [e["text"] for e in events]
-        assert texts == snapshot(["human follow-up"])
-        # No replies fan-out fired (neither message is a thread root).
-        assert transport.calls_to("conversations.replies") == snapshot([])
-
-    def test_thread_reply_helper_tolerates_non_list_messages_field(self, transport: FakeSlackTransport) -> None:
-        """RED if ``_fetch_thread_replies`` stops type-checking ``messages``."""
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                {"ts": "1.0", "thread_ts": "1.0", "user": "U_HUMAN", "text": "top"},
-            ],
-        }
-        # Slack returns a corrupt ``messages`` (string, not list)
-        transport.default_responses["conversations.replies"] = {"ok": True, "messages": "corrupt"}
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        events = backend.fetch_dms()
-        # Top-level still surfaces, no crash from the corrupt reply payload.
-        assert [e["text"] for e in events] == snapshot(["top"])
-
-    def test_thread_reply_helper_skips_non_dict_items(self, transport: FakeSlackTransport) -> None:
-        """RED if ``_fetch_thread_replies`` stops filtering non-dict items.
-
-        Guard: removing the ``if not isinstance(m, dict): continue``
-        check makes the helper crash on a non-dict element.
-        """
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                {"ts": "1.0", "thread_ts": "1.0", "user": "U_HUMAN", "text": "top"},
-            ],
-        }
-        transport.default_responses["conversations.replies"] = {
-            "ok": True,
-            "messages": [
-                {"ts": "1.0", "user": "U_HUMAN", "text": "top"},  # root, skipped
-                "not-a-dict",  # filtered
-                {"ts": "1.1", "user": "U_HUMAN", "text": "real reply"},
-            ],
-        }
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-
-        texts = [e["text"] for e in backend.fetch_dms()]
-        assert texts == snapshot(["top", "real reply"])
 
     def test_get_reactions_tolerates_non_list_reactions(self, transport: FakeSlackTransport) -> None:
         """RED if ``get_reactions`` stops type-checking the ``reactions`` field."""
@@ -475,20 +302,181 @@ class TestSlackBotBackendErrorPathsE2E:
         backend = SlackBotBackend(bot_token="xoxb-bot")
         assert backend.resolve_user_id("alice") == snapshot("")
 
-    def test_scanner_skips_blank_text_messages(self, transport: FakeSlackTransport) -> None:
-        """RED if ``SlackDmInboundScanner.scan`` stops rejecting blank text."""
+    def test_recorder_skips_blank_text_messages(self, transport: FakeSlackTransport) -> None:
+        """RED if ``PendingChatInjection.record`` stops rejecting blank text."""
+        _ = transport
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
+
+        recorded = SlackDmRecorder(backend=backend, overlay="demo").record_events(
+            [
+                {"ts": "1.0", "user": "U_HUMAN", "channel": "D-USER", "text": "   "},
+                {"ts": "2.0", "user": "U_HUMAN", "channel": "D-USER", "text": "real"},
+            ]
+        )
+
+        rows = list(PendingChatInjection.objects.values_list("text", flat=True))
+        assert rows == snapshot(["real"])
+        assert recorded == 1
+
+
+def _ts_ago(seconds: float) -> str:
+    return f"{time.time() - seconds:.6f}"
+
+
+@dataclass
+class _Delivered:
+    events: list[RawAPIDict] = field(default_factory=list)
+
+    def __call__(self, event: RawAPIDict) -> bool:
+        self.events.append(event)
+        return True
+
+
+def _catch_up(backend: SlackBotBackend, delivered: _Delivered) -> None:
+    list(catch_up(backend, alive_at=time.time() - 120, deliver=delivered))
+
+
+def _in_window_root(text: str) -> RawAPIDict:
+    root_ts = _ts_ago(60)
+    return {
+        "ts": root_ts,
+        "thread_ts": root_ts,
+        "reply_count": 1,
+        "latest_reply": _ts_ago(30),
+        "user": "U_HUMAN",
+        "text": text,
+    }
+
+
+class TestSlackCatchUpDmReadErrorPathsE2E:
+    """Failure modes of the catch-up's read of the owner's bot DM.
+
+    A catch-up that cannot read its whole window delivers nothing and raises, so the
+    caller retries instead of advancing past a hole. Each refusal test scripts an
+    in-window human DM, so a pass that delivered before failing would turn it RED.
+    """
+
+    def _backend(self) -> SlackBotBackend:
+        return SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
+
+    def _serve_one_human_dm(self, transport: FakeSlackTransport) -> None:
+        transport.default_responses["conversations.history"] = {
+            "ok": True,
+            "messages": [{"ts": _ts_ago(30), "user": "U_HUMAN", "text": "sent while the listener was down"}],
+        }
+
+    def test_a_refused_history_page_raises_and_delivers_nothing(self, transport: FakeSlackTransport) -> None:
+        """RED if a refused page is skipped, or the first page is delivered before the refusal."""
+        first_page = {
+            "ok": True,
+            "messages": [{"ts": _ts_ago(30), "user": "U_HUMAN", "text": "on the first page"}],
+            "response_metadata": {"next_cursor": "c1"},
+        }
+
+        def history(params: dict[str, Any], _headers: dict[str, str]) -> dict[str, Any]:
+            return {"ok": False, "error": "invalid_cursor"} if params.get("cursor") else first_page
+
+        transport.handlers["conversations.history"] = history
+        delivered = _Delivered()
+
+        with pytest.raises(SlackReadRefusedError, match="invalid_cursor"):
+            _catch_up(self._backend(), delivered)
+
+        assert delivered.events == []
+        assert len(transport.calls_to("conversations.history")) == 2
+
+    def test_a_refused_replies_page_under_an_in_window_root_raises_and_delivers_nothing(
+        self, transport: FakeSlackTransport
+    ) -> None:
+        """RED if a refused thread read is skipped, or the in-window root is delivered anyway."""
+        root = _in_window_root("root of an active thread")
+        transport.default_responses["conversations.history"] = {"ok": True, "messages": [root]}
+        transport.default_responses["conversations.replies"] = {"ok": False, "error": "thread_not_found"}
+        delivered = _Delivered()
+
+        with pytest.raises(SlackReadRefusedError, match="thread_not_found"):
+            _catch_up(self._backend(), delivered)
+
+        assert delivered.events == []
+        assert [c.payload["ts"] for c in transport.calls_to("conversations.replies")] == [root["ts"]]
+
+    def test_an_unresolved_bot_identity_raises_before_reading(self, transport: FakeSlackTransport) -> None:
+        """RED if the pass reads (and delivers the bot's own posts) without knowing who the bot is."""
+        transport.default_responses["auth.test"] = {"ok": False, "error": "invalid_auth"}
+        self._serve_one_human_dm(transport)
+        delivered = _Delivered()
+
+        with pytest.raises(CatchUpRefusedError, match="identity is unresolved"):
+            _catch_up(self._backend(), delivered)
+
+        assert delivered.events == []
+        assert transport.calls_to("conversations.history") == []
+
+    def test_a_dm_channel_that_does_not_open_raises(self, transport: FakeSlackTransport) -> None:
+        """RED if ``conversations.open`` failing is read as an empty DM."""
+        transport.default_responses["conversations.open"] = {"ok": False, "error": "user_not_found"}
+        self._serve_one_human_dm(transport)
+        delivered = _Delivered()
+
+        with pytest.raises(CatchUpRefusedError, match="no bot DM channel"):
+            _catch_up(self._backend(), delivered)
+
+        assert delivered.events == []
+        assert transport.calls_to("conversations.history") == []
+
+    def test_no_owner_user_id_raises_without_opening_a_dm(self, transport: FakeSlackTransport) -> None:
+        """RED if the pass opens a DM with an empty user id."""
+        self._serve_one_human_dm(transport)
+        delivered = _Delivered()
+
+        with pytest.raises(CatchUpRefusedError, match="no bot DM channel"):
+            _catch_up(SlackBotBackend(bot_token="xoxb-bot", user_id=""), delivered)
+
+        assert delivered.events == []
+        assert transport.calls_to("conversations.open") == []
+        assert transport.calls_to("conversations.history") == []
+
+    def test_bot_authored_messages_are_never_delivered(self, transport: FakeSlackTransport) -> None:
+        """RED if the self-filter is dropped, or a non-root message fans out to ``conversations.replies``."""
         transport.default_responses["conversations.history"] = {
             "ok": True,
             "messages": [
-                {"ts": "1.0", "user": "U_HUMAN", "text": "   "},
-                {"ts": "2.0", "user": "U_HUMAN", "text": "real"},
+                {"ts": _ts_ago(50), "bot_id": "B_BOT", "text": "previous bot post"},
+                {"ts": _ts_ago(40), "user": "B_BOT", "text": "bot status"},
+                {"ts": _ts_ago(30), "user": "U_HUMAN", "text": "human reply"},
             ],
         }
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
+        delivered = _Delivered()
 
-        signals = SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+        _catch_up(self._backend(), delivered)
 
-        # Only the non-blank message produces a row.
-        rows = list(PendingChatInjection.objects.values_list("text", flat=True))
-        assert rows == snapshot(["real"])
-        assert len(signals) == 1
+        assert [e["text"] for e in delivered.events] == snapshot(["human reply"])
+        assert transport.calls_to("conversations.replies") == []
+
+    def test_a_corrupt_replies_payload_keeps_the_root(self, transport: FakeSlackTransport) -> None:
+        """RED if a non-list ``messages`` in a thread read crashes the pass."""
+        transport.default_responses["conversations.history"] = {"ok": True, "messages": [_in_window_root("top")]}
+        transport.default_responses["conversations.replies"] = {"ok": True, "messages": "corrupt"}
+        delivered = _Delivered()
+
+        _catch_up(self._backend(), delivered)
+
+        assert [e["text"] for e in delivered.events] == snapshot(["top"])
+
+    def test_non_dict_reply_items_are_skipped(self, transport: FakeSlackTransport) -> None:
+        """RED if the thread read stops filtering non-dict items."""
+        root = _in_window_root("top")
+        transport.default_responses["conversations.history"] = {"ok": True, "messages": [root]}
+        transport.default_responses["conversations.replies"] = {
+            "ok": True,
+            "messages": [
+                root,
+                "not-a-dict",
+                {"ts": _ts_ago(30), "user": "U_HUMAN", "text": "real reply"},
+            ],
+        }
+        delivered = _Delivered()
+
+        _catch_up(self._backend(), delivered)
+
+        assert [e["text"] for e in delivered.events] == snapshot(["top", "real reply"])

@@ -6487,7 +6487,9 @@ Usage: t3 slack listen [OPTIONS]
  Run the Socket Mode receiver for all (or one) slack-enabled overlays.
 
  Maintains one WebSocket per overlay, writes events to a JSONL queue
- file that the worker's mention scanner drains. Runs until SIGTERM or SIGINT.
+ file that the worker's mention scanner drains, records each DM and wakes the
+ answer cycle, and on every ``hello`` replays what Slack holds since the
+ listener was last alive. Runs until SIGTERM or SIGINT.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay           TEXT  Restrict to a single overlay (default: all).       │

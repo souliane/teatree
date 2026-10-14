@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.backends.slack.receiver import QueuePaths, _probe_own_identity, _run_single_overlay
+from teatree.backends.slack.receiver import ListenerCallbacks, QueuePaths, _probe_own_identity, _run_single_overlay
 from teatree.backends.slack.self_identity import OwnSlackIdentity, is_self_originated
 
 _OWN = OwnSlackIdentity(user_id="U0BOT", bot_id="B0BOT")
@@ -56,7 +56,7 @@ def _drive(tmp_path: Path, event: dict, *, auth_body: dict | None) -> MagicMock:
             overlay=("ov", "xapp", "xoxb"),
             queues=_queues(tmp_path),
             stop_event=stop,
-            on_event=on_event,
+            callbacks=ListenerCallbacks(on_event=on_event),
         )
     return on_event
 
@@ -148,7 +148,7 @@ class TestProbeOwnIdentity:
                 overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
-                on_event=MagicMock(),
+                callbacks=ListenerCallbacks(on_event=MagicMock()),
             )
 
         assert web_client.auth_test.call_count == 1

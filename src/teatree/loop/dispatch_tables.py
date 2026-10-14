@@ -338,13 +338,6 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # tick (the orphan sweep only reaps MERGED/CLOSED PRs, not open
     # self-authored ones).
     "reviewer_pr.task_self_authored": ("mechanical", "reviewer_task_self_authored"),
-    # #1113 Defect 2: ``SlackDmInboundScanner`` emits ``slack.user_reply`` per
-    # drained user reply. The real consumer is the reactive Slack-answer loop
-    # (``teatree.loop.slack_answer`` — drains the ``PendingChatInjection`` rows
-    # this scanner records, see ``slack_dm_inbound`` docstring). Without an
-    # explicit mechanical route, the signal fell through to the statusline
-    # fallback and leaked raw ``ts``/``text`` verbatim into ``action_needed``.
-    "slack.user_reply": ("mechanical", "slack_user_reply"),
     "notion.unrouted": ("webhook", "n8n"),
     # #1295 cap B: Slack @-mention pickup → mechanically assign the user
     # as reviewer on the MR. Once GitLab acknowledges the assignment, the
