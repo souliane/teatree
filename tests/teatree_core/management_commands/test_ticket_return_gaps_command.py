@@ -43,6 +43,7 @@ class ReturnGapsCommandTests(TestCase):
     def test_returns_all_keys_and_keeps_memory_row(self) -> None:
         member = self.member("g1")
         member.extra["dream_gap_batch"].append({"gap_key": "g2", "cluster_key": "g2"})
+        member.extra["dream_gap_claimed_delivered"] = ["g1", "g2"]
         member.save(update_fields=["extra"])
         memory = ConsolidatedMemory.objects.create(
             cluster_key="g1",
@@ -59,12 +60,27 @@ class ReturnGapsCommandTests(TestCase):
         self.umbrella.refresh_from_db()
         memory.refresh_from_db()
         assert member.state == Ticket.State.IGNORED
+        assert member.extra["dream_gap_claimed_delivered"] == []
         assert [entry["gap_key"] for entry in pending_entries(self.umbrella)] == ["g1", "g2"]
         assert "returned from ticket" in pending_entries(self.umbrella)[0]["detail"].lower()
         assert memory.rule == "Keep this rule"
         self.returned(member)
         self.umbrella.refresh_from_db()
         assert [entry["gap_key"] for entry in pending_entries(self.umbrella)] == ["g1", "g2"]
+
+    def test_refuses_claim_for_a_key_outside_the_batch(self) -> None:
+        member = self.member("g1")
+        member.extra["dream_gap_claimed_delivered"] = ["g1", "foreign"]
+        member.save(update_fields=["extra"])
+
+        with pytest.raises(SystemExit):
+            self.returned(member)
+
+        member.refresh_from_db()
+        self.umbrella.refresh_from_db()
+        assert member.state == Ticket.State.WORK_STARTED
+        assert member.extra["dream_gap_claimed_delivered"] == ["g1", "foreign"]
+        assert pending_entries(self.umbrella) == []
 
     def test_refuses_live_task_pr_and_worktree(self) -> None:
         active = self.member("task")

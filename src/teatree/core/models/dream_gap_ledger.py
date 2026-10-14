@@ -123,7 +123,7 @@ def _return_batch(member: Ticket) -> tuple[str, list[str], list[dict[str, str]]]
     return base, keys, entries
 
 
-def _require_returnable(member: Ticket, *, advanced: bool) -> None:
+def _require_returnable(member: Ticket, keys: list[str], *, advanced: bool) -> None:
     if member.state in Ticket.finished_states() or (member.state not in Ticket.EARLY_STATES and not advanced):
         _refuse_return(member, "needs --advanced or is already finished")
     if member.tasks.filter(status__in=Task.Status.active()).exists():
@@ -132,8 +132,11 @@ def _require_returnable(member: Ticket, *, advanced: bool) -> None:
         _refuse_return(member, "has a pull request")
     if any(not worktree.is_stale for worktree in member.worktrees.all()):
         _refuse_return(member, "has an existing worktree")
-    if (member.extra or {}).get(DISPOSITIONS_KEY) or (member.extra or {}).get(CLAIMED_DELIVERED_KEY):
+    if (member.extra or {}).get(DISPOSITIONS_KEY):
         _refuse_return(member, "has recorded gap dispositions")
+    claimed = (member.extra or {}).get(CLAIMED_DELIVERED_KEY) or []
+    if not isinstance(claimed, list) or any(not isinstance(key, str) or key not in keys for key in claimed):
+        _refuse_return(member, "claims keys outside its gap batch")
 
 
 def return_member_gaps(member: Ticket, *, advanced: bool = False) -> list[str]:
@@ -147,7 +150,7 @@ def return_member_gaps(member: Ticket, *, advanced: bool = False) -> list[str]:
             if set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}:
                 return keys
             _refuse_return(member, "is ignored but its gaps are not pending")
-        _require_returnable(member, advanced=advanced)
+        _require_returnable(member, keys, advanced=advanced)
         returned = [
             cast(
                 "DreamGapEntry",
@@ -162,6 +165,7 @@ def return_member_gaps(member: Ticket, *, advanced: bool = False) -> list[str]:
         umbrella.refresh_from_db(fields=["extra"])
         if not set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}:
             _refuse_return(member, "gaps were not recorded on the umbrella")
+        member.merge_extra(set_keys={CLAIMED_DELIVERED_KEY: []})
         member.ignore()
         member.save()
         return keys
