@@ -26,6 +26,8 @@ from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.models.worktree_occupancy import _worktree_at, occupancy_holder, task_holder_id
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
 from teatree.core.worktree.occupancy import finish_recorded_task_checkout
@@ -342,8 +344,16 @@ class Command(TyperCommand):
         # souliane/teatree#657: an in-session sub-agent runs inside the user's
         # own Claude Code session — always the Max subscription seat, never
         # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
+        checkout_path = dispatch_worktree_path(task.ticket)
+        checkout = _worktree_at(task.ticket, checkout_path) if checkout_path else None
+        holder = occupancy_holder(checkout) if checkout else None
+        factory_owned = bool(
+            holder and holder.holder == task_holder_id(task) and holder.holder_session == task.claimed_by_session
+        )
         usage = AttemptUsage(
-            agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION, recording_source="loop"
+            agent_session_id=agent_session_id,
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            recording_source="loop" if factory_owned else "hand",
         )
         with drive_claim(task):
             attempt = record_result_envelope(task, result, usage=usage)
