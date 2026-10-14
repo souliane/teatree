@@ -14,7 +14,6 @@ charter:
   AGENTS.md:
   - teatree.overlays
   BLUEPRINT.md:
-  - teatree.harnesses
   - teatree.overlays
   - teatree.teams
   CLAUDE.md:

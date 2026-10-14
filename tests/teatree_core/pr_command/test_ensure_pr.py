@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 from typing import cast
@@ -7,7 +8,9 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.backends.github.client import GitHubCodeHost
 from teatree.config import UserSettings
+from teatree.core import forge_pr_probe
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
@@ -172,7 +175,7 @@ class TestEnsurePr(TestCase):
         (spec,) = host.create_pr.call_args.args
         assert spec.draft is False
         assert spec.branch == "feat-q"
-        assert spec.repo == "souliane/teatree"
+        assert spec.repo == "."
         assert spec.title == "feat: cool thing"
 
     def test_create_url_failing_reread_is_reported_as_error_not_a_url(self) -> None:
@@ -645,6 +648,41 @@ class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
         why = spec.description.split("## Why", 1)[1]
         assert f"Tracks {issue_url}." in why
         assert not re.search(r"\b(closes|fixes|resolves)\b", why, re.IGNORECASE)
+
+
+_RACE_WINNER_URL = "https://github.com/souliane/teatree/pull/42"
+_GH_LOSES_THE_CREATE_RACE = f"""#!/bin/sh
+case "$1 $2" in
+    "pr create") echo 'a pull request for branch "1534-fix-the-real-work" into branch "main" already exists:' >&2
+        echo '{_RACE_WINNER_URL}' >&2; exit 1 ;;
+    "pr list") echo '[{{"url": "{_RACE_WINNER_URL}"}}]' ;;
+    "pr view") printf '## Why\\n- The drain opened it first.\\n' ;;
+    "api user") echo '{{"login": "souliane"}}' ;;
+    "api repos/"*) echo '{{"state": "open", "merged": false}}' ;;
+    *) echo "unexpected gh call: $*" >&2; exit 2 ;;
+esac
+"""
+
+
+class TestAPrAnotherOpenerCreatedFirstIsAdopted(_RealGitOrphanBranch):
+    """The pending-PR drain and an explicit ``ensure-pr`` both create; the one that loses adopts the winner's PR."""
+
+    def test_already_exists_adopts_the_open_pr_through_the_real_probe(self) -> None:
+        clone = self._origin_and_feature(["fix(y): the real work"])
+        bin_dir = self._tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(_GH_LOSES_THE_CREATE_RACE)
+        (bin_dir / "gh").chmod(0o755)
+        self._monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        self._monkeypatch.setattr(forge_pr_probe, "forge_cli_env", lambda _repo: {**os.environ, "GH_TOKEN": "t"})
+        self._monkeypatch.setattr(
+            ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: GitHubCodeHost(token="t")
+        )
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = create_or_defer_pr(str(clone), "1534-fix-the-real-work")
+
+        assert result == {"branch": "1534-fix-the-real-work", "url": _RACE_WINNER_URL}
 
 
 class TestEnsurePrResolutionError:

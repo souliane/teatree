@@ -80,6 +80,7 @@ Your tool grant is whatever `teatree.core.modelkit.phase_tools.tools_for_phase("
 - Test that writes its own baseline / snapshot
 - Test mocks the behaviour it is supposed to exercise
 - Guard green only where the defect cannot appear
+- Test that claims isolation but reads the venue it runs in
 - Business logic in a view or management command
 - FloatField for currency
 - Module past the health threshold
