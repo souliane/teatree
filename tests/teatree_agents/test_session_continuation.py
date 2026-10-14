@@ -29,6 +29,7 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.lane_b import toolsets as lane_b_toolsets
 from teatree.agents.lane_b.tool_names import TOOL_READ
@@ -36,11 +37,14 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.runner_failure_taxonomy import RESULT_ERROR_PREFIX
 from teatree.agents.session_lineage import resume_session_id
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import CONTEXT_EXHAUSTED_MARKER
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, dispatch_reason, schedule_resume
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.transient_requeue import requeue_transient_failed
 from tests.factories import planned_ticket
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _PARENT_SESSION = "11111111-1111-4111-8111-111111111111"
 _OWN_SESSION = "22222222-2222-4222-8222-222222222222"
@@ -159,11 +163,15 @@ class TestAPydanticRunReopenedInPlaceContinuesItsOwnConversation(TestCase):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
-        Worktree.objects.create(
-            ticket=self.ticket, repo_path=str(root), branch="feature", extra={"worktree_path": str(root)}
-        )
+        _init_repo_with_branch(root, branch="feature", commits_ahead=1)
         self.notes = root / "notes.txt"
         self.notes.write_text("lock order", encoding="utf-8")
+        Worktree.objects.create(
+            ticket=self.ticket,
+            repo_path=str(root),
+            branch="feature",
+            extra={"worktree_path": str(root), "attested_state": checkout_state(root).digest},
+        )
         self.parent = Task.objects.create(
             ticket=self.ticket, session=Session.objects.create(ticket=self.ticket), phase="debugging"
         )
@@ -192,6 +200,7 @@ class TestAPydanticRunReopenedInPlaceContinuesItsOwnConversation(TestCase):
             patch.object(harness_mod.PydanticAiHarness, "_resolve_model", lambda _self, _options, _run: model),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, _task: TaskUsage(0, 0.0))),
             patch.object(lane_b_toolsets, "build_mcp_toolsets", return_value=[]),
+            patch.object(checkout_fence_mod, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")),
         ):
             return run_agent(self.task, phase="debugging", overlay_skill_metadata={})
 

@@ -55,13 +55,14 @@ def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
 
 def _answer_click(overlay: str, payload: dict) -> None:
     """Record a tapped owner-question option; the receiver has already acknowledged the envelope."""
+    from teatree.core.worktree.survivor_notice import apply_stop_answer  # noqa: PLC0415 — deferred: ORM-backed
     from teatree.loop.question_binding import answer_from_click  # noqa: PLC0415 — deferred: ORM-backed
 
     backend = messaging_from_overlay(overlay or None)
     if backend is None:
         logging.getLogger(__name__).warning("No slack backend for overlay %r — a button tap was dropped", overlay)
         return
-    answer_from_click(payload, backend=backend)
+    answer_from_click(payload, backend=backend, on_answer=apply_stop_answer)
 
 
 @slack_app.command("listen")

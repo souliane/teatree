@@ -52,20 +52,23 @@ from django.utils import timezone
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
-from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
+from teatree.core.models import PlanArtifact, PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
     schedule_external_review,
 )
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.persistence_phase_task import create_phase_task
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -171,13 +174,20 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
 
     One queryset, two admission predicates OR-ed: a ticket idle past *threshold_hours*
     (frozen) or one whose latest attempt for the implied phase failed (failing).
+    A newest task recorded by hand means a session is driving, so only the idle class applies.
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
         phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled():
+        if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
             continue
-        failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
+        if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+            continue
+        failing = (
+            _phase_is_failing(ticket, phase=phase)
+            and not _review_has_no_head(ticket, phase=phase)
+            and not ticket.newest_task_recorded_by_hand()
+        )
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
@@ -260,6 +270,34 @@ def _review_has_no_head(ticket: Ticket, *, phase: str) -> bool:
     latest = ticket.tasks.filter(phase__in=phase_spellings("reviewing")).order_by("-pk").first()  # Django reverse FK
     target = review_target_for_task(latest) if latest is not None else None
     return target is not None and not target.head_sha
+
+
+def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
+    """A merge_safe self-review at the live checkout HEAD, recorded after the latest plan."""
+    plan_time = (
+        PlanArtifact.objects.filter(ticket=ticket)
+        .order_by("-recorded_at", "-pk")
+        .values_list("recorded_at", flat=True)
+        .first()
+    )
+    path = dispatch_worktree_path(ticket)
+    review = SelfReview.latest_for(ticket)
+    if plan_time is None or not path or review is None or review.verdict != "merge_safe":
+        return False
+    try:
+        head = git.run_strict(repo=path, args=["rev-parse", "HEAD"])
+    except (CommandFailedError, OSError):
+        # Not proven reviewed; the run-start fence parks a checkout it cannot read.
+        logger.warning("stuck-redispatch: HEAD of %s unreadable for ticket %s", path, ticket.pk, exc_info=True)
+        return False
+    if review.reviewed_sha != head.lower():
+        return False
+    return TaskAttempt.objects.filter(
+        task_id=review.task_pk,
+        ended_at__gt=plan_time,
+        result__review_verdict__verdict="merge_safe",
+        result__review_verdict__reviewed_sha=head,
+    ).exists()
 
 
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).
@@ -382,7 +420,7 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
     """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first.
 
-    Both a usage-window limit-PARK (``LIMIT_PARKED_PREFIX``) and a window-recoverable
+    Both a park (``TaskAttempt.objects.parks()``) and a window-recoverable
     exhaustion FAILURE (session/weekly/rate-limit — see
     :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`) are excluded: a
     capacity dip never executed a work iteration, so it must not burn the repair budget
@@ -394,7 +432,7 @@ def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
             task__ticket_id=ticket.pk,
             task__phase__in=phase_spellings(normalize_phase(phase)),
         )
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .excluding_parks()
         .order_by("pk")
     )
     return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]

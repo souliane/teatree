@@ -506,6 +506,19 @@ class TestABoundAnswerSurvivesARefusedResume(TestCase):
         assert not parked.child_tasks.exists()
 
 
+class TestCheckoutStopAnswer(TestCase):
+    def test_owner_answer_reaches_the_checkout_stop_consumer(self) -> None:
+        question = DeferredQuestion.objects.create(
+            question="Should the verified child writers be stopped?",
+            dedupe_marker="checkout-exit-held:7:session",
+        )
+        answered: list[DeferredQuestion] = []
+        assert apply_bound_answer(
+            BoundAnswer(question=question, answer="Stop verified writers"), on_answer=answered.append
+        )
+        assert [row.resolved_via for row in answered] == [DeferredQuestion.ResolvedVia.SLACK]
+
+
 class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):
     def _parked(self) -> Task:
         ticket = planned_ticket()

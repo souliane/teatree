@@ -15,6 +15,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli.slack import listen
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loops.slack_inbound import record_and_wake_slack_answer
 from teatree.types import RawAPIDict
 
@@ -84,7 +85,7 @@ class TestTheClickHandler:
         ):
             listen._answer_click("demo", _TAP)
 
-        click.assert_called_once_with(_TAP, backend=backend)
+        click.assert_called_once_with(_TAP, backend=backend, on_answer=apply_stop_answer)
 
     def test_a_tap_with_no_backend_is_dropped_not_raised(self) -> None:
         with (

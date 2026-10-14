@@ -216,6 +216,14 @@ def test_a_lease_lost_after_the_checkpoint_request_stops_the_beat_and_stays_a_ch
     assert outcome.stuck_reason == f"deploy checkpoint: {_DRAIN}"
 
 
+def test_cancel_keeps_interrupting_until_the_drive_returns() -> None:
+    session = _SlowToStopSession(stops_on_interrupt=3)
+    with patch.object(runner_heartbeat._Heartbeat, "_cancelled", return_value=True, create=True):
+        _drive(session, drain_reason=lambda: "", renew_lease=_lease_lost_on_beat(1))
+
+    assert session.interrupts == 3
+
+
 class _OperatorSteerableSession(InterruptibleSession):
     """Takes operator input, and lets one land from another thread the moment the run is told to stop."""
 

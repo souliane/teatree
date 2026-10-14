@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
 from teatree.core.modelkit.task_failure_taxonomy import classify_failure
+from teatree.core.models.checkout_exit import prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.generation import current_generation
 
@@ -31,8 +32,6 @@ if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
-
-_COMPLETION_FIELDS = ("status", "result_artifact_path", *RELEASED_CLAIM)
 
 #: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
 #: The renewal is an asyncio task on the same event loop the agent drives, so a starved box
@@ -282,18 +281,26 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     """
     if not _generation_holds(task):
         raise LeaseLostError(describe_lease_loss(task))
-    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+    from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
+        release_task_occupancy,
+        task_occupancy_release_deferred,
+    )
 
+    exit_state = prepared_checkout_exit(task)
     with transaction.atomic():
         # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
         # CAS matches on that exact session value (#4867).
-        release_task_occupancy(task)
+        deferred = not exit_state.release if exit_state is not None else task_occupancy_release_deferred(task)
+        if not deferred:
+            release_task_occupancy(task, attested_state=exit_state.attested_state if exit_state else None)
         task.status = task.Status.COMPLETED
         task.result_artifact_path = result_artifact_path
-        # owner_pid included (#4872): terminal_task_pk trusts a COMPLETED row only once it is null.
-        for field, released_value in RELEASED_CLAIM.items():
-            setattr(task, field, released_value)
-        task.save(update_fields=list(_COMPLETION_FIELDS))
+        fields = ["status", "result_artifact_path"]
+        if not deferred:
+            for field, released_value in RELEASED_CLAIM.items():
+                setattr(task, field, released_value)
+            fields.extend(RELEASED_CLAIM)
+        task.save(update_fields=fields)
 
 
 def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
@@ -325,15 +332,22 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
     if not reason.strip():
         msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
         raise ValueError(msg)
-    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+    from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
+        release_task_occupancy,
+        task_occupancy_release_deferred,
+    )
 
+    exit_state = prepared_checkout_exit(task) if by_holder else None
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
-        if release_now:
+        deferred = (
+            not exit_state.release if exit_state is not None else by_holder and task_occupancy_release_deferred(task)
+        )
+        if release_now and not deferred:
             # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
             # CAS matches on that exact session value (#4867).
-            release_task_occupancy(task)
+            release_task_occupancy(task, attested_state=exit_state.attested_state if exit_state else None)
             for field, released_value in RELEASED_CLAIM.items():
                 setattr(task, field, released_value)
             update_fields.extend(RELEASED_CLAIM)

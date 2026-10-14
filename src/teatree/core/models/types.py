@@ -731,6 +731,7 @@ class WorktreeSiblingFields(TypedDict, total=False):
 
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
+    attested_state: str
     clone_path: str
     services: list[str]
     urls: dict[str, str]

@@ -91,6 +91,21 @@ class TestRefuseReason:
 
 
 class TestSourceSelection:
+    def test_own_recorder_excludes_its_checkout_shell_ancestors(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "checkout"
+        peer = tmp_path / "peer"
+        root = _proc_with(tmp_path / "host-proc", {"200": checkout, "300": peer})
+        (root / THIS_PROCESS_PID / "stat").write_text(f"{THIS_PROCESS_PID} (recorder) S 200 0 0\n")
+        (root / "200" / "stat").write_text("200 (shell) S 1 0 0\n")
+        (root / "1").mkdir()
+        (root / "1" / "stat").write_text("1 (init) S 0 0 0\n")
+        with patch.object(process_table, "_HOST_PROC_ROOT", root):
+            assert read_process_table().holds(checkout)
+            recorder = read_process_table(exclude_ancestors=True)
+        assert recorder.usable
+        assert not recorder.holds(checkout)
+        assert recorder.holds(peer)
+
     def test_the_host_mount_wins_over_this_namespace(self, tmp_path: Path) -> None:
         host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "on-the-host"})
         own = _proc_with(tmp_path / "proc", {"22": tmp_path / "in-the-container"})
