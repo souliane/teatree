@@ -22,6 +22,7 @@ from teatree.hooks._curl_payload import (
     CURL_SHORT_KINDS,
     _json_body_fields,
     _walk_curl_args,
+    curl_argv,
     curl_groups,
     curl_method,
     curl_options,
@@ -78,6 +79,13 @@ class TestWalkCurlArgs:
 
 
 class TestCurlOptionGrammar:
+    def test_double_dash_keeps_later_words_as_positions(self) -> None:
+        argv = list(curl_argv(["-sS", "--", "--frobnicate", "https://api.github.com/user"]))
+        assert [item for item in argv if isinstance(item, str)] == [
+            "--frobnicate",
+            "https://api.github.com/user",
+        ]
+
     def test_known_value_options_consume_dash_led_values(self) -> None:
         options = list(curl_options(["--header", "-H", "-d", "body=acmecorp"]))
         assert [(option.name, option.value) for option in options] == [("--header", "-H"), ("-d", "body=acmecorp")]
