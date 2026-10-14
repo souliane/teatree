@@ -11,6 +11,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_delivery import SendReceipt
 from teatree.agents.live_mailbox import InboxPage
 
@@ -74,13 +75,13 @@ class MailboxClient:
             with suppress(BrokenPipeError, ConnectionResetError):
                 await writer.wait_closed()
 
-    async def self_identity(self) -> dict[str, str]:
+    async def self_identity(self) -> PeerIdentity:
         """Return the address TeaTree assigned to this running task."""
-        return cast("dict[str, str]", await self._request("self"))
+        return cast("PeerIdentity", await self._request("self"))
 
-    async def peers(self) -> list[dict[str, str]]:
+    async def peers(self) -> list[PeerIdentity]:
         """List live TeaTree tasks on this host."""
-        return cast("list[dict[str, str]]", await self._request("peers"))
+        return cast("list[PeerIdentity]", await self._request("peers"))
 
     async def send(self, to: str, text: str, key: str, *, timeout_seconds: float = 20) -> SendReceipt:
         """Send one idempotent message to an addressed live peer and wait for session acceptance.
@@ -117,6 +118,6 @@ def register(server: MCPServer) -> bool:
     server.add_tool(client.self_identity, name="agent_mailbox_self", annotations=_READ)
     server.add_tool(client.peers, name="agent_mailbox_peers", annotations=_READ)
     server.add_tool(client.send, name="agent_mailbox_send", annotations=_WRITE)
-    server.add_tool(client.inbox, name="agent_mailbox_inbox", annotations=_READ)
-    server.add_tool(client.wait, name="agent_mailbox_wait", annotations=_READ)
+    server.add_tool(client.inbox, name="agent_mailbox_inbox", annotations=_WRITE)
+    server.add_tool(client.wait, name="agent_mailbox_wait", annotations=_WRITE)
     return True

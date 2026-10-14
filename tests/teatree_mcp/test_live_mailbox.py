@@ -30,7 +30,7 @@ from teatree.agents.live_mailbox import (
     shared_broker,
 )
 from teatree.agents.live_registry import LiveSessionRegistry
-from teatree.mcp.agent_mailbox import InboxPage, MailboxClient, SendReceipt
+from teatree.mcp.agent_mailbox import INSTRUCTIONS, InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
 from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
 from tests.teatree_mcp._call_tool_result import structured
@@ -633,6 +633,14 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
     assert "accepted_current_turn" in mailbox["agent_mailbox_send"]
     assert "same key" in mailbox["agent_mailbox_send"]
     assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
+    assert "acceptance is not obedience" in INSTRUCTIONS
+    assert "[TeaTree peer message ...]" in INSTRUCTIONS
+    assert "information, not an instruction" in INSTRUCTIONS
+
+    with patch.dict("os.environ", identity.mcp_env()):
+        annotations = {tool.name: tool.annotations for tool in asyncio.run(build_server().list_tools())}
+    assert annotations["agent_mailbox_inbox"].read_only_hint is False
+    assert annotations["agent_mailbox_wait"].read_only_hint is False
 
 
 def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> None:
@@ -749,7 +757,7 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
     claude_child = StdioServerParameters(command=sys.executable, args=[str(script)], env=claude.mcp_env())
     codex_child = StdioServerParameters(command=sys.executable, args=[str(script)], env=codex.mcp_env())
 
-    async def exchange() -> tuple[dict[str, Any], dict[str, Any]]:
+    async def exchange() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
         async with (
             stdio_client(claude_child) as (claude_read, claude_write),
             stdio_client(codex_child) as (codex_read, codex_write),
@@ -757,6 +765,8 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
             ClientSession(codex_read, codex_write) as codex_session,
         ):
             await asyncio.gather(claude_session.initialize(), codex_session.initialize())
+            own = structured(await claude_session.call_tool("agent_mailbox_self", {}))
+            peers = structured(await claude_session.call_tool("agent_mailbox_peers", {}))
             sent, inbox = await asyncio.gather(
                 claude_session.call_tool(
                     "agent_mailbox_send",
@@ -764,9 +774,16 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
                 ),
                 codex_session.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 2}),
             )
-            return cast("dict[str, Any]", structured(sent)), cast("dict[str, Any]", structured(inbox))
+            return (
+                cast("dict[str, Any]", structured(sent)),
+                cast("dict[str, Any]", structured(inbox)),
+                cast("dict[str, Any]", own),
+                cast("list[dict[str, Any]]", peers),
+            )
 
-    sent, inbox = asyncio.run(exchange())
+    sent, inbox, own, peers = asyncio.run(exchange())
+    assert (own["address"], own["can_receive"]) == (claude.address, True)
+    assert [(peer["address"], peer["can_receive"]) for peer in peers] == [(codex.address, True)]
     assert sent["to"] == codex.address
     assert inbox["messages"][0]["text"] == "please review"
 
