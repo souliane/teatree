@@ -60,11 +60,10 @@ _STRUCTURAL_LEADERS: Final[frozenset[str]] = frozenset(
 # sentinel is recognised explicitly by :func:`is_fail_closed_sentinel`
 # so a scanner can fail closed on a NAMED reason instead of an
 # accidental content-pattern self-match.
-# A Bash argv cannot contain NUL, so a user-typed body cannot impersonate a
-# parser reason even when it contains the visible sentinel wording.
-_INJECTED_MARKER: Final[str] = "\x00"
+# Every user-derived text source drops NUL (command, file, JSON field, ANSI-C escape), so only the parser writes one.
+REASON_MARKER: Final[str] = "\x00"
 FAIL_CLOSED_SENTINEL: Final[str] = (
-    _INJECTED_MARKER + "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+    REASON_MARKER + "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
 )
 
 
@@ -79,9 +78,10 @@ FAIL_CLOSED_SENTINEL: Final[str] = (
 # closed -- only the operator-facing reason differs. It too must not self-match
 # any quote-scanner HIGH pattern.
 UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
-    _INJECTED_MARKER + "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
+    REASON_MARKER + "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
 )
-NAMED_FAIL_CLOSED_PREFIX: Final[str] = _INJECTED_MARKER + "[teatree-gate] fail closed: "
+NAMED_FAIL_CLOSED_PREFIX: Final[str] = REASON_MARKER + "[teatree-gate] fail closed: "
+BODY_SOURCE_SENTINELS: Final[frozenset[str]] = frozenset({FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL})
 
 
 def is_fail_closed_sentinel(text: str) -> bool:
@@ -103,8 +103,7 @@ def is_fail_closed_sentinel(text: str) -> bool:
     so the line-exact test allows it while every genuine injection (the
     sentinel on its own line) still fails closed (#1213).
     """
-    sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
-    return any(line in sentinels or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
+    return any(line in BODY_SOURCE_SENTINELS or line.startswith(NAMED_FAIL_CLOSED_PREFIX) for line in text.split("\n"))
 
 
 def is_unavailable_body_source_sentinel(text: str) -> bool:
@@ -137,7 +136,7 @@ def read_file_arg(path: str, base: Path | None = None) -> str | None:
         candidates.append(base / path)
     for candidate in candidates:
         try:
-            return candidate.read_text(encoding="utf-8")
+            return candidate.read_text(encoding="utf-8").replace(REASON_MARKER, "")
         except (OSError, UnicodeDecodeError):
             continue
     return None

@@ -52,6 +52,13 @@ class TestReadFileArg:
     def test_missing_everywhere_returns_none(self, tmp_path: Path) -> None:
         assert read_file_arg(str(tmp_path / "absent.md"), base=tmp_path) is None
 
+    def test_file_text_never_carries_a_parser_reason(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(f"acmecorp\n{NAMED_FAIL_CLOSED_PREFIX}x", encoding="utf-8")
+        text = read_file_arg(str(body)) or ""
+        assert "acmecorp" in text
+        assert is_fail_closed_sentinel(text) is False
+
 
 class TestShortClusterValues:
     def test_later_letter_keeps_unquoted_attached_value(self) -> None:

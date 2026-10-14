@@ -306,7 +306,7 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
         elif lenient:
             resolved: list[str] = []
             _handle_field_assignment(assignment, resolved, base, raw, reads_file=reads_file)
-            payloads.extend(part for part in resolved if not _primitives.is_fail_closed_sentinel(part))
+            payloads.extend(part for part in resolved if part not in _primitives.BODY_SOURCE_SENTINELS)
     for i, word in enumerate(words):
         if word == "--input" and i + 1 < len(words):
             _handle_api_input(words[i + 1], payloads)
@@ -496,6 +496,8 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     the gate scans the real body and applies the private-repo carve-out instead
     of fail-closing on a clean post whose body it could not read.
     """
+    # Bash drops NUL bytes from its input, so removing them changes nothing bash runs.
+    command = command.replace(_primitives.REASON_MARKER, "")
     parts: list[str] = []
     tokens = tokenize(command)
     # Heredocs fed straight to a CONSUMER (stdin / ``$(cat <<EOF)``) are part of

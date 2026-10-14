@@ -55,6 +55,12 @@ class TestRawSpanInvariant:
         assert newline_ops[0].raw == "\r\n"
 
 
+class TestAnsiCNul:
+    @pytest.mark.parametrize("escape", [r"\x00", r"\0", r"\400", r"\u0000", r"\U00000000", r"\c@"])
+    def test_a_nul_escape_ends_the_quoted_string_as_bash_does(self, escape: str) -> None:
+        assert [tok.value for tok in tokenize(f"printf %s $'a{escape}b'c")] == ["printf", "%s", "ac"]
+
+
 class TestAmpersandSeparator:
     def test_bare_background_ampersand_is_an_operator(self) -> None:
         # A free-standing ``&`` is the command-separator operator the grammar

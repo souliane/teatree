@@ -26,7 +26,7 @@ from teatree.hooks._curl_payload import (
     curl_method,
     curl_options,
 )
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX, is_fail_closed_sentinel
 
 
 class TestJsonBodyFields:
@@ -38,6 +38,12 @@ class TestJsonBodyFields:
     def test_non_dict_and_invalid_json_yield_nothing(self) -> None:
         assert _json_body_fields("[1, 2, 3]") == []
         assert _json_body_fields("not json") == []
+
+    def test_a_decoded_field_never_carries_a_parser_reason(self) -> None:
+        fields = _json_body_fields(json.dumps({"body": f"acmecorp\n{NAMED_FAIL_CLOSED_PREFIX}x"}))
+        assert fields == [fields[0]]
+        assert "acmecorp" in fields[0]
+        assert is_fail_closed_sentinel(fields[0]) is False
 
 
 class TestWalkCurlArgs:

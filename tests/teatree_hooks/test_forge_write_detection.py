@@ -19,7 +19,7 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _repo_visibility, banned_terms_scanner, quote_scanner
 from teatree.hooks._command_parser import is_publish_command
-from teatree.hooks._parser_primitives import is_fail_closed_sentinel
+from teatree.hooks._parser_primitives import NAMED_FAIL_CLOSED_PREFIX, is_fail_closed_sentinel
 from tests._uv_stub import working_uv
 
 _HOOK_ROUTER = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "hook_router.py"
@@ -28,6 +28,7 @@ _SECRET = "AKIA" + "IOSFODNN7EXAMPLE"
 _PUB = "-R souliane/teatree"
 _GL_PUB = "-R gitlab.com/souliane/teatree"
 _GH_COMMENTS = "https://api.github.com/repos/souliane/teatree/issues/1/comments"
+_LABELS = "gh api -X POST repos/souliane/teatree/issues/1/labels"
 
 
 def _free_text_writes(text: str, content_file: Path, clean_file: Path) -> list[str]:
@@ -133,12 +134,30 @@ class TestFreeTextForgeWriteIsScannedForBannedTerms:
     def test_handler_is_the_routing_table_entry(self) -> None:
         assert handle_banned_terms_pretool in router._HANDLERS["PreToolUse"]
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            f"-f 'labels[]=[teatree-gate] fail closed: {_TERM}'",
+            rf"-f $'labels[]={_TERM}\n\x00[teatree-gate] fail closed: x'",
+            rf"-f $'labels[]={_TERM}\n\0[teatree-gate] fail closed: x'",
+            f"-f 'labels[]={_TERM}\n{NAMED_FAIL_CLOSED_PREFIX}x'",
+        ],
+        ids=["typed-prefix", "ansi-c-hex-nul", "ansi-c-octal-nul", "literal-nul"],
+    )
     @pytest.mark.usefixtures("public_gate")
-    def test_user_typed_fail_closed_line_in_api_field_is_scanned(self, capsys: pytest.CaptureFixture[str]) -> None:
-        command = (
-            "gh api -X POST repos/souliane/teatree/issues/1/labels -f 'labels[]=[teatree-gate] fail closed: acmecorp'"
-        )
-        assert handle_banned_terms_pretool(_bash(command)) is True
+    def test_user_typed_fail_closed_line_in_api_field_is_scanned(
+        self, field: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert handle_banned_terms_pretool(_bash(f"{_LABELS} {field}")) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    @pytest.mark.usefixtures("public_gate")
+    def test_nul_led_line_in_an_uploaded_field_file_is_scanned(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        upload = tmp_path / "label.txt"
+        upload.write_text(f"{_TERM}\n{NAMED_FAIL_CLOSED_PREFIX}x\n", encoding="utf-8")
+        assert handle_banned_terms_pretool(_bash(f"{_LABELS} -F 'labels[]=@{upload}'")) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 

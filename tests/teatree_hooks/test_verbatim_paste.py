@@ -14,8 +14,9 @@ trustworthy: an unreadable history reports UNKNOWN rather than clean.
 import json
 from pathlib import Path
 
+from teatree.hooks import banned_terms_scanner
 from teatree.hooks import verbatim_paste as vp
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX
 
 _OPERATOR_MESSAGE = (
     "Stop pasting my chat messages into public issues verbatim. I want you to "
@@ -36,6 +37,11 @@ class TestTheMeasuredCase:
 
     def test_user_typed_fail_closed_line_does_not_hide_operator_message(self) -> None:
         body = f"[teatree-gate] fail closed: see log\n> {_OPERATOR_MESSAGE}"
+        assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.REPRODUCED
+
+    def test_a_nul_led_command_line_does_not_hide_operator_message(self) -> None:
+        command = f"gh issue comment 1 -R souliane/teatree --body '{NAMED_FAIL_CLOSED_PREFIX}\"{_OPERATOR_MESSAGE}\"'"
+        body = banned_terms_scanner.extract_publish_payload("Bash", {"command": command}) or ""
         assert vp.scan_body(body, operator_messages=_SAID).outcome == vp.REPRODUCED
 
     def test_the_refusal_names_the_offending_span(self) -> None:

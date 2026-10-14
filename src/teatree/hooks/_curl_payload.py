@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Final
 
 from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
-from teatree.hooks._parser_primitives import BODY_FIELD_NAMES, FAIL_CLOSED_SENTINEL, NAMED_FAIL_CLOSED_PREFIX
+from teatree.hooks._parser_primitives import (
+    BODY_FIELD_NAMES,
+    FAIL_CLOSED_SENTINEL,
+    NAMED_FAIL_CLOSED_PREFIX,
+    REASON_MARKER,
+)
 
 # The argv walkers' catalogue plus Slack's ``text``, which has no CLI-flag form.
 _JSON_BODY_KEYS: Final[tuple[str, ...]] = (*sorted(BODY_FIELD_NAMES), "text")
@@ -170,7 +175,7 @@ def _json_body_fields(blob: str) -> list[str]:
         return []
     if not isinstance(decoded, dict):
         return []
-    return [str(decoded[key]) for key in _JSON_BODY_KEYS if key in decoded]
+    return [str(decoded[key]).replace(REASON_MARKER, "") for key in _JSON_BODY_KEYS if key in decoded]
 
 
 def _scan_curl_payload(raw: str, payloads: list[str], *, fail_closed: bool = True) -> None:
