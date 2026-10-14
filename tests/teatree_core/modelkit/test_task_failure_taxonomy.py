@@ -243,6 +243,19 @@ class TestALeakBlockIsNeverRetried:
         assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.HALT
 
 
+class TestResumeRefusalPrefix:
+    @pytest.mark.parametrize(
+        ("prefix", "expected"),
+        [
+            ("landing_unverified:", FailureKind.LANDING_UNVERIFIED),
+            ("provision_failed:", FailureKind.PROVISION_FAILED),
+        ],
+    )
+    def test_quoted_refusal_does_not_reclassify_a_different_failure(self, prefix: str, expected: str) -> None:
+        reason = f"{prefix} detail quoted the resumed conversation ended without taking a turn"
+        assert classify_failure(reason) == expected
+
+
 class TestThePlanGateRefusalIsNamed:
     """#4578: the refusal was ``unclassified``, so no recovery mechanism could see it."""
 

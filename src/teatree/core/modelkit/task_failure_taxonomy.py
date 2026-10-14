@@ -315,7 +315,6 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # After the park row: a parked budget stop is a usage window, a terminal one a drained credential.
     (FailureKind.CREDENTIAL_EXHAUSTED, ("provider_budget:",)),
     (FailureKind.OUTAGE, ("outage_death:",)),
-    (FailureKind.RESUME_REFUSED, (RESUME_REFUSED_PHRASE,)),
     (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
@@ -359,6 +358,12 @@ def classify_failure(error: str) -> str:
     if not haystack:
         return FailureKind.UNRECORDED
     for kind, needles in _MATCHERS:
+        if (
+            kind == FailureKind.RESULT_ERROR
+            and haystack.startswith(RESULT_ERROR_MARKER)
+            and RESUME_REFUSED_PHRASE in haystack
+        ):
+            return FailureKind.RESUME_REFUSED
         if any(needle.casefold() in haystack for needle in needles):
             return kind
     if outage_signature_in_text(error):
