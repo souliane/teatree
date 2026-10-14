@@ -311,6 +311,32 @@ def test_worker_repairs_recreated_git_metadata_before_the_next_probe(layout: Pat
         assert subprocess.run([git, "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, check=True).stdout
 
 
+def test_worker_leaves_an_already_readable_hardlink_unchanged(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    outside = layout / "outside-object"
+    outside.write_bytes(b"shared object")
+    outside.chmod(0o644)
+    (clone / ".git" / "objects" / "shared").hardlink_to(outside)
+
+    codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert outside.stat().st_mode & 0o777 == 0o644
+    assert git_readable(str(worktree)) == "OK"
+
+
+def test_worker_refuses_to_change_an_unreadable_hardlink(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    outside = layout / "outside-object"
+    outside.write_bytes(b"shared object")
+    outside.chmod(0o600)
+    (clone / ".git" / "objects" / "shared").hardlink_to(outside)
+
+    with pytest.raises(codex_read_only_executor.ExecutorRefusalError, match="links outside its checkout"):
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert outside.stat().st_mode & 0o777 == 0o600
+
+
 def test_worker_refuses_git_metadata_outside_the_declared_mounts(layout: Path) -> None:
     clone, worktree = _clone_with_worktree(layout)
     outside = layout / "outside-git"

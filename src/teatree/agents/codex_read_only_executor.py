@@ -208,6 +208,8 @@ def executor_availability_reason(phase: str) -> str | None:
 
 def _readable_git_file(path: Path) -> None:
     info = path.lstat()
+    if info.st_mode & stat.S_IROTH:
+        return
     if info.st_nlink > 1:
         msg = f"Git metadata {path} has links outside its checkout"
         raise ExecutorRefusalError(msg)
