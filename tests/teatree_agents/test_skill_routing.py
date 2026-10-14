@@ -1,10 +1,21 @@
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
+import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.skill_routing as routing_mod
-from teatree.agents.skill_routing import AmbiguousSkillRouteError, ConflictingHarnessRoutingError, resolve_skill_route
-from teatree.config.agent_spawn import AgentRouteCandidate
+from teatree.agents.harness_dispatch import resolve_dispatch_harness
+from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.skill_routing import (
+    AmbiguousSkillRouteError,
+    ConflictingHarnessRoutingError,
+    clear_route_availability_cache,
+    resolve_skill_route,
+)
+from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
+from teatree.core.modelkit.phases import KNOWN_PHASES
+from teatree.types import SkillMetadata
 
 
 def _routes(*models: str) -> tuple[AgentRouteCandidate, ...]:
@@ -153,3 +164,51 @@ def test_availability_observations_are_isolated_by_normalized_phase() -> None:
             )
             is None
         )
+
+
+_ROW = (AgentRouteCandidate("codex_app_server", "gpt-6-sol"), AgentRouteCandidate("claude_sdk", "claude-opus-5-5"))
+_BOX_ROUTES = {
+    "code": _ROW,
+    "debug": _ROW,
+    "test": _ROW,
+    "e2e-review": (AgentRouteCandidate("claude_sdk", "claude-opus-5-5"),),
+}
+
+
+class TestTheArchitectureDesignRoute(TestCase):
+    """The planning route row moves only the phases whose own lifecycle skill is architecture-design."""
+
+    def _route_sources(self, skill_models: dict[str, tuple[AgentRouteCandidate, ...]]) -> dict[str, str]:
+        sources: dict[str, str] = {}
+        with patch.object(
+            harness_dispatch_mod, "resolve_agent_config", return_value=AgentConfig(skill_models=skill_models)
+        ):
+            for phase in sorted(KNOWN_PHASES):
+                skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata())
+                sources[phase] = resolve_dispatch_harness(phase=phase, skills=skills).route_source_skill
+        return sources
+
+    def test_a_lone_route_owner_never_builds_the_skill_index(self) -> None:
+        clear_route_availability_cache()
+        with patch.object(harness_dispatch_mod, "build_skill_index", side_effect=AssertionError("built")) as built:
+            self._route_sources({"code": _BOX_ROUTES["code"]})
+
+        built.assert_not_called()
+
+    def test_architecture_design_route_moves_only_its_primary_phases(self) -> None:
+        clear_route_availability_cache()
+        before = self._route_sources(_BOX_ROUTES)
+        after = self._route_sources({**_BOX_ROUTES, "architecture-design": _ROW})
+
+        moved = {phase for phase in before if before[phase] != after[phase]}
+        assert moved == {"planning", "directive_interpreting"}
+        assert {after[phase] for phase in moved} == {"architecture-design"}
+
+
+def test_an_owner_another_owner_requires_yields_to_the_more_specific_one() -> None:
+    index = [{"skill": "review", "requires": ["code"]}, {"skill": "code", "requires": []}]
+    route = _routes("opus")
+
+    assert resolve_skill_route(
+        {"review": route, "code": _routes("sonnet")}, ["review", "code"], phase_candidates=[], skill_index=lambda: index
+    ) == ("review", route)

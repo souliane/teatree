@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
@@ -173,7 +174,7 @@ class PartialReviewPublishError(RuntimeError):
 class PullRequestSpec:
     """Fields needed to open a pull/merge request on a CodeHostBackend."""
 
-    repo: str
+    repo: str  # the local checkout: GitHub adopts a racing PR by probing its origin
     branch: str
     title: str
     description: str
@@ -546,6 +547,8 @@ class CodeHostBackend(Protocol):
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState: ...  # pragma: no branch
+
+    def fetch_pr_content_snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot: ...  # pragma: no branch
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState: ...  # pragma: no branch
 

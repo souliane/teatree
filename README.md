@@ -203,8 +203,8 @@ looking at:
   integrations, and skills. The agent does the creative work; teatree does
   the mechanical work.
 - **Not a stable, polished product.** It is in motion, expected to break,
-  expected to change shape. The author dogfoods it daily on real client
-  work; bugs surface fast because every broken edge stops a real ticket.
+  expected to change shape. The author dogfoods it daily on real work;
+  bugs surface fast because every broken edge stops a real ticket.
 
 ## Core concepts
 
@@ -363,6 +363,7 @@ stateDiagram-v2
     review_requested --> closed : mark_closed
     approved --> merged : mark_merged
     approved --> closed : mark_closed
+    merged --> closed : void_merge
 ```
 <!-- END GENERATED: pull-request-fsm -->
 
@@ -843,7 +844,7 @@ provisioning steps, runtime metadata, and project-specific service hooks. See
 [docs/overlay-api.md](docs/overlay-api.md) for the full API.
 
 Overlays can live anywhere; they do not need to be vendored into this repo.
-The author dogfoods this on a private client-codebase overlay; the same
+The author dogfoods this on real work; the same
 extension point is what any other consumer would use.
 
 ## Configuration
@@ -1032,7 +1033,10 @@ ls-files`) and scans its content for the registry's leak terms, exiting
 non-zero with the offending `file:line` list. Its matcher is
 underscore-tolerant — `wt_777_<term>` and `<term>_x` are caught where the
 diff gate's word-boundary matcher misses them. An email address is scanned like
-any other content; the registry's `allow` class exempts configured identifiers.
+any other content; the registry's `allow` class exempts exact occurrences of configured
+identifiers. `--classes leak,overlay,allow` checks that no value of those classes appears
+under `src`, `scripts`, `tests`, `docs` or `.github`; there only the repository owner's login
+is exempt.
 The scan reads the `leak` class of the `banned_term_registry` DB setting or the
 `$TEATREE_TERM_REGISTRY` JSON secret. It refuses an absent registry or an empty
 `leak` class, so a missing term source cannot produce a clean result. A CI job
@@ -1060,7 +1064,7 @@ teatree/
 ## Where it is headed
 
 Teatree stays a single-author tool for now. The plan is to keep dogfooding it
-on real client work, let the rough edges surface through daily use, and only
+on real work, let the rough edges surface through daily use, and only
 broaden adoption once the patterns it relies on have been pushed through
 enough sessions to be trustworthy. The public repo is a side effect of that
 workflow — the code lives somewhere reachable in case any of the patterns

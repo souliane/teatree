@@ -1,12 +1,14 @@
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from urllib.parse import urlsplit
 
 from django.db import models
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
+from teatree.core.models.merge_void import MergeVoid
 from teatree.url_classify import repo_and_iid
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -17,6 +19,10 @@ if TYPE_CHECKING:
     from teatree.core.models.types import JSONObject
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_is_voided(row: object) -> bool:
+    return pr_ref_from_url(cast("PullRequest", row).url) in MergeVoid.objects.voided_refs()
 
 
 class PullRequestQuerySet(models.QuerySet):
@@ -160,6 +166,8 @@ class PullRequestQuerySet(models.QuerySet):
         every route crosses, so the keystone's own post-hook call finds the rows already
         settled and marks zero (#3984).
         """
+        if PrRef(slug=slug, pr_id=pr_id, host_kind="") in MergeVoid.objects.voided_refs():
+            return 0
         merged = 0
         for row in self.for_pr(slug=slug, pr_id=pr_id).exclude(state=PullRequest.State.MERGED):
             row.mark_merged()
@@ -318,4 +326,9 @@ class PullRequest(models.Model):
 
         MERGED is deliberately not a source: a merge is irreversible and terminal,
         so a later "not open" reading of a merged PR must never demote it to CLOSED.
+        :meth:`void_merge` is the one sanctioned MERGED -> CLOSED edge.
         """
+
+    @transition(field="state", source=State.MERGED, target=State.CLOSED, conditions=[_merge_is_voided])
+    def void_merge(self) -> None:
+        """The forge still reports the PR merged, so only a recorded ``MergeVoid`` may close the row."""

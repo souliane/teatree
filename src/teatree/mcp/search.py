@@ -25,7 +25,7 @@ from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_score import score as factory_score_compute
 from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, FactorySignalsReportDict, compute_factory_signals
 from teatree.core.modelkit.phases import phase_spellings
-from teatree.core.models import IncomingEvent, PullRequest, ReplyDispatch, Task, Ticket, Worktree
+from teatree.core.models import IncomingEvent, MergeVoid, PullRequest, ReplyDispatch, Task, Ticket, Worktree
 from teatree.mcp.serializers import (
     serialize_incoming_event,
     serialize_pull_request,
@@ -34,6 +34,7 @@ from teatree.mcp.serializers import (
     serialize_ticket_detail,
     serialize_worktree,
 )
+from teatree.url_classify import pr_ref
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,8 @@ def pr_for_ticket(*, ticket: str) -> list[dict[str, Any]]:
     except Ticket.DoesNotExist:
         return []
     rows = PullRequest.objects.filter(ticket=resolved).order_by("-pk")
-    return [serialize_pull_request(pull_request) for pull_request in rows]
+    voided = MergeVoid.objects.voided_refs()
+    return [serialize_pull_request(row, merge_void=voided.void_for(pr_ref(row.url))) for row in rows]
 
 
 def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:

@@ -77,7 +77,7 @@ from teatree.core.factory.health_signal import HealthSignal
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
+from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
@@ -204,7 +204,7 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
         Ticket.objects.exclude(issue_url="").exclude(state__in=_settled_states()).filter(remote_missing=False),
         overlay,
     ).order_by("-pk")
-    pr_tickets = [t for t in candidates if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
+    pr_tickets = [t for t in without_voided(candidates) if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
     states = {ticket.issue_url: pr_open_state(ticket.issue_url) for ticket in pr_tickets}
 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
@@ -345,7 +345,7 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    candidates = list(
+    candidates = without_voided(
         scoped(
             Ticket.objects.filter(state__in=Ticket.completable_states())
             .exclude(issue_url="")

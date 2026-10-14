@@ -30,6 +30,9 @@ Invoked from the ``Ticket.mark_merged()`` and ``Ticket.reconcile_merged()``
 transition bodies exactly as ``ship()`` invokes ``local_e2e_dod`` — the single
 chokepoint every path to MERGED funnels through. On a block it raises
 :class:`NoMergeEvidenceError`; the transition does not advance.
+
+A recorded :class:`MergeVoid` neutralises every piece of evidence naming its PR,
+so no loop can re-merge a ticket whose merge was voided; a different PR still counts.
 """
 
 import logging
@@ -37,8 +40,9 @@ import re
 from typing import TYPE_CHECKING
 
 from teatree.core.merge.ci_rollup import CodeHostQuery
+from teatree.core.merge.pr_slug_resolution import resolved_repo_slug
 from teatree.core.modelkit.gate_registry import register_gate
-from teatree.core.models import MergeAudit, PullRequest
+from teatree.core.models import MergeAudit, MergeVoid, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.url_classify import pr_ref
 from teatree.utils.forge import forge_from_remote
@@ -62,9 +66,19 @@ class NoMergeEvidenceError(InvalidTransitionError):
 
 
 def has_merge_audit_evidence(ticket: "Ticket") -> bool:
-    """True iff a ``MergeAudit`` row with a real (non-blank) ``merged_sha`` is linked to *ticket*."""
-    shas = MergeAudit.objects.filter(clear__ticket=ticket).values_list("merged_sha", flat=True)
-    return any(sha and sha.strip() for sha in shas)
+    """True iff *ticket* links a ``MergeAudit`` with a real ``merged_sha`` for a PR whose merge is not voided."""
+    voided = MergeVoid.objects.voided_refs()
+    return any(
+        audit.merged_sha.strip() and not (voided and audit_pr_ref(audit) in voided)
+        for audit in MergeAudit.objects.filter(clear__ticket=ticket).select_related("clear")
+    )
+
+
+def audit_pr_ref(audit: MergeAudit) -> PrRef:
+    clear = audit.clear
+    return PrRef(
+        slug=audit.repo_slug or resolved_repo_slug(clear) or clear.slug, pr_id=clear.pr_id, host_kind=clear.host_kind
+    )
 
 
 def _pr_host_kind(pr: PullRequest) -> str:
@@ -90,10 +104,10 @@ def _probeable_refs(ticket: "Ticket") -> list[PrRef]:
         if not slug or not raw_id.isdigit():
             continue
         refs.append(PrRef(slug=slug, pr_id=int(raw_id), host_kind=_pr_host_kind(pr)))
-    if refs:
-        return refs
-    own = pr_ref(ticket.issue_url or "")
-    return [own] if own is not None else []
+    if not refs and (own := pr_ref(ticket.issue_url or "")) is not None:
+        refs.append(own)
+    voided = MergeVoid.objects.voided_refs()
+    return [ref for ref in refs if ref not in voided]
 
 
 def forge_confirms_merged(ticket: "Ticket") -> bool:

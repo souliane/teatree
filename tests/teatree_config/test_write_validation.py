@@ -34,6 +34,10 @@ class TestValidateConfigWrite:
         with pytest.raises(ConfigWriteError, match="unknown config key: unregistered_setting"):
             validate_config_write("unregistered_setting", 1)
 
+    def test_retired_key_explains_why_it_has_no_setting(self) -> None:
+        with pytest.raises(ConfigWriteError, match=r"branch_prefix.*retired.*no readers"):
+            validate_config_write("branch_prefix", "ac")
+
     @pytest.mark.parametrize("raw", [4, 0, 0.1, "nan", "inf"])
     def test_a_per_core_factor_outside_its_range_is_refused(self, raw: object) -> None:
         with pytest.raises(ConfigWriteError, match=r"between 0\.25 and 2"):

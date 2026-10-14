@@ -396,7 +396,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         return gate_error
 
     spec = PullRequestSpec(
-        repo=repo_slug,
+        repo=repo_path,
         branch=branch_name,
         title=title,
         description=description,

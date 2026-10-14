@@ -26,7 +26,7 @@ from typing import Any
 from django.utils.text import slugify
 
 from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
-from teatree.core.settings_snapshot import FORMAT_VERSION, SNAPSHOT_FORMAT
+from teatree.core.settings_snapshot import FORMAT_VERSION, SNAPSHOT_FORMAT, WITHHELD_LABEL
 
 #: The largest document the loader accepts. A real snapshot measures a few hundred KB, so this
 #: is generous for any capture while refusing a mis-picked archive before it reaches the parser.
@@ -67,7 +67,8 @@ def load_snapshots(documents: Sequence[tuple[str, bytes]]) -> LoadedSnapshots:
 
 def snapshot_filename(payload: Mapping[str, Any]) -> str:
     """The name a saved snapshot lands under — the instance's own label and its capture date."""
-    label = slugify(_instance_field(payload, "label")) or "instance"
+    label = _instance_field(payload, "label")
+    label = "instance" if label == WITHHELD_LABEL else slugify(label) or "instance"
     day = slugify(str(payload.get("captured_at", ""))[:_DATE_CHARS]) or "undated"
     return f"teatree-settings-{label}-{day}.json"
 

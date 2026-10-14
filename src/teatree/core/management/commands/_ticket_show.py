@@ -7,7 +7,7 @@ grow. Holds ``show`` (per-phase ``attempt N/max`` budget over the ticket's
 (the rows no forge query can reach, #4527).
 """
 
-from typing import IO, Annotated, TypedDict, cast
+from typing import IO, Annotated, NotRequired, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -33,6 +33,7 @@ class TicketShowResult(TypedDict):
     issue_url: str
     expedited: bool
     phases: list[PhaseBudgetRow]
+    merge_voids: NotRequired[list[str]]
 
 
 class DeadRowResult(TypedDict):
@@ -87,6 +88,7 @@ def render_ticket_show(result: TicketShowResult) -> str:
     ]
     if result.get("expedited"):
         lines.append("  expedite: ⚡ release-blocker (pre-CI push allowed; merge still gated on review+test)")
+    lines.extend(f"  {void}" for void in result.get("merge_voids", []))
     if not result["phases"]:
         lines.append("  phases:  (no attempts yet)")
         return "\n".join(lines)
@@ -132,6 +134,7 @@ class TicketShowCommands(TyperCommand):
             "issue_url": ticket.issue_url,
             "expedited": ticket.expedited,
             "phases": phase_budget_rows(ticket),
+            "merge_voids": [void.describe() for void in ticket.merge_voids.all()],
         }
         self.stdout.write(render_ticket_show(result))
         return result

@@ -1,5 +1,9 @@
 {
   "gates": {
+    "allow": {
+      "count": 1,
+      "digest": "sha256:15e0513390be995e5754e40849f11e59c9cc8c578dd841a5f177eaf5d688f089"
+    },
     "overlay": {
       "count": 51,
       "digest": "sha256:6ef55a5a6a5c1e943136018507e20663e653a208e2d3c460e0fa7aed8423aa8b"

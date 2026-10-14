@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks import term_match
+from teatree.utils.exact_carve_out import mask_exempt
 
 # Synthetic term lists. ``ab`` vs ``about`` mirrors a short-term
 # false positive generically; ``acme``/``acme-corp``/``foo_bar`` exercise
@@ -241,8 +242,7 @@ class TestCompanyIdentifierAllowlistCarveOut:
         assert term_match.matched_term("acme-engineering", self._TERMS, ("", "   ", "--")) == "acme"
 
     def test_longer_identifier_consumed_as_one_run(self) -> None:
-        # ``acme-widget-app`` (3 tokens) is consumed whole even though
-        # ``acme-product`` (2 tokens) shares the ``acme`` prefix — longest-first.
+        # ``acme-widget-app`` is its own exact entry; ``acme-product`` shares only the ``acme`` prefix.
         assert term_match.matched_term("acme-widget-app", self._TERMS, self._ALLOW) is None
 
     def test_line_matches_honours_allowlist(self) -> None:
@@ -250,26 +250,32 @@ class TestCompanyIdentifierAllowlistCarveOut:
         assert term_match.line_matches("acme alone here", self._TERMS, self._ALLOW) is True
 
 
-class TestStripAllowlistedTokens:
-    """The token-run remover backing the carve-out, exercised directly."""
+class TestMaskExemptBlanksWholeEntryRuns:
+    """The exact carve-out backing the allow-list, exercised directly."""
 
     def test_removes_a_multi_token_run(self) -> None:
-        toks = term_match.tokens("the acme engineering team")
-        assert term_match._strip_allowlisted_tokens(toks, ("acme-engineering",)) == ["the", "team"]
+        toks = term_match.tokens(mask_exempt("the acme engineering team", ("acme-engineering",)))
+        assert toks == ["the", "team"]
 
     def test_removes_a_single_token_entry(self) -> None:
-        toks = term_match.tokens("the widget here")
-        assert term_match._strip_allowlisted_tokens(toks, ("widget",)) == ["the", "here"]
+        toks = term_match.tokens(mask_exempt("the widget here", ("widget",)))
+        assert toks == ["the", "here"]
 
     def test_keeps_a_partial_run(self) -> None:
         # Only ``acme`` present, not the full ``acme engineering`` run, so nothing
         # is consumed.
         toks = term_match.tokens("acme then engineering later")
-        assert term_match._strip_allowlisted_tokens(toks, ("acme-engineering",)) == toks
+        assert term_match.tokens(mask_exempt("acme then engineering later", ("acme-engineering",))) == toks
 
-    def test_empty_allowlist_is_identity(self) -> None:
-        toks = term_match.tokens("acme-engineering")
-        assert term_match._strip_allowlisted_tokens(toks, ()) == toks
+
+class TestTheCarveOutReadsTheMatchersTokens:
+    """An allow entry spelled with the matcher's own tokens exempts its text, whatever the script."""
+
+    @pytest.mark.parametrize("text", [f"{chr(0x130)}acme", f"{chr(0x212A)}cme"])
+    def test_an_entry_of_the_matchers_tokens_exempts_the_whole_text(self, text: str) -> None:
+        entry = "-".join(term_match.tokens(text))
+
+        assert mask_exempt(text, (entry,)).strip() == ""
 
 
 class TestContainsRun:
@@ -316,8 +322,10 @@ class TestIterTermMatches:
         assert matches[0][1] < matches[1][1]
 
     def test_camelcase_split_token_is_matched(self) -> None:
-        matches = term_match.iter_term_matches("value = acmeClient", "acme")
-        assert [m[0] for m in matches] == ["acme"]
+        assert term_match.iter_term_matches("value = acmeClient", "acme") == [("acme", 8)]
+
+    def test_the_position_indexes_the_original_text_past_a_case_cut(self) -> None:
+        assert term_match.iter_term_matches(f"{chr(0x130)} useAcmeClient", "acme") == [("acme", 5)]
 
     def test_multi_token_run_is_matched(self) -> None:
         matches = term_match.iter_term_matches("uses acme-corp here", "acme-corp")

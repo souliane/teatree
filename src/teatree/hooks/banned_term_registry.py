@@ -30,6 +30,7 @@ __all__ = [
     "export_scan_terms",
     "load_registry",
     "load_term_refs",
+    "required_registry",
     "terms_for_gate",
 ]
 
@@ -110,6 +111,14 @@ def load_registry(db_path: Path | None = None) -> dict[str, tuple[str, ...]] | N
     return _normalise_registry(read.value)
 
 
+def required_registry(*, db_path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """:func:`load_registry`, refusing an unset registry the way every scanning gate does."""
+    registry = load_registry(db_path=db_path)
+    if registry is None:
+        raise BannedTermsUnsetError.for_key(_REGISTRY_KEY, _REGISTRY_ENV)
+    return registry
+
+
 def _classes_union(registry: dict[str, tuple[str, ...]], gate: str) -> tuple[str, ...]:
     """The order-stable, de-duplicated union of the terms in the classes *gate* consumes."""
     if gate == ALLOW:
@@ -147,13 +156,7 @@ def terms_for_gate(gate: str, *, db_path: Path | None = None) -> tuple[str, ...]
 
 
 def export_scan_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
-    """Every ban-class term for the config-export content scan; fail-safe to empty.
-
-    The order-stable union of the four ban classes excludes the ``allow`` carve-out.
-    Unlike the gates this NEVER raises on a genuinely-unset source: the export is a
-    backup command, so a store with no terms configured yields an empty scan set. A
-    MALFORMED registry still fails loud (propagates :class:`BannedTermsUnsetError`).
-    """
+    """The order-stable union of ban classes, refusing an empty scan source."""
     registry = load_registry(db_path=db_path)
     if registry is not None:
         seen: dict[str, None] = {}
@@ -161,8 +164,14 @@ def export_scan_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
             for term in registry[term_class]:
                 if term.strip():
                     seen.setdefault(term, None)
-        return tuple(seen)
-    return ()
+        if seen:
+            return tuple(seen)
+        msg = (
+            f"{_REGISTRY_KEY} holds no leak, prose_collider, tone or overlay term — configure one "
+            f"or supply the ${_REGISTRY_ENV} JSON secret; refusing to scan as empty"
+        )
+        raise BannedTermsUnsetError(msg)
+    raise BannedTermsUnsetError.for_key(_REGISTRY_KEY, _REGISTRY_ENV)
 
 
 def class_of_term(term: str, *, db_path: Path | None = None) -> str:

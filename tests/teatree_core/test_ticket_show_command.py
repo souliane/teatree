@@ -14,6 +14,8 @@ from django.utils import timezone
 from teatree.core.management.commands._ticket_show import TicketShowResult, render_ticket_show
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from tests.factories import merge_void
+from tests.void_merge_fixtures import MERGED_SHA, PR_URL, landed_ticket, void_pr
 
 
 def _failed_attempt(task: Task, *, error: str) -> TaskAttempt:
@@ -101,3 +103,19 @@ class TicketShowTest(TestCase):
         )
         assert result["ticket_id"] == int(ticket.pk)
         assert result["state"] == Ticket.State.WORK_STARTED
+
+
+class TicketShowMergeVoidTest(TestCase):
+    def test_every_void_naming_the_ticket_is_shown_with_its_evidence(self) -> None:
+        ticket = landed_ticket()
+        void = void_pr()
+        second = merge_void(tickets=[ticket], pr_id=42, pr_url="https://github.com/example-org/example-repo/pull/42")
+
+        result = cast("dict[str, object]", call_command("ticket", "show", str(ticket.pk)))
+
+        assert result["merge_voids"] == [second.describe(), void.describe()]
+        assert void.describe() == (
+            f"merge voided: {PR_URL} @{MERGED_SHA[:8]} by alice at {void.voided_at.isoformat(timespec='seconds')}: "
+            "history rewrite dropped the change (2/2 paths absent on main)"
+        )
+        assert f"  {void.describe()}" in render_ticket_show(cast("TicketShowResult", result))

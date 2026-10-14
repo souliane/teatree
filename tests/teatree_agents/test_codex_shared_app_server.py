@@ -276,12 +276,20 @@ def test_failed_auth_startup_can_be_closed_without_touching_a_closed_loop(tmp_pa
         def persist(self) -> None:
             pytest.fail("failed bootstrap must not persist")
 
+    class SlowToExit(SharedCodexAppServer):
+        def _fail_dropped_submissions(self) -> None:
+            time.sleep(0.5)
+            super()._fail_dropped_submissions()
+
     options = CodexAppServerOptions.from_sdk_options(ClaudeAgentOptions(cwd=str(tmp_path)))
-    manager = SharedCodexAppServer(code_home=tmp_path / "private-home", cache=FailingCache())
+    manager = SlowToExit(code_home=tmp_path / "private-home", cache=FailingCache())
 
     with pytest.raises(RuntimeError, match="auth unavailable"):
         asyncio.run(manager.open_session(options, None))
+    assert manager._loop is not None
+    assert (manager._loop.is_closed(), manager.stopped) == (True, False)
     manager.close()
+    assert manager.stopped
     key = (os.getpid(), (tmp_path / "private-home").resolve())
     with patch.dict("teatree.agents.codex_shared_app_server._managers", {key: manager}):
         assert shared_codex_app_server(tmp_path / "private-home") is not manager
