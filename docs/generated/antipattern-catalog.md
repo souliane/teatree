@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`architectural-review`).
 
-**38 entries** — 5 greppable, 33 judgement.
+**39 entries** — 5 greppable, 34 judgement.
 
 ## Index
 
@@ -48,6 +48,7 @@ holistic (`architectural-review`).
 - [Signal carrying core domain flow](#signal-for-core-flow) — medium, greppable
 - [Fallback chain that hides the primary failure](#silent-fallback-chain) — medium, judgement
 - [List/fetch reads only the first page](#silent-truncation-pagination) — medium, judgement
+- [Test that claims isolation but reads the venue it runs in](#test-reads-the-ambient-venue) — medium, judgement
 - [New configurable surface that was not earned](#unearned-configurable-surface) — medium, judgement
 - [Multi-line comment block narrating what the code already says](#comment-block-narrates-code) — low, judgement
 - [Documentation prose that restates the code instead of capturing architecture](#doc-prose-restates-code) — low, judgement
@@ -309,6 +310,21 @@ holistic (`architectural-review`).
 **Anti-pattern.** A test or gate that asserts plenty and still guards nothing, because the only path it exercises is the one where the defect cannot occur — a race reproduced under a lock the buggy code never took, a deny-path probe that never reaches the deny, a fixture whose shape forecloses the failure. It is cited as evidence of safety and survives every mutation of the code it names.
 
 **Preferred.** For any guard cited as evidence of safety, NAME THE MUTATION that turns it red, then make it — revert the fix, break the invariant, plant the violation — and observe the red. A guard no mutation can turn red is itself the finding, not proof of the code it wraps.
+
+## Test that claims isolation but reads the venue it runs in
+
+<a id="test-reads-the-ambient-venue"></a>
+
+- **id:** `test-reads-the-ambient-venue`
+- **severity:** medium
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, architectural-review
+- **refs:** test-writing-doctrine
+
+**Anti-pattern.** A test whose premise is an empty world — no token, no term registry, no control DB — that clears only the inputs its author knew of, so the code under test resolves the missing value from the venue instead: a mounted control DB, an exported token, a git insteadOf rewrite. It is green in CI, where the venue is empty, and red in the worker container every agent runs it in, so each local run pays a control run against main to attribute it.
+
+**Preferred.** Pin every input the path resolves, not only HOME: point each resolver at an absent tmp_path location, as CI's empty venue does, and prove the isolation by running the test inside the worker container.
 
 ## Business logic in a view or management command
 

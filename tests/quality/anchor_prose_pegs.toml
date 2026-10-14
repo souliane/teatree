@@ -21,7 +21,7 @@
 # outside every window -- measured, not assumed.
 radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
-"BLUEPRINT.md" = ["b7bf92da3aa32c32"]
+"docs/blueprint/admission-governor.md" = ["b7bf92da3aa32c32"]
 # The skill-loading kill-switch has no TaskCreated counterpart.
 "docs/blueprint/configuration.md" = ["6d462c54f2a5c6b8"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
@@ -85,7 +85,7 @@ radius = 400
 # of it. Only the numerator is pinned -- it moves in lockstep with the digests, whereas the
 # file TOTAL would red on every unrelated edit.
 [TaskCreated.coverage]
-"BLUEPRINT.md" = 811
+"docs/blueprint/admission-governor.md" = 811
 "docs/blueprint/configuration.md" = 811
 "docs/blueprint/factory-architecture.md" = 811
 "docs/claude-code-internals.md" = 3653

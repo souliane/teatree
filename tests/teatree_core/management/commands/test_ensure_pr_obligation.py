@@ -131,7 +131,7 @@ class EnsurePrDeferralIsAnObligationTestCase(TestCase):
         assert result["owed"] is True
         owed = PendingPullRequest.objects.get(branch="feat-q")
         assert owed.spec["title"] == "feat: cool thing"
-        assert owed.spec["repo"] == "souliane/teatree"
+        assert owed.spec["repo"] == "/repo/path"
 
 
 class _RefusingHttpRemote(BaseHTTPRequestHandler):

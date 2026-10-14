@@ -88,6 +88,7 @@ through its normal PR; it never writes to the default branch directly.
 - Test that writes its own baseline / snapshot
 - Test mocks the behaviour it is supposed to exercise
 - Guard green only where the defect cannot appear
+- Test that claims isolation but reads the venue it runs in
 - Business logic in a view or management command
 - FloatField for currency
 - Module past the health threshold

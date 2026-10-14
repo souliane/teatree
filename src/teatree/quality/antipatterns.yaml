@@ -346,6 +346,26 @@
   linter: null
   eval_invariant: null
 
+- id: test-reads-the-ambient-venue
+  name: Test that claims isolation but reads the venue it runs in
+  severity: medium
+  detection: judgement
+  anti_pattern: >-
+    A test whose premise is an empty world — no token, no term registry, no
+    control DB — that clears only the inputs its author knew of, so the code
+    under test resolves the missing value from the venue instead: a mounted
+    control DB, an exported token, a git insteadOf rewrite. It is green in CI,
+    where the venue is empty, and red in the worker container every agent runs
+    it in, so each local run pays a control run against main to attribute it.
+  preferred_pattern: >-
+    Pin every input the path resolves, not only HOME: point each resolver at an
+    absent tmp_path location, as CI's empty venue does, and prove the
+    isolation by running the test inside the worker container.
+  consumers: [architecture-design, architectural-review]
+  refs: ["test-writing-doctrine"]
+  linter: null
+  eval_invariant: null
+
 # ── Django fat-model (provenance: ac-django/references/antipatterns.md) ──────
 - id: logic-in-view-or-command
   name: Business logic in a view or management command
