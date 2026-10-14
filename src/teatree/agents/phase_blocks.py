@@ -381,27 +381,20 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
                 else "1. Review the DIFF UNDER REVIEW from the mounted branch; hold if it is absent or incomplete."
             )
             if read_only_venue
-            else "1. Do a thorough code review of all changes on this ticket's branch."
+            else "1. Review this ticket's branch thoroughly."
         ),
-        (
-            "Return `review_context` with the fetched work_item URL, downloaded documents, "
-            "and analysis; the phase cannot complete without it."
-        ),
+        ("Return required `review_context`: work item URL, documents, analysis."),
         (
             'Return `anti_vacuity`: {"ac_coverage":"AC covered",'
             '"proven_tests":["tests/test_example.py::test_case"],"no_new_tests":false}'
         ),
         (
-            "`proven_tests` lists test ID strings observed failing on the pre-fix code; "
-            "`no_new_tests` is true with an empty list only when the diff adds no regression test. "
-            "other keys are dropped before recording; a merge_safe maker review of shippable work "
-            "cannot complete without it, while a `hold` owes none."
+            "`proven_tests`: test IDs seen RED before the fix. Set `no_new_tests`: true "
+            "with an empty list only if no regression test was added; other keys are dropped. "
+            "Shippable maker `merge_safe` requires this; a `hold` owes none."
         ),
-        (
-            "For a multi-repo ticket, inspect the combined changeset and return "
-            "`integration_review.repos` listing every reviewed repo."
-        ),
-        *(() if read_only_venue else ("2. Run /t3:next when done — it handles retro + structured result + handoff.",)),
+        ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
+        *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),

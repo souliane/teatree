@@ -130,7 +130,7 @@ class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
     def test_a_hold_is_told_it_owes_no_anti_vacuity(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
 
-        assert "a merge_safe maker review of shippable work cannot complete without it" in brief
+        assert "Shippable maker `merge_safe` requires this" in brief
         assert "a `hold` owes none" in brief
 
 
