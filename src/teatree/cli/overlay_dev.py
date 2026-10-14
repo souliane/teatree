@@ -222,7 +222,7 @@ def _ensure_sibling_worktree(workspace: TeatreeWorkspace, main_clone: Path, *, b
     sibling = workspace.root.parent / main_clone.name
     if sibling.exists():
         return sibling
-    if reason := checkout_roots(source_clone=main_clone).refusal(sibling, durable=True):
+    if reason := checkout_roots().refusal(sibling, durable=True):
         raise OverlayDevError(reason)
     target_branch = branch if _branch_exists(main_clone, branch) else _default_branch(main_clone)
     run_checked(["git", "-C", str(main_clone), "worktree", "add", str(sibling), target_branch])

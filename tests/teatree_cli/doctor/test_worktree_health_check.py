@@ -16,6 +16,7 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_worktree_health import (
+    _check_linked_worktree_placement,
     _check_occupied_checkouts,
     _check_one_worktree_root,
     _check_registered_worktrees_are_checkouts,
@@ -298,6 +299,18 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
 
 
 class LinkedCheckoutPlacementTest(_TmpTestCase):
+    def test_reads_roots_once_for_multiple_clones(self) -> None:
+        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(), harness=())
+        clones = {str(self.tmp / "a"), str(self.tmp / "b")}
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value=clones),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.core.cleanup.checkout_registry.raw_worktree_paths", return_value=[]),
+            mock.patch("teatree.config.checkout_roots.checkout_roots", return_value=roots) as read_roots,
+        ):
+            assert _check_linked_worktree_placement() is True
+        read_roots.assert_called_once_with()
+
     def _clone(self) -> tuple[Path, Path, Path]:
         clone = make_git_repo(self.tmp / "clone")
         (clone / "tracked.txt").write_text("stable\n", encoding="utf-8")

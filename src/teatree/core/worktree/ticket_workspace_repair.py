@@ -116,7 +116,14 @@ def _verified_bundle(checkout: Path, branch: str, overlay: str, work: UnshippedW
         root = Path(tempfile.mkdtemp(prefix="repair-", dir=get_data_dir(ARTIFACT_NAMESPACE)))
     except OSError as exc:
         return "", f"could not create a salvage directory ({exc}) — nothing moved"
-    record = capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=root)
+    prior = UnshippedWorkRecord.objects.filter(checkout_path=str(checkout)).first()
+    try:
+        record = capture_unshipped_work(checkout, branch=branch, overlay=overlay, artifact_root=root)
+    finally:
+        if prior is not None:
+            UnshippedWorkRecord.objects.filter(pk=prior.pk).update(
+                **{name: value for name, value in vars(prior).items() if not name.startswith("_") and name != "id"}
+            )
     if record is None or Path(record.artifact_prefix).parent != root:
         return "", "could not capture a fresh salvage bundle — nothing moved"
     prefix = record.artifact_prefix

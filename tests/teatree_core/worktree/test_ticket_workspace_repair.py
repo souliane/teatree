@@ -349,6 +349,21 @@ class TestRepairSplitWorkspace(TestCase):
         assert restore_bundle(prefix, moved).ok
         assert (moved / "work.txt").read_text(encoding="utf-8") == "original\n"
 
+    def test_success_keeps_an_earlier_salvage_record_and_bundle(self) -> None:
+        ticket, _, frontend = self._split_ticket()
+        prior = capture_unshipped_work(frontend, branch=_BRANCH, overlay="test", artifact_root=self.tmp / "older")
+        assert prior is not None
+        prefix = prior.artifact_prefix
+        assert bundle_path(prefix, UNCOMMITTED_SUFFIX).is_file()
+
+        with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace):
+            outcome = repair_split_workspace(ticket)
+
+        assert outcome.ok, outcome.render()
+        prior.refresh_from_db()
+        assert prior.artifact_prefix == prefix
+        assert bundle_path(prefix, UNCOMMITTED_SUFFIX).is_file()
+
     def test_repairs_a_split_unfinished_ticket_preserving_unpushed_and_uncommitted_work(self) -> None:
         backend_clone = self._clone("backend")
         frontend_clone = self._clone("frontend")

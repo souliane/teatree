@@ -113,6 +113,18 @@ def test_unreadable_store_falls_back_to_base_and_reports_it(tmp_path: Path) -> N
     assert "workspace_dir" in roots.refusal(tmp_path / "outside", durable=True)
 
 
+def test_absent_store_does_not_claim_it_was_unreadable(tmp_path: Path) -> None:
+    with (
+        patch("teatree.config.checkout_roots.import_module", side_effect=ImportError),
+        patch("teatree.config.checkout_roots.cold_db.canonical_config_db", return_value=tmp_path / "absent.db"),
+        patch("teatree.config.checkout_roots.cold_db.canonical_projection", return_value=None),
+    ):
+        roots = checkout_roots(home=tmp_path / "home", clone_dir=tmp_path / "clone", disposable=())
+
+    assert roots.read_error == ""
+    assert "unreadable" not in roots.refusal(tmp_path / "outside")
+
+
 def test_all_stored_scopes_are_allowed_when_the_store_is_readable(tmp_path: Path) -> None:
     db = tmp_path / "settings.sqlite3"
     with closing(sqlite3.connect(db)) as conn, conn:

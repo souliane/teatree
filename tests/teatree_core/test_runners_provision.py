@@ -66,6 +66,29 @@ class TestWorktreeProvisioner(TestCase):
         assert result.ok is False
         assert "no repos" in result.detail.lower()
 
+    def test_duplicate_recorded_rows_use_the_first_row(self) -> None:
+        ticket = self._scoped_ticket(repos=["repo-a"])
+        first = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="repo-a", branch="first")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="repo-a", branch="second")
+        selected: list[int] = []
+
+        class RowSelectedError(Exception):
+            pass
+
+        def capture(_repo: str, existing: Worktree | None, _root: Path) -> None:
+            selected.append(existing.pk if existing is not None else -1)
+            raise RowSelectedError
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision._recorded_plan", side_effect=capture),
+            pytest.raises(RowSelectedError),
+        ):
+            WorktreeProvisioner(ticket).run()
+
+        assert selected == [first.pk]
+
     def test_refuses_disallowed_new_checkout_before_clone_or_directory(self) -> None:
         ticket = self._scoped_ticket(repos=["repo-a"])
 

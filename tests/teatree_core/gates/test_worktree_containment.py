@@ -55,6 +55,31 @@ def test_literal_mktemp_directory_is_resolved(tmp_path: Path) -> None:
     assert calls[0].target == Path("/tmp/review.XXXXXX")
 
 
+@pytest.mark.parametrize("redirect", ["2>&1", "2>/dev/null", "&>/dev/null", "> /dev/null"])
+def test_move_destination_ignores_redirections(redirect: str, tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts(f"git worktree move old /opt/new {redirect}", tmp_path)
+    assert [call.target for call in calls] == [Path("/opt/new")]
+
+
+def test_mktemp_tmpdir_is_joined_to_the_template(tmp_path: Path) -> None:
+    calls = scan_worktree_checkouts('git worktree add "$(mktemp -d --tmpdir=/opt/evil wt.XXXX)"', tmp_path)
+    assert [call.target for call in calls] == [Path("/opt/evil/wt.XXXX")]
+
+
+def test_mktemp_t_without_known_tmpdir_is_unresolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TMPDIR", raising=False)
+    calls = scan_worktree_checkouts('git worktree add "$(mktemp -d -t wt.XXXX)"', tmp_path)
+    assert [call.target for call in calls] == [None]
+
+
+def test_home_and_tmpdir_expand_from_the_shell_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "temporary"))
+    calls = scan_worktree_checkouts(
+        "git worktree add $HOME/workspace/t3-workspaces/x; git worktree add $TMPDIR/x", tmp_path
+    )
+    assert [call.target for call in calls] == [Path.home() / "workspace/t3-workspaces/x", tmp_path / "temporary/x"]
+
+
 def test_cd_and_git_dash_c_choose_source_and_relative_destination(tmp_path: Path) -> None:
     source = tmp_path / "clone"
     source.mkdir()
@@ -96,10 +121,10 @@ def test_bare_mktemp_assignment_has_unknown_target(tmp_path: Path) -> None:
     assert calls[0].target is None
 
 
-def test_assigned_unresolved_variable_stays_unknown(tmp_path: Path) -> None:
+def test_assigned_home_variable_resolves(tmp_path: Path) -> None:
     calls = scan_worktree_checkouts("WT=$HOME/stray; git worktree add $WT main", tmp_path)
     assert len(calls) == 1
-    assert calls[0].target is None
+    assert calls[0].target == Path.home() / "stray"
 
 
 def test_variable_names_are_replaced_by_exact_spans(tmp_path: Path) -> None:

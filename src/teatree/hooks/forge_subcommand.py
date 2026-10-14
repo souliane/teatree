@@ -51,6 +51,7 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "nice": frozenset({"-n", "--adjustment"}),
     "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
     "setsid": frozenset(),
+    "sudo": frozenset({"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"}),
 }
 
 # Wrappers whose own operands come before the program (``timeout DURATION gh …``): how many.

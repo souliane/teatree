@@ -4,6 +4,7 @@ The gate denies when ANY reported call is bad, so where bash's behaviour is not 
 knowable the scan reports every candidate (an unknown value as ``None``) rather than guess one.
 """
 
+import os
 import re
 import shlex
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ _SHELLS = frozenset({"sh", "bash", "zsh"})
 _NAVIGATION_WITH_PATH = 2
 _END = Token("", TokenKind.OP)
 _MAX_NESTING = 3
+_REDIRECTION = re.compile(r"^(?:\d+)?(?:&>>?|<>|<<-?|>>?|<&|>&|<)")
+_SHELL_HEREDOC = re.compile(r"(?m)^\s*(?:bash|sh|zsh)(?:\s+-[A-Za-z]+)*\s+<<-?\s*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n")
 
 type Values = tuple[str | None, ...]
 
@@ -126,10 +129,56 @@ def _mktemp_directory(word: str) -> str | None:
         return None
     if args[:2] != ["mktemp", "-d"]:
         return None
-    if "-p" in args:
-        index = args.index("-p") + 1
-        return args[index] if index < len(args) else None
-    return next((arg for arg in reversed(args[2:]) if not arg.startswith("-")), None)
+    return _mktemp_template(args[2:])
+
+
+def _mktemp_template(args: list[str]) -> str | None:
+    directory: str | None = None
+    template: str | None = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "-p":
+            index += 1
+            directory = args[index] if index < len(args) else None
+        elif arg.startswith("--tmpdir="):
+            directory = arg.partition("=")[2] or None
+        elif arg in {"-t", "--tmpdir"}:
+            directory = os.environ.get("TMPDIR")
+            if directory is None:
+                return None
+        elif not arg.startswith("-"):
+            template = arg
+        index += 1
+    if directory is not None:
+        return str(Path(directory) / template) if template else directory
+    return template
+
+
+def _shell_heredoc_bodies(command: str) -> list[str]:
+    bodies: list[str] = []
+    for head in _SHELL_HEREDOC.finditer(command):
+        remaining = command[head.end() :]
+        end = re.search(rf"(?m)^{re.escape(head[2])}[ \t]*$", remaining)
+        if end is not None:
+            bodies.append(remaining[: end.start()])
+    return bodies
+
+
+def _without_redirections(words: list[str], raws: list[str]) -> tuple[list[str], list[str]]:
+    kept_words: list[str] = []
+    kept_raws: list[str] = []
+    index = 0
+    while index < len(words):
+        raw = raws[index]
+        match = _REDIRECTION.match(raw)
+        if match is None:
+            kept_words.append(words[index])
+            kept_raws.append(raw)
+        elif match.end() == len(raw):
+            index += 1
+        index += 1
+    return kept_words, kept_raws
 
 
 def _piped_shell_payloads(tokens: list[Token]) -> list[str]:
@@ -170,7 +219,11 @@ class _ShellScan:
         tokens = tokenize(strip_heredoc_bodies(command))
         self._walk(tokens)
         inherited = {"GIT_DIR": tuple(self.git_dirs)} if self.git_dirs else {}
-        for inner in [*_piped_shell_payloads(tokens), *command_substitution_bodies(command)]:
+        for inner in [
+            *_piped_shell_payloads(tokens),
+            *_shell_heredoc_bodies(command),
+            *command_substitution_bodies(command),
+        ]:
             self.calls.extend(_ShellScan(tuple(self.seen), self.depth + 1, inherited).scan(inner))
         return self.calls
 
@@ -237,6 +290,7 @@ class _ShellScan:
             self.frames.pop()
 
     def _command(self, words: list[str], raws: list[str]) -> None:
+        words, raws = _without_redirections(words, raws)
         start = 0
         while start < len(words) and words[start] in _LEADING_KEYWORDS:
             start += 1
@@ -330,7 +384,8 @@ class _ShellScan:
         offset = 0
         for match in matches:
             name = match[1] or match[2]
-            values = (*variables.get(name, (None,)), *((None,) if name in self.tainted else ()))
+            ambient = {"HOME": str(Path.home()), "TMPDIR": os.environ.get("TMPDIR", "")}
+            values = (*variables.get(name, (ambient.get(name),)), *((None,) if name in self.tainted else ()))
             literal = word[offset : match.start()]
             expanded = [p + literal + v if p is not None and v is not None else None for p in expanded for v in values]
             offset = match.end()
@@ -385,6 +440,8 @@ class _ShellScan:
             if not option:
                 return
             index = argv.index(option) + 1
+            while index < len(argv) and argv[index].startswith("-"):
+                index += 1
             inner = argv[index] if index < len(argv) else ""
         if re.fullmatch(r"\$\{?\w+\}?", inner):
             self.calls.extend(WorktreeCheckout(cwd, None, inner, "shell") for cwd in cwds)

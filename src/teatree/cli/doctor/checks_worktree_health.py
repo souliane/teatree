@@ -24,6 +24,7 @@ read-only disposition report, because absence is never proof of deadness.
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -260,13 +261,14 @@ def _check_linked_worktree_placement() -> bool:
     from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred with the doctor check
 
     env = git_env_without_overrides() | {"GIT_OPTIONAL_LOCKS": "0"}
+    base_roots = checkout_roots()
     for clone in sorted(candidate_clones(clone_root())):
         try:
             linked = raw_worktree_paths(clone)
         except CommandFailedError as exc:
             typer.echo(f"WARN  Linked worktrees of {clone} UNVERIFIED: could not list clone ({exc}).")
             continue
-        roots = checkout_roots(source_clone=Path(clone))
+        roots = replace(base_roots, harness=((Path(clone) / ".claude" / "worktrees").resolve(),))
         for raw in sorted(linked):
             checkout = Path(raw)
             if roots.allows(checkout):

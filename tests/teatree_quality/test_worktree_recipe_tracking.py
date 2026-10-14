@@ -214,6 +214,17 @@ class TestPlacement:
         findings = scan_placement_source(_fence("git worktree add --orphan ../outside"), "skills/x.md")
         assert [finding.target for finding in findings] == ["../outside"]
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C ~/workspace/clone worktree add ../outside HEAD",
+            "sudo git worktree add ../outside HEAD",
+            "$ git worktree add ../outside HEAD",
+        ],
+    )
+    def test_wrapped_recipes_still_check_placement(self, command: str) -> None:
+        assert [finding.target for finding in scan_placement_source(_fence(command), "skills/x.md")] == ["../outside"]
+
     def test_waiver_applies_only_to_placement(self) -> None:
         body = _fence(f"{_DEFECTIVE} # worktree-placement: allow")
         assert scan_placement_source(body, "skills/example.md") == []

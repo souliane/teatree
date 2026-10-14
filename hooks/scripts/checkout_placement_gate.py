@@ -49,13 +49,15 @@ def handle_block_worktree_checkout(data: dict) -> bool:
     with teatree_src_on_path():
         core = import_module("teatree.core.gates.worktree_containment")
         repo_dir = import_module("teatree.hooks._commit_repo_dir")
+        policy = None
         for call in core.scan_worktree_checkouts(command, cwd):
             if call.source is None or not call.source.is_dir():
                 continue
             clone = repo_dir.git_root_for_dir(call.source)
             if clone is None or not repo_root_is_teatree_managed(str(clone)):
                 continue
-            policy = import_module("teatree.config.checkout_roots").checkout_roots()
+            if policy is None:
+                policy = import_module("teatree.config.checkout_roots").checkout_roots()
             if call.target is not None and policy.allows(call.target):
                 continue
             from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred router back-import

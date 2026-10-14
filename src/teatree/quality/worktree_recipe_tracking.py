@@ -48,7 +48,9 @@ _SCANNED_ROOTS: tuple[str, ...] = ("skills", "docs")
 _FENCE_RE = re.compile(r"^\s*```")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _WORKTREE_ADD_RE = re.compile(r"git\s+worktree\s+add\b")
-_WORKTREE_CREATE_RE = re.compile(r"git\s+worktree\s+(add|move)\b")
+_WORKTREE_CREATE_RE = re.compile(
+    r"(?:sudo(?:\s+-u\s+\S+)?\s+)?git(?:\s+(?:-C\s+\S+|-C\S+|--git-dir(?:=|\s+)\S+|-c\s+\S+))*\s+worktree\s+(add|move)\b"
+)
 _TERMINATOR_RE = re.compile(r"&&|\|\||;|\||#")
 _BRANCH_FLAG_RE = re.compile(r"(?<![\w-])-[bB](?![\w-])")
 _REMOTE_START_POINT_RE = re.compile(r"(?<![\w./-])(?:origin|upstream|<remote>)/[A-Za-z0-9._<>/-]+")
@@ -167,7 +169,11 @@ def scan_placement_source(source: str, path: str) -> list[PlacementFinding]:
         for fragment in code_fragments(text, in_fence=in_fence):
             for match in _WORKTREE_CREATE_RE.finditer(fragment):
                 prefix = fragment[: match.start()].rstrip()
-                if prefix and not prefix.endswith(("&&", "||", ";", "|")):
+                if (
+                    prefix
+                    and not prefix.endswith(("&&", "||", ";", "|"))
+                    and not re.fullmatch(r"[\w@:/~.-]*[$#]", prefix)
+                ):
                     continue
                 tail = fragment[match.end() :]
                 cut = _TERMINATOR_RE.search(tail)

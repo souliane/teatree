@@ -31,7 +31,12 @@ def worktree_destination_index(args: list[str], *, add: bool) -> int | None:
     options = True
     while i < len(args):
         word = args[i]
-        bundled_branch = word.startswith("-") and word[-1:] in {"b", "B"} and set(word[1:]) <= set("qfdbB")
+        bundled_branch = (
+            word.startswith("-")
+            and not word.startswith(("-b", "-B"))
+            and word[-1:] in {"b", "B"}
+            and set(word[1:]) <= set("qfdbB")
+        )
         if word == "--":
             options = False
         elif options and add and (word in {"-b", "-B", "--reason"} or bundled_branch):

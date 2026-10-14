@@ -347,7 +347,7 @@ class WorktreeProvisioner(RunnerBase):
         except TicketWorkspaceDivergenceError as exc:
             logger.exception("Ticket workspace is already split")
             return RunnerResult(ok=False, detail=str(exc))
-        recorded_worktrees = {worktree.repo_path: worktree for worktree in self.ticket.worktrees.all()}
+        recorded_worktrees = {worktree.repo_path: worktree for worktree in self.ticket.worktrees.order_by("-pk")}
         recorded_plans = {
             repo_name: _recorded_plan(repo_name, recorded_worktrees.get(repo_name), clone_root_path)
             for repo_name in repos

@@ -81,7 +81,7 @@ def _stored_workspace_dirs() -> tuple[tuple[str, ...], str]:
         else:
             return values, ""
     else:
-        error = f"{db} unavailable"
+        error = ""
     projection = cold_db.canonical_projection()
     if projection is not None:
         values = tuple(
