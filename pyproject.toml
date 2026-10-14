@@ -772,6 +772,12 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 # release re-narrows the bound or reaches for something mcp 2.x lacks.
 override-dependencies = [  ]
 
+[tool.uv.exclude-newer-package]
+pydantic-ai-slim = "2026-10-13T23:50:13Z"
+pydantic-graph = "2026-10-13T23:50:17Z"
+anthropic = "2026-10-08T03:42:01Z"
+genai-prices = "2026-10-09T17:58:16Z"
+
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
 # preview lane (CI job `uv-audit-advisory`). The advisory lane never reds the

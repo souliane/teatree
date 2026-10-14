@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==1.11.0",
+      "description": "requirements line 7: anthropic==1.12.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@1.11.0",
+      "purl": "pkg:pypi/anthropic@1.12.1",
       "type": "library",
-      "version": "1.11.0"
+      "version": "1.12.1"
     },
     {
       "bom-ref": "requirements-L9",
@@ -347,7 +347,7 @@
     },
     {
       "bom-ref": "requirements-L79",
-      "description": "requirements line 79: genai-prices==0.1.9",
+      "description": "requirements line 79: genai-prices==0.1.10",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -356,9 +356,9 @@
         }
       ],
       "name": "genai-prices",
-      "purl": "pkg:pypi/genai-prices@0.1.9",
+      "purl": "pkg:pypi/genai-prices@0.1.10",
       "type": "library",
-      "version": "0.1.9"
+      "version": "0.1.10"
     },
     {
       "bom-ref": "requirements-L81",
@@ -647,7 +647,7 @@
     },
     {
       "bom-ref": "requirements-L138",
-      "description": "requirements line 138: openai==3.24.0",
+      "description": "requirements line 138: openai==3.26.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -656,9 +656,9 @@
         }
       ],
       "name": "openai",
-      "purl": "pkg:pypi/openai@3.24.0",
+      "purl": "pkg:pypi/openai@3.26.0",
       "type": "library",
-      "version": "3.24.0"
+      "version": "3.26.0"
     },
     {
       "bom-ref": "requirements-L140",
@@ -872,7 +872,7 @@
     },
     {
       "bom-ref": "requirements-L189",
-      "description": "requirements line 189: pydantic-ai-slim==2.54.0",
+      "description": "requirements line 189: pydantic-ai-slim==2.56.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -881,9 +881,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.54.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.56.0",
       "type": "library",
-      "version": "2.54.0"
+      "version": "2.56.0"
     },
     {
       "bom-ref": "requirements-L191",
@@ -902,7 +902,7 @@
     },
     {
       "bom-ref": "requirements-L193",
-      "description": "requirements line 193: pydantic-graph==2.54.0",
+      "description": "requirements line 193: pydantic-graph==2.56.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -911,9 +911,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.54.0",
+      "purl": "pkg:pypi/pydantic-graph@2.56.0",
       "type": "library",
-      "version": "2.54.0"
+      "version": "2.56.0"
     },
     {
       "bom-ref": "requirements-L195",
