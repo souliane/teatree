@@ -90,9 +90,4 @@ def owner_dm_events(backend: SlackBotBackend, *, window: CatchUpWindow, identity
             if reply.get("ts") != root:
                 events.extend(_message_events(reply, channel=channel, owner=owner, window=window, identity=identity))
 
-    def event_time(event: RawAPIDict) -> float:
-        item = event.get("item")
-        stamp = item.get("ts") if isinstance(item, dict) else event.get("ts")
-        return ts_seconds(stamp)
-
-    return sorted(events, key=event_time)
+    return events

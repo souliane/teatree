@@ -109,7 +109,9 @@ class CatchUpSlice:
     delivered: int
 
 
-def catch_up(backend: SlackBotBackend, *, alive_at: float | None, deliver: Deliver) -> Iterator[CatchUpSlice]:
+def catch_up(
+    backend: SlackBotBackend, *, alive_at: float | None, deliver: Deliver, overlay: str = ""
+) -> Iterator[CatchUpSlice]:
     """Deliver every item the window holds; raise, delivering nothing, when any read is refused.
 
     *alive_at* is when the listener was last known alive; ``None`` means no evidence,
@@ -120,14 +122,17 @@ def catch_up(backend: SlackBotBackend, *, alive_at: float | None, deliver: Deliv
     if identity is None:
         msg = "the bot's own Slack identity is unresolved"
         raise CatchUpRefusedError(msg)
-    if not backend.user_token:
-        logger.warning("Slack catch-up cannot recover channel mentions or reactions without a user token")
+    if not backend.owner_dm_only and not backend.user_token:
+        logger.warning(
+            "Slack catch-up for overlay %s skips channel mentions and owner reactions without a user token",
+            overlay or "<default>",
+        )
     start = window.start
     while start < window.end:
         end = min(start + SLICE_SECONDS, window.end)
         slice_window = CatchUpWindow(start=start, oldest=start - (window.start - window.oldest), end=end)
         events = [*owner_dm_events(backend, window=slice_window, identity=identity)]
-        if backend.user_token:
+        if backend.user_token and not backend.owner_dm_only:
             events.extend(_non_dm_events(backend, slice_window))
         events.sort(key=_event_time)
         delivered = sum(1 for event in events if deliver(event))

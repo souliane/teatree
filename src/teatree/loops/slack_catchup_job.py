@@ -126,7 +126,7 @@ def run_catch_up(
             overlay, event, context=DeliveryContext(queues=queues, identity=identity, on_event=on_event, seen=seen)
         )
 
-    for item in catch_up(backend, alive_at=alive_at, deliver=deliver):
+    for item in catch_up(backend, alive_at=alive_at, deliver=deliver, overlay=overlay):
         seen.prune(before=item.oldest)
         if new_rows:
             wake()

@@ -50,7 +50,7 @@ def test_mentions_and_owner_reactions_recover_only_from_member_channels(monkeypa
             },
         ],
     }
-    backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user", user_id="U_OWNER", owner_dm_only=True)
+    backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user", user_id="U_OWNER")
     delivered: list[RawAPIDict] = []
 
     def deliver(event: RawAPIDict) -> bool:
@@ -75,14 +75,35 @@ def test_missing_user_token_warns_and_keeps_bot_dm_recovery(
     transport = FakeSlackTransport()
     monkeypatch.setattr(slack_http.httpx, "post", transport.post)
     monkeypatch.setattr(slack_http.httpx, "get", transport.get)
-    backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_OWNER", owner_dm_only=True)
+    backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_OWNER")
+
+    with caplog.at_level("WARNING"):
+        list(catch_up(backend, alive_at=time.time() - 180, deliver=lambda _event: True, overlay="demo"))
+
+    assert "demo" in caplog.text
+    assert "channel mentions" in caplog.text
+    assert "reactions" in caplog.text
+    assert caplog.text.count("user token") == 1
+    assert transport.calls_to("conversations.history")
+    assert not transport.calls_to("search.messages")
+
+
+def test_owner_dm_only_skips_user_token_reads_without_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    transport = FakeSlackTransport()
+    monkeypatch.setattr(slack_http.httpx, "post", transport.post)
+    monkeypatch.setattr(slack_http.httpx, "get", transport.get)
+    backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user", user_id="U_OWNER", owner_dm_only=True)
 
     with caplog.at_level("WARNING"):
         list(catch_up(backend, alive_at=time.time() - 180, deliver=lambda _event: True))
 
-    assert "user token" in caplog.text
     assert transport.calls_to("conversations.history")
+    assert not transport.calls_to("users.conversations")
     assert not transport.calls_to("search.messages")
+    assert not transport.calls_to("reactions.list")
+    assert not caplog.records
 
 
 def test_fresh_hello_memos_do_not_repeat_dm_or_reaction_lines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
