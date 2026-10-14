@@ -303,13 +303,21 @@ class TestReadOnlySurface(TestCase):
         full, _, _ = _surface(read_only=False)
         read_only, _, _ = _surface(read_only=True)
         assert set(read_only) == {name for name, tool in full.items() if _is_read_only(tool)}
-        assert {"ticket_get", "github_pr_diff", "overlay_peek", "agent_mailbox_inbox"} <= set(read_only)
+        assert {"ticket_get", "github_pr_diff", "overlay_peek"} <= set(read_only)
 
     def test_the_withheld_tools_include_every_seamed_write(self) -> None:
         full, _, seams = _surface(read_only=False)
         writes = {name for name, tool in full.items() if not _is_read_only(tool)}
         assert set(seams) <= writes
-        assert {"pr_merge", "question_answer", "github_issue_create", "agent_mailbox_send", "overlay_stamp"} <= writes
+        assert {
+            "pr_merge",
+            "question_answer",
+            "github_issue_create",
+            "agent_mailbox_send",
+            "agent_mailbox_inbox",
+            "agent_mailbox_wait",
+            "overlay_stamp",
+        } <= writes
 
     def test_the_read_only_instructions_advertise_no_withheld_tool(self) -> None:
         tools, instructions, seams = _surface(read_only=True)
