@@ -80,6 +80,7 @@ graph TD
     teatree.core --> teatree.core.schema_readiness
     teatree.core --> teatree.core.process_freshness
     teatree.core --> teatree.core.managers
+    teatree.core --> teatree.core.managers_issue_match
     teatree.core --> teatree.core.managers_overlay
     teatree.core --> teatree.core.loop_lease_manager
     teatree.core --> teatree.core.session_handover_manager
@@ -432,6 +433,7 @@ graph TD
     teatree.loop.rendering --> teatree.loop.rendering_items
     teatree.loop.rendering --> teatree.loop.rendering_permalinks
     teatree.loop.rendering --> teatree.loop.rendering_zones
+    teatree.loop.slack_answer --> teatree.core.managers_issue_match
     teatree.loop.slack_answer --> teatree.loop.inbound_reading
     teatree.loop.slack_answer --> teatree.loop.inbound_classifier
     teatree.loop.slack_answer --> teatree.loop.question_binding

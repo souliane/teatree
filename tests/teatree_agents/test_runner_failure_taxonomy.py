@@ -31,6 +31,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     classify_failure,
     exhausted_the_conversation,
     recovery_strategy,
+    stall_fingerprints,
 )
 from teatree.llm.anthropic_limits import (
     RECOVERABLE_EXHAUSTION_CAUSES,
@@ -274,6 +275,11 @@ class TestAResumeTheCliDeclinedIsAnExhaustedConversation:
 
         assert exhausted_the_conversation(reason)
         assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
+        assert classify_failure(reason) == FailureKind.RESUME_REFUSED
+        assert reason == (
+            "result_error: context_exhausted — subtype=success — the resumed conversation ended without taking a turn"
+        )
+        assert stall_fingerprints([(FailureKind.RESUME_REFUSED, "same"), (FailureKind.RESUME_REFUSED, "same")]) == []
 
 
 class TestProviderAccessDenied:
