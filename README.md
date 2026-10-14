@@ -477,7 +477,8 @@ with the message. Delivery is live-only: there is no database queue, parked-task
 delivery across hosts, or idle-session wake-up. A socket left by a worker that
 exited is removed before the 32-worker limit is applied. Peer listing skips an
 unresponsive socket and logs a warning; a send whose destination cannot be found
-fails if discovery was incomplete. The MCP tools are absent
+fails if discovery was incomplete. Discovery verifies the socket's owner, private
+mode and live worker process before trusting its peer list. The MCP tools are absent
 outside TeaTree-managed tasks.
 
 #### Live control

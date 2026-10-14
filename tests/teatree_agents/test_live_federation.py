@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from teatree.agents.live_federation import FederationRefusedError, WorkerGoneError, call, proof, verified_sender
+from teatree.agents.live_federation import (
+    FederationRefusedError,
+    WorkerGoneError,
+    _worker_process,
+    call,
+    proof,
+    verified_sender,
+)
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.mcp.agent_mailbox import MailboxClient
 
@@ -179,3 +186,23 @@ def test_discovery_removes_stale_sockets_before_enforcing_the_worker_limit(tmp_p
 def test_a_socket_its_worker_already_removed_reads_as_a_gone_worker(tmp_path: Path) -> None:
     with pytest.raises(WorkerGoneError, match="removed by its worker"):
         asyncio.run(call(tmp_path / "w-gone.sock", {"method": "relay.peers"}, wait=1))
+
+
+def test_remote_process_must_be_running_the_worker_command() -> None:
+    with patch.object(Path, "read_bytes", return_value=b"/bin/python\0/bin/t3\0worker\0"):
+        assert _worker_process(7)
+    with patch.object(Path, "read_bytes", return_value=b"/bin/python\0/bin/t3\0status\0"):
+        assert not _worker_process(7)
+
+
+def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as source,
+        LiveMailboxBroker(runtime_dir=tmp_path) as recipient,
+    ):
+        sender = source.register(room="first", harness="claude_sdk", label="sender")
+        target = recipient.register(room="second", harness="claude_sdk", label="recipient")
+        recipient.socket_path.chmod(0o666)
+
+        peers = asyncio.run(MailboxClient(sender.socket_path, sender.token).peers())
+        assert target.address not in {peer["address"] for peer in peers}

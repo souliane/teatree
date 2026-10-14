@@ -36,6 +36,7 @@ from teatree.agents.live_federation import (
     FederationRefusedError,
     FederationUnavailableError,
     PeerRelay,
+    WorkerSocketOwner,
     live_dir,
     publish_path,
     remote_peers,
@@ -206,12 +207,14 @@ class LiveMailboxBroker:
         finally:
             if self._socket_path is not None:
                 self._socket_path.unlink(missing_ok=True)
+                WorkerSocketOwner.retire(self._socket_path)
 
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
         server = await asyncio.start_unix_server(self._handle, path=str(self.socket_path), limit=_MAX_REQUEST_BYTES)
         self.socket_path.chmod(0o600)
+        WorkerSocketOwner.publish(self.socket_path)
         self._ready.set()
         async with server:
             await self._stop.wait()

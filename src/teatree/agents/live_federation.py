@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -21,9 +22,12 @@ _MAX_RESPONSE_BYTES = 2_000_000
 _CONNECT_SECONDS = 2.0
 _MAX_SOCKET_PATH_BYTES = 100
 _MAX_WORKERS = 32
+_OWNER_MODE = 0o600
+_MAX_OWNER_BYTES = 256
 _PROOF_FIELDS = ("action", "source_socket", "source_address", "to", "text", "key")
 MAX_RELAYED_KEYS = 10_000
 logger = logging.getLogger(__name__)
+_published: set[Path] = set()
 
 
 class VerifiedIdentity(TypedDict):
@@ -59,6 +63,83 @@ class FederationRefusedError(Exception):
 
 def workers(directory: Path, own_socket: Path) -> list[Path]:
     return [path for path in sorted(directory.glob("w-*.sock")) if path != own_socket]
+
+
+def _process_start(pid: int) -> str:
+    try:
+        return (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2].split()[19]
+    except (OSError, IndexError):
+        return ""
+
+
+class WorkerSocketOwner:
+    @staticmethod
+    def path(socket_path: Path) -> Path:
+        return socket_path.with_suffix(".owner")
+
+    @staticmethod
+    def publish(socket_path: Path) -> None:
+        details = socket_path.stat()
+        payload = {"pid": os.getpid(), "start": _process_start(os.getpid()), "inode": details.st_ino}
+        descriptor = os.open(WorkerSocketOwner.path(socket_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, _OWNER_MODE)
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            json.dump(payload, stream)
+        _published.add(socket_path)
+
+    @staticmethod
+    def retire(socket_path: Path) -> None:
+        _published.discard(socket_path)
+        WorkerSocketOwner.path(socket_path).unlink(missing_ok=True)
+
+
+def _worker_process(pid: int) -> bool:
+    try:
+        arguments = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return any(
+        Path(os.fsdecode(argument)).name == "t3" and arguments[index + 1] == b"worker"
+        for index, argument in enumerate(arguments[:-1])
+    )
+
+
+def _trusted_worker(socket_path: Path, sock: PeerSocket | None) -> bool:
+    credentials = peer_credentials(sock)
+    if credentials is None or credentials.pid <= 0 or credentials.uid != os.getuid():
+        return False
+    try:
+        socket_info = socket_path.lstat()
+        owner_info = WorkerSocketOwner.path(socket_path).lstat()
+        if (
+            not stat.S_ISSOCK(socket_info.st_mode)
+            or not stat.S_ISREG(owner_info.st_mode)
+            or socket_info.st_uid != credentials.uid
+            or owner_info.st_uid != credentials.uid
+        ):
+            return False
+        if (
+            stat.S_IMODE(socket_info.st_mode) != _OWNER_MODE
+            or stat.S_IMODE(owner_info.st_mode) != _OWNER_MODE
+            or owner_info.st_size > _MAX_OWNER_BYTES
+        ):
+            return False
+        owner = json.loads(WorkerSocketOwner.path(socket_path).read_text(encoding="ascii"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(owner, dict)
+        and owner.get("pid") == credentials.pid
+        and owner.get("inode") == socket_info.st_ino
+        and bool(owner.get("start"))
+        and owner["start"] == _process_start(credentials.pid)
+        and (socket_path in _published if credentials.pid == os.getpid() else _worker_process(credentials.pid))
+    )
+
+
+def _require_trusted_worker(socket_path: Path, sock: PeerSocket | None) -> None:
+    if not _trusted_worker(socket_path, sock):
+        msg = f"{socket_path.name}: worker identity could not be verified"
+        raise FederationUnavailableError(msg)
 
 
 async def remote_peers(
@@ -177,6 +258,7 @@ async def call(socket_path: Path, request: Mapping[str, object], *, wait: float)
         )
     except ConnectionRefusedError as exc:
         await asyncio.to_thread(socket_path.unlink, missing_ok=True)
+        await asyncio.to_thread(WorkerSocketOwner.retire, socket_path)
         msg = f"{socket_path.name}: nothing listens on it; removed"
         raise WorkerGoneError(msg) from exc
     except FileNotFoundError as exc:
@@ -186,6 +268,7 @@ async def call(socket_path: Path, request: Mapping[str, object], *, wait: float)
         msg = f"{socket_path.name}: connection failed"
         raise FederationUnavailableError(msg) from exc
     try:
+        _require_trusted_worker(socket_path, writer.get_extra_info("socket"))
         writer.write(json.dumps(request).encode() + b"\n")
         await asyncio.wait_for(writer.drain(), _CONNECT_SECONDS)
         raw = await asyncio.wait_for(reader.readline(), wait)
@@ -268,8 +351,6 @@ class PeerRelay:
 
     async def _send(self, sender: PeerIdentity, request: MailboxRequest) -> SendReceipt:
         to, body, key, wait = send_fields(request)
-        if self._broker.identity_of(to) is None:
-            _refuse("Mailbox recipient is not active")
         entry = (sender["address"], key)
         delivery = self._relayed.get(entry)
         if delivery is None:

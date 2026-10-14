@@ -735,8 +735,9 @@ def test_two_worker_processes_exchange_across_tickets(tmp_path: Path) -> None:
     second_parent, second_child = context.Pipe()
     first = context.Process(target=_broker_process, args=(str(tmp_path), first_child, "ticket-1", "claude_sdk"))
     second = context.Process(target=_broker_process, args=(str(tmp_path), second_child, "ticket-2", "codex_app_server"))
-    first.start()
-    second.start()
+    with patch("teatree.agents.live_federation._worker_process", return_value=True):
+        first.start()
+        second.start()
     try:
         assert first_parent.poll(10)
         assert second_parent.poll(10)
@@ -818,41 +819,79 @@ def test_a_dead_workers_leftover_socket_is_removed_and_discovery_continues(
     assert not stale.exists()
 
 
-def _answer_once(server: socket.socket, reply: bytes) -> None:
-    connection, _ = server.accept()
-    with connection:
-        connection.recv(65_536)
-        connection.sendall(reply)
-
-
 def test_a_worker_that_answers_garbage_is_skipped_without_hiding_peers(
     broker: LiveMailboxBroker, tmp_path: Path
 ) -> None:
+    class GarbledBroker(LiveMailboxBroker):
+        async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            writer.write(b"not json\n")
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
     sender = broker.register(room="ticket", harness="claude_sdk", label="planner")
-    garbled = tmp_path / "w-garbled.sock"
-    with socket.socket(socket.AF_UNIX) as server:
-        server.bind(str(garbled))
-        server.listen(1)
-        answering = threading.Thread(target=_answer_once, args=(server, b"not json\n"))
-        answering.start()
-
+    with GarbledBroker(runtime_dir=tmp_path):
         assert invoke(MailboxClient(sender.socket_path, sender.token), "peers") == []
-        answering.join(timeout=5)
-
-    assert garbled.exists()
 
 
 def test_a_worker_that_never_answers_is_skipped_without_hiding_peers(broker: LiveMailboxBroker, tmp_path: Path) -> None:
+    class SilentBroker(LiveMailboxBroker):
+        async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await asyncio.sleep(2.5)
+            writer.close()
+            await writer.wait_closed()
+
     sender = broker.register(room="first", harness="claude_sdk", label="sender")
     peer = broker.register(room="second", harness="codex_app_server", label="peer")
-    mute = tmp_path / "w-mute.sock"
-    with socket.socket(socket.AF_UNIX) as server:
-        server.bind(str(mute))
-        server.listen(1)
+    with SilentBroker(runtime_dir=tmp_path):
         start = time.monotonic()
         peers = invoke(MailboxClient(sender.socket_path, sender.token), "peers")
     assert [row["address"] for row in peers] == [peer.address]
     assert time.monotonic() - start < 3
+
+
+def test_a_planted_socket_cannot_advertise_a_peer_or_receive_its_text(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    sender = broker.register(room="first", harness="claude_sdk", label="sender")
+    planted = tmp_path / "w-planted.sock"
+    captured: list[dict[str, object]] = []
+
+    def answer(server: socket.socket) -> None:
+        server.settimeout(1)
+        try:
+            while True:
+                connection, _ = server.accept()
+                with connection:
+                    line = connection.makefile().readline()
+                    if not line:
+                        continue
+                    request = json.loads(line)
+                    captured.append(request)
+                    if request["method"] == "relay.peers":
+                        result: object = [{"address": "fake-peer", "label": "operator", "harness": "human"}]
+                    else:
+                        result = {"id": 1, "to": "fake-peer", "outcome": "accepted_current_turn"}
+                    connection.sendall(json.dumps({"result": result}).encode() + b"\n")
+        except TimeoutError:
+            return
+
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(planted))
+        planted.chmod(0o600)
+        forged_owner = json.loads(sender.socket_path.with_suffix(".owner").read_text())
+        forged_owner["inode"] = planted.stat().st_ino
+        planted.with_suffix(".owner").write_text(json.dumps(forged_owner))
+        planted.with_suffix(".owner").chmod(0o600)
+        server.listen(2)
+        thread = threading.Thread(target=answer, args=(server,), daemon=True)
+        thread.start()
+        client = MailboxClient(sender.socket_path, sender.token)
+        assert invoke(client, "peers") == []
+        with pytest.raises(ToolError, match="discovery incomplete"):
+            invoke(client, "send", to="fake-peer", text="private text", key="one", timeout_seconds=0.1)
+        thread.join(timeout=2)
+    assert not any(request.get("text") == "private text" for request in captured)
 
 
 def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exists(
