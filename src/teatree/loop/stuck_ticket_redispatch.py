@@ -64,7 +64,6 @@ from teatree.core.models.ticket_external_review import (
     schedule_external_review,
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.persistence_phase_task import create_phase_task
@@ -421,7 +420,7 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
     """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first.
 
-    Both a usage-window limit-PARK (``LIMIT_PARKED_PREFIX``) and a window-recoverable
+    Both a park (``TaskAttempt.objects.parks()``) and a window-recoverable
     exhaustion FAILURE (session/weekly/rate-limit — see
     :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`) are excluded: a
     capacity dip never executed a work iteration, so it must not burn the repair budget
@@ -433,7 +432,7 @@ def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
             task__ticket_id=ticket.pk,
             task__phase__in=phase_spellings(normalize_phase(phase)),
         )
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .excluding_parks()
         .order_by("pk")
     )
     return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]

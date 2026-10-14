@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from django.db.models import QuerySet
 
 from teatree.core.models import Task, TaskAttempt
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 
 DEFAULT_STALL_MINUTES = 30
 MAX_STALL_MINUTES = 24 * 60
@@ -42,6 +41,6 @@ def read_queue_stall(pending: QuerySet[Task], *, now: datetime, minutes: int) ->
         return None
     if Task.objects.filter(status=Task.Status.CLAIMED).exists():
         return None
-    if TaskAttempt.objects.filter(started_at__gte=cutoff).exclude(error__startswith=LIMIT_PARKED_PREFIX).exists():
+    if TaskAttempt.objects.filter(started_at__gte=cutoff).excluding_parks().exists():
         return None
     return QueueStall(pending=pending.count(), oldest_pk=oldest[0], oldest_created_at=oldest[1])
