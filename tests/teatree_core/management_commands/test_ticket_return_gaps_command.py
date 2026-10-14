@@ -1,3 +1,4 @@
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -31,14 +32,23 @@ class ReturnGapsCommandTests(TestCase):
             extra={"dream_gap_batch": [{"gap_key": key, "cluster_key": key, "detail": "Original"}]},
         )
 
-    def returned(self, *members: Ticket, confirm: str = "", advanced: str = "") -> object:
+    def returned(
+        self, *members: Ticket, confirm: str = "", advanced: str = "", stderr: StringIO | None = None
+    ) -> object:
         ids = ",".join(str(member.pk) for member in members)
         args = ["ticket", "return-gaps", "--ids", ids]
         if confirm:
             args.extend(["--confirm", confirm])
         if advanced:
             args.extend(["--advanced", advanced])
-        return call_command(*args)
+        return call_command(*args, **({"stderr": stderr} if stderr is not None else {}))
+
+    def refused(self, *members: Ticket, reason: str, confirm: str = "", advanced: str = "") -> None:
+        stderr = StringIO()
+        with pytest.raises(SystemExit) as error:
+            self.returned(*members, confirm=confirm, advanced=advanced, stderr=stderr)
+        assert error.value.code == 1
+        assert reason in stderr.getvalue()
 
     def test_returns_all_keys_and_keeps_memory_row(self) -> None:
         member = self.member("g1")
@@ -73,8 +83,7 @@ class ReturnGapsCommandTests(TestCase):
         member.extra["dream_gap_claimed_delivered"] = ["g1", "foreign"]
         member.save(update_fields=["extra"])
 
-        with pytest.raises(SystemExit):
-            self.returned(member)
+        self.refused(member, reason="claims keys outside its gap batch")
 
         member.refresh_from_db()
         self.umbrella.refresh_from_db()
@@ -90,9 +99,13 @@ class ReturnGapsCommandTests(TestCase):
         with TemporaryDirectory() as directory:
             worktree = self.member("worktree")
             WorktreeFactory(ticket=worktree, extra={"worktree_path": directory})
-            for member in (active, pr, worktree):
-                with self.subTest(member=member.pk), pytest.raises(SystemExit):
-                    self.returned(member)
+            for member, reason in (
+                (active, "has a live task"),
+                (pr, "has a pull request"),
+                (worktree, "has an existing worktree"),
+            ):
+                with self.subTest(member=member.pk):
+                    self.refused(member, reason=reason)
                 member.refresh_from_db()
                 self.umbrella.refresh_from_db()
                 assert member.state == Ticket.State.WORK_STARTED
@@ -103,9 +116,13 @@ class ReturnGapsCommandTests(TestCase):
         disposition.extra["dream_gap_dispositions"] = {"done": {"disposition": "address", "evidence": "x"}}
         disposition.save(update_fields=["extra"])
         planned = self.member("planned", state=Ticket.State.PLAN_RECORDED)
-        for member in (disposition, planned):
-            with self.subTest(member=member.pk), pytest.raises(SystemExit):
-                self.returned(member)
+        for member, reason in ((disposition, "has recorded gap dispositions"), (planned, "needs --advanced")):
+            with self.subTest(member=member.pk):
+                self.refused(member, reason=reason)
+                member.refresh_from_db()
+                self.umbrella.refresh_from_db()
+                assert member.state != Ticket.State.IGNORED
+                assert pending_entries(self.umbrella) == []
         self.returned(planned, advanced=str(planned.pk))
         planned.refresh_from_db()
         assert planned.state == Ticket.State.IGNORED
@@ -116,8 +133,7 @@ class ReturnGapsCommandTests(TestCase):
             "teatree.core.gates.bulk_close_gate.get_effective_settings",
             return_value=UserSettings(bulk_close_threshold=2),
         ):
-            with pytest.raises(SystemExit):
-                self.returned(*members)
+            self.refused(*members, reason="explicit per-item confirmation")
             self.umbrella.refresh_from_db()
             assert pending_entries(self.umbrella) == []
             self.returned(*members, confirm=",".join(str(member.pk) for member in members))
@@ -129,8 +145,7 @@ class ReturnGapsCommandTests(TestCase):
         blocked = self.member("blocked")
         TaskFactory(ticket=blocked)
 
-        with pytest.raises(SystemExit):
-            self.returned(safe, blocked)
+        self.refused(safe, blocked, reason="has a live task")
 
         safe.refresh_from_db()
         self.umbrella.refresh_from_db()
@@ -149,8 +164,22 @@ class ReturnGapsCommandTests(TestCase):
         assert member.state == Ticket.State.IGNORED
 
     def test_malformed_member_refuses_without_changes(self) -> None:
-        member = Ticket.objects.create(issue_url=f"{UMBRELLA}#not-a-member", state=Ticket.State.WORK_STARTED)
-        with pytest.raises(SystemExit):
-            self.returned(member)
+        member = Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#not-a-member",
+            state=Ticket.State.WORK_STARTED,
+            extra={"dream_gap_batch": [{"gap_key": "g1", "cluster_key": "g1"}]},
+        )
+        self.refused(member, reason="is not anchored on a dream-gap member")
+        member.refresh_from_db()
         self.umbrella.refresh_from_db()
+        assert member.state == Ticket.State.WORK_STARTED
+        assert pending_entries(self.umbrella) == []
+
+    def test_missing_pending_write_refuses_without_ignoring_member(self) -> None:
+        member = self.member("g1")
+        with patch("teatree.core.models.dream_gap_ledger.queue_pending"):
+            self.refused(member, reason="gaps were not recorded on the umbrella")
+        member.refresh_from_db()
+        self.umbrella.refresh_from_db()
+        assert member.state == Ticket.State.WORK_STARTED
         assert pending_entries(self.umbrella) == []
