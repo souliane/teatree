@@ -110,6 +110,7 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(teatree_cli_doctor, "_check_t3_shim_receipt", lambda *, repair=False: True)
     monkeypatch.setattr(teatree_cli_doctor, "_check_stale_path_t3", lambda: True)
     monkeypatch.setattr(teatree_cli_doctor, "_run_worker_gates", lambda: True)
+    monkeypatch.setattr(teatree_cli_doctor, "check_deployed_gnupg_home", lambda: True)
     monkeypatch.setattr(teatree_doctor_bootstrap, "_check_github_remotes_are_https", lambda: True)
     # The loop/intent gates (#3978/#4140/#4253/#4250/#4466 — intent freshness, intake
     # budget/pass, schedule liveness, the t3-master lease, unconsumed merge clears) read
