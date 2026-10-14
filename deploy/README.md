@@ -193,7 +193,7 @@ A second stack can be rolled on the same daemon without touching the live one:
 
 | Variable | Default (the live stack) | What it scopes |
 |---|---|---|
-| `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, and host `t3` routing |
+| `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, host `t3` routing, and the container the host hooks probe |
 | `TEATREE_PROMOTED_TAG` | `teatree-headless:latest` | the tag a verified generation is promoted to |
 | `TEATREE_ADMIN_PORT` | `8000` | the admin's loopback bind and the roller's probe |
 | `TEATREE_DEPLOY_LOCK` | `/tmp/teatree-deploy.lock` | the deploy lock; must sit under `TEATREE_HOST_TMP` |
@@ -449,6 +449,9 @@ every translatable root, an unreachable Docker daemon, a stack never built here 
 wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
+Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
+and AI-signature gates refuse with the cause, while the coverage gate allows and
+names the cause.
 
 ### Worker sizing: derived from the host
 
@@ -1273,6 +1276,12 @@ re-run `t3 setup` — when a piece is missing. The launcher check runs inside
 the container through the host bin mount. Override the preferred service with
 `TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
 `TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
+Both knobs also order the host hooks' CLI-container probe, which reads the compose
+project as `deploy/t3` does: `TEATREE_COMPOSE_PROJECT`, then `COMPOSE_PROJECT_NAME`,
+then `teatree`, an empty value falling through. Set `TEATREE_COMPOSE_PROJECT` when a
+shell inherits a worktree's `COMPOSE_PROJECT_NAME`. Neither variable reaches the
+container, so in-container callers (`t3 admin` forwarding, the doctor restart-loop
+check) always mean the default project.
 
 **The host hook tool env follows the checkout (#4988).** The plugin hooks run on the host under
 `${UV_TOOL_DIR:-~/.local/share/uv/tools}/teatree/bin/python`, which the container cannot reach, so once

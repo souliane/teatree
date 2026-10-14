@@ -96,16 +96,7 @@ from hooks.scripts.forge_api_detect import (
 )
 from hooks.scripts.gate_decision import record_gate_decision as _record_gate_decision
 from hooks.scripts.gate_decision import write_pretooluse_deny as _write_pretooluse_deny
-from hooks.scripts.gate_result import (
-    CompletedRun,
-    GateOutcome,
-    GateSkipped,
-    ValidatorTimedOut,
-    announce_cannot_evaluate,
-    classify_validator_run,
-    run_validator,
-    warn_gate_skipped,
-)
+from hooks.scripts.gate_result import GateSkipped, ValidatorTimedOut, announce_cannot_evaluate, run_validator
 from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
@@ -126,14 +117,8 @@ from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branc
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
 from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detection_probe
-from hooks.scripts.mr_cli_fields import (
-    cli_update_is_title_only,
-    extract_api_mr_fields,
-    extract_cli_mr_fields,
-    extract_mr_target_repo,
-    mr_deny_reason,
-)
-from hooks.scripts.mr_validator import mr_validate_argv, run_mr_validator
+from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
+from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
@@ -193,7 +178,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available, t3_never_started
+from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available, t3_never_started, venue_fault
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
@@ -1061,100 +1046,6 @@ def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
     return None
 
 
-_MR_VALIDATE_BROKEN_ENV_DENY = (
-    "Cannot validate MR title/description — the overlay validator "
-    "(`t3 tool validate-mr`) is not resolvable. Refusing to create "
-    "the MR with unvalidated metadata (fail closed). Fix the environment, or "
-    "set T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
-)
-
-_MR_VALIDATE_BROKEN_ENV_SKIP = (
-    "the overlay validator (`t3 tool validate-mr`) is not resolvable in this "
-    "environment and T3_MR_VALIDATE_ALLOW_BROKEN_ENV is set, so the fail-closed "
-    "deny was deliberately bypassed"
-)
-
-
-def _handle_broken_validate_env(data: dict) -> bool:
-    """Decide the gate's action when no validator could be resolved.
-
-    The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
-    must never reach GitLab just because the env could not validate it. The
-    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
-    self-rescue — and taking it is announced, never mute, so an MR that goes out
-    unvalidated says so. The broken-env deny additionally routes through
-    :func:`_fail_open_or_deny` so the master ``danger_gate_fail_open`` switch and
-    the always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
-    """
-    if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
-        warn_gate_skipped("MR-metadata", _MR_VALIDATE_BROKEN_ENV_SKIP)
-        return False
-    return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY, gate_id="mr_metadata")
-
-
-def _mr_validator_verdict(data: dict, result: "CompletedRun | ValidatorTimedOut | GateSkipped | None") -> bool:
-    """Map a validator run (or its failure to run) to the gate's block decision."""
-    if isinstance(result, ValidatorTimedOut | GateSkipped):
-        return announce_cannot_evaluate("MR-metadata", result)
-    if result is None:
-        return _handle_broken_validate_env(data)
-
-    outcome = classify_validator_run(result)
-    if outcome is GateOutcome.CANNOT_EVALUATE:
-        # The validator RAN but crashed (a traceback, not a clean verdict).
-        # Crash ≠ deny (#1528): warn loudly and allow — the remote CI
-        # MR-title/description job is the backstop for real non-compliance.
-        sys.stderr.write(
-            "NOTE: the MR-metadata validator crashed (could not evaluate) — "
-            "allowing the MR to proceed (fail-open-with-warn). The remote "
-            "MR-title/description CI job remains the backstop.\n"
-        )
-        return False
-    if outcome is GateOutcome.DENY:
-        return emit_pretooluse_deny(mr_deny_reason(data, result.stderr or result.stdout or ""), gate_id="mr_metadata")
-    return False
-
-
-def handle_validate_mr_metadata(data: dict) -> bool:
-    """Block a non-compliant ``glab mr``/``gh pr`` create/update before it runs.
-
-    Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
-    opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
-    repo is parsed from the command and threaded as ``--repo`` so an MR is graded
-    against the TARGET overlay's rules, not the cwd overlay's weaker ones. A
-    validator that RAN but crashed, and one too SLOW to finish inside its
-    allowance, are both CANNOT_EVALUATE — crash ≠ deny (#1528), and neither is a
-    timeout: each warns and allows, with the remote CI job as backstop. Only the
-    UNRESOLVABLE validator (no ``t3``, no script — the ``None`` broken-env path)
-    FAILS CLOSED; the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores
-    fail-open there.
-
-    Every outcome in which the gate does NOT actually validate the MR — an
-    unresolvable ``$(…)``/``$VAR`` field, an update setting no governed field,
-    the broken-env opt-in, a crash, a timeout — emits one loud named line. Only
-    "this is not an MR mutation" and a clean PASS are silent, so a mute gate can
-    never be mistaken for one that swallowed the call.
-    """
-    fields = _extract_mr_fields(data)
-    if fields is None:
-        return False
-    if isinstance(fields, GateSkipped):
-        return announce_cannot_evaluate("MR-metadata", fields)
-    title, description = fields
-    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-    target_repo = extract_mr_target_repo(command) if command else None
-    # Title-only update: no description touched → skip required-section check (#3254).
-    sections_optional = bool(command) and cli_update_is_title_only(command)
-
-    argv = mr_validate_argv()
-    if argv is None:
-        return _handle_broken_validate_env(data)
-
-    return _mr_validator_verdict(
-        data, run_mr_validator(argv, title, description, target_repo, sections_optional=sections_optional)
-    )
-
-
 # ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
 
 _PR_CREATE_TOOLS = {
@@ -1331,9 +1222,16 @@ def _run_block_ai_signature(data: dict) -> bool:
     # "scanner error" message — block, but never report a finding that did
     # not happen, and never silently let an unscanned publish through.
     # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
-    # purpose; a leak-prevention gate must not.)
+    # purpose; a leak-prevention gate must not.) A launcher refusing the venue (exit 69)
+    # scanned nothing, so it blocks the same way under its own name.
+    fault = venue_fault(result.returncode, result.stderr)
     detail = (result.stderr or result.stdout or "").strip()
-    return emit_pretooluse_deny(ai_signature_gate.format_scanner_error_message(detail), gate_id="ai_signature")
+    message = (
+        ai_signature_gate.format_venue_fault_message(fault)
+        if fault
+        else ai_signature_gate.format_scanner_error_message(detail)
+    )
+    return emit_pretooluse_deny(message, gate_id="ai_signature")
 
 
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────

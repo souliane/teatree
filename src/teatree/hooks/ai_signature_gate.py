@@ -68,3 +68,12 @@ def format_scanner_error_message(detail: str) -> str:
         "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
         f"not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n{detail}"
     )
+
+
+def format_venue_fault_message(fault: str) -> str:
+    """The gate's deny when the scanner never ran because ``t3`` cannot run in this venue."""
+    return (
+        "BLOCKED: the AI-signature scan could not run in this venue, so the PR body / commit message could NOT "
+        "be confirmed signature-free. This is neither a detected trailer nor a scanner error; fix the venue and "
+        f"retry (BLUEPRINT §17.6 gate 15).\n{fault}"
+    )
