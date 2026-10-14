@@ -69,4 +69,12 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "Write",
 )
 
-__all__ = ["KNOWN_BUILTIN_TOOLS"]
+# TodoWrite remains CLI-known for deny rules but is retired from task-list hooks.
+KNOWN_HOOK_MATCHER_TOOLS: frozenset[str] = (frozenset(KNOWN_BUILTIN_TOOLS) - {"TodoWrite"}) | {
+    "CronCreate",
+    "CronDelete",
+    "ScheduleWakeup",
+    "Skill",
+}
+
+__all__ = ["KNOWN_BUILTIN_TOOLS", "KNOWN_HOOK_MATCHER_TOOLS"]

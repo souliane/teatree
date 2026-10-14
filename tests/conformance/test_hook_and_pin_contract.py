@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
+from teatree.llm.builtin_tools import KNOWN_HOOK_MATCHER_TOOLS
 from teatree.quality.regression_scan import ASTGREP_PIN
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,8 +56,11 @@ def test_skill_dependency_and_hook_share_revision() -> None:
 def test_astgrep_engine_pin_matches_pinned_hook_declaration() -> None:
     hooks = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     declaration = re.search(r"pinned hook wrapper uses ast-grep ([0-9.]+)", hooks)
+    hook_pin = re.search(r"repo: https://github.com/souliane/skills\s+rev: ([0-9a-f]{40})", hooks)
     assert declaration is not None
+    assert hook_pin is not None
     assert declaration.group(1) == ASTGREP_PIN
+    assert (hook_pin.group(1), ASTGREP_PIN) == ("84f075fff0187ccbdf187143a6cf3ab91711fddb", "0.44.1")
 
 
 def test_configuration_has_one_per_overlay_heading() -> None:
@@ -95,9 +98,9 @@ def test_eval_readme_describes_generated_promotion_artifact() -> None:
 
 
 def test_hooks_only_name_known_literal_tools() -> None:
-    known = (set(KNOWN_BUILTIN_TOOLS) - {"TodoWrite"}) | {"CronCreate", "CronDelete", "ScheduleWakeup", "Skill"}
+    assert "TodoWrite" not in KNOWN_HOOK_MATCHER_TOOLS
     for event in ("PreToolUse", "PostToolUse"):
         for matcher in _matchers(event):
             if matcher.startswith("mcp__"):
                 continue
-            assert set(matcher.split("|")) <= known, (event, matcher)
+            assert set(matcher.split("|")) <= KNOWN_HOOK_MATCHER_TOOLS, (event, matcher)
