@@ -507,6 +507,9 @@ _TOOLS: tuple[_WriteTool, ...] = (
 # so the transport-boundary fitness test pins EVERY write tool's seam in one map.
 _NOTION_WRITE_SEAM = "cli.notion_write_service.NotionWrites via the services_notion seam — WriteGuard + approval"
 _CROSS_MODULE_SEAMS: dict[str, WriteSeam] = {
+    "sentry_issue_resolve": WriteSeam(
+        "SentryIssueClient.resolve_issue after CodeHostBackend.fetch_pr_merge_state", ApprovalTier.AGENT
+    ),
     "slack_post": WriteSeam("OnBehalfSlackEgress.post — send-proxy + on-behalf gate + receipt", ApprovalTier.POSTURE),
     "github_pr_update": WriteSeam(
         "CodeHostBackend.update_pr_message + send-proxy + own-author check", ApprovalTier.AGENT

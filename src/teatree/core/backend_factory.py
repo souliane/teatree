@@ -20,7 +20,7 @@ from teatree.core.backend_protocols import CIService, CodeHostBackend, Messaging
 from teatree.core.backend_registry import UnknownSlackScopeProfileError, get_backend_provider
 
 if TYPE_CHECKING:
-    from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
+    from teatree.core.backend_registry import NotionPageClient, SentryIssueClient, SharePointReadClient
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays, get_overlay
 from teatree.core.toml_backends import (
@@ -388,7 +388,7 @@ def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageCl
     return get_backend_provider().build_notion_client(token=token, overlay=key or None)
 
 
-def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadClient | None":
+def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryIssueClient | None":
     """Build a read-only Sentry client from the active overlay's config.
 
     Returns ``None`` when the overlay declares no ``sentry_org`` (the

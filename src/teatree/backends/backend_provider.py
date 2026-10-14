@@ -31,7 +31,7 @@ if TYPE_CHECKING:
         NotionPageClient,
         ReviewHistoryReadLike,
         ReviewSearchSpec,
-        SentryReadClient,
+        SentryIssueClient,
         SharePointReadClient,
         SlackMessagingSpec,
         ThreadActivityReadLike,
@@ -86,7 +86,7 @@ class ConcreteBackendProvider:
     def build_notion_client(self, *, token: str, overlay: str | None = None) -> "NotionPageClient | None":  # noqa: PLR6301 — BackendProvider protocol method
         return NotionClient(token=token, overlay=overlay)
 
-    def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method
+    def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryIssueClient | None":  # noqa: PLR6301 — BackendProvider protocol method
         return SentryClient(token=token, org=org, base_url=base_url)
 
     def build_sharepoint_client(self, spec: "SharePointRemoteSpec") -> "SharePointReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method

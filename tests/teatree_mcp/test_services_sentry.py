@@ -18,9 +18,11 @@ from django.test import TestCase
 from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
+from teatree.core.backend_protocols import PrMergeState, PrMessage
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import services_sentry
 from teatree.mcp.server import build_server
+from tests.teatree_mcp._call_tool_result import structured
 
 
 @contextlib.contextmanager
@@ -63,6 +65,77 @@ class TestSentryClientResolution(TestCase):
 
 
 class TestSentryToolCalls(TestCase):
+    def test_resolve_requires_a_live_merged_pr_and_verifies_the_issue(self) -> None:
+        class Sentry:
+            def __init__(self) -> None:
+                self.status = "unresolved"
+                self.writes = 0
+
+            def resolve_issue(self, issue_id: str) -> dict[str, object]:
+                self.writes += 1
+                self.status = "resolved"
+                return {"id": issue_id, "status": self.status}
+
+            def get_issue(self, issue_id: str) -> dict[str, object]:
+                return {"id": issue_id, "status": self.status, "permalink": "https://sentry.io/acme/issues/9/"}
+
+        sentry = Sentry()
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        forge.fetch_pr_message.return_value = PrMessage("Fix error", "Fixes https://sentry.io/acme/issues/9/")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+        ):
+            result = structured(
+                async_to_sync(build_server().call_tool)(
+                    "sentry_issue_resolve",
+                    {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7},
+                )
+            )
+
+        assert result == {"id": "9", "status": "resolved", "fixing_pr_merge_oid": "abc"}
+        assert sentry.writes == 1
+        forge.fetch_pr_merge_state.assert_called_once_with(slug="acme/widgets", pr_id=7)
+        forge.fetch_pr_message.assert_called_once_with(slug="acme/widgets", pr_id=7)
+
+    def test_resolve_refuses_a_merged_pr_with_no_link_to_the_issue(self) -> None:
+        sentry = MagicMock()
+        sentry.get_issue.return_value = {
+            "id": "9",
+            "status": "unresolved",
+            "permalink": "https://sentry.io/acme/issues/9/",
+        }
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="MERGED", merge_commit_oid="abc")
+        forge.fetch_pr_message.return_value = PrMessage("Unrelated change", "No issue link")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+            pytest.raises(ToolError, match="link"),
+        ):
+            async_to_sync(build_server().call_tool)(
+                "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
+            )
+        sentry.resolve_issue.assert_not_called()
+
+    def test_resolve_refuses_an_unmerged_pr_before_sentry_write(self) -> None:
+        sentry = MagicMock()
+        forge = MagicMock()
+        forge.fetch_pr_merge_state.return_value = PrMergeState(state="OPEN", merge_commit_oid="")
+        with (
+            patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry._client", return_value=sentry),
+            patch("teatree.mcp.services_sentry._forge_client", return_value=forge),
+            pytest.raises(ToolError, match="merged"),
+        ):
+            async_to_sync(build_server().call_tool)(
+                "sentry_issue_resolve", {"issue_id": "9", "forge": "github", "repo": "acme/widgets", "pr_iid": 7}
+            )
+        sentry.resolve_issue.assert_not_called()
+
     def test_top_issues_routes_through_the_backend_client(self) -> None:
         fake = MagicMock()
         fake.get_top_issues.return_value = [{"id": "1", "title": "boom"}]
@@ -95,6 +168,9 @@ class TestSentryToolCalls(TestCase):
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _SentryOverlay()}):
             tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
 
-        sentry_tools = [tool for name, tool in tools.items() if name.startswith("sentry_")]
-        assert len(sentry_tools) == 4
-        assert all(tool.annotations and tool.annotations.read_only_hint for tool in sentry_tools)
+        sentry_reads = [
+            tool for name, tool in tools.items() if name.startswith("sentry_") and name != "sentry_issue_resolve"
+        ]
+        assert len(sentry_reads) == 4
+        assert all(tool.annotations and tool.annotations.read_only_hint for tool in sentry_reads)
+        assert tools["sentry_issue_resolve"].annotations.read_only_hint is False

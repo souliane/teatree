@@ -36,7 +36,7 @@ from teatree.mcp.server import build_server, declared_write_tool_seams
 
 _MCP_DIR = Path(teatree.mcp.__file__).parent
 
-_OVERLAY_SERVICES = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION})
+_OVERLAY_SERVICES = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION, Service.SENTRY})
 
 
 def _overlay_write(subject: str) -> str:
@@ -110,7 +110,7 @@ class TestNoTransportImports:
 
 
 class TestSeamAllowlistCoverage:
-    # Built against a server that declares github + gitlab + slack + notion, so every
+    # Built against a server that declares github + gitlab + slack + notion + sentry, so every
     # conditionally-registered per-service write tool (the forge issue writes,
     # slack_react, the notion writes) is present — otherwise a forge write tool would look "stale"
     # in an env that happens not to declare its forge.

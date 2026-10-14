@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from teatree.backends.sentry import SentryClient
 
@@ -42,6 +43,49 @@ def test_get_issue_fetches_single_issue() -> None:
         issue = client.get_issue("42")
 
     assert issue["id"] == "42"
+
+
+def test_resolve_issue_updates_the_org_endpoint_and_verifies_by_re_read() -> None:
+    client = SentryClient(token="fake", org="myorg")
+    mock_http = MagicMock()
+    mock_http.__enter__ = MagicMock(return_value=mock_http)
+    mock_http.__exit__ = MagicMock(return_value=False)
+    mock_http.get.side_effect = [
+        _mock_response({"id": "42", "status": "unresolved"}),
+        _mock_response({"id": "42", "status": "resolved"}),
+    ]
+    mock_http.put.return_value = _mock_response({"id": "42", "status": "resolved"})
+
+    with patch.object(client, "_client", return_value=mock_http):
+        result = client.resolve_issue("42")
+
+    assert result["status"] == "resolved"
+    mock_http.put.assert_called_once_with("/api/0/organizations/myorg/issues/42/", json={"status": "resolved"})
+    assert mock_http.get.call_count == 2
+
+
+def test_resolve_issue_is_a_no_op_when_already_resolved() -> None:
+    client = SentryClient(token="fake", org="myorg")
+    mock_http = MagicMock()
+    mock_http.__enter__ = MagicMock(return_value=mock_http)
+    mock_http.__exit__ = MagicMock(return_value=False)
+    mock_http.get.return_value = _mock_response({"id": "42", "status": "resolved"})
+
+    with patch.object(client, "_client", return_value=mock_http):
+        assert client.resolve_issue("42")["status"] == "resolved"
+    mock_http.put.assert_not_called()
+
+
+def test_resolve_issue_fails_if_the_write_did_not_land() -> None:
+    client = SentryClient(token="fake", org="myorg")
+    mock_http = MagicMock()
+    mock_http.__enter__ = MagicMock(return_value=mock_http)
+    mock_http.__exit__ = MagicMock(return_value=False)
+    mock_http.get.return_value = _mock_response({"id": "42", "status": "unresolved"})
+    mock_http.put.return_value = _mock_response({"id": "42", "status": "resolved"})
+
+    with patch.object(client, "_client", return_value=mock_http), pytest.raises(RuntimeError, match="read back"):
+        client.resolve_issue("42")
 
 
 def test_list_projects_returns_org_projects() -> None:

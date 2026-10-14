@@ -142,8 +142,8 @@ class NotionPageClient(Protocol):
     def page_is_live(self, page_id: str) -> bool: ...  # pragma: no branch
 
 
-class SentryReadClient(Protocol):
-    """Core-owned view of the read-only Sentry client the backends app builds.
+class SentryIssueClient(Protocol):
+    """Core-owned view of the Sentry issue client the backends app builds.
 
     The MCP sentry tool group reads issues/events/projects without importing the
     concrete ``teatree.backends.sentry`` client — the same core → backends
@@ -153,6 +153,8 @@ class SentryReadClient(Protocol):
     def get_top_issues(self, *, project: str, limit: int = 10) -> "list[RawAPIDict]": ...  # pragma: no branch
 
     def get_issue(self, issue_id: str) -> "RawAPIDict": ...  # pragma: no branch
+
+    def resolve_issue(self, issue_id: str) -> "RawAPIDict": ...  # pragma: no branch
 
     def get_issue_events(self, issue_id: str, *, limit: int = 10) -> "list[RawAPIDict]": ...  # pragma: no branch
 
@@ -165,7 +167,7 @@ class SharePointReadClient(Protocol):
     The MCP sharepoint tool group lists/cats/fetches a document library and
     verifies share links without importing the concrete
     ``teatree.backends.sharepoint`` client — the same core → backends inversion
-    as :class:`SentryReadClient` and the forge/messaging builders.
+    as :class:`SentryIssueClient` and the forge/messaging builders.
     """
 
     def list_files(
@@ -214,7 +216,7 @@ class BackendProvider(Protocol):
 
     def build_sentry_client(
         self, *, token: str, org: str, base_url: str
-    ) -> "SentryReadClient | None": ...  # pragma: no branch
+    ) -> "SentryIssueClient | None": ...  # pragma: no branch
 
     def build_sharepoint_client(
         self, spec: "SharePointRemoteSpec"
@@ -267,7 +269,7 @@ class _UnconfiguredProvider:
     def build_notion_client(self, *, token: str, overlay: str | None = None) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
-    def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
+    def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryIssueClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
         return None
 
     def build_sharepoint_client(self, spec: "SharePointRemoteSpec") -> "SharePointReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; spec unused, returns None with no backends app
