@@ -224,7 +224,7 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> boo
     return freed == 1
 
 
-def release_task_occupancy(task: Task, *, defer_if_driving: bool = True) -> bool:
+def release_task_occupancy(task: Task, *, defer_if_driving: bool = True, attested_state: str | None = None) -> bool:
     """Release *task*'s occupancy claim on its ticket's checkout, iff it holds one (#4867).
 
     Runs in the SAME transaction as the terminal status write unless the holder
@@ -241,6 +241,21 @@ def release_task_occupancy(task: Task, *, defer_if_driving: bool = True) -> bool
         return False
     if defer_if_driving and task_occupancy_release_deferred(task):
         return False
+    if attested_state is not None:
+        extra = dict(worktree.extra or {})
+        extra["attested_state"] = attested_state
+        freed = Worktree.objects.filter(
+            pk=worktree.pk,
+            occupied_by=task_holder_id(task),
+            occupied_by_session=task.claimed_by_session,
+        ).update(
+            extra=extra,
+            occupied_by="",
+            occupied_by_session="",
+            occupied_at=None,
+            occupancy_expires_at=None,
+        )
+        return freed == 1
     return release(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
 
 

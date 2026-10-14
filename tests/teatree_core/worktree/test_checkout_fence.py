@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from teatree.agents import runner
 from teatree.core.cleanup.process_table import ProcessTable
-from teatree.core.models import TaskAttempt, Worktree
+from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
@@ -93,7 +93,7 @@ class CheckoutFenceTests(TestCase):
         with pytest.raises(CheckoutFenceError, match="exactly one"):
             verify_task_checkout(self.task, str(self.checkout))
 
-    def test_worker_completion_attests_only_when_its_checkout_is_released(self) -> None:
+    def test_worker_completion_releases_and_attests_before_handoff(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         with patch(
             "teatree.core.worktree.checkout_fence.read_process_table",
@@ -115,12 +115,32 @@ class CheckoutFenceTests(TestCase):
             (self.checkout / "new.txt").write_text("run output")
             self.task.complete()
             held = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
-            assert held is not None
-            assert Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"] == initial
+            assert held is None
+            assert Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"] != initial
 
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] != initial
+
+    def test_next_phase_started_inside_completion_uses_released_attestation(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        testing = TaskFactory(ticket=self.ticket, phase="testing")
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "work.txt").write_text("coding output")
+            self.task.complete()
+            testing.claim(claimed_by="worker-2", claimed_by_session="s2")
+            with patch.object(runner, "_run_agent", return_value=Mock(spec=TaskAttempt)) as drive:
+                runner.run_agent(testing, phase="testing", overlay_skill_metadata={})
+        drive.assert_called_once()
+        assert Task.objects.get(pk=testing.pk).status == Task.Status.CLAIMED
 
     def test_a_run_whose_checkout_was_handed_to_another_holder_never_attests(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
@@ -137,10 +157,10 @@ class CheckoutFenceTests(TestCase):
             drive_claim(self.task),
         ):
             (self.checkout / "new.txt").write_text("run output")
-            self.task.complete()
             handed = Worktree.objects.get(pk=self.worktree.pk)
             assert release(handed, holder=task_holder_id(self.task), holder_session="s1")
             acquire(handed, holder="owner-terminal", holder_session="owner")
+            self.task.complete()
 
         finished = Worktree.objects.get(pk=self.worktree.pk)
         held = occupancy_holder(finished)
@@ -178,19 +198,40 @@ class CheckoutFenceTests(TestCase):
         assert held.holder == task_holder_id(self.task)
         assert finished.get_extra()["attested_state"] == initial
 
-    def test_exiting_child_gets_a_grace_read_before_owner_page(self) -> None:
+    def test_cancelled_run_does_not_attest_partial_tree(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         clear = ProcessTable(frozenset(), "/proc")
-        busy = ProcessTable(frozenset({self.checkout}), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
-            patch("teatree.core.worktree.occupancy.read_process_table", side_effect=[busy, clear]),
-            patch("teatree.core.worktree.occupancy.time.sleep") as pause,
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "partial.txt").write_text("half done")
+            Task.objects.get(pk=self.task.pk).fail(reason="cancelled: owner stop", by_holder=False)
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(finished) is None
+        assert finished.get_extra()["attested_state"] == initial
+
+    def test_process_wait_precedes_terminal_write(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+
+        def settled(*_args: object, **_kwargs: object) -> tuple[()]:
+            assert Task.objects.get(pk=self.task.pk).status == Task.Status.CLAIMED
+            return ()
+
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=settled) as wait,
             patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):
             self.task.complete()
-        pause.assert_called_once()
+        wait.assert_called_once()
         page.assert_not_called()
         assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 

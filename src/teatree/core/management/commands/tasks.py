@@ -30,7 +30,7 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import _worktree_at, occupancy_holder, task_holder_id
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
-from teatree.core.worktree.occupancy import finish_recorded_task_checkout
+from teatree.core.worktree.occupancy import finish_recorded_task_checkout, recording_task_checkout
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +355,7 @@ class Command(TyperCommand):
             lane=TaskAttempt.Lane.SUBSCRIPTION,
             recording_source="loop" if factory_owned else "hand",
         )
-        with drive_claim(task):
+        with drive_claim(task), recording_task_checkout(task):
             attempt = record_result_envelope(task, result, usage=usage)
             finish_recorded_task_checkout(task)
         task.refresh_from_db()

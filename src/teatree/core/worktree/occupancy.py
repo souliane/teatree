@@ -50,7 +50,9 @@ from django.db import transaction
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.cleanup.process_table import read_process_table
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
+from teatree.core.models.task_claim import CheckoutExit, _checkout_exit_scope
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
@@ -67,6 +69,7 @@ from teatree.core.models.worktree_occupancy import (
     terminal_holder_task_pk,
     terminal_task_pk,
 )
+from teatree.core.worktree.cancel_processes import wait_for_owned_checkout_processes
 from teatree.core.worktree.checkout_fence import writes_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.survivor_notice import page_surviving_checkout
@@ -92,6 +95,30 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_task_checkout_exit(
+    task: Task, worktree: Worktree, *, holder: str, holder_session: str
+) -> CheckoutExit | None:
+    if holder != task_holder_id(task) or holder_session != task.claimed_by_session:
+        return None
+    row = Worktree.objects.get(pk=worktree.pk)
+    if row.occupied_by != holder or row.occupied_by_session != holder_session:
+        return CheckoutExit(release=False)
+    path = Path(row.worktree_path)
+    if wait_for_owned_checkout_processes(path, beat_seconds=60):
+        return CheckoutExit(release=False)
+    table = read_process_table()
+    if not table.usable or table.holds(path):
+        return CheckoutExit(release=False)
+    digest = None
+    if writes_checkout(task):
+        try:
+            digest = checkout_state(path).digest
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Keeping checkout %s occupied after task %s: state could not be attested", path, task.pk)
+            return CheckoutExit(release=False)
+    return CheckoutExit(release=True, attested_state=digest)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -127,6 +154,9 @@ def _checkpointed_task(worktree: Worktree, holder: str) -> Task | None:
 
 
 def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> bool:
+    current = Worktree.objects.get(pk=worktree.pk)
+    if current.occupied_by != holder or current.occupied_by_session != holder_session:
+        return True
     task_pk = terminal_holder_task_pk(holder)
     task = (
         Task.objects.filter(pk=task_pk, claimed_by_session=holder_session).first()
@@ -151,7 +181,7 @@ def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: st
             logger.exception("Could not page owner for surviving checkout process on task %s", task_pk)
         return True
     state = None
-    if writes_checkout(task):
+    if writes_checkout(task) and not (task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED):
         try:
             state = checkout_state(path)
         except (OSError, RuntimeError, ValueError):
@@ -183,6 +213,30 @@ def finish_recorded_task_checkout(task: Task) -> None:
 
 
 @contextmanager
+def recording_task_checkout(task: Task) -> Iterator[None]:
+    path = dispatch_worktree_path(task.ticket)
+    worktree = _worktree_at(task.ticket, path) if path else None
+    holder = occupancy_holder(worktree) if worktree is not None else None
+    if (
+        worktree is None
+        or holder is None
+        or (holder.holder, holder.holder_session)
+        != (
+            task_holder_id(task),
+            task.claimed_by_session,
+        )
+    ):
+        yield
+        return
+    with _checkout_exit_scope(
+        lambda current: _prepare_task_checkout_exit(
+            current, worktree, holder=holder.holder, holder_session=holder.holder_session
+        )
+    ):
+        yield
+
+
+@contextmanager
 def occupy_ticket_checkout(
     ticket: "Ticket",
     *,
@@ -207,11 +261,14 @@ def occupy_ticket_checkout(
 
     _release_if_finished_task(worktree)
     acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
-    try:
-        yield path
-    finally:
-        if not _finish_task_checkout(worktree, holder=holder, holder_session=holder_session):
-            release(worktree, holder=holder, holder_session=holder_session)
+    with _checkout_exit_scope(
+        lambda task: _prepare_task_checkout_exit(task, worktree, holder=holder, holder_session=holder_session)
+    ):
+        try:
+            yield path
+        finally:
+            if not _finish_task_checkout(worktree, holder=holder, holder_session=holder_session):
+                release(worktree, holder=holder, holder_session=holder_session)
 
 
 def renew_ticket_checkout(

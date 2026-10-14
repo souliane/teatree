@@ -13,8 +13,10 @@ the model class through the instance, so this module needs no runtime import of
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -42,6 +44,29 @@ logger = logging.getLogger(__name__)
 #: default, whose whole point is that a dead owner's row frees up quickly. Kept equal to
 #: ``agents.runner._LEASE_SECONDS`` by a drift guard, since core cannot import the agents layer.
 HEARTBEAT_MATCHED_LEASE_SECONDS = 900
+
+
+@dataclass(frozen=True)
+class CheckoutExit:
+    release: bool
+    attested_state: str | None = None
+
+
+_checkout_exit: ContextVar[Callable[["Task"], CheckoutExit | None] | None] = ContextVar("checkout_exit", default=None)
+
+
+@contextmanager
+def _checkout_exit_scope(prepare: Callable[["Task"], CheckoutExit | None]) -> Iterator[None]:
+    token = _checkout_exit.set(prepare)
+    try:
+        yield
+    finally:
+        _checkout_exit.reset(token)
+
+
+def _prepared_checkout_exit(task: "Task") -> CheckoutExit | None:
+    prepare = _checkout_exit.get()
+    return prepare(task) if prepare is not None else None
 
 
 def window_parked(task: "Task", now: datetime | None = None) -> bool:
@@ -285,12 +310,17 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
         task_occupancy_release_deferred,
     )
 
+    exit_state = _prepared_checkout_exit(task)
     with transaction.atomic():
         # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
         # CAS matches on that exact session value (#4867).
-        deferred = task_occupancy_release_deferred(task)
+        deferred = not exit_state.release if exit_state is not None else task_occupancy_release_deferred(task)
         if not deferred:
-            release_task_occupancy(task)
+            release_task_occupancy(
+                task,
+                defer_if_driving=False,
+                attested_state=exit_state.attested_state if exit_state is not None else None,
+            )
         task.status = task.Status.COMPLETED
         task.result_artifact_path = result_artifact_path
         fields = ["status", "result_artifact_path"]
@@ -335,13 +365,21 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
         task_occupancy_release_deferred,
     )
 
+    exit_state = _prepared_checkout_exit(task) if by_holder else None
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
-        if release_now and not (by_holder and task_occupancy_release_deferred(task)):
+        deferred = (
+            not exit_state.release if exit_state is not None else by_holder and task_occupancy_release_deferred(task)
+        )
+        if release_now and not deferred:
             # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
             # CAS matches on that exact session value (#4867).
-            release_task_occupancy(task, defer_if_driving=by_holder)
+            release_task_occupancy(
+                task,
+                defer_if_driving=False if exit_state is not None else by_holder,
+                attested_state=exit_state.attested_state if exit_state is not None else None,
+            )
             for field, released_value in RELEASED_CLAIM.items():
                 setattr(task, field, released_value)
             update_fields.extend(RELEASED_CLAIM)
