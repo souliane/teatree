@@ -222,6 +222,10 @@ class LiveMailboxBroker:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             raw = await reader.readline()
+            if not raw:
+                writer.close()
+                await writer.wait_closed()
+                return
             if len(raw) > _MAX_REQUEST_BYTES or not raw.endswith(b"\n"):
                 _reject("Mailbox request is too large")
             request = json.loads(raw)
@@ -526,6 +530,7 @@ def reset_shared_brokers() -> None:
         for broker in _shared_brokers.values():
             broker.close()
         _shared_brokers.clear()
+        WorkerSocketOwner.reset()
 
 
 atexit.register(reset_shared_brokers)

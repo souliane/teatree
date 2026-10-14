@@ -9,12 +9,13 @@ import pytest
 from teatree.agents.live_federation import (
     FederationRefusedError,
     WorkerGoneError,
+    _published,
     _worker_process,
     call,
     proof,
     verified_sender,
 )
-from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_mailbox import LiveMailboxBroker, reset_shared_brokers
 from teatree.mcp.agent_mailbox import MailboxClient
 
 
@@ -206,3 +207,18 @@ def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) 
 
         peers = asyncio.run(MailboxClient(sender.socket_path, sender.token).peers())
         assert target.address not in {peer["address"] for peer in peers}
+
+
+def test_reset_shared_brokers_forgets_published_socket_paths(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        assert broker.socket_path in _published
+        reset_shared_brokers()
+        assert broker.socket_path not in _published
+
+
+def test_closed_peer_connection_gets_no_error_response(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker, socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(1)
+        client.connect(str(broker.socket_path))
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(1024) == b""

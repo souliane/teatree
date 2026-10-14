@@ -91,6 +91,10 @@ class WorkerSocketOwner:
         _published.discard(socket_path)
         WorkerSocketOwner.path(socket_path).unlink(missing_ok=True)
 
+    @staticmethod
+    def reset() -> None:
+        _published.clear()
+
 
 def _worker_process(pid: int) -> bool:
     try:
