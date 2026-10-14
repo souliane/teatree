@@ -78,7 +78,6 @@ class CheckoutFenceTests(TestCase):
         WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
         with pytest.raises(CheckoutFenceError, match="exactly one"):
             verify_task_checkout(self.task, str(self.checkout))
-
         Worktree.objects.filter(ticket=self.ticket).order_by("-pk").first().delete()
         with (
             patch(
@@ -87,6 +86,11 @@ class CheckoutFenceTests(TestCase):
             ),
             pytest.raises(CheckoutFenceError, match="live process"),
         ):
+            verify_task_checkout(self.task, str(self.checkout))
+
+    def test_cross_ticket_duplicate_row_refuses_checkout(self) -> None:
+        WorktreeFactory(ticket=TicketFactory(), extra={"worktree_path": str(self.checkout)})
+        with pytest.raises(CheckoutFenceError, match="exactly one"):
             verify_task_checkout(self.task, str(self.checkout))
 
     def test_worker_completion_attests_only_when_its_checkout_is_released(self) -> None:

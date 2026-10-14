@@ -15,6 +15,7 @@ from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import WorktreeOccupiedError, _worktree_at, acquire, release, task_holder_id
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
+from teatree.core.worktree.worktree_paths import paths_match
 
 logger = logging.getLogger(__name__)
 CHECKOUT_PARKED_PREFIX = "checkout_parked: "
@@ -42,8 +43,12 @@ def writes_checkout(task: Task) -> bool:
 def verify_task_checkout(task: Task, path: str) -> None:
     if not path or not writes_checkout(task):
         return
-    rows = list(Worktree.objects.filter(ticket=task.ticket, extra__worktree_path=path))
-    if len(rows) != 1:
+    rows = [
+        row
+        for row in Worktree.objects.exclude(extra__worktree_path__isnull=True).only("ticket_id", "extra")
+        if row.worktree_path and paths_match(row.worktree_path, path)
+    ]
+    if len(rows) != 1 or rows[0].ticket_id != task.ticket.pk:
         message = f"checkout {path} needs exactly one Worktree row; found {len(rows)}"
         raise CheckoutFenceError(message)
     table = read_process_table()
