@@ -221,7 +221,12 @@ class LiveMailboxBroker:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            raw = await reader.readline()
+            try:
+                raw = await reader.readline()
+            except asyncio.CancelledError:
+                writer.close()
+                await writer.wait_closed()
+                raise
             if not raw:
                 writer.close()
                 await writer.wait_closed()
