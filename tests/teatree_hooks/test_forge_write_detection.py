@@ -19,7 +19,7 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _repo_visibility, banned_terms_scanner, quote_scanner
 from teatree.hooks._command_parser import is_publish_command
-from teatree.hooks._parser_primitives import NAMED_FAIL_CLOSED_PREFIX, is_fail_closed_sentinel
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 from tests._uv_stub import working_uv
 
 _HOOK_ROUTER = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "hook_router.py"
@@ -29,6 +29,7 @@ _PUB = "-R souliane/teatree"
 _GL_PUB = "-R gitlab.com/souliane/teatree"
 _GH_COMMENTS = "https://api.github.com/repos/souliane/teatree/issues/1/comments"
 _LABELS = "gh api -X POST repos/souliane/teatree/issues/1/labels"
+NAMED_FAIL_CLOSED_PREFIX = "\x00[teatree-gate] fail closed: "
 
 
 def _free_text_writes(text: str, content_file: Path, clean_file: Path) -> list[str]:
