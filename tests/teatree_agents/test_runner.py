@@ -55,6 +55,7 @@ from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
+from tests.teatree_agents.test_model_tiering import _seeded_db
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -1849,8 +1850,9 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()
