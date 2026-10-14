@@ -174,7 +174,7 @@ class PartialReviewPublishError(RuntimeError):
 class PullRequestSpec:
     """Fields needed to open a pull/merge request on a CodeHostBackend."""
 
-    repo: str
+    repo: str  # the local checkout: GitHub adopts a racing PR by probing its origin
     branch: str
     title: str
     description: str

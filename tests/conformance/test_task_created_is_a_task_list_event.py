@@ -133,7 +133,7 @@ _DEAD_NAME_LEDGERS: Final[frozenset[str]] = frozenset({"tests/quality/test_no_de
 #: carrying the retired premise, which is how the previous walk shipped blind.
 _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
     {
-        "BLUEPRINT.md",
+        "docs/blueprint/admission-governor.md",
         "docs/blueprint/configuration.md",
         "docs/blueprint/factory-architecture.md",
         "docs/claude-code-internals.md",
