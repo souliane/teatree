@@ -81,7 +81,7 @@ PACE_DENY = 0.1
 #: Band thresholds. ``DEGRADE_AT`` is where the continuous intake term is materially
 #: clamping and nothing is refused yet; ``SHED_AT_DEFAULT`` is where the EXPENSIVE agent
 #: class is refused while the cheap drain keeps running; ``HALT_AT`` is the pre-#4508
-#: brake set. Documented in BLUEPRINT § "Adaptive admission governor" so the behaviour is
+#: brake set. Documented in docs/blueprint/admission-governor.md so the behaviour is
 #: predictable rather than emergent.
 DEGRADE_AT = 0.7
 SHED_AT_DEFAULT = 0.9
