@@ -1,5 +1,6 @@
 import asyncio
 import os
+import select
 import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -8,7 +9,9 @@ import pytest
 
 from teatree.agents.live_federation import (
     FederationRefusedError,
+    FederationUnavailableError,
     WorkerGoneError,
+    WorkerSocketOwner,
     _published,
     _worker_process,
     call,
@@ -222,3 +225,19 @@ def test_closed_peer_connection_gets_no_error_response(tmp_path: Path) -> None:
         client.connect(str(broker.socket_path))
         client.shutdown(socket.SHUT_WR)
         assert client.recv(1024) == b""
+
+
+def test_public_mode_worker_is_rejected_before_connect(tmp_path: Path) -> None:
+    path = tmp_path / "w-unsafe.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(path))
+        WorkerSocketOwner.publish(path)
+        try:
+            path.chmod(0o666)
+            listener.listen()
+
+            with pytest.raises(FederationUnavailableError, match="identity could not be verified"):
+                asyncio.run(call(path, {"method": "relay.peers"}, wait=1))
+            assert not select.select([listener], [], [], 0)[0]
+        finally:
+            WorkerSocketOwner.retire(path)
