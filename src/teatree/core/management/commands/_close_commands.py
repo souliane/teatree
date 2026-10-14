@@ -156,6 +156,12 @@ class CloseCommands(TyperCommand):
         if not target_ids or any(not raw.isdigit() for raw in target_ids) or len(target_ids) != len(set(target_ids)):
             self.stderr.write("  return-gaps refused: --ids needs unique numeric ticket ids")
             raise SystemExit(1)
+        if any(not raw.isdigit() for raw in advanced_ids):
+            self.stderr.write("  return-gaps refused: --advanced needs numeric ticket ids")
+            raise SystemExit(1)
+        if not advanced_ids.issubset(target_ids):
+            self.stderr.write("  return-gaps refused: --advanced ids must appear in --ids")
+            raise SystemExit(1)
         refusal = check_bulk_close(items=target_ids, confirmed_tokens=confirmed)
         if refusal:
             self.stderr.write(f"  return-gaps refused: {refusal}")

@@ -183,3 +183,16 @@ class ReturnGapsCommandTests(TestCase):
         self.umbrella.refresh_from_db()
         assert member.state == Ticket.State.WORK_STARTED
         assert pending_entries(self.umbrella) == []
+
+    def test_advanced_ids_must_be_numeric_and_in_target_ids(self) -> None:
+        member = self.member("g1")
+        for advanced, reason in (
+            (f"{member.pk},abc", "--advanced needs numeric"),
+            ("99999", "--advanced ids must appear in --ids"),
+        ):
+            with self.subTest(advanced=advanced):
+                self.refused(member, advanced=advanced, reason=reason)
+                member.refresh_from_db()
+                self.umbrella.refresh_from_db()
+                assert member.state == Ticket.State.WORK_STARTED
+                assert pending_entries(self.umbrella) == []
