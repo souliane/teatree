@@ -1,7 +1,13 @@
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pytest
+from django.test import TestCase
 
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.utils.git import run_strict
+from teatree.utils.run import CommandFailedError
+from tests.factories import TicketFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -45,3 +51,35 @@ def test_checkout_state_accepts_detached_head(tmp_path: Path) -> None:
     state = checkout_state(checkout)
     assert state.commits_ahead == 1
     assert state.digest
+
+
+class StackedTicketTests(TestCase):
+    def test_a_stacked_ticket_counts_commits_from_its_target_branch(self) -> None:
+        with TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="parent", commits_ahead=2)
+            run_strict(repo=str(checkout), args=["checkout", "-b", "feature"])
+            run_strict(repo=str(checkout), args=["remote", "add", "origin", str(checkout)])
+            run_strict(repo=str(checkout), args=["fetch", "origin"])
+            run_strict(repo=str(checkout), args=["remote", "set-head", "origin", "main"])
+            stacked = TicketFactory(extra={"target_branch": "parent"})
+
+            assert checkout_state(checkout, ticket=stacked).pristine
+            assert checkout_state(checkout).commits_ahead == 2
+
+
+def test_dangling_symlinks_and_nested_repos_digest_cleanly(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+    (checkout / "dangling").symlink_to(tmp_path / "missing")
+    _init_repo_with_branch(checkout / "nested", branch="feature", commits_ahead=0)
+    first = checkout_state(checkout)
+
+    (checkout / "dangling").unlink()
+    (checkout / "dangling").symlink_to(tmp_path / "elsewhere")
+    assert checkout_state(checkout).digest != first.digest
+
+
+def test_unreadable_git_refuses(tmp_path: Path) -> None:
+    with pytest.raises(CommandFailedError):
+        checkout_state(tmp_path)

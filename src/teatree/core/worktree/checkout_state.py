@@ -4,9 +4,16 @@ import hashlib
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch
+from teatree.core.worktree.target_branch import qualified_target, resolve_pr_target_branch
+from teatree.utils import git
 from teatree.utils.git_run import run_strict, run_strict_verbatim
+from teatree.utils.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,11 +27,20 @@ class CheckoutState:
         return self.commits_ahead == 0 and not self.dirty
 
 
-def checkout_state(checkout: Path) -> CheckoutState:
+def _base_ref(repo: str, ticket: "Ticket | None", branch: str) -> str:
+    try:
+        slug = git.remote_slug(repo=repo)
+    except (CommandFailedError, RuntimeError, ValueError):
+        slug = ""
+    stacked = resolve_pr_target_branch(ticket, repo_slug=slug, branch=branch)
+    return qualified_target(stacked) if stacked else _resolve_base_branch(repo)
+
+
+def checkout_state(checkout: Path, *, ticket: "Ticket | None" = None) -> CheckoutState:
     repo = str(checkout)
     head = run_strict(repo=repo, args=["rev-parse", "--verify", "HEAD"])
     branch = run_strict(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
-    base = _resolve_base_branch(repo)
+    base = _base_ref(repo, ticket, branch)
     commits_ahead = int(run_strict(repo=repo, args=["rev-list", "--count", f"{base}..HEAD"]))
     status = run_strict_verbatim(repo=repo, args=["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     diff = run_strict_verbatim(repo=repo, args=["diff", "HEAD", "--binary", "--no-ext-diff"])
