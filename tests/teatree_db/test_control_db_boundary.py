@@ -260,7 +260,7 @@ class TestTheDjangoFreeColdWriter:
     def test_it_writes_an_unclaimed_database(self, tmp_path: Path) -> None:
         db = _config_db(tmp_path / "db.sqlite3")
 
-        assert cold_writer.write_setting("mode", "auto", db_path=db) is cold_writer.WriteResult.WROTE
+        assert cold_writer.write_setting("mode", "auto", db_path=db).result is cold_writer.WriteResult.WROTE
 
 
 class TestControlDbUnreachableReason:
