@@ -144,6 +144,9 @@ def carry_out_owner_actions() -> list[str]:
         except OwnerActionDeferredError as exc:
             logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
             continue
+        except Exception:
+            logger.exception("Owner action %s failed; retrying next pass", row.pk)
+            continue
         if decision is None:
             continue
         results.append(f"{decision.outcome.replace('_', ' ')} {row.pk}")

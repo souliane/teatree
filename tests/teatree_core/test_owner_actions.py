@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.merge.void_request import request_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
@@ -20,6 +21,7 @@ from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
+from tests.void_merge_fixtures import PR_URL, landed_ticket, stub_forge
 
 _OWNER = "U0DEMOOWNER"
 _CLEAR = ProcessTable(frozenset(), "/proc")
@@ -159,6 +161,19 @@ class TestCheckoutAttestation(TestCase):
 
         self.task.refresh_from_db()
         assert self.task.not_before == later
+
+    def test_a_card_that_errors_does_not_hold_back_the_next(self) -> None:
+        landed_ticket()
+        with stub_forge():
+            void_card = request_void(PR_URL, "The merge content disappeared.")
+        assert apply_bound_answer(BoundAnswer(void_card, "Void", answered_by=_OWNER))
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+
+        with stub_forge(TypeError("malformed forge payload")), self.assertLogs("teatree.core.owner_actions", "ERROR"):
+            assert self._carry_out() == [f"carried out {row.pk}"]
+
+        assert self._outcomes(void_card) == []
 
 
 class TestActionIdentity(TestCase):
