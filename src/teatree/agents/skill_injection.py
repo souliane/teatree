@@ -146,16 +146,19 @@ def _read_skill_contents_scoped(
 
 
 def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str:
-    """Each skill in *embedded* in full and every other one by name only: the venue mounts no skill file."""
+    """Embed primary skills and the rules document; this venue mounts no skill files."""
     dirs = harness_skills_dirs()
     sections: list[str] = []
     absent: list[str] = []
     for name in skills:
+        bare = bare_skill_name(name)
         skill_md = resolve_skill_md(name, dirs) if _is_primary(name, embedded) else None
         if skill_md is None:
-            absent.append(bare_skill_name(name))
+            absent.append(bare)
         else:
-            sections.append(_skill_section(bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+            sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
+            if bare == "rules":
+                sections.append(f"--- RULES.md ---\n{skill_md.with_name('RULES.md').read_text(encoding='utf-8')}")
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."

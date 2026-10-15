@@ -15,6 +15,21 @@ def _skill(root: Path, name: str, *references: str) -> Path:
 
 
 class TestRegistration:
+    def test_registers_only_the_rules_document_beside_the_rules_skill(self, tmp_path: Path) -> None:
+        skill_dir = _skill(tmp_path, "rules")
+        rules = skill_dir / "RULES.md"
+        rules.write_text("# Rules\n", encoding="utf-8")
+        index = SkillFileIndex.build([tmp_path])
+        assert index.lookup("skills/rules/RULES.md") == rules
+        assert index.lookup(str(rules)) == rules
+
+    def test_refuses_a_symlinked_rules_document(self, tmp_path: Path) -> None:
+        skill_dir = _skill(tmp_path, "rules")
+        (outside := tmp_path / "outside.md").write_text("secret", encoding="utf-8")
+        rules = skill_dir / "RULES.md"
+        rules.symlink_to(outside)
+        assert SkillFileIndex.build([tmp_path]).lookup("skills/rules/RULES.md") is None
+
     def test_registers_skill_md_and_reference_markdown(self, tmp_path: Path) -> None:
         _skill(tmp_path, "rules", "verification.md")
         index = SkillFileIndex.build([tmp_path])
