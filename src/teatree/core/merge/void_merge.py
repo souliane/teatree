@@ -251,7 +251,17 @@ def apply_void(plan: VoidPlan, *, reason: str, actor: str, stdin: TextIO, stdout
     return _write(fresh, reason=reason.strip(), actor=actor.strip())
 
 
-def apply_owner_approved_void(pr_url: str, *, binding: str, reason: str, actor: str) -> MergeVoid:
+@dataclass(frozen=True, slots=True)
+class ApprovedVoid:
+    plan: VoidPlan
+    reason: str
+    actor: str
+
+    def write(self) -> MergeVoid:
+        return _write(self.plan, reason=self.reason, actor=self.actor)
+
+
+def approve_owner_void(pr_url: str, *, binding: str, reason: str, actor: str) -> ApprovedVoid:
     if not reason.strip():
         raise VoidRefusedError(VoidRefusal.REASON_MISSING, "the reason for voiding the merge is missing")
     fresh = plan_void(pr_url)
@@ -259,7 +269,7 @@ def apply_owner_approved_void(pr_url: str, *, binding: str, reason: str, actor: 
         raise fresh.refusal
     if fresh.binding() != binding:
         raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the forge or ledger changed since the owner answered")
-    return _write(fresh, reason=reason.strip(), actor=actor)
+    return ApprovedVoid(fresh, reason.strip(), actor)
 
 
 @transaction.atomic

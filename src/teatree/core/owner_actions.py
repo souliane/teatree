@@ -1,20 +1,25 @@
-"""Carry out an owner's Slack answer after rechecking the action's live evidence."""
+"""Carry out an owner's Slack answer: recheck the live evidence first, then write once under the lock."""
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from django.db import transaction
 
-from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, apply_owner_approved_void
+from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.models import Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
+from teatree.core.worktree.checkout_attest import AttestRefusedError, read_attestation
 
 logger = logging.getLogger(__name__)
 _OUTCOMES = ("carried_out", "declined", "refused")
+_LABELS = {OwnerActionKind.ATTEST: ("accept", "decline"), OwnerActionKind.VOID: ("void", "keep")}
+
+type _Write = Callable[[], str]
 
 
 class OwnerActionDeferredError(Exception):
@@ -25,103 +30,123 @@ class OwnerActionRefusedError(Exception):
     pass
 
 
-def _attest(row: DeferredQuestion, action: ActionRequest) -> str:
-    try:
-        worktree_id = int(action["target"])
-    except ValueError as exc:
-        message = "The checkout reference is invalid."
-        raise OwnerActionRefusedError(message) from exc
-    worktree = Worktree.objects.filter(pk=worktree_id).first()
+@dataclass(frozen=True, slots=True)
+class _Decision:
+    outcome: str
+    note: str = ""
+    notify: bool = False
+    write: _Write | None = None
+
+
+def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
+    worktree = Worktree.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
     if worktree is None:
         message = "The checkout no longer has a record."
         raise OwnerActionRefusedError(message)
     try:
-        attestation = attest_checkout(worktree, expected_digest=action["binding"])
+        attestation = read_attestation(worktree, expected_digest=action["binding"])
     except AttestRefusedError as exc:
-        if "live or unverifiable processes" in str(exc) or "unoccupied" in str(exc):
-            raise OwnerActionDeferredError(str(exc)) from exc
-        raise OwnerActionRefusedError(str(exc)) from exc
-    if row.parked_task is not None:
-        release_checkout_park(row.parked_task)
-    return f"Attested the checkout at {attestation.state.digest}."
+        message = f"The checkout {exc}"
+        if exc.retryable:
+            raise OwnerActionDeferredError(message) from exc
+        raise OwnerActionRefusedError(message) from exc
+
+    def write() -> str:
+        attestation.record()
+        if row.parked_task is not None:
+            release_checkout_park(row.parked_task)
+        return f"Attested the checkout at {attestation.state.digest}."
+
+    return write
 
 
-def _void(action: ActionRequest, answered_by: str) -> str:
+def _prepare_void(_row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
     try:
-        void = apply_owner_approved_void(
-            action["target"], binding=action["binding"], reason=action.get("note", ""), actor=answered_by
+        approved = approve_owner_void(
+            action["target"], binding=action["binding"], reason=action.get("note", ""), actor=actor
         )
     except VoidRefusedError as exc:
         if exc.code == VoidRefusal.FORGE_UNREADABLE:
             raise OwnerActionDeferredError(exc.message) from exc
         raise OwnerActionRefusedError(exc.message) from exc
-    return f"Voided merge record {void.pk}."
+    return lambda: f"Voided merge record {approved.write().pk}."
 
 
-def _record(row: DeferredQuestion, outcome: str, actor: str, note: str) -> str:
-    DeferredQuestionAudit.objects.create(question=row, action=outcome, resolver_id=actor, note=note)
-    return f"{'carried out' if outcome == 'carried_out' else outcome} {row.pk}"
+_PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
+    OwnerActionKind.ATTEST: _prepare_attest,
+    OwnerActionKind.VOID: _prepare_void,
+}
 
 
-def _carry_one(question_id: int) -> tuple[str | None, str]:
+def _answered_by(row: DeferredQuestion) -> str:
+    answers = DeferredQuestionAudit.objects.filter(question=row, action="answered", resolver_id__startswith="slack:")
+    answer = answers.order_by("-pk").first()
+    return answer.resolver_id if answer is not None else ""
+
+
+def _decide(row: DeferredQuestion, actor: str) -> _Decision:
+    action = read_action(row.evidence)
+    if action is None or row.dedupe_marker != action_marker(action):
+        return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
+    if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or not actor:
+        return _Decision("refused", "Only an authenticated owner answer in Slack may approve this action.", notify=True)
+    kind = OwnerActionKind(action["kind"])
+    approve, decline = _LABELS[kind]
+    answer = row.answer_text.strip().casefold()
+    if answer == decline:
+        return _Decision("declined", "The owner declined.")
+    if answer != approve:
+        return _Decision("declined", "The answer did not match an approval option.", notify=True)
+    try:
+        return _Decision("carried_out", write=_PREPARE[kind](row, action, actor))
+    except OwnerActionRefusedError as exc:
+        return _Decision("refused", str(exc), notify=True)
+
+
+def _carry_one(row: DeferredQuestion) -> _Decision | None:
+    actor = _answered_by(row)
+    decision = _decide(row, actor)
     with transaction.atomic():
-        row = DeferredQuestion.objects.select_for_update().get(pk=question_id)
+        DeferredQuestion.objects.select_for_update().get(pk=row.pk)
         if DeferredQuestionAudit.objects.filter(question=row, action__in=_OUTCOMES).exists():
-            return None, ""
-        action = read_action(row.evidence)
-        answer = (
-            DeferredQuestionAudit.objects.filter(question=row, action="answered", resolver_id__startswith="slack:")
-            .order_by("-pk")
-            .first()
+            return None
+        note = decision.write() if decision.write is not None else decision.note
+        DeferredQuestionAudit.objects.create(question=row, action=decision.outcome, resolver_id=actor, note=note)
+    return decision
+
+
+def _tell_owner(row: DeferredQuestion, reason: str) -> None:
+    try:
+        notify_user(
+            f"Owner action for question {row.pk} did not change anything: {reason}",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"owner-action-result:{row.pk}",
+            audience=NotifyAudience.OWNER_ESCALATION,
         )
-        actor = answer.resolver_id if answer is not None else ""
-        if action is None or row.dedupe_marker != action_marker(action):
-            note = "The action card no longer matches its recorded request."
-            return _record(row, "refused", actor, note), note
-        if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or not actor:
-            note = "Only an authenticated owner answer in Slack may approve this action."
-            return _record(row, "refused", actor, note), note
-        labels = {
-            OwnerActionKind.ATTEST: ("accept", "decline"),
-            OwnerActionKind.VOID: ("void", "keep"),
-        }
-        approve, decline = labels[OwnerActionKind(action["kind"])]
-        answer_text = row.answer_text.strip().casefold()
-        if answer_text != approve:
-            note = "The owner declined." if answer_text == decline else "The answer did not match an approval option."
-            return _record(row, "declined", actor, note), note if answer_text != decline else ""
-        try:
-            note = _attest(row, action) if action["kind"] == OwnerActionKind.ATTEST else _void(action, actor)
-        except OwnerActionRefusedError as exc:
-            note = str(exc)
-            return _record(row, "refused", actor, note), note
-        return _record(row, "carried_out", actor, note), ""
+    except Exception:
+        logger.exception("Could not notify owner of refused action %s", row.pk)
 
 
 def carry_out_owner_actions() -> list[str]:
     results: list[str] = []
-    candidates = DeferredQuestion.objects.filter(
-        audience=DeferredQuestion.Audience.OWNER_QUESTION,
-        answered_at__isnull=False,
-        evidence__has_key="action",
-    ).order_by("answered_at", "pk")
-    for row in candidates:
+    answered = (
+        DeferredQuestion.objects.filter(
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            answered_at__isnull=False,
+            evidence__has_key="action",
+        )
+        .exclude(audits__action__in=_OUTCOMES)
+        .order_by("answered_at", "pk")
+    )
+    for row in answered:
         try:
-            result, notice = _carry_one(row.pk)
-        except OwnerActionDeferredError:
-            logger.info("Owner action %s waits for live evidence", row.pk)
+            decision = _carry_one(row)
+        except OwnerActionDeferredError as exc:
+            logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
             continue
-        if result is None:
+        if decision is None:
             continue
-        results.append(result)
-        if notice:
-            try:
-                notify_user(
-                    f"Owner action for question {row.pk} did not change anything: {notice}",
-                    kind=NotifyKind.INFO,
-                    idempotency_key=f"owner-action-result:{row.pk}",
-                    audience=NotifyAudience.OWNER_ESCALATION,
-                )
-            except Exception:
-                logger.exception("Could not notify owner of refused action %s", row.pk)
+        results.append(f"{decision.outcome.replace('_', ' ')} {row.pk}")
+        if decision.notify:
+            _tell_owner(row, decision.note)
     return results

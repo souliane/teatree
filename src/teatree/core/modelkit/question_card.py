@@ -92,6 +92,10 @@ def safe_card_title(title: str, fallback: str) -> str:
     return fallback if any(character in candidate for character in "<>|") else candidate
 
 
+def counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 class OptionDict(TypedDict):
     """An option as stored in ``options_json``: the ``AskUserQuestion`` shape plus the recommended marker."""
 

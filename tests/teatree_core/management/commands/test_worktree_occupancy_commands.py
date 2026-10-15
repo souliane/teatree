@@ -123,7 +123,7 @@ class AttestTests(_CommandCase):
         with (
             patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
             patch(
-                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                "teatree.core.worktree.checkout_attest.read_process_table",
                 return_value=ProcessTable(frozenset(), "/proc"),
                 create=True,
             ),
@@ -143,12 +143,12 @@ class AttestTests(_CommandCase):
     def test_changed_checkout_is_not_attested(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
         state = checkout_state(self.checkout)
-        changed = type(state)("changed", state.commits_ahead, state.dirty)
+        changed = type(state)("changed", state.commits_ahead, state.uncommitted)
         with (
             patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
-            patch("teatree.core.management.commands._worktree_occupancy.checkout_state", side_effect=[state, changed]),
+            patch("teatree.core.worktree.checkout_attest.checkout_state", side_effect=[state, changed]),
             patch(
-                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                "teatree.core.worktree.checkout_attest.read_process_table",
                 return_value=ProcessTable(frozenset(), "/proc"),
             ),
             pytest.raises(SystemExit),
@@ -162,7 +162,7 @@ class AttestTests(_CommandCase):
         unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
         with (
             patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
-            patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=unavailable),
+            patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=unavailable),
         ):
             self.run_cmd("attest", str(self.checkout))
         assert self.fresh().get_extra()["attested_state"] == f"owner:{state.digest}"

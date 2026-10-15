@@ -21,11 +21,9 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
-from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -66,7 +64,7 @@ class OccupancyCommands(TyperCommand):
             raise SystemExit(1)
         worktree = _worktree_for_path(path)
         try:
-            attestation = attest_checkout(worktree, table_reader=read_process_table, state_reader=checkout_state)
+            attestation = attest_checkout(worktree)
         except AttestRefusedError as exc:
             self.stderr.write(f"  Refused: {path} {exc}")
             raise SystemExit(1) from exc

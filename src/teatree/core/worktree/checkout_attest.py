@@ -1,14 +1,13 @@
 """Recheck and attest a checkout after a direct owner command or Slack approval."""
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.cleanup.process_table import ProcessTable, read_process_table
+from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_card_title
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_card_title
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.worktree_occupancy import occupancy_holder
@@ -19,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class AttestRefusedError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,9 @@ class CheckoutAttestation:
     def action(self) -> ActionRequest:
         return ActionRequest(kind=OwnerActionKind.ATTEST, target=str(self.worktree.pk), binding=self.state.digest)
 
+    def record(self) -> None:
+        self.worktree.merge_extra(set_keys={"attested_state": self.recorded})
+
 
 def checkout_rows(path: str) -> list[Worktree]:
     return [
@@ -45,47 +49,33 @@ def checkout_rows(path: str) -> list[Worktree]:
     ]
 
 
-def read_attestation(
-    worktree: Worktree,
-    *,
-    table_reader: Callable[..., ProcessTable] | None = None,
-    state_reader: Callable[..., CheckoutState] | None = None,
-) -> CheckoutAttestation:
-    table_reader = table_reader or read_process_table
-    state_reader = state_reader or checkout_state
+def read_attestation(worktree: Worktree, *, expected_digest: str = "") -> CheckoutAttestation:
     path = worktree.worktree_path
     if len(checkout_rows(path)) != 1 or occupancy_holder(worktree) is not None:
         message = "needs one unoccupied Worktree row to attest."
-        raise AttestRefusedError(message)
-    table = table_reader(exclude_ancestors=True)
+        raise AttestRefusedError(message, retryable=True)
+    table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(Path(path)):
         message = f"has live or unverifiable processes: {table.refuse_reason()}"
-        raise AttestRefusedError(message)
+        raise AttestRefusedError(message, retryable=True)
     try:
-        state = state_reader(Path(path), ticket=worktree.ticket)
-        if state_reader(Path(path), ticket=worktree.ticket).digest != state.digest:
-            message = "changed while attesting."
-            raise AttestRefusedError(message)
+        state = checkout_state(Path(path), ticket=worktree.ticket)
+        unchanged = checkout_state(Path(path), ticket=worktree.ticket).digest == state.digest
     except (OSError, RuntimeError, ValueError) as exc:
-        if isinstance(exc, AttestRefusedError):
-            raise
         message = f"state could not be read: {exc}"
         raise AttestRefusedError(message) from exc
+    if not unchanged:
+        message = "changed while attesting."
+        raise AttestRefusedError(message)
+    if expected_digest and state.digest != expected_digest:
+        message = "changed since the owner was asked; ask again."
+        raise AttestRefusedError(message)
     return CheckoutAttestation(worktree, state, table.usable)
 
 
-def attest_checkout(
-    worktree: Worktree,
-    *,
-    expected_digest: str = "",
-    table_reader: Callable[..., ProcessTable] | None = None,
-    state_reader: Callable[..., CheckoutState] | None = None,
-) -> CheckoutAttestation:
-    attestation = read_attestation(worktree, table_reader=table_reader, state_reader=state_reader)
-    if expected_digest and attestation.state.digest != expected_digest:
-        message = "changed since the owner was asked; ask again."
-        raise AttestRefusedError(message)
-    worktree.merge_extra(set_keys={"attested_state": attestation.recorded})
+def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
+    attestation = read_attestation(worktree)
+    attestation.record()
     return attestation
 
 
@@ -99,12 +89,11 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
         if attestation.host_evidence
         else "The host process list could not be read."
     )
+    holdings = f"{counted(state.commits_ahead, 'commit')} and {counted(state.uncommitted, 'uncommitted file')}"
     why = (
-        f"The checkout changed since its last run; it holds {state.commits_ahead} commits and "
-        f"{state.uncommitted} uncommitted files."
+        f"The checkout changed since its last run; it holds {holdings}."
         if attestation.host_evidence
-        else f"The host process list is unavailable; accepting permits one run with {state.commits_ahead} commits "
-        f"and {state.uncommitted} uncommitted files."
+        else f"The host process list is unavailable; accepting permits one run with {holdings}."
     )
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
@@ -113,8 +102,8 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
             if attestation.host_evidence
             else "The host process list is unavailable.",
             process_fact,
-            f"It holds {state.commits_ahead} commits not on the target branch.",
-            f"It has {state.uncommitted} uncommitted files.",
+            f"It holds {counted(state.commits_ahead, 'commit')} not on the target branch.",
+            f"It has {counted(state.uncommitted, 'uncommitted file')}.",
         ),
         blocker="Only the owner may accept a checkout state the factory did not record.",
         why=why,

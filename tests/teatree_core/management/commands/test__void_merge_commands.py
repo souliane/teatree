@@ -11,12 +11,13 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.management.commands import _void_merge_commands
 from teatree.core.management.commands import pr as pr_mod
 from teatree.core.management.commands._void_merge_commands import VoidMergeResult
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError
-from teatree.core.models import MergeVoid, PullRequest, Ticket
+from teatree.core.models import DeferredQuestion, MergeVoid, PullRequest, Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.hooks.void_merge_detect import DENY_REASON, void_merge_deny_reason
 from tests.void_merge_fixtures import ABSENT, ISSUE_URL, PR_URL, Terminal, human_operator, landed_ticket, stub_forge
@@ -128,6 +129,40 @@ class TestVoidMergeCommand(TestCase):
 
         assert f"ticket {keyed.pk}: coded" in out
         assert out.count("reopen ") == 1
+
+
+class TestRequestVoidCommand(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        landed_ticket()
+
+    def _request(self, *snapshots: PrContentSnapshot) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with stub_forge(*snapshots):
+            try:
+                call_command("pr", "request-void", PR_URL, "The merge content disappeared.", stdout=out, stderr=err)
+            except SystemExit as exit_:
+                code = int(exit_.code or 0)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_request_records_one_owner_card(self) -> None:
+        code, out, _err = self._request()
+
+        row = DeferredQuestion.objects.get()
+        assert code == 0
+        assert row.is_pending
+        assert row.evidence["action"]["kind"] == "void"
+        assert f"question {row.pk}" in out
+
+    def test_a_refused_plan_records_no_card_and_exits_non_zero(self) -> None:
+        present = replace(ABSENT, merge_blobs=ABSENT.head_blobs)
+
+        code, _out, err = self._request(present, present)
+
+        assert code == 1
+        assert "content_carried_by_merge" in err
+        assert not DeferredQuestion.objects.exists()
 
 
 class TestTheAgentHookReadsTheArgvAsTheParserDoes(TestCase):

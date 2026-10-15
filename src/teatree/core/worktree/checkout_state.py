@@ -20,12 +20,11 @@ if TYPE_CHECKING:
 class CheckoutState:
     digest: str
     commits_ahead: int
-    dirty: bool
-    uncommitted: int = 0
+    uncommitted: int
 
     @property
     def pristine(self) -> bool:
-        return self.commits_ahead == 0 and not self.dirty
+        return self.commits_ahead == 0 and self.uncommitted == 0
 
 
 def _base_ref(repo: str, ticket: "Ticket | None", branch: str) -> str:
@@ -62,11 +61,14 @@ def checkout_state(checkout: Path, *, ticket: "Ticket | None" = None) -> Checkou
         else:
             digest.update(str(mode).encode())
         digest.update(b"\0")
-    entries = list(filter(None, status.split("\0")))
-    uncommitted = 0
-    index = 0
-    while index < len(entries):
-        entry = entries[index]
-        uncommitted += 1
-        index += 2 if "R" in entry[:2] or "C" in entry[:2] else 1
-    return CheckoutState(digest.hexdigest(), commits_ahead, bool(status), uncommitted)
+    return CheckoutState(digest.hexdigest(), commits_ahead, _changed_paths(status))
+
+
+def _changed_paths(porcelain_z: str) -> int:
+    entries = iter(filter(None, porcelain_z.split("\0")))
+    count = 0
+    for entry in entries:
+        count += 1
+        if {"R", "C"} & set(entry[:2]):
+            next(entries, None)  # -z writes a rename's source path as its own field
+    return count
