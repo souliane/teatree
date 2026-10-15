@@ -81,7 +81,7 @@ class TestGhUpdatePrBranch:
         empty = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="route unset")
         with (
             patch("teatree.forge_credentials.resolve_slug_token", return_value=empty),
-            patch("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail") as run,
+            patch("teatree.backends.github.api.run_allowed_to_fail") as run,
         ):
             assert client.update_pr_branch(slug=SLUG, pr_id=4029, expected_head_oid=HEAD) is False
 
