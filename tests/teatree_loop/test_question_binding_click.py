@@ -105,10 +105,12 @@ class TestTheTapRoundTrip(TestCase):
     def test_a_tap_by_another_user_writes_nothing_and_updates_nothing(self) -> None:
         row, backend = _posted_card()
 
-        assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
+        with self.assertLogs("teatree.loop.question_binding", level="WARNING") as logs:
+            assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
 
         row.refresh_from_db()
         assert row.is_pending
+        assert "not the owner" in logs.output[0]
         backend.update_message.assert_not_called()
 
     def test_a_tap_naming_no_user_binds_nothing_while_the_owner_id_is_unknown(self) -> None:
