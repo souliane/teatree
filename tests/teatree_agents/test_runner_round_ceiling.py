@@ -7,7 +7,7 @@ run is recorded as a ``needs_user_input`` hand-off that parks the task behind a 
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import patch
 
@@ -47,7 +47,7 @@ class _Harness:
         self.session: FakeHarnessSession | None = None
 
     @contextlib.asynccontextmanager
-    async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: Any) -> AsyncGenerator[FakeHarnessSession]:
         self.opened_options = options
         self.session = FakeHarnessSession(self._messages)
         yield self.session

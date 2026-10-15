@@ -10,7 +10,7 @@ the only mock, so no ``rclone`` runs.
 import asyncio
 import contextlib
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,7 +25,7 @@ from teatree.mcp.server import build_server
 
 
 @contextlib.contextmanager
-def _builder(**mock_kwargs: object) -> Iterator[MagicMock]:
+def _builder(**mock_kwargs: object) -> Generator[MagicMock]:
     build = MagicMock(**mock_kwargs)
     with patch.object(
         services_sharepoint, "SHAREPOINT", dataclasses.replace(services_sharepoint.SHAREPOINT, build=build)

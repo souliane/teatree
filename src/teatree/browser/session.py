@@ -18,7 +18,7 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -185,7 +185,7 @@ class BrowserSession:
             raise StepFailedError(str(exc), log.read(after=before)) from exc
 
     @contextlib.contextmanager
-    def _attach(self, cdp_url: str) -> Iterator["Page"]:
+    def _attach(self, cdp_url: str) -> Generator["Page"]:
         from playwright.sync_api import (  # noqa: PLC0415 — deferred: keeps Playwright off `t3` startup
             Error,
             sync_playwright,
@@ -290,7 +290,7 @@ def _wait_exited(pid: int, timeout_s: float) -> None:
 
 
 @contextlib.contextmanager
-def _owner_only() -> Iterator[None]:
+def _owner_only() -> Generator[None]:
     """Create every file and directory inside the block readable by its owner alone."""
     previous = os.umask(0o077)
     try:

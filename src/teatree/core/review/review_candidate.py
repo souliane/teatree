@@ -21,7 +21,7 @@ shapes, plus the heterogeneous ``approvers`` list (strings or
 """
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -59,7 +59,7 @@ _AUTHORSHIP_OBSERVER: ContextVar[AuthorshipObserver | None] = ContextVar("author
 
 
 @contextmanager
-def observe_authorship(observer: AuthorshipObserver) -> Iterator[None]:
+def observe_authorship(observer: AuthorshipObserver) -> Generator[None]:
     token = _AUTHORSHIP_OBSERVER.set(observer)
     try:
         yield

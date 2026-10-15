@@ -1,6 +1,6 @@
 """The running holder's checkout exit: settled once before its terminal write, consumed by the release."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ _checkout_exit: ContextVar[CheckoutExitScope | None] = ContextVar("checkout_exit
 
 
 @contextmanager
-def checkout_exit_scope(prepare: Callable[["Task"], CheckoutExit | None]) -> Iterator[CheckoutExitScope]:
+def checkout_exit_scope(prepare: Callable[["Task"], CheckoutExit | None]) -> Generator[CheckoutExitScope]:
     scope = CheckoutExitScope(prepare)
     token = _checkout_exit.set(scope)
     try:

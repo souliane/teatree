@@ -259,7 +259,7 @@ class TestDriveThroughInjectedHarness(TestCase):
             bound_env: dict[str, str]
 
             @asynccontextmanager
-            async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+            async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
                 assert isinstance(options.mcp_servers, dict)
                 teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
                 self.bound_env = dict(teatree["env"])

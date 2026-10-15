@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import importlib.metadata
 import inspect
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -69,7 +69,7 @@ class FakeThirdHarness:
         self._messages = messages
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         yield FakeHarnessSession(self._messages)
 
 
@@ -397,7 +397,7 @@ class _NamedHarness:
         self._session = session
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield self._session(success_stream({"summary": f"{self.name} done"}))
 

@@ -39,7 +39,7 @@ database at all.
 
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -254,7 +254,7 @@ def _drop_record(_record: logging.LogRecord) -> bool:
 
 
 @contextmanager
-def _mode_read_unlogged() -> Iterator[None]:
+def _mode_read_unlogged() -> Generator[None]:
     """Silence the mode read's own fail-open WARNINGs for the duration of one call.
 
     The publish chain resolves every minute, so a degraded store would log a full

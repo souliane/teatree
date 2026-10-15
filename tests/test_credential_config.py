@@ -10,7 +10,7 @@ and the probe token equals the routed path.
 
 import datetime as dt
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
@@ -106,7 +106,7 @@ class _FakeReader:
 
 
 @contextmanager
-def _pass_echoes_path() -> Iterator[None]:
+def _pass_echoes_path() -> Generator[None]:
     with (
         patch.dict(os.environ, {}, clear=True),
         patch("teatree.llm.credentials.read_pass", side_effect=lambda path: path),
@@ -670,7 +670,7 @@ class TestInContainerSniffsTheForwardedCredential(TestCase):
     """
 
     @contextmanager
-    def _in_container(self, **extra_env: str) -> Iterator[None]:
+    def _in_container(self, **extra_env: str) -> Generator[None]:
         # A DB read that would raise exactly CI's crash ("no such table:
         # teatree_config_setting") proves the short-circuit never reaches it —
         # a raise here means the fix regressed, not that the DB was "empty".

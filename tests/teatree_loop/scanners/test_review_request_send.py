@@ -11,7 +11,7 @@ import io
 import os
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,7 +168,7 @@ def _ready_ticket(
 
 
 @contextmanager
-def _world(slack: _Slack, forge: _Forge) -> Iterator[Path]:
+def _world(slack: _Slack, forge: _Forge) -> Generator[Path]:
     """The four replaced edges; everything between them is the live code."""
     target = GuardTarget(channel_id=_CHANNEL, channel_name="reviews", token="xoxb-bot")
     provider = type("P", (), {"read_recent_review_matches": staticmethod(slack.read_recent_review_matches)})

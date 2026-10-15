@@ -2,12 +2,12 @@
 
 import contextlib
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import patch
 
 
 @contextlib.contextmanager
-def unread_stdout() -> Iterator[None]:
+def unread_stdout() -> Generator[None]:
     """Patch ``sys.stdout`` onto an OS pipe whose read end is closed, so its flush fails with EPIPE."""
     unread, written = os.pipe()
     os.close(unread)

@@ -9,7 +9,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -138,7 +138,7 @@ class _Handoff(TestCase):
         )
 
     @contextlib.contextmanager
-    def _delivered(self, task: Task) -> Iterator[tuple[Path, str]]:
+    def _delivered(self, task: Task) -> Generator[tuple[Path, str]]:
         with delivered_phase_handoff(task) as handoff:
             assert handoff is not None, "a task beginning a new phase after a recorded attempt must get a handoff"
             yield handoff, build_system_context(task, skills=[], handoff=handoff)

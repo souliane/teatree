@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Self
@@ -700,7 +700,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         return ticket
 
     @contextmanager
-    def _patched_clone_root(self) -> Iterator[None]:
+    def _patched_clone_root(self) -> Generator[None]:
         with ExitStack() as stack:
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
             for target in (
@@ -1279,7 +1279,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
         return ticket
 
     @contextmanager
-    def _ship_collaborators(self, host: object) -> Iterator[None]:
+    def _ship_collaborators(self, host: object) -> Generator[None]:
         with ExitStack() as stack:
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
             stack.enter_context(patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host))

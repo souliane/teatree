@@ -10,7 +10,7 @@ import fcntl
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 from teatree.paths import DATA_DIR
@@ -42,7 +42,7 @@ def _write(paths: list[str]) -> None:
 
 
 @contextlib.contextmanager
-def _exclusive() -> Iterator[None]:
+def _exclusive() -> Generator[None]:
     """Serialize the read-modify-write across processes — an unlocked pair loses marks."""
     _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with _CACHE_FILE.with_suffix(".lock").open("a", encoding="utf-8") as lock_fh:

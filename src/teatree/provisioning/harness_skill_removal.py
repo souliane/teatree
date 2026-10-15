@@ -1,6 +1,6 @@
 import fcntl
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
@@ -59,7 +59,7 @@ OperationLock = Callable[[], AbstractContextManager[None]]
 
 
 @contextmanager
-def file_operation_lock(path: Path) -> Iterator[None]:
+def file_operation_lock(path: Path) -> Generator[None]:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     os.fchmod(fd, 0o600)

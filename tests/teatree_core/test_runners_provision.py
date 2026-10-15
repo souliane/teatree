@@ -7,7 +7,7 @@ the coding task.
 """
 
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,7 @@ class TestWorktreeProvisioner(TestCase):
         )
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -331,7 +331,7 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
         self.workspace.mkdir(parents=True)
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -484,7 +484,7 @@ class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
         self.workspace.mkdir(parents=True)
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -1352,7 +1352,7 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
         )
 
     @contextmanager
-    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Iterator[None]:
+    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Generator[None]:
         declared = ["group/widget-core=chore/fork-bootstrap"]
 
         class _Settings:

@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,7 +159,7 @@ def record_owned_pr_for_test(*, slug: str, pr_id: int, head_sha: str, host_kind:
 
 
 @contextmanager
-def ready_review_batch_for_test(mr_url: str) -> Iterator[None]:
+def ready_review_batch_for_test(mr_url: str) -> Generator[None]:
     """Supply a forge listing whose only work-group member has passed CI.
 
     The batch gate and its readiness checks run unchanged; only the external
