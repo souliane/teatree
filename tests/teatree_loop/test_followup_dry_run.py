@@ -49,6 +49,7 @@ from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeR
 from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
 from teatree.loop.tick import TickRequest
 from teatree.types import RawAPIDict
+from tests._file_backed_db import file_backed_default_database
 from tests._send_gate import allow_slack_channels
 
 _CHANNEL = "C_REVIEW"
@@ -292,43 +293,6 @@ def _jobs(slack: _Slack, host: _Host | None = None) -> list[_ScannerJob]:
     ]
 
 
-@contextmanager
-def _file_backed_default_database() -> Iterator[Path]:
-    wrapper = connections["default"]
-    wrapper.ensure_connection()
-    original_name = wrapper.settings_dict["NAME"]
-    original_options = wrapper.settings_dict["OPTIONS"]
-    original_transaction_mode = wrapper.transaction_mode
-    original_raw = wrapper.connection
-    if original_raw is None:
-        msg = "the test database connection did not open"
-        raise RuntimeError(msg)
-
-    with TemporaryDirectory(prefix="followup-source-") as directory:
-        source = Path(directory) / "source.sqlite3"
-        destination = sqlite3.connect(source)
-        try:
-            original_raw.backup(destination)
-        finally:
-            destination.close()
-
-        wrapper.connection = None
-        wrapper.settings_dict["NAME"] = str(source)
-        wrapper.settings_dict["OPTIONS"] = {**original_options, "timeout": 30, "transaction_mode": "IMMEDIATE"}
-        wrapper.transaction_mode = "IMMEDIATE"
-        try:
-            yield source
-        finally:
-            redirected_raw = wrapper.connection
-            if redirected_raw is not None:
-                redirected_raw.close()
-            wrapper.connection = None
-            wrapper.settings_dict["NAME"] = original_name
-            wrapper.settings_dict["OPTIONS"] = original_options
-            wrapper.transaction_mode = original_transaction_mode
-            wrapper.connection = original_raw
-
-
 def _review_request_post_checksum(path: Path) -> tuple[int, str]:
     database = sqlite3.connect(path)
     try:
@@ -346,7 +310,7 @@ def _scanner_dependencies(*, inline_workers: bool = True) -> Iterator[Path]:
     config = TeaTreeConfig(user=UserSettings(review_nag_max_interval_days=30))
     target = GuardTarget(channel_id=_CHANNEL, channel_name="review", token="unused")
     with ExitStack() as stack:
-        source = stack.enter_context(_file_backed_default_database())
+        source = stack.enter_context(file_backed_default_database())
         stack.enter_context(patch.object(config_module, "load_config", return_value=config))
         stack.enter_context(patch.object(cold_reader, "mapping_setting", return_value={}))
         stack.enter_context(
@@ -491,7 +455,7 @@ class TestFollowupDryRun(TransactionTestCase):
         ]
 
         with (
-            _file_backed_default_database(),
+            file_backed_default_database(),
             patch.dict(connections.databases["default"]["OPTIONS"], {"transaction_mode": "IMMEDIATE"}),
             patch.object(
                 followup_dry_run_module, "collect_scan", wraps=followup_dry_run_module.collect_scan

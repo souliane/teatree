@@ -254,15 +254,18 @@ def release_task_occupancy(task: Task, *, attested_state: str | None = None) -> 
     )
 
 
+def held_dispatch_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Worktree | None:
+    """*ticket*'s dispatch checkout row, read fresh, iff ``(holder, holder_session)`` occupies it now."""
+    path = dispatch_worktree_path(ticket)
+    worktree = _worktree_at(ticket, path) if path else None
+    if worktree is None or (worktree.occupied_by, worktree.occupied_by_session) != (holder, holder_session):
+        return None
+    return worktree
+
+
 def task_occupancy_release_deferred(task: Task) -> bool:
-    path = dispatch_worktree_path(task.ticket)
-    worktree = _worktree_at(task.ticket, path) if path else None
-    return bool(
-        worktree is not None
-        and worktree.occupied_by == task_holder_id(task)
-        and worktree.occupied_by_session == task.claimed_by_session
-        and Task.objects.filter(pk=task.pk, owner_driving_since__isnull=False).exists()
-    )
+    held = held_dispatch_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+    return held is not None and Task.objects.filter(pk=task.pk, owner_driving_since__isnull=False).exists()
 
 
 def _worktree_at(ticket: "Ticket", path: str) -> Worktree | None:
