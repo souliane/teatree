@@ -484,9 +484,7 @@ class Ticket(
     @transition(field="state", source=[State.SELF_REVIEWED, State.PR_OPENED], target=State.PR_OPENED)
     def ship(self) -> None:
         """Schedule push + PR creation."""
-        self._refuse_if_worktree_dirty("shipping")
-        get_gate("local_e2e_dod")(self)
-        get_gate("forced_repro")(self)
+        self.refuse_unless_shippable()
         self._consume_pending_phase_tasks("shipping")
 
     @transition(field="state", source=State.PR_OPENED, target=State.REVIEW_REQUESTED)

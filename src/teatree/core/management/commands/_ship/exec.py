@@ -1,29 +1,18 @@
-"""Ship execution: FSM transition + inline/async push (extracted from ``pr.py``).
+"""Ship execution: the ``ship()`` FSM transition and the inline/async push (extracted from ``pr.py``).
 
-The ``pr create`` command validates the deterministic gates, then either
-*enqueues* ``execute_ship`` (default) or runs it *inline* (``--sync``).
-That ship-execution concern — the ``ship()`` FSM transition and its
-atomicity contract with ``execute_ship`` — is its own self-documenting
-home, kept here so ``pr.py`` stays within the module-health LOC bar.
-
-Synchronous ship atomicity (#838, #860): ``_ship_sync`` runs the
-``ship()`` transition **and** the inline ``execute_ship`` inside a
-*single* ``transaction.atomic()`` block. Both a ``ShipExecutor.run()``
-exception (#838) and a non-raising structured failure (#860,
-``RunnerResult(ok=False)``) roll the ``ship()`` advance back, so the
-ship is all-or-nothing and the real cause is structured-surfaced. See
-BLUEPRINT § "Synchronous ship atomicity".
+``pr create`` validates the deterministic gates, then either *enqueues* ``execute_ship``
+(default) or ships *inline* (``--sync``). The inline ship pushes and opens the PR with no
+transaction open, then commits ``ship()`` + ``request_review()`` in one short block: the
+SQLite write lock is never held across network I/O, and the FSM moves only once the PR exists.
 """
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import InvalidTransitionError, Ticket
-
-if TYPE_CHECKING:
-    from teatree.core.tasks import TransitionResult
+from teatree.core.runners.ship import ShipExecutor
 
 
 class ShipEnqueued(TypedDict):
@@ -48,27 +37,19 @@ class ShippingGateFailure(TypedDict):
     hint: str
 
 
-class _ShipExecutionError(RuntimeError):
-    """Carries a structured ``execute_ship`` failure out of the atomic block.
+def _gate_failure(ticket: Ticket, exc: Exception) -> ShippingGateFailure:
+    ticket.refresh_from_db()
+    return ShippingGateFailure(
+        allowed=False,
+        error=str(exc) or f"Cannot ship from state '{ticket.state}': FSM not in SELF_REVIEWED.",
+        missing=[],
+        hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
+    )
 
-    #860: raised inside ``_ship_sync``'s ``transaction.atomic()`` when
-    ``execute_ship`` returns ``ok=False`` (a non-raising precondition
-    failure) so the shared transaction rolls the ``ship()`` advance back
-    rather than committing a partial ``PR_OPENED``. ``str(exc)`` is the
-    real ``detail``, surfaced by the existing handler.
-    """
 
-
-def _abort_on_ship_failure(result: "TransitionResult") -> None:
-    """Raise ``_ShipExecutionError`` when ``execute_ship`` reported failure.
-
-    #860: a non-raising ``RunnerResult(ok=False)`` is a ship failure too;
-    raising here aborts ``_ship_sync``'s shared transaction so the
-    ``ship()`` advance rolls back instead of committing a partial
-    ``PR_OPENED`` (no push, no PR).
-    """
-    if not result.get("ok"):
-        raise _ShipExecutionError(str(result.get("detail", "")))
+def _sync_result(ticket: Ticket, *, ok: bool, detail: str) -> ShipExecuted:
+    ticket.refresh_from_db()
+    return ShipExecuted(ticket_id=int(ticket.pk), state=str(ticket.state), synced=True, ok=ok, detail=detail)
 
 
 def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | None:
@@ -103,14 +84,7 @@ def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | Non
             ticket.ship()
             ticket.save()
     except (TransitionNotAllowed, InvalidTransitionError) as exc:
-        ticket.refresh_from_db()
-        error = str(exc) or f"Cannot ship from state '{ticket.state}': FSM not in SELF_REVIEWED."
-        return ShippingGateFailure(
-            allowed=False,
-            error=error,
-            missing=[],
-            hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
-        )
+        return _gate_failure(ticket, exc)
     return None
 
 
@@ -141,72 +115,28 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
 
 
 def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure:
-    """Synchronous ship: run ``execute_ship`` inline in this process (#708).
+    """Synchronous ship (#708): preflight, push + open the PR, then advance the FSM in one short commit.
 
-    Atomicity (#838): the FSM ``ship()`` transition and the inline
-    ``execute_ship`` run inside a **single** ``transaction.atomic()``
-    block. Pre-#838 ``_do_ship_transition`` committed ``PR_OPENED`` in its
-    own transaction and ``execute_ship.call()`` ran afterwards in a
-    separate one; a ``ShipExecutor.run()`` exception (a ``git push``
-    precondition failure surfaces as ``CommandFailedError``) then left
-    ``Ticket.state == PR_OPENED`` with no push and no PR — a partial state
-    the operator could not safely re-run. Sharing one transaction makes
-    the exception roll the FSM advance back, so the ship is all-or-nothing:
-    either pushed + PR opened + FSM advanced, or the FSM is untouched.
-
-    Error surfacing (#838): a ``ShipExecutor.run()`` exception is caught
-    here and returned as a structured ``ShipExecuted`` (``ok=False`` with
-    the real error in ``detail``). Pre-#838 the exception propagated
-    unhandled, crashing the ``manage.py`` subprocess so the CLI wrapper
-    only surfaced a bare ``rc=1`` with the real cause lost.
-
-    Structured-failure atomicity (#860): ``ShipExecutor.run()`` also has
-    *non-raising* precondition exits (``"no code host configured"``,
-    ``"no worktree on ticket"``, ``"branch ... already merged into
-    base"``) that return ``RunnerResult(ok=False)``. ``execute_ship``
-    then returns a normal ``{"ok": False}`` dict — no exception — so
-    pre-#860 both atomic blocks committed, leaving the same partial
-    ``PR_OPENED`` (no push, no PR) #838 closed for the raised path. A
-    failing ``execute_ship`` result is a ship failure too, so it must
-    roll the ``ship()`` advance back: it is re-raised inside the atomic
-    block as ``_ShipExecutionError`` carrying the real ``detail``, so
-    both failure paths share one rollback + surfacing path.
-
-    The ``on_commit`` enqueue scheduled by ``ship()`` only fires when the
-    block commits (success); ``execute_ship`` is idempotent (re-checks
-    state under ``select_for_update``) so a worker later picking it up is
-    a safe no-op (state is no longer PR_OPENED).
+    A failed push or PR-open leaves the FSM untouched (#838, #860); a PR whose advance is then
+    refused stays recorded, so a re-run adopts it instead of opening a second one.
     """
-    from teatree.core.tasks import execute_ship  # noqa: PLC0415 — deferred: keeps command import light
-
+    try:
+        ticket.refuse_unless_shippable()
+    except (TransitionNotAllowed, InvalidTransitionError) as exc:
+        return _gate_failure(ticket, exc)
+    try:
+        result = ShipExecutor(ticket, title_override=title).run()
+    except Exception as exc:  # noqa: BLE001 — surface the real cause, never an opaque rc=1
+        return _sync_result(ticket, ok=False, detail=str(exc))
+    if not result.ok:
+        return _sync_result(ticket, ok=False, detail=result.detail)
     try:
         with transaction.atomic():
-            failure = _do_ship_transition(ticket, title)
-            if failure is not None:
-                return failure
-            result = execute_ship.call(int(ticket.pk))
-            # #860: a structured ship failure must roll the ``ship()``
-            # advance back too — abort so the shared transaction does
-            # not commit a partial PR_OPENED.
-            _abort_on_ship_failure(result)
-    except Exception as exc:  # noqa: BLE001 — the atomic block already rolled back; surface the real cause, never an opaque rc=1
-        # Atomicity: the surrounding ``transaction.atomic()`` already
-        # rolled the ``ship()`` advance back, so the FSM is NOT left in a
-        # partial PR_OPENED state. Surface the real cause instead of letting
-        # it crash the subprocess into an opaque wrapper-only ``rc=1``.
-        ticket.refresh_from_db()
-        return ShipExecuted(
-            ticket_id=int(ticket.pk),
-            state=str(ticket.state),
-            synced=True,
-            ok=False,
-            detail=str(exc),
-        )
-    ticket.refresh_from_db()
-    return ShipExecuted(
-        ticket_id=int(ticket.pk),
-        state=str(ticket.state),
-        synced=True,
-        ok=bool(result.get("ok", False)),
-        detail=str(result.get("detail", "")),
-    )
+            fresh = Ticket.objects.select_for_update().get(pk=ticket.pk)
+            fresh.ship()
+            fresh.request_review()
+            fresh.save()
+    except (TransitionNotAllowed, InvalidTransitionError) as exc:
+        detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
+        return _sync_result(ticket, ok=False, detail=detail)
+    return _sync_result(ticket, ok=True, detail=result.detail)

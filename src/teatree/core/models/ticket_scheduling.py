@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 from django.apps import apps
 from django.db import transaction
+from django_fsm import TransitionNotAllowed, can_proceed
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
@@ -35,7 +36,7 @@ class SelfReviewRework(NamedTuple):
 
 
 class TicketSchedulingModel(TicketFacet):
-    """Fresh-session phase-task scheduling, orphan-task consumption, and the dirty-worktree preflight."""
+    """Fresh-session phase-task scheduling, orphan-task consumption, and the transition preflights."""
 
     if TYPE_CHECKING:
         # Reverse accessor for ``Task.ticket``'s ``related_name="tasks"`` — Django
@@ -333,6 +334,15 @@ class TicketSchedulingModel(TicketFacet):
             f"and could clobber another branch — #806.)"
         )
         raise DirtyWorktreeError(msg)
+
+    def refuse_unless_shippable(self: "Ticket") -> None:
+        """Raise what ``ship()`` would refuse with, without transitioning — the preflight before any push."""
+        if not can_proceed(self.ship):
+            msg = f"Can't switch from state '{self.state}' using method 'ship'"
+            raise TransitionNotAllowed(msg, object=self, method=self.ship)
+        self._refuse_if_worktree_dirty("shipping")
+        get_gate("local_e2e_dod")(self)
+        get_gate("forced_repro")(self)
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
         """Mark non-terminal tasks for ``phase`` as COMPLETED.

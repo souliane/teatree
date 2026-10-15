@@ -179,9 +179,8 @@ def _run_ship_gates(
     gates, then the expensive diff-rendering gates (visual-QA, mandatory-E2E)
     so all of them see the post-branch-currency tree.
 
-    ``title`` is the explicit ``--title`` override: it has not yet been
-    persisted to ``extra['pr_title_override']`` (that happens at ship time,
-    after the gates pass), so it is threaded into ``validate_pr_metadata``
+    ``title`` is the explicit ``--title`` override: it reaches the ship only
+    after the gates pass, so it is threaded into ``validate_pr_metadata``
     here — otherwise the preflight would validate the regenerated commit
     subject rather than the title that will actually ship.
     """
@@ -351,7 +350,7 @@ class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
         bare issue number (resolved against ``Ticket.issue_url``).
 
         ``--title`` overrides the PR title (default: last commit subject).
-        Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+        ``--sync`` hands it to the ship; the queued ship reads ``ticket.extra['pr_title_override']``.
 
         ``--skip-validation`` skips the heavy ship gates (visual QA, branch
         currency, FSM phase check) but STILL runs the cheap MR

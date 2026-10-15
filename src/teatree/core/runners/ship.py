@@ -254,18 +254,20 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
 
 
 class ShipExecutor(RunnerBase):
-    """Push the worktree branch and open the pull request.
+    """Push the worktree branch and open the pull request, with no transaction open.
 
-    Runs inside ``execute_ship`` after the FSM advances to ``PR_OPENED``. The
-    worker calls ``request_review()`` on success to advance to ``REVIEW_REQUESTED``.
+    Two callers: the async ``execute_ship`` after ``ship()`` committed ``PR_OPENED``, and
+    ``pr create --sync`` before it commits ``ship()`` + ``request_review()``.
     """
 
-    def __init__(self, ticket: "Ticket") -> None:
+    def __init__(self, ticket: "Ticket", *, title_override: str = "") -> None:
         self.ticket = ticket
+        self.title_override = title_override
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
-        extra = cast("TicketExtra", ticket.extra or {})
+        pinned_title = {"pr_title_override": self.title_override} if self.title_override else {}
+        extra = cast("TicketExtra", {**(ticket.extra or {}), **pinned_title})
 
         try:
             worktree = resolve_ship_worktree(ticket, extra)

@@ -10692,7 +10692,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  bare issue number (resolved against ``Ticket.issue_url``).
 
  ``--title`` overrides the PR title (default: last commit subject).
- Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+ ``--sync`` hands it to the ship; the queued ship reads
+ ``ticket.extra['pr_title_override']``.
 
  ``--skip-validation`` skips the heavy ship gates (visual QA, branch
  currency, FSM phase check) but STILL runs the cheap MR
