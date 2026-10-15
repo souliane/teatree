@@ -8,7 +8,7 @@ metadata:
 
 # Agent Rules
 
-Every rule is binding. Each entry is the trigger and the verdict; Read its named `skills/rules/references/<file>.md` for the full text when it applies.
+Read [`skills/rules/RULES.md`](RULES.md) first. Every rule is binding; each entry is its trigger and verdict; Read its named reference when it applies.
 
 ## Index
 
