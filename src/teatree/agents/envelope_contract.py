@@ -18,7 +18,6 @@ where it is unreachable.
 
 import json
 from collections.abc import Mapping
-from typing import cast
 
 from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
@@ -100,7 +99,7 @@ def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult
     verdict = evidence.get("review_verdict")
     if not identity or not isinstance(verdict, Mapping):
         return evidence
-    return cast("AgentResult", {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}})
+    return {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}}
 
 
 def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
