@@ -14,7 +14,7 @@ from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import DeferredQuestion, Task, TaskAttempt, Worktree
+from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
 from teatree.core.worktree.checkout_fence import (
@@ -34,6 +34,7 @@ from teatree.core.worktree.occupancy import (
     release,
     task_holder_id,
 )
+from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.utils.git import run_strict
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core._self_review_helpers import completed_self_review
@@ -97,9 +98,8 @@ class CheckoutFenceTests(TestCase):
     def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             self._park_on_a_foreign_edit()
-            assert self.task.deferred_questions.get().apply_answer(
-                "Decline", resolved_via=DeferredQuestion.ResolvedVia.LOCAL
-            )
+            row = self.task.deferred_questions.get()
+            assert apply_bound_answer(BoundAnswer(row, "Decline", answered_by="U0DEMOOWNER"))
             with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
                 assert claim_task_checkout_or_park(self.task) is not None
 
