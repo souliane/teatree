@@ -178,7 +178,7 @@ def host_proc_root() -> tuple[Path | None, str]:
     return None, f"no readable process table at {_OWN_PROC_ROOT}"
 
 
-def read_process_table() -> ProcessTable:
+def read_process_table(*, exclude_ancestors: bool = False) -> ProcessTable:
     """Read the host-covering process table, or report why there is none."""
     root, refusal = host_proc_root()
     if root is None:
@@ -186,12 +186,13 @@ def read_process_table() -> ProcessTable:
     own_pid = _own_pid_in(root)
     if own_pid is None:
         return ProcessTable(frozenset(), "", (f"{root} would not say which process this is",))
-    view = held_paths(root, exclude_pid=own_pid)
+    ancestors = _ancestor_pids(root, own_pid) if exclude_ancestors else frozenset()
+    view = held_paths(root, exclude_pid=own_pid, exclude_pids=ancestors)
     if not view.answered_pids:
         return ProcessTable(frozenset(), "", (view.unknowable_reason,))
     paths = {Path(normalized_spelling(path)) for path in view.held}
     executables, executable_gaps, unreadable_executables = _executables(
-        [pid for pid in _pid_dirs(root) if pid.name != own_pid]
+        [pid for pid in _pid_dirs(root) if pid.name != own_pid and pid.name not in ancestors]
     )
     paths.update(executables)
     partial_gaps = (view.unknowable_reason,) if view.unknowable_reason else ()
@@ -233,6 +234,21 @@ def _process_name(pid: Path) -> str:
         return (pid / "comm").read_text(encoding="utf-8").strip() or "unknown"
     except OSError:
         return "unknown"
+
+
+def _ancestor_pids(root: Path, own_pid: str) -> frozenset[str]:
+    ancestors: set[str] = set()
+    current = own_pid
+    while True:
+        try:
+            parent = (root / current / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[1]
+        except (OSError, IndexError):
+            break
+        if parent == "0" or parent in ancestors or parent == own_pid:
+            break
+        ancestors.add(parent)
+        current = parent
+    return frozenset(ancestors)
 
 
 def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...], tuple[str, ...]]:

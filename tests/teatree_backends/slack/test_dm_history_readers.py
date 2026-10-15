@@ -1,6 +1,6 @@
-"""Branch coverage for the dm_history single-message and thread-reply readers.
+"""Branch coverage for the dm_history single-message and thread-reply readers and the page walker.
 
-The two raw ``conversations.*`` read helpers split out of ``SlackBotBackend``
+The raw ``conversations.*`` read helpers split out of ``SlackBotBackend``
 to keep the backend under the module-health LOC cap (#2061). Pure functions
 over an injected ``get`` callable — no Slack network, no Django.
 """
@@ -11,11 +11,11 @@ import pytest
 
 from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.dm_history import (
-    _MAX_DM_PAGES,
     _MAX_THREAD_PAGES,
+    PageLimit,
     read_single_message,
     read_thread_replies,
-    read_user_dms,
+    walk_pages,
 )
 from teatree.types import RawAPIDict
 
@@ -201,53 +201,27 @@ class TestReadThreadRepliesUserTokenFallback:
         assert get.tokens == [""]
 
 
-class TestReadUserDmsWindow:
-    """A bounded poll is read whole; an unbounded one stays on the newest page."""
-
-    def test_a_bounded_poll_reads_every_page_of_the_window(self) -> None:
+class TestWalkPages:
+    def test_every_page_repeats_the_params_and_follows_the_cursor(self) -> None:
         pages = {
             "": _page([{"ts": "3.0"}, {"ts": "2.9"}], next_cursor="c1"),
             "c1": _page([{"ts": "2.8"}]),
         }
+        seen: list[dict[str, str | int]] = []
 
         def get(method: str, params: dict[str, str | int]) -> RawAPIDict:
             assert method == "conversations.history"
-            assert params["oldest"] == "2.0"
+            seen.append(params)
             return pages[str(params.get("cursor", ""))]
 
-        messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+        messages = walk_pages(
+            get, "conversations.history", {"channel": "D1", "oldest": "2.0"}, limit=PageLimit(5, "DM channel D1")
+        )
 
         assert [m["ts"] for m in messages] == ["3.0", "2.9", "2.8"]
+        assert seen == [{"channel": "D1", "oldest": "2.0"}, {"channel": "D1", "oldest": "2.0", "cursor": "c1"}]
 
-    def test_the_window_includes_its_own_anchor(self) -> None:
-        # `oldest` is exclusive by default, and the thread fan-out only reaches roots
-        # this history returns — so an exclusive window drops a reply landing under
-        # the very message the cursor was taken from.
-        seen: list[dict[str, str | int]] = []
-
-        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
-            seen.append(params)
-            return _page([{"ts": "2.0"}])
-
-        messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
-
-        assert seen[0]["inclusive"] == "true"
-        assert [m["ts"] for m in messages] == ["2.0"]
-
-    def test_an_unbounded_poll_never_walks_back_through_the_whole_history(self) -> None:
-        cursors: list[str] = []
-
-        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
-            cursors.append(str(params.get("cursor", "")))
-            return _page([{"ts": "3.0"}], next_cursor="c1")
-
-        messages = read_user_dms(get=get, channel="D1", since="", identity=None)
-
-        assert cursors == [""]
-        assert [m["ts"] for m in messages] == ["3.0"]
-
-    def test_a_refused_page_mid_walk_abandons_the_read(self, caplog: pytest.LogCaptureFixture) -> None:
-        """The caller advances its cursor off what it read, so a partial page-1 read strands page 2."""
+    def test_a_refused_page_raises_naming_the_method_subject_and_error(self) -> None:
         pages: dict[str, RawAPIDict] = {
             "": _page([{"ts": "3.0"}], next_cursor="c1"),
             "c1": {"ok": False, "error": "ratelimited"},
@@ -256,36 +230,33 @@ class TestReadUserDmsWindow:
         def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
             return pages[str(params.get("cursor", ""))]
 
-        with caplog.at_level(logging.WARNING):
-            messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+        with pytest.raises(SlackReadRefusedError, match="ratelimited") as excinfo:
+            walk_pages(get, "conversations.history", {"channel": "D1"}, limit=PageLimit(5, "DM channel D1"))
 
-        assert messages == []
-        assert "abandoned" in caplog.text
+        refused = excinfo.value
+        assert (refused.method, refused.subject, refused.error_code) == (
+            "conversations.history",
+            "DM channel D1",
+            "ratelimited",
+        )
 
-    def test_the_bounded_page_cap_logs_and_stops(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_the_cap_logs_the_truncation_and_returns_what_was_read(self, caplog: pytest.LogCaptureFixture) -> None:
         def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
             return _page([{"ts": str(params.get("cursor", "start"))}], next_cursor="more")
 
         with caplog.at_level(logging.WARNING):
-            messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+            messages = walk_pages(get, "conversations.history", {"channel": "D1"}, limit=PageLimit(3, "DM channel D1"))
 
-        assert len(messages) == _MAX_DM_PAGES
-        assert "truncated" in caplog.text
+        assert [m["ts"] for m in messages] == ["start", "more", "more"]
+        assert "conversations.history hit the 3-page cap on DM channel D1" in caplog.text
 
+    def test_strict_cap_refuses_the_partial_read(self) -> None:
+        def get(_method: str, _params: dict[str, str | int]) -> RawAPIDict:
+            return _page([{"ts": "3.0"}], next_cursor="more")
 
-class TestReadUserDmsThreadFanout:
-    def test_thread_fanout_follows_the_cursor(self) -> None:
-        history = _ok([{"ts": "root.ts", "thread_ts": "root.ts", "reply_count": 1}])
-        reply_pages = {
-            "": _page([{"ts": "root.ts"}, {"ts": "r1"}], next_cursor="c1"),
-            "c1": _page([{"ts": "r2"}]),
-        }
+        with pytest.raises(SlackReadRefusedError) as refused:
+            walk_pages(
+                get, "conversations.history", {"channel": "D1"}, limit=PageLimit(2, "DM channel D1"), strict=True
+            )
 
-        def get(method: str, params: dict[str, str | int]) -> RawAPIDict:
-            if method == "conversations.history":
-                return history
-            return reply_pages[str(params.get("cursor", ""))]
-
-        messages = read_user_dms(get=get, channel="D1", since="", identity=None)
-
-        assert [m["ts"] for m in messages] == ["root.ts", "r1", "r2"]
+        assert refused.value.error_code == "page_cap_reached"

@@ -10,20 +10,212 @@ guard before reaching the behaviour it names.
 """
 
 import json
+import tempfile
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.task_claim import claim_generation
-from tests.factories import planned_ticket
+from teatree.utils.git import run_strict
+from tests.factories import WorktreeFactory, planned_ticket
+from tests.teatree_core._self_review_helpers import author_ticket, self_review_result
+from tests.teatree_core.conftest import record_maker_review_for_test
+from tests.teatree_core.models._shared import _init_repo_with_branch
+
+_HAND_PLAN = {
+    "plan_text": "Implement the checkout fence and prove its refusal.",
+    "base_sha": "a" * 40,
+    "adequacy": {
+        "design": {"content": "fence before the harness opens"},
+        "integration_seams": {"content": ["src/teatree/agents/runner.py"]},
+        "edge_cases": {"none_reason": "the refusal parks without changing the checkout"},
+        "test_strategy": {"content": "run a claimed coding task through the real fence"},
+        "acceptance_criteria": {"content": ["a foreign checkout state parks the task"]},
+    },
+}
 
 
 class TestRecordAttemptCommand(TestCase):
+    def _claim_next(self, task: Task, checkout: Path) -> str:
+        WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+        claimed = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=claimed)
+        [entry] = json.loads(claimed.getvalue())
+        assert entry["task_id"] == task.pk
+        return entry["claim_token"]
+
+    def test_loop_plan_schedules_one_coding_task_even_on_replay(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            token = self._claim_next(task, checkout)
+            with patch(
+                "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(_HAND_PLAN),
+                    claim_token=token,
+                    stdout=StringIO(),
+                )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert task.attempts.latest("pk").result.get("recording_source") == "loop"
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
+        assert task._apply_phase_transition() is False
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
+
+    def test_loop_review_schedules_shipping_once_even_on_replay(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+            token = self._claim_next(task, checkout)
+            record_maker_review_for_test(ticket, head)
+            with (
+                patch.object(Ticket, "has_shippable_diff", return_value=True),
+                patch(
+                    "teatree.core.worktree.occupancy.read_process_table",
+                    return_value=ProcessTable(frozenset(), "/proc"),
+                ),
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
+                    claim_token=token,
+                    stdout=StringIO(),
+                )
+                task.refresh_from_db()
+                ticket.refresh_from_db()
+                assert task.status == Task.Status.COMPLETED, task.attempts.latest("pk").error
+                assert ticket.state == Ticket.State.SELF_REVIEWED
+                task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
+
+    def test_loop_review_hold_schedules_one_rework_even_on_replay(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            token = self._claim_next(task, checkout)
+            with patch(
+                "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("hold")),
+                    claim_token=token,
+                    stdout=StringIO(),
+                )
+        task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
+
+    def test_manual_hand_plan_keeps_the_writing_task_unscheduled(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        task.claim(claimed_by="operator")
+        call_command(
+            "tasks",
+            "record-attempt",
+            str(task.pk),
+            json.dumps(_HAND_PLAN),
+            claim_token=claim_generation(task),
+            stdout=StringIO(),
+        )
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert task.attempts.latest("pk").result["recording_source"] == "hand"
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+
+    def test_manual_hand_review_hold_keeps_rework_unscheduled(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="operator")
+        call_command(
+            "tasks",
+            "record-attempt",
+            str(task.pk),
+            json.dumps(self_review_result("hold")),
+            claim_token=claim_generation(task),
+            stdout=StringIO(),
+        )
+        task._apply_phase_transition()
+        assert task.attempts.latest("pk").result["recording_source"] == "hand"
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+
+    def test_a_hand_record_with_a_process_in_the_checkout_pages_nobody(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="operator")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+            WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            busy = ProcessTable(frozenset({checkout}), "/proc")
+            with (
+                patch("teatree.core.worktree.occupancy.read_process_table", return_value=busy),
+                patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("hold")),
+                    claim_token=claim_generation(task),
+                    stdout=StringIO(),
+                )
+        page.assert_not_called()
+
+    def test_manual_hand_review_merge_safe_keeps_shipping_unscheduled(self) -> None:
+        ticket = author_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        task.claim(claimed_by="operator")
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=1)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+            WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            record_maker_review_for_test(ticket, head)
+            with patch.object(Ticket, "has_shippable_diff", return_value=True):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
+                    claim_token=claim_generation(task),
+                    stdout=StringIO(),
+                )
+        assert task.attempts.latest("pk").result["recording_source"] == "hand"
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+
     def _claimed_task(self, *, phase: str = "coding") -> Task:
         ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)

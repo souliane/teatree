@@ -8,7 +8,7 @@ from django.db.models.functions import Coalesce
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
 from teatree.utils.session_ref import session_ref
@@ -27,10 +27,21 @@ _BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_
 #: Kinds where a route candidate ran and did not deliver. Outage and provisioning failures are deliberately
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
 #: corrective retry on the same candidate.
-CANDIDATE_FAULT_KINDS = frozenset({FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR})
+CANDIDATE_FAULT_KINDS = frozenset(
+    {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
+)
+
+
+_PARK_ERROR = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def parks(self) -> "TaskAttemptQuerySet":
+        return self.filter(_PARK_ERROR)
+
+    def excluding_parks(self) -> "TaskAttemptQuerySet":
+        return self.exclude(_PARK_ERROR)
+
     def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
         """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
         last_park = (
@@ -72,7 +83,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def _coalesce_repeated_park(self, *, task: object, error: object, ended_at: object) -> "TaskAttempt | None":
         """The preceding park row this insert repeats verbatim, bumped — or ``None`` to insert."""
-        if task is None or not isinstance(error, str) or not error.startswith(LIMIT_PARKED_PREFIX):
+        if task is None or not isinstance(error, str) or not error.startswith(PARK_ERROR_PREFIXES):
             return None
         latest = self.model.objects.filter(task=task).order_by("-started_at", "-pk").first()
         if latest is None or latest.error != error:
@@ -94,10 +105,10 @@ class TaskAttemptQuerySet(models.QuerySet):
 
         This lane asks the park's own three questions instead.
 
-        **Is it a park?** ``error`` carries :data:`LIMIT_PARKED_PREFIX` — the ONE
-        canonical marker, written by the single ``record_park`` chokepoint and
-        already the definition the coalescer, the iteration stamp and the park-spin
-        detector share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
+        **Is it a park?** ``error`` carries a :data:`PARK_ERROR_PREFIXES` marker —
+        written by ``record_park`` or the checkout fence's park, and already the
+        definition the coalescer, the iteration stamp and the park-spin detector
+        share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
         lease-loss breach is a genuine watchdog failure record, and is deliberately
         NOT swept in with it.
 
@@ -112,11 +123,14 @@ class TaskAttemptQuerySet(models.QuerySet):
         ``started_at`` window would delete exactly the live "still parked, N polls
         later" row. ``started_at`` is the fallback when ``ended_at`` was never set.
         """
-        return self.filter(
-            error__startswith=LIMIT_PARKED_PREFIX,
-            **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
-        ).filter(
-            models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
+        return (
+            self.parks()
+            .filter(
+                **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
+            )
+            .filter(
+                models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
+            )
         )
 
     def usages(self) -> "list[AttemptUsage]":
@@ -387,7 +401,7 @@ class TaskAttempt(models.Model):
         if (
             self.outcome
             and self.outcome != previous_outcome
-            and not self.error.startswith(LIMIT_PARKED_PREFIX)
+            and not self.error.startswith(PARK_ERROR_PREFIXES)
             and (update_fields is None or "outcome" in update_fields)
         ):
             transaction.on_commit(
@@ -480,5 +494,5 @@ class TaskAttempt(models.Model):
         # stamping one here disagrees with that query and leaves the park row carrying a
         # bogus work-iteration number that corrupts the "attempt N/max" display and the
         # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
-        if not self.iteration and self.task_id and not self.error.startswith(LIMIT_PARKED_PREFIX):  # ty: ignore[unresolved-attribute]
+        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):  # ty: ignore[unresolved-attribute]
             self.iteration = self.task.phase_iteration_count() + 1

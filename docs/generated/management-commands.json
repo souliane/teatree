@@ -1272,6 +1272,10 @@
           "name": "bulk-close"
         },
         {
+          "help": "Return guarded legacy gap members to the dream umbrella",
+          "name": "return-gaps"
+        },
+        {
           "help": "Prove a host body still carries the folded member's substance (#4344)",
           "name": "fold-check"
         },
@@ -1494,6 +1498,10 @@
         {
           "help": "Show every checkout a live agent currently holds (#3952)",
           "name": "occupancy"
+        },
+        {
+          "help": "Record the present checkout state after the owner has inspected it",
+          "name": "attest"
         },
         {
           "help": "Register an existing on-disk checkout as a ``Worktree`` row",

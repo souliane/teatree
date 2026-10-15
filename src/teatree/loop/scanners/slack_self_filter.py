@@ -19,14 +19,14 @@ the bot's own outbound posts from ``chat.postMessage`` arrive as plain
 ``message`` events whose ``user`` matches the bot's posted-as user id and
 whose ``bot_id`` matches the bot's bot id. Without a self-filter the bot
 ends up "answering" its own outbound DMs (#1346). Both filters are applied inside
-:class:`SlackDmInboundScanner.scan` so rows that fail either one never
+:meth:`SlackDmRecorder.record_events` so rows that fail either one never
 reach the DB and the consumer benefits for free.
 
 **Fail-closed (identity filter only).** When the bot's own identity cannot
 be resolved (``auth.test`` returned ``ok:false``, no bot token configured,
 transport error), :func:`resolve_own_identity` returns ``None`` and
 :func:`filter_self_messages` returns ``None`` to signal "identity
-unknown — caller must NOT proceed". The scanner refuses to enqueue any
+unknown — caller must NOT proceed". The recorder refuses to enqueue any
 row that turn — better silent for one tick than spam-spawning
 ``t3:answerer`` sub-agents against the bot's own traffic.
 

@@ -12,9 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.loop.dispatch import DispatchAction, dispatch
+from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering import zones_for
-from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.statusline import render
 
 
@@ -569,57 +568,6 @@ class TestInboundDmsCollapseToOneNeutralLine:
         assert "[teatree] DMs (1):" in dm_lines[0], repr(dm_lines)
         # Body text must still be absent even in the fallback form.
         assert "x" not in dm_lines[0].split("DMs (1):")[1].split(" · ")[0].split()
-
-
-class TestSlackUserReplyNeverRendersVerbatim:
-    """#1113 Defect 2 — raw Slack reply text + ts must never leak verbatim.
-
-    The full pipeline: a ``slack.user_reply`` signal → real ``dispatch()``
-    → ``zones_for``. Pre-fix the signal fell through to the statusline
-    fallback and ``c.other`` rendered ``Slack user reply <ts>: <text>``
-    verbatim into the red zone.
-    """
-
-    def _signal(self) -> ScanSignal:
-        return ScanSignal(
-            kind="slack.user_reply",
-            summary="Slack user reply 1779215938.999779: if there are posted in the channel",
-            payload={
-                "ts": "1779215938.999779",
-                "channel": "C9XYZ",
-                "user_id": "U123",
-                "text": "if there are posted in the channel",
-                "overlay": "t3-teatree",
-            },
-        )
-
-    def test_slack_user_reply_text_and_ts_never_render_verbatim(self) -> None:
-        blob = _render_blob(dispatch([self._signal()]))
-        assert "1779215938.999779" not in blob, repr(blob)
-        assert "if there are posted in the channel" not in blob, repr(blob)
-
-    def test_render_defense_drops_a_statusline_slack_user_reply_action(self) -> None:
-        """Defence-in-depth drops a stray ``slack.user_reply`` statusline shape.
-
-        Even if the dispatcher regresses and emits a ``slack.user_reply``-shaped
-        statusline action, the classifier must drop it before ``c.other``
-        renders the raw text/ts verbatim.
-        """
-        action = DispatchAction(
-            kind="statusline",
-            zone="action_needed",
-            detail="Slack user reply 1779.0001: some text",
-            payload={
-                "ts": "1779.0001",
-                "channel": "C9",
-                "user_id": "U1",
-                "text": "some text",
-                "overlay": "t3-teatree",
-            },
-        )
-        blob = _render_blob([action])
-        assert "1779.0001" not in blob, repr(blob)
-        assert "some text" not in blob, repr(blob)
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

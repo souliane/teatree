@@ -5,7 +5,7 @@ This package exercises the inbound bridge (Slack DM →
 backend ``post_message`` → Slack ``chat.postMessage``) end-to-end with a
 fake Slack transport bolted onto the ``httpx`` boundary so the only
 thing mocked is the network. Every other layer — the real
-``SlackBotBackend``, the real ``SlackDmInboundScanner``, real
+``SlackBotBackend``, the real ``teatree.slack_catchup`` replay, real
 ``PendingChatInjection`` rows in the Django DB, the real hook router,
 the real ``notify_user``, the real ``loops_tick`` management command —
 runs unmodified. The split into ``test_inbound`` / ``test_outbound`` /
@@ -37,14 +37,23 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 from hooks.scripts.hook_router import _write_loop_registry
 from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.config.enums import Autonomy
 from teatree.config.settings import TeaTreeConfig, UserSettings
+from teatree.loops.slack_catchup_job import CatchUpState
+
+
+@pytest.fixture(autouse=True)
+def _isolate_catch_up_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(CatchUpState, "path", staticmethod(lambda overlay: tmp_path / f"state-{overlay}.json"))
+
 
 # ── Fake Slack transport ──────────────────────────────────────────────
 
@@ -131,6 +140,61 @@ class FakeSlackTransport:
         return [c for c in self.calls if c.method == method]
 
 
+def _within(ts: str, params: dict[str, Any]) -> bool:
+    inclusive = str(params.get("inclusive", "")).lower() in {"true", "1"}
+    value = float(ts)
+    oldest = float(params.get("oldest") or 0)
+    latest = float(params.get("latest") or "inf")
+    after = value >= oldest if inclusive else value > oldest
+    before = value <= latest if inclusive else value < latest
+    return after and before
+
+
+def _page(items: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    start = int(params.get("cursor") or 0)
+    end = start + int(params.get("limit") or 100)
+    body: dict[str, Any] = {"ok": True, "messages": items[start:end], "has_more": end < len(items)}
+    if end < len(items):
+        body["response_metadata"] = {"next_cursor": str(end)}
+    return body
+
+
+def _as_root(message: dict[str, Any], thread: list[dict[str, Any]]) -> dict[str, Any]:
+    if not thread:
+        return message
+    latest = max((r["ts"] for r in thread), key=float)
+    return {**message, "thread_ts": message["ts"], "reply_count": len(thread), "latest_reply": latest}
+
+
+def serve_history(
+    transport: FakeSlackTransport,
+    messages: list[dict[str, Any]],
+    replies: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Serve ``conversations.history`` / ``conversations.replies`` the way Slack pages them.
+
+    Honours ``oldest`` / ``latest`` / ``inclusive`` / ``limit`` / ``cursor``; history pages
+    newest first, replies oldest first with the root always leading. A root listed in
+    *replies* gets ``thread_ts``, ``reply_count`` and ``latest_reply`` stamped on it.
+    """
+    threads = replies or {}
+    roots = {msg["ts"]: _as_root(msg, threads.get(msg["ts"], [])) for msg in messages}
+
+    def history(params: dict[str, Any], _headers: dict[str, str]) -> dict[str, Any]:
+        selected = [m for m in roots.values() if _within(m["ts"], params)]
+        return _page(sorted(selected, key=lambda m: float(m["ts"]), reverse=True), params)
+
+    def thread(params: dict[str, Any], _headers: dict[str, str]) -> dict[str, Any]:
+        root = roots.get(str(params.get("ts")))
+        if root is None:
+            return {"ok": False, "error": "thread_not_found"}
+        later = [{**r, "thread_ts": root["ts"]} for r in threads.get(root["ts"], []) if _within(r["ts"], params)]
+        return _page([root, *sorted(later, key=lambda m: float(m["ts"]))], params)
+
+    transport.handlers["conversations.history"] = history
+    transport.handlers["conversations.replies"] = thread
+
+
 @pytest.fixture(autouse=True)
 def _isolate_bundled_overlay_module() -> Iterator[None]:
     """Drop the ``teatree.contrib.t3_teatree.overlay`` module + cache after each test.
@@ -175,6 +239,17 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> FakeSlackTransport:
     monkeypatch.setattr(slack_http.httpx, "post", fake.post)
     monkeypatch.setattr(slack_http.httpx, "get", fake.get)
     return fake
+
+
+@pytest.fixture
+def overlay_backend(transport: FakeSlackTransport) -> Iterator[SlackBotBackend]:
+    """A real bot backend over the fake transport, resolved by the catch-up and the recorder alike."""
+    backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
+    with (
+        patch("teatree.loops.slack_catchup_job.messaging_from_overlay", return_value=backend),
+        patch("teatree.loops.slack_inbound.messaging_from_overlay", return_value=backend),
+    ):
+        yield backend
 
 
 # ── Test-side config ──────────────────────────────────────────────────

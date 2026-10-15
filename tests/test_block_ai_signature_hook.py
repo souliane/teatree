@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts import hook_budget
+from hooks.scripts import hook_budget, t3_invocation
 from hooks.scripts.hook_router import _extract_ai_sig_payload, handle_block_ai_signature
 
 
@@ -251,6 +251,26 @@ class TestScannerErrorIsDistinguishedFromFinding:
         assert blocked is True
         reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
         assert "scanner error" in reason.lower()
+        assert "banned trailer in the PR body or commit message" not in reason
+
+    def test_a_launcher_that_cannot_run_here_stays_closed_and_names_the_venue(self, monkeypatch, capsys):
+        """Exit 69 is ``deploy/t3`` refusing the venue — no scan ran, so no scanner error either."""
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        refused = subprocess.CompletedProcess(
+            args=[],
+            returncode=t3_invocation.VENUE_UNAVAILABLE_EXIT,
+            stdout="",
+            stderr="deploy/t3: refusing to run — this checkout is not visible inside the container.\n",
+        )
+        with (
+            patch.object(subprocess, "run", return_value=refused),
+            patch.object(t3_invocation, "unreachable_reason", return_value=None),
+        ):
+            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "venue fault" in reason
+        assert "this checkout is not visible inside the container" in reason
+        assert "AI-signature scanner error" not in reason
         assert "banned trailer in the PR body or commit message" not in reason
 
     def test_a_t3_that_could_not_exec_fails_open(self, monkeypatch):

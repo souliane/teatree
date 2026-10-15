@@ -60,6 +60,8 @@ _LANE_ORDER = [
     "BotPing (payload)",
     "IncomingEvent",
     "TicketTransition",
+    "PendingChatInjection",
+    "BotPing (sent text)",
     "DBTaskResult",
 ]
 

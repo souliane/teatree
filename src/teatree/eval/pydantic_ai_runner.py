@@ -34,7 +34,7 @@ import asyncio
 from collections.abc import Callable
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
-from typing import Literal, cast, get_args
+from typing import cast, get_args
 
 from claude_agent_sdk import Message
 from claude_agent_sdk.types import EffortLevel
@@ -49,7 +49,12 @@ from pydantic_ai.toolsets import FunctionToolset
 from teatree.agents.harness import resolve_effort
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.model_tiering import model_supports_thinking, resolve_pydantic_ai_model, resolve_tier
-from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig, build_openai_compatible_provider
+from teatree.agents.pydantic_ai_config import (
+    LANE_EVAL,
+    OpenAICompatibleLaneConfig,
+    anthropic_cache_settings,
+    build_openai_compatible_provider,
+)
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
@@ -82,11 +87,6 @@ from teatree.llm.builtin_tool_schemas import BUILTIN_TOOL_PARAMETERS
 #: ``pydantic_ai``'s own provider discriminator for the Anthropic transport
 #: (``AnthropicModel.system``) — the branch key for which settings class a model reads.
 _ANTHROPIC_SYSTEM = "anthropic"
-
-#: Prompt-cache TTL for the eval lane's system instructions. Every scenario sharing an
-#: ``agent_path`` sends a byte-identical system prompt, and the shortest TTL refreshes on
-#: each read, so a suite run keeps the entry warm at the cheaper 5-minute write rate.
-EVAL_CACHE_TTL: Literal["5m"] = "5m"
 
 
 def _inert_tool(**_kwargs: object) -> str:
@@ -155,14 +155,14 @@ def _system_prompt(spec: EvalSpec) -> str:
 
 
 def _anthropic_settings(resolved: ReasoningEffort | None, max_tokens: int) -> AnthropicModelSettings:
-    """Anthropic-keyed settings: the output ceiling, the instruction cache, the effort.
+    """Anthropic-keyed settings: the output ceiling, unified cache, and effort.
 
     ``AnthropicEffort`` carries no ``minimal`` rung, so the vocabulary is re-checked
     against the provider's own scale here — the harness guard only narrows to what
     ``pydantic_ai`` accepts, which is the wider set. A rung Anthropic has no name for
     is dropped; the ceiling and the cache key still ride.
     """
-    settings = AnthropicModelSettings(anthropic_cache_instructions=EVAL_CACHE_TTL)
+    settings = AnthropicModelSettings(**anthropic_cache_settings())
     if max_tokens > 0:
         settings["max_tokens"] = max_tokens
     if resolved in get_args(AnthropicEffort):

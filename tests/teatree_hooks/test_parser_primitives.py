@@ -9,7 +9,14 @@ needs when its cwd has reset away from the commit's worktree). Synthetic term
 
 from pathlib import Path
 
-from teatree.hooks._parser_primitives import attached_value, read_file_arg
+from teatree.hooks._parser_primitives import (
+    NAMED_FAIL_CLOSED_PREFIX,
+    ClusterValue,
+    attached_value,
+    is_fail_closed_sentinel,
+    read_file_arg,
+    short_cluster_values,
+)
 
 
 class TestAttachedValue:
@@ -44,3 +51,26 @@ class TestReadFileArg:
 
     def test_missing_everywhere_returns_none(self, tmp_path: Path) -> None:
         assert read_file_arg(str(tmp_path / "absent.md"), base=tmp_path) is None
+
+    def test_file_text_never_carries_a_parser_reason(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(f"acmecorp\n{NAMED_FAIL_CLOSED_PREFIX}x", encoding="utf-8")
+        text = read_file_arg(str(body)) or ""
+        assert "acmecorp" in text
+        assert is_fail_closed_sentinel(text) is False
+
+
+class TestShortClusterValues:
+    def test_later_letter_keeps_unquoted_attached_value(self) -> None:
+        assert short_cluster_values("-sbacmecorp", frozenset({"-b"})) == [
+            ClusterValue("-sb", "acmecorp", "-sbacmecorp", 3, later=True)
+        ]
+
+    def test_first_letter_and_bare_later_letter_are_distinct(self) -> None:
+        assert short_cluster_values("-bm", frozenset({"-b", "-m"})) == [
+            ClusterValue("-b", "m", "-bm", 2, later=False),
+            ClusterValue("-bm", "", "-bm", 3, later=True),
+        ]
+
+    def test_named_fail_closed_line_is_recognised(self) -> None:
+        assert is_fail_closed_sentinel(f"routine\n{NAMED_FAIL_CLOSED_PREFIX}unreadable option")

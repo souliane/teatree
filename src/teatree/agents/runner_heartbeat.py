@@ -82,13 +82,7 @@ async def drive_with_heartbeat(
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
     """Drive one session while renewing ownership and enforcing watchdog ceilings."""
-    live_task = _live_task(task, options, harness)
-    with bound_task_mailbox(
-        options,
-        room=str(live_task.ticket),
-        harness=live_task.harness,
-        label=f"{task.phase} task {task.pk}",
-    ):
+    with bound_task_mailbox(options, _live_task(task, options, harness)):
         return await _drive_bound_session(task, prompt, options, harness, runtime=runtime)
 
 
@@ -122,7 +116,7 @@ class _Heartbeat:
             while True:
                 await asyncio.sleep(self.runtime.heartbeat_interval)
                 if await self._lost_the_lease():
-                    return
+                    continue
                 # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
                 if self.breach or await self._checkpointed():
                     continue
@@ -146,9 +140,12 @@ class _Heartbeat:
         try:
             await asyncio.to_thread(self.runtime.renew_lease, self.task)
         except LeaseLostError as exc:
-            # The flags name what FIRST interrupted the run; a claim lost after that only ends the beat.
-            self.lease_lost = not self.breach
-            logger.warning("Task %s lease lost; interrupting duplicate run", self.task.pk)
+            # The flags name what FIRST interrupted the run; a lost claim re-interrupts every beat until the drive ends.
+            if self.breach:
+                await self.live.interrupt()
+                return True
+            self.lease_lost = True
+            logger.warning("Task %s lease lost; interrupting run", self.task.pk)
             return await self._interrupt(str(exc))
         except Exception:
             logger.warning("Heartbeat failed for task %s", self.task.pk, exc_info=True)

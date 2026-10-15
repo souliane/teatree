@@ -21,21 +21,23 @@ from teatree.agents.codex_shared_app_server import reset_shared_codex_app_server
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
-from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
 from teatree.core.views._webhook_secrets import reset_webhook_secrets
+from teatree.core.worktree import checkout_fence, occupancy
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
+from teatree.loops.slack_inbound import reset_dm_recorders
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -368,6 +370,21 @@ def _inert_ambient_process_table() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _empty_checkout_process_table() -> Iterator[None]:
+    """Give the checkout fence and its exit an empty, usable host table, so no dispatch reads the live ``/proc``.
+
+    CI's container has no ``/host-proc``, so the unpinned read is unusable there and every
+    writing dispatch parks before its fake agent runs. Tests about the table pin their own.
+    """
+    empty = ProcessTable(frozenset(), "/proc")
+    with (
+        patch.object(checkout_fence, "read_process_table", return_value=empty),
+        patch.object(occupancy, "read_process_table", return_value=empty),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_webhook_rate_limiter() -> Iterator[None]:
     """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
     from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415
@@ -483,7 +500,7 @@ def _reset_work_tree_cwd_cache() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_slack_dm_recorders() -> Iterator[None]:
-    """Drop the listener's per-overlay DM recorders around every test.
+    """Drop the per-overlay Slack DM recorders around every test.
 
     Each recorder holds the backend ``messaging_from_overlay`` resolved and the bot
     identity probed through it, so it survives the ``_clear_backend_caches`` reset it

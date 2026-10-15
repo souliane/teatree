@@ -14,7 +14,6 @@ from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -50,7 +49,7 @@ def phase_attempts(task: Task) -> list[TaskAttempt]:
             task__ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
             task__phase__in=phase_spellings(normalize_phase(task.phase)),
         )
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .excluding_parks()
         .order_by("pk")
     )
     return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]

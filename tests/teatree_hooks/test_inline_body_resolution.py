@@ -6,10 +6,16 @@ is inert literal text scanned verbatim, and an absent env var yields the
 unavailable-body-source sentinel. Synthetic term ``acmecorp`` only.
 """
 
+from pathlib import Path
+
 import pytest
 
-from teatree.hooks._inline_body_resolution import _var_ref_is_live, resolve_inline_body_value
-from teatree.hooks._parser_primitives import UNAVAILABLE_BODY_SOURCE_SENTINEL, is_unavailable_body_source_sentinel
+from teatree.hooks._inline_body_resolution import _var_ref_is_live, resolve_inline_body_value, resolve_short_cluster
+from teatree.hooks._parser_primitives import (
+    NAMED_FAIL_CLOSED_PREFIX,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    is_unavailable_body_source_sentinel,
+)
 
 
 class TestVarRefIsLive:
@@ -46,3 +52,28 @@ class TestResolveInlineBodyValue:
         # reference -- even with the env set, it is scanned verbatim.
         monkeypatch.setenv("BODYV", "ship to acmecorp")
         assert resolve_inline_body_value("$BODYV", None, raw="'$BODYV'") == "$BODYV"
+
+
+class TestResolveShortCluster:
+    def test_equals_suffix_is_not_a_bare_letter_cluster(self) -> None:
+        assert resolve_short_cluster(["-m=", "acmecorp"], ["-m=", "acmecorp"], frozenset({"-m"}), None) == []
+
+    def test_later_unquoted_attached_value_is_scanned(self) -> None:
+        assert resolve_short_cluster(["-sbacmecorp"], ["-sbacmecorp"], frozenset({"-b"}), None) == ["acmecorp"]
+
+    def test_unresolved_later_value_has_named_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_ABSENT_CLUSTER_VAR", raising=False)
+        result = resolve_short_cluster(
+            ["-sd", "$T3_ABSENT_CLUSTER_VAR"],
+            ["-sd", '"$T3_ABSENT_CLUSTER_VAR"'],
+            frozenset({"-d"}),
+            None,
+        )
+        assert UNAVAILABLE_BODY_SOURCE_SENTINEL in result
+        assert any(value.startswith(NAMED_FAIL_CLOSED_PREFIX) for value in result)
+
+    def test_attached_live_cat_reads_the_file(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("acmecorp", encoding="utf-8")
+        value = f"$(cat {body})"
+        assert resolve_short_cluster([f"-sm{value}"], [f'-sm"{value}"'], frozenset({"-m"}), None) == ["acmecorp"]

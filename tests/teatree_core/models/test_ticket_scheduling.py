@@ -67,6 +67,16 @@ class TestScheduleHeadlessCollapsesDuplicates(TestCase):
 
         assert Task.objects.filter(ticket=ticket).count() == 3
 
+    def test_shipping_reuses_an_in_flight_task(self) -> None:
+        ticket = self._author()
+
+        first = ticket.schedule_shipping()
+        second = ticket.schedule_shipping()
+
+        assert second.pk == first.pk
+        assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
+        assert Session.objects.filter(ticket=ticket, agent_id="shipping").count() == 1
+
 
 class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):
     """The guard is not over-eager: a finished attempt never blocks the next one."""

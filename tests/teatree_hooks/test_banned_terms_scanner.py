@@ -35,6 +35,7 @@ from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
 from teatree.hooks._parser_primitives import (
     FAIL_CLOSED_SENTINEL,
+    NAMED_FAIL_CLOSED_PREFIX,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
     is_fail_closed_sentinel,
     is_unavailable_body_source_sentinel,
@@ -2440,6 +2441,12 @@ class TestMarkerDenyMessage:
 
     def test_real_term_is_not_a_marker(self) -> None:
         assert banned_terms_scanner.marker_deny_message("acmecorp") is None
+
+    def test_named_parser_reason_has_its_own_deny_message(self) -> None:
+        reason = f"{NAMED_FAIL_CLOSED_PREFIX}curl option -@ is outside the option table"
+        assert banned_terms_scanner.marker_deny_message(reason) == (
+            "BLOCKED: banned-terms posting gate (#1415). curl option -@ is outside the option table."
+        )
 
 
 @pytest.mark.integration

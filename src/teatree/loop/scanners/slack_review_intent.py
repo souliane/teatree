@@ -18,7 +18,7 @@ never the moment t3 first sees the request (#113/#86). The review-intent
 signals are also passed through :func:`teatree.loop.review_claim_signals.filter_review_intent_signals`
 so a *stopped* review loop queues none of them (#79).
 
-Mirrors :class:`teatree.loop.scanners.slack_dm_inbound.SlackDmInboundScanner`:
+Mirrors :class:`teatree.loop.scanners.slack_dm_recorder.SlackDmRecorder`:
 durable idempotent persistence, single-signal emission, no agent
 invocation here (the dispatcher routes signals to agents). The
 reviewed is approved by t3 — it advances ledger rows to ``approved`` so

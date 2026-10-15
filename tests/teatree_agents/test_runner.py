@@ -18,6 +18,7 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_env import system_child_env
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
@@ -36,6 +37,7 @@ from teatree.agents.runner_result import parse_result
 from teatree.agents.runner_usage import _safe_float, _safe_int
 from teatree.agents.session_lineage import resume_session_id
 from teatree.config import AgentHarnessProvider
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import (
     ConfigSetting,
     DeferredQuestion,
@@ -46,6 +48,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
@@ -395,7 +398,10 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
         branch = f"feature-{ticket.pk}"
         _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=1)
         Worktree.objects.create(
-            ticket=ticket, repo_path=str(repo_dir), branch=branch, extra={"worktree_path": str(repo_dir)}
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch=branch,
+            extra={"worktree_path": str(repo_dir), "attested_state": checkout_state(repo_dir).digest},
         )
 
         stream = [
@@ -403,7 +409,10 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
             _assistant_text("implemented it, forgot the envelope"),
             _result_message(),
         ]
-        with _fake_sdk(stream):
+        with (
+            _fake_sdk(stream),
+            patch.object(checkout_fence_mod, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")),
+        ):
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()

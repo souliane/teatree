@@ -45,10 +45,6 @@ class FakeMessaging:
         _ = since
         return []
 
-    def fetch_dms(self, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         return self.messages_by_ts.get((channel, ts), {})
 
@@ -110,11 +106,7 @@ class TestMentionsQueueOverlayPartition(_QueueDirMixin):
                 {"overlay": "beta", "event": _mention("2.0002")},
             ],
         )
-        scanner = SlackMentionsScanner(
-            backend=FakeMessaging(),
-            cursor_path=queue.parent / "cursor.json",
-            overlay="alpha",
-        )
+        scanner = SlackMentionsScanner(backend=FakeMessaging(), overlay="alpha")
 
         with patch.object(receiver, "default_queue_path", return_value=queue):
             signals = scanner.scan()
@@ -125,11 +117,7 @@ class TestMentionsQueueOverlayPartition(_QueueDirMixin):
     def test_untagged_legacy_record_is_still_consumed(self) -> None:
         queue = self.queue_path("slack-events.jsonl")
         _write_queue(queue, [{"overlay": "", "event": _mention("1.0001")}])
-        scanner = SlackMentionsScanner(
-            backend=FakeMessaging(),
-            cursor_path=queue.parent / "cursor.json",
-            overlay="alpha",
-        )
+        scanner = SlackMentionsScanner(backend=FakeMessaging(), overlay="alpha")
 
         with patch.object(receiver, "default_queue_path", return_value=queue):
             signals = scanner.scan()
