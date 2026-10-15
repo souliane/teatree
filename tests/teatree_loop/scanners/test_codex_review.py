@@ -32,7 +32,7 @@ _PROBE = "teatree.loop.scanners.codex_review.head_checks_unsettled"
 _QUERY = "teatree.loop.scanners.codex_review.CodeHostQuery"
 # codex_review binds ``run_allowed_to_fail`` at module import, so patch the name
 # in the scanner's namespace (not the utils source).
-_RUN = "teatree.loop.scanners.codex_review.run_allowed_to_fail"
+_RUN = "teatree.backends.github.api.run_allowed_to_fail"
 
 
 def _completed(*, returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:

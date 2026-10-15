@@ -9,11 +9,12 @@ the same split shape as :mod:`teatree.backends.gitlab.api`.
 import json
 import os
 import re
+import shutil
 from typing import cast
 from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -39,10 +40,25 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
+    return run_checked(list(args), env=_gh_env(token), timeout=timeout)
+
+
+def _gh_env(token: str) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("GITHUB_TOKEN", None)
+    env.pop("GITLAB_TOKEN", None)
     env["GH_TOKEN"] = token
-    return run_checked(list(args), env=env, timeout=timeout)
+    return env
+
+
+def run_gh_unchecked(args: list[str], *, token: str) -> CompletedProcess[str]:
+    argv = [shutil.which("gh") or "gh", *args]
+    if not token:
+        return CompletedProcess(args=argv, returncode=4, stdout="", stderr="github token unavailable")
+    try:
+        return run_allowed_to_fail(argv, expected_codes=None, env=_gh_env(token))
+    except FileNotFoundError:
+        return CompletedProcess(args=argv, returncode=127, stdout="", stderr="gh not installed")
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:
@@ -144,9 +160,6 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
-    env = dict(os.environ)
-    env.pop("GITHUB_TOKEN", None)
-    env["GH_TOKEN"] = token
     result = run_checked(
         [
             "gh",
@@ -160,7 +173,7 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "-",
         ],
         stdin_text=json.dumps(payload),
-        env=env,
+        env=_gh_env(token),
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
