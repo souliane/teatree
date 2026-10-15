@@ -59,6 +59,9 @@ class CheckoutRecoveryTests(TestCase):
     def test_unusable_process_table_refuses(self) -> None:
         self.assert_parked(ProcessTable(frozenset(), "", ("unreadable",)))
 
+    def test_unreadable_same_user_process_refuses(self) -> None:
+        self.assert_parked(ProcessTable(frozenset(), "/proc", (), ("pid 7 (python) is unreadable by this uid",)))
+
     def test_live_process_refuses_then_a_retry_recovers(self) -> None:
         self.assert_parked(ProcessTable(frozenset({self.path}), "/proc"))
         release(self.worktree, holder=task_holder_id(self.next_task))

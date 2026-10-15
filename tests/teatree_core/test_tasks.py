@@ -1874,6 +1874,8 @@ class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
         assert not TaskAttempt.objects.filter(task=task, error__startswith="checkout_parked:").exists()
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        interrupted = self.worktree.get_extra()["auto_attestation"]["tenures"][0]
+        assert (interrupted["holder"], interrupted["ended"]) == (f"task:{self.coding.pk}", "abandoned")
 
     def test_same_task_retry_after_worker_restart(self) -> None:
         self.interrupt_run()

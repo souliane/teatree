@@ -69,7 +69,7 @@ def _state_unchanged(task: Task, worktree: Worktree, state: CheckoutState) -> bo
 
 def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable) -> bool:
     custody = Custody.from_extra(worktree.get_extra())
-    if custody is None or not table.usable or table.holds(Path(worktree.worktree_path)):
+    if custody is None or table.eviction_refuse_reason() or table.holds(Path(worktree.worktree_path)):
         return False
     prior = _interrupted_writer(task, custody)
     branches = _expected_branches(task, worktree, state) if prior is not None else None
