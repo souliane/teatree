@@ -14,9 +14,12 @@ phase-independent, so it covers every such phase. Only a reason that names an ow
 decision (``user_input_kind``) is an owner question (#5096).
 """
 
+import dataclasses
+
 import pytest
 from django.test import TestCase
 
+from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_handoff import (
@@ -24,6 +27,7 @@ from teatree.core.models.task_handoff import (
     RESUME_CONTINUATION_CLAUSE,
     dispatch_reason,
     record_deferred_question,
+    resume_on_answer,
     schedule_resume,
 )
 from tests._owner_channel import OWNER_CARD, owner_stop
@@ -265,3 +269,20 @@ class TestResumeNeedsAPlan(TestCase):
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
 
         assert schedule_resume(parked, answer="scope it to X").phase == "planning"
+
+
+class TestAnOwnerActionCardResumesNothing(TestCase):
+    def test_only_a_card_without_an_action_resumes_its_task(self) -> None:
+        action = ActionRequest(kind=OwnerActionKind.ATTEST, target="1", binding="digest")
+        for card, marker, resumes in (
+            (OWNER_CARD, "", True),
+            (dataclasses.replace(OWNER_CARD, action=action), action_marker(action), False),
+        ):
+            with self.subTest(resumes=resumes):
+                ticket = planned_ticket()
+                task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+                row = DeferredQuestion.record("Should I go ahead?", parked_task=task, dedupe_marker=marker, card=card)
+                answered = row.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+                assert answered is not None
+
+                assert (resume_on_answer(answered, task) is not None) == resumes
