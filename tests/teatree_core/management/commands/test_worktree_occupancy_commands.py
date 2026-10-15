@@ -10,6 +10,7 @@ rather than pointed into the tree.
 
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -143,7 +144,7 @@ class AttestTests(_CommandCase):
     def test_changed_checkout_is_not_attested(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
         state = checkout_state(self.checkout)
-        changed = type(state)("changed", state.commits_ahead, state.dirty)
+        changed = replace(state, digest="changed")
         with (
             patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
             patch("teatree.core.management.commands._worktree_occupancy.checkout_state", side_effect=[state, changed]),

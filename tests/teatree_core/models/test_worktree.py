@@ -9,6 +9,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.models.worktree_occupancy import acquire
 from teatree.core.worktree.worktree_env import compose_project
 
 
@@ -118,6 +119,61 @@ class TestWorktreeTransitionSignals(TestCase):
 
 
 class TestWorktree(TestCase):
+    def test_stale_full_save_keeps_live_checkout_custody_and_claim(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5276")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="ticket-5276",
+            extra={"attested_state": "anchor", "checkout_custody": {"anchor": "anchor", "tenures": []}},
+        )
+        stale = Worktree.objects.get(pk=worktree.pk)
+        acquire(worktree, holder="task:5276", holder_session="run")
+        stale.extra = {"worktree_path": "/tmp/updated"}
+        stale.save()
+
+        saved = Worktree.objects.get(pk=worktree.pk)
+        assert saved.occupied_by == "task:5276"
+        assert saved.occupied_by_session == "run"
+        assert saved.extra["worktree_path"] == "/tmp/updated"
+        assert saved.extra["attested_state"] == "anchor"
+        assert saved.extra["checkout_custody"]["tenures"][0]["holder"] == "task:5276"
+
+    def test_stale_extra_save_keeps_live_checkout_custody_and_attestation(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5277")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="ticket-5277")
+        stale = Worktree.objects.get(pk=worktree.pk)
+        worktree.merge_extra(set_keys={"attested_state": "anchor", "auto_attestation": {"proof": "live"}})
+        stale.extra = {"worktree_path": "/tmp/updated"}
+        stale.save(update_fields=["extra"])
+
+        saved = Worktree.objects.get(pk=worktree.pk)
+        assert saved.extra["worktree_path"] == "/tmp/updated"
+        assert saved.extra["attested_state"] == "anchor"
+        assert saved.extra["auto_attestation"] == {"proof": "live"}
+
+    def test_stale_save_cannot_restore_a_released_claim_or_a_dropped_proof(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5278")
+        worktree = Worktree.objects.create(
+            ticket=ticket, repo_path="backend", branch="ticket-5278", extra={"attested_state": "anchor"}
+        )
+        acquire(worktree, holder="task:5278")
+        stale = Worktree.objects.get(pk=worktree.pk)
+        Worktree.objects.filter(pk=worktree.pk).update(occupied_by="", occupied_by_session="", extra={})
+        stale.save()
+
+        saved = Worktree.objects.get(pk=worktree.pk)
+        assert saved.occupied_by == ""
+        assert "attested_state" not in saved.extra
+
+    def test_save_of_a_deleted_row_writes_it_back(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5279")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="ticket-5279")
+        Worktree.objects.filter(pk=worktree.pk).delete()
+        worktree.save()
+
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
     def test_lifecycle_transitions_and_stores_urls(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/42", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="teatree-django")
