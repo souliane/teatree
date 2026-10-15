@@ -58,6 +58,17 @@ class TestVoidRequest(TestCase):
         ]
         assert row.evidence["quoted"] == "The merge content disappeared."
 
+    def test_non_text_legacy_title_uses_a_safe_fallback(self) -> None:
+        self.ticket.short_description = ""
+        self.ticket.extra = {"issue_title": {"private": "data"}}
+        self.ticket.save(update_fields=["short_description", "extra"])
+
+        with stub_forge():
+            row = self._ask()
+
+        assert "this pull request" in row.question
+        assert "private" not in row.question
+
     def test_the_forge_is_read_outside_the_write_lock(self) -> None:
         depths: list[int] = []
 

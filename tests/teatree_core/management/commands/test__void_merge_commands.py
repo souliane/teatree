@@ -155,6 +155,19 @@ class TestRequestVoidCommand(TestCase):
         assert row.evidence["action"]["kind"] == "void"
         assert f"question {row.pk}" in out
 
+    def test_a_declined_request_can_be_asked_again(self) -> None:
+        code, _out, _err = self._request()
+        assert code == 0
+        first = DeferredQuestion.objects.get()
+        assert first.apply_answer("Keep", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        code, out, _err = self._request()
+
+        assert code == 0
+        second = DeferredQuestion.owner_pending().get()
+        assert second.pk != first.pk
+        assert f"question {second.pk}" in out
+
     def test_a_refused_plan_records_no_card_and_exits_non_zero(self) -> None:
         present = replace(ABSENT, merge_blobs=ABSENT.head_blobs)
 

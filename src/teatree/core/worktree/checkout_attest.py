@@ -4,10 +4,12 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from django.db import DatabaseError, transaction
+
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_card_title
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_ticket_card_title
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.worktree_occupancy import occupancy_holder
@@ -35,7 +37,12 @@ class CheckoutAttestation:
 
     @property
     def action(self) -> ActionRequest:
-        return ActionRequest(kind=OwnerActionKind.ATTEST, target=str(self.worktree.pk), binding=self.state.digest)
+        return ActionRequest(
+            kind=OwnerActionKind.ATTEST,
+            target=str(self.worktree.pk),
+            binding=self.state.digest,
+            host_evidence=self.host_evidence,
+        )
 
     def record(self) -> None:
         self.worktree.merge_extra(set_keys={"attested_state": self.recorded})
@@ -49,7 +56,9 @@ def checkout_rows(path: str) -> list[Worktree]:
     ]
 
 
-def read_attestation(worktree: Worktree, *, expected_digest: str = "") -> CheckoutAttestation:
+def read_attestation(
+    worktree: Worktree, *, expected_digest: str = "", requested_host_evidence: bool | None = None
+) -> CheckoutAttestation:
     path = worktree.worktree_path
     if len(checkout_rows(path)) != 1 or occupancy_holder(worktree) is not None:
         message = "needs one unoccupied Worktree row to attest."
@@ -63,14 +72,15 @@ def read_attestation(worktree: Worktree, *, expected_digest: str = "") -> Checko
         unchanged = checkout_state(Path(path), ticket=worktree.ticket).digest == state.digest
     except (OSError, RuntimeError, ValueError) as exc:
         message = f"state could not be read: {exc}"
-        raise AttestRefusedError(message) from exc
+        raise AttestRefusedError(message, retryable=True) from exc
     if not unchanged:
         message = "changed while attesting."
         raise AttestRefusedError(message)
     if expected_digest and state.digest != expected_digest:
         message = "changed since the owner was asked; ask again."
         raise AttestRefusedError(message)
-    return CheckoutAttestation(worktree, state, table.usable)
+    host_evidence = table.usable and requested_host_evidence is not False
+    return CheckoutAttestation(worktree, state, host_evidence)
 
 
 def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
@@ -81,7 +91,7 @@ def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
 
 def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, QuestionCard]:
     ticket = task.ticket
-    title = safe_card_title(str(ticket.short_description or ticket.extra.get("issue_title", "")), "this ticket")
+    title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
     subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else title
     state = attestation.state
     process_fact = (
@@ -119,12 +129,19 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
     question, card = attest_card(task, attestation)
     try:
-        return DeferredQuestion.record(
-            question,
-            dedupe_marker=action_marker(attestation.action),
-            parked_task=task,
-            card=card,
-        )
-    except DeferredQuestionError:
+        marker = action_marker(attestation.action)
+        with transaction.atomic():
+            obsolete = (
+                DeferredQuestion.owner_pending()
+                .filter(
+                    evidence__action__kind=OwnerActionKind.ATTEST,
+                    evidence__action__target=str(attestation.worktree.pk),
+                )
+                .exclude(dedupe_marker=marker)
+            )
+            for row in obsolete.select_for_update():
+                row.mark_stale("The checkout changed since this question was asked", resolver_id="checkout_attest")
+            return DeferredQuestion.record(question, dedupe_marker=marker, parked_task=task, card=card)
+    except (DatabaseError, DeferredQuestionError):
         logger.exception("Could not record checkout attestation question for task %s", task.pk)
         return None

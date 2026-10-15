@@ -70,6 +70,7 @@ class VoidRefusal(StrEnum):
     AGENT_PROCESS = "agent_process"
     ALREADY_VOIDED = "already_voided"
     FORGE_UNREADABLE = "forge_unreadable"
+    OWNER_QUESTION_UNAVAILABLE = "owner_question_unavailable"
     FORGE_NOT_MERGED = "forge_not_merged"
     CONTENT_ON_DEFAULT = "content_on_default"
     CONTENT_CARRIED_BY_MERGE = "content_carried_by_merge"

@@ -5,10 +5,17 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
-from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, attest_card, read_attestation
+from teatree.core.worktree.checkout_attest import (
+    AttestRefusedError,
+    CheckoutAttestation,
+    ask_owner_to_attest,
+    attest_card,
+    read_attestation,
+)
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
@@ -49,6 +56,25 @@ class TestCheckoutAttestCard(TestCase):
         assert card.problems(question) == []
         assert "A checkout title" in question
 
+    def test_non_text_legacy_title_uses_a_safe_fallback(self) -> None:
+        ticket = TicketFactory(short_description="", extra={"issue_title": {"private": "data"}})
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 0, 0), host_evidence=True)
+
+        question, _card = attest_card(task, attestation)
+
+        assert "this ticket" in question
+        assert "private" not in question
+
+    def test_unavailable_question_store_returns_to_the_park_notice_path(self) -> None:
+        task = TaskFactory(ticket=TicketFactory())
+        worktree = WorktreeFactory(ticket=task.ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 0, 0), host_evidence=True)
+
+        with patch("teatree.core.worktree.checkout_attest.DeferredQuestion.record", side_effect=OperationalError("db")):
+            assert ask_owner_to_attest(task, attestation) is None
+
 
 class TestReadAttestation(TestCase):
     def setUp(self) -> None:
@@ -87,3 +113,12 @@ class TestReadAttestation(TestCase):
         assert attestation.recorded == digest
         self.worktree.refresh_from_db()
         assert "attested_state" not in self.worktree.get_extra()
+
+    def test_unreadable_git_state_is_retryable(self) -> None:
+        with (
+            patch("teatree.core.worktree.checkout_attest.checkout_state", side_effect=OSError("transient")),
+            pytest.raises(AttestRefusedError, match="state could not be read") as error,
+        ):
+            self._read(ProcessTable(frozenset(), "/proc"))
+
+        assert error.value.retryable

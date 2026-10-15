@@ -12,6 +12,7 @@ that while costing a model call.
 """
 
 import asyncio
+import shutil
 import tempfile
 import threading
 from collections.abc import AsyncIterator
@@ -26,8 +27,10 @@ from teatree.agents import runner
 from teatree.agents.live_control import LiveTask
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_stream import StreamCapture
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
 from teatree.core.worktree.checkout_fence import CheckoutFenceError
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
     OccupancyHolder,
     WorktreeOccupiedError,
@@ -36,6 +39,7 @@ from teatree.core.worktree.occupancy import (
     task_holder_id,
 )
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 class _DispatchCase(TestCase):
@@ -97,6 +101,17 @@ class OccupiedCheckoutTests(_DispatchCase):
 
 
 class CheckoutFenceDispatchTests(_DispatchCase):
+    def test_a_real_foreign_edit_asks_the_owner_to_attest(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        self.addCleanup(shutil.rmtree, self.checkout)
+        self.worktree.merge_extra(set_keys={"attested_state": checkout_state(self.checkout).digest})
+        clear = ProcessTable(frozenset(), "/proc")
+        with mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            (self.checkout / "foreign.txt").write_text("foreign edit")
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
+
     def test_a_refused_checkout_never_opens_the_harness(self) -> None:
         driver = mock.Mock()
         with (

@@ -35,8 +35,9 @@ from django.utils import timezone
 
 from teatree import answer_handback
 from teatree.core.modelkit.question_card import QuestionCard
+from teatree.core.models.question_actions import held_question
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
@@ -204,9 +205,9 @@ class DeferredQuestion(models.Model):
         """The single guarded factory: a refused record raises, listing every problem, and writes no row.
 
         Only a :class:`QuestionCard` that passes every check makes an owner row (its ``evidence``), stored dismissed
-        when its subject has finished; no card is INTERNAL. ``dedupe_marker`` collapses repeats onto the PENDING row;
-        an owner marker also returns its answer, or this question dismissed (:func:`question_fingerprint`), and
-        supersedes a pending internal row, inheriting a withheld one's waiting task.
+        when its subject has finished; no card is INTERNAL. ``dedupe_marker`` collapses repeats onto a pending row;
+        ordinary owner cards also hold answered or matching dismissed rows, while action cards can be asked again
+        after resolution. An owner card supersedes a pending internal row and inherits a withheld task.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -223,7 +224,11 @@ class DeferredQuestion(models.Model):
         with transaction.atomic():
             marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")
             parked_task, task_session = carried_wait(marked, parked_task, task_session)
-            if dedupe_marker and (held := cls._held(marked, clean_question, owner=card is not None)):
+            action = card is not None and card.action is not None
+            if dedupe_marker and (held := held_question(marked, clean_question, owner=card is not None, action=action)):
+                if action and parked_task is not None and held.parked_task_id != parked_task.pk:
+                    held.parked_task = parked_task
+                    held.save(update_fields=["parked_task"])
                 return held
             row = cls.objects.create(
                 question=clean_question,
@@ -252,22 +257,6 @@ class DeferredQuestion(models.Model):
             if card is not None and (reason := finished_subject_reason(row)):
                 row.mark_stale(reason, resolver_id="record_subject_settled")
             return row
-
-    @classmethod
-    def _held(
-        cls, marked: models.QuerySet["DeferredQuestion"], question: str, *, owner: bool
-    ) -> "DeferredQuestion | None":
-        """Which of *marked* a record returns instead of asking; an owner record retires a pending internal one."""
-        pending = marked.filter(answered_at__isnull=True, dismissed_at__isnull=True)
-        if not owner:
-            return pending.first()
-        fingerprint = question_fingerprint(question)
-        for row in marked.filter(audience=cls.Audience.OWNER_QUESTION):
-            if row.dismissed_at is None or question_fingerprint(row.question) == fingerprint:
-                return row
-        for internal in pending:
-            internal.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
-        return None
 
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:

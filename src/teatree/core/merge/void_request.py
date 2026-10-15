@@ -3,7 +3,7 @@
 from teatree.core.merge.void_merge import VoidPlan, VoidRefusal, VoidRefusedError, plan_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_card_title
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_ticket_card_title
 from teatree.core.models import Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -11,8 +11,11 @@ from teatree.core.models.deferred_question import DeferredQuestion
 def _subject(plan: VoidPlan) -> str:
     ticket_ids = [item["ticket_id"] for item in plan.restores]
     ticket = Ticket.objects.filter(pk__in=ticket_ids).order_by("pk").first()
-    title = (ticket.short_description or ticket.extra.get("issue_title", "")) if ticket is not None else ""
-    title = safe_card_title(str(title), "this pull request")
+    title = (
+        safe_ticket_card_title(ticket.short_description, ticket.extra, "this pull request")
+        if ticket is not None
+        else "this pull request"
+    )
     return f"<{plan.pr_url}|{title}>"
 
 
@@ -45,4 +48,8 @@ def request_void(pr_url: str, reason: str) -> DeferredQuestion:
         ),
         action=action,
     ).with_quote(question, reason)
-    return DeferredQuestion.record(question, dedupe_marker=action_marker(action), card=card)
+    row = DeferredQuestion.record(question, dedupe_marker=action_marker(action), card=card)
+    if not row.is_pending:
+        message = "the owner question could not be queued; ask again"
+        raise VoidRefusedError(VoidRefusal.OWNER_QUESTION_UNAVAILABLE, message)
+    return row

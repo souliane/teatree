@@ -15,6 +15,7 @@ class ActionRequest(TypedDict):
     target: str
     binding: str
     note: NotRequired[str]
+    host_evidence: NotRequired[bool]
 
 
 MARKER_PREFIX = "owner-action:"
@@ -38,5 +39,7 @@ def read_action(evidence: object) -> ActionRequest | None:
     if not all(isinstance(action.get(key), str) and action[key] for key in ("target", "binding")):
         return None
     if "note" in action and not isinstance(action["note"], str):
+        return None
+    if "host_evidence" in action and not isinstance(action["host_evidence"], bool):
         return None
     return action

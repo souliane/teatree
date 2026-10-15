@@ -12,13 +12,15 @@ from django.utils import timezone
 from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.merge.void_request import request_void
-from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind
+from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, DeferredQuestionAudit, TaskAttempt
-from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, verify_task_checkout
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, park_task_checkout, verify_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
-from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, resolve_answer
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 from tests.void_merge_fixtures import PR_URL, landed_ticket, stub_forge
@@ -74,7 +76,7 @@ class TestCheckoutAttestation(TestCase):
     def _outcomes(self, row: DeferredQuestion) -> list[str]:
         return list(
             DeferredQuestionAudit.objects.filter(question=row)
-            .exclude(action="answered")
+            .exclude(action__in=("answered", "deferred"))
             .values_list("action", flat=True)
         )
 
@@ -107,6 +109,99 @@ class TestCheckoutAttestation(TestCase):
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
         assert self._outcomes(row) == ["declined"]
 
+    def test_typed_yes_accepts_the_checkout(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        assert apply_bound_answer(BoundAnswer(row, "yes", answered_by=_OWNER))
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        assert self._outcomes(row) == ["carried_out"]
+
+    def test_unrecognised_typed_reply_leaves_action_pending(self) -> None:
+        row = self._park_on_a_foreign_edit()
+
+        def reader(_text: str) -> InboundReading:
+            return InboundReading(InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC)
+
+        assert resolve_answer("perhaps later", row, reader=reader) is None
+        row.refresh_from_db()
+        assert row.is_pending
+
+    def test_typed_punctuation_matches_the_recorded_option(self) -> None:
+        row = self._park_on_a_foreign_edit()
+
+        def reader(_text: str) -> InboundReading:
+            return InboundReading(InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC)
+
+        assert resolve_answer("Accept.", row, reader=reader) == "Accept"
+
+    def test_approval_uses_the_card_option_instead_of_a_fixed_label(self) -> None:
+        state = checkout_state(self.checkout)
+        card = QuestionCard(
+            decision=OwnerDecision.IRREVERSIBLE,
+            checked=("The checkout state was inspected.",),
+            blocker="Only the owner may accept this state.",
+            why="The factory stopped before writing.",
+            options=(
+                CardOption("Proceed", "I record this checkout state.", recommended=True),
+                CardOption("Leave", "The task stays parked."),
+            ),
+            action=CheckoutAttestation(self.worktree, state, host_evidence=True).action,
+        )
+        action = card.action
+        assert action is not None
+        row = DeferredQuestion.record("Should I accept this checkout?", dedupe_marker=action_marker(action), card=card)
+        assert apply_bound_answer(BoundAnswer(row, "Proceed", answered_by=_OWNER))
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+
+    def test_latest_waiting_task_is_released_by_a_reused_card(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        later = TaskFactory(ticket=self.task.ticket, phase="coding")
+        state = checkout_state(self.checkout)
+        park_task_checkout(
+            later, reason="foreign edit", attestable=CheckoutAttestation(self.worktree, state, host_evidence=True)
+        )
+        reused = DeferredQuestion.objects.get(pk=row.pk)
+        assert reused.pk == row.pk
+        self._answer(reused, "Accept")
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        later.refresh_from_db()
+        assert later.not_before is None
+
+    def test_answered_action_can_be_asked_again_for_the_same_state(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        state = checkout_state(self.checkout)
+
+        renewed = ask_owner_to_attest(self.task, CheckoutAttestation(self.worktree, state, host_evidence=True))
+
+        assert renewed is not None
+        assert renewed.pk != row.pk
+        assert renewed.is_pending
+
+    def test_card_without_host_evidence_keeps_its_one_run_binding(self) -> None:
+        unavailable = ProcessTable(frozenset(), "")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):
+            assert claim_task_checkout_or_park(self.task) is not None
+        row = self.task.deferred_questions.get()
+        self._answer(row, "Accept")
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == f"owner:{checkout_state(self.checkout).digest}"
+
+    def test_new_digest_supersedes_an_old_pending_card(self) -> None:
+        old = self._park_on_a_foreign_edit()
+        (self.checkout / "new.txt").write_text("new foreign edit")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            assert claim_task_checkout_or_park(self.task) is not None
+
+        old.refresh_from_db()
+        assert old.dismissed_at is not None
+        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
+
     def test_a_checkout_changed_after_the_card_is_refused_with_one_notice(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
@@ -126,8 +221,34 @@ class TestCheckoutAttestation(TestCase):
 
         assert self._carry_out(ProcessTable(frozenset({self.checkout}), "/proc")) == []
         assert self._outcomes(row) == []
+        DeferredQuestionAudit.objects.filter(question=row, action="deferred").update(
+            resolved_at=timezone.now() - timedelta(minutes=6)
+        )
 
         assert self._carry_out() == [f"carried out {row.pk}"]
+
+    def test_deferred_action_backs_off_and_notifies_owner(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        busy = ProcessTable(frozenset({self.checkout}), "/proc")
+
+        with patch("teatree.core.answering.owner_actions.notify_user") as notice:
+            assert self._carry_out(busy) == []
+            assert self._carry_out(busy) == []
+
+        assert DeferredQuestionAudit.objects.filter(question=row, action="deferred").count() == 1
+        notice.assert_called_once()
+
+    def test_deferred_action_expires_with_a_visible_refusal(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        DeferredQuestion.objects.filter(pk=row.pk).update(answered_at=timezone.now() - timedelta(hours=25))
+
+        with patch("teatree.core.answering.owner_actions.notify_user") as notice:
+            assert self._carry_out(ProcessTable(frozenset({self.checkout}), "/proc")) == [f"refused {row.pk}"]
+
+        assert self._outcomes(row) == ["refused"]
+        notice.assert_called_once()
 
     def test_the_checkout_is_read_outside_the_write_lock(self) -> None:
         row = self._park_on_a_foreign_edit()

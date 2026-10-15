@@ -92,6 +92,12 @@ def safe_card_title(title: str, fallback: str) -> str:
     return fallback if any(character in candidate for character in "<>|") else candidate
 
 
+def safe_ticket_card_title(short_description: object, extra: object, fallback: str) -> str:
+    legacy = extra.get("issue_title", "") if isinstance(extra, dict) else ""
+    title = short_description if isinstance(short_description, str) and short_description.strip() else legacy
+    return safe_card_title(title if isinstance(title, str) else "", fallback)
+
+
 def counted(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
@@ -146,6 +152,21 @@ class CardOption:
         except ValueError:
             return ()
         return tuple(option for item in raw if (option := cls.from_raw(item))) if isinstance(raw, list) else ()
+
+
+def match_action_option(options_json: str, answer: str) -> CardOption | None:
+    options = CardOption.parse_all(options_json)
+    if not options or sum(option.recommended for option in options) != 1:
+        return None
+    normalized = " ".join(answer.casefold().strip(" \t\n.!?").split())
+    for option in options:
+        if normalized == " ".join(option.label.casefold().split()):
+            return option
+    if normalized in {"yes", "yes please", "approve", "go ahead"}:
+        return next(option for option in options if option.recommended)
+    if normalized in {"no", "no thanks", "reject"}:
+        return next((option for option in options if not option.recommended), None)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
