@@ -19,6 +19,7 @@ from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, re
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
+_SOURCE_RULES_MD = Path(__file__).resolve().parents[3] / "skills" / "rules" / "RULES.md"
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
@@ -158,7 +159,10 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
         else:
             sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
             if bare == "rules":
-                sections.append(f"--- RULES.md ---\n{skill_md.with_name('RULES.md').read_text(encoding='utf-8')}")
+                rules_md = skill_md.with_name("RULES.md")
+                if not rules_md.is_file():
+                    rules_md = _SOURCE_RULES_MD
+                sections.append(f"--- RULES.md ---\n{rules_md.read_text(encoding='utf-8')}")
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."
