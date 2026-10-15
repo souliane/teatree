@@ -9,13 +9,13 @@ from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.merge.void_request import request_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, DeferredQuestionAudit, TaskAttempt
-from teatree.core.owner_actions import carry_out_owner_actions
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer
@@ -112,7 +112,7 @@ class TestCheckoutAttestation(TestCase):
         self._answer(row, "Accept")
         (self.checkout / "new.txt").write_text("changed again")
 
-        with patch("teatree.core.owner_actions.notify_user") as notice:
+        with patch("teatree.core.answering.owner_actions.notify_user") as notice:
             assert self._carry_out() == [f"refused {row.pk}"]
 
         notice.assert_called_once()
@@ -170,7 +170,10 @@ class TestCheckoutAttestation(TestCase):
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
 
-        with stub_forge(TypeError("malformed forge payload")), self.assertLogs("teatree.core.owner_actions", "ERROR"):
+        with (
+            stub_forge(TypeError("malformed forge payload")),
+            self.assertLogs("teatree.core.answering.owner_actions", "ERROR"),
+        ):
             assert self._carry_out() == [f"carried out {row.pk}"]
 
         assert self._outcomes(void_card) == []

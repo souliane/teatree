@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 from django.db import connection
 from django.test import TestCase
 
+from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.void_request import request_void
 from teatree.core.models import DeferredQuestion, MergeVoid, PullRequest, Ticket
-from teatree.core.owner_actions import carry_out_owner_actions
 from teatree.loop.question_binding import answer_from_click
 from tests.void_merge_fixtures import ABSENT, PR_URL, landed_ticket, stub_forge
 

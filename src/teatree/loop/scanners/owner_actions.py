@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from teatree.core.owner_actions import carry_out_owner_actions
+from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.loop.scanners.base import ScanSignal
 
 

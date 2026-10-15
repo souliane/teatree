@@ -97,10 +97,10 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
     backend = messaging_from_overlay()
     user_id = resolve_user_id()
     return [
-        _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
+        _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(
