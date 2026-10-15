@@ -22,6 +22,6 @@ class OwnerActionScanner:
             logger.info("OwnerActionScanner: question tables unavailable; skipping")
             return []
         return [
-            ScanSignal(kind="owner_action.carried_out", summary=outcome, payload={"scanner": self.name})
+            ScanSignal(kind="owner_action.result", summary=outcome, payload={"scanner": self.name})
             for outcome in outcomes
         ]

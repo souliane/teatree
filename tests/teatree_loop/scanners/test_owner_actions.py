@@ -15,7 +15,12 @@ def test_global_dispatch_orders_owner_actions_before_pending_tasks() -> None:
     assert names.index("owner_actions") < names.index("pending_tasks")
 
 
-def test_scanner_emits_one_signal_per_carried_out_card() -> None:
-    with patch("teatree.loop.scanners.owner_actions.carry_out_owner_actions", return_value=["carried out 7"]):
+def test_scanner_emits_one_result_per_answered_card() -> None:
+    with patch(
+        "teatree.loop.scanners.owner_actions.carry_out_owner_actions", return_value=["carried out 7", "refused 8"]
+    ):
         signals = OwnerActionScanner().scan()
-    assert [(signal.kind, signal.summary) for signal in signals] == [("owner_action.carried_out", "carried out 7")]
+    assert [(signal.kind, signal.summary) for signal in signals] == [
+        ("owner_action.result", "carried out 7"),
+        ("owner_action.result", "refused 8"),
+    ]
