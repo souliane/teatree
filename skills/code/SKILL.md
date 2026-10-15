@@ -80,8 +80,8 @@ For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), c
 git fetch origin main -q
 # `--no-track` is load-bearing: without it the new branch tracks origin/main, so
 # `git push` on it refuses confusingly — and aims at main under push.default=upstream.
-git worktree add -b <short-branch> --no-track ../<repo>-wt-<slug> origin/main
-cd ../<repo>-wt-<slug>
+git worktree add -b <short-branch> --no-track ~/workspace/t3-workspaces/<repo>-wt-<slug> origin/main
+cd ~/workspace/t3-workspaces/<repo>-wt-<slug>
 # only now: Edit / Write the file
 ```
 

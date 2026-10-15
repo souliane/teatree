@@ -58,6 +58,7 @@ class ProcessTableView:
     answered_pids: int
     unknowable_pids: int
     unknowable_reason: str = ""
+    unknowable_details: tuple[tuple[str, str], ...] = ()
 
     @property
     def sighted(self) -> bool:
@@ -155,6 +156,7 @@ def held_paths(
         answered_pids=answered,
         unknowable_pids=len(unknowable),
         unknowable_reason=_coverage_reason(unknowable, pid_count=len(pids), answered=answered, proc_root=proc_root),
+        unknowable_details=tuple(unknowable),
     )
 
 

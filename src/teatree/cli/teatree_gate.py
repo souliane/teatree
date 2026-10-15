@@ -45,6 +45,7 @@ ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
 BRIEF_ANCHOR_GATE_KEY = "brief_anchor_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
+WORKTREE_CONTAINMENT_GATE_KEY = "worktree_containment_gate_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
 OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
@@ -285,6 +286,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="main-clone",
         key=MAIN_CLONE_GATE_KEY,
         label="Main-clone working-tree mutation gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="worktree-containment",
+        key=WORKTREE_CONTAINMENT_GATE_KEY,
+        label="Linked worktree destination gate",
     )
 
     _register_keyed_gate(

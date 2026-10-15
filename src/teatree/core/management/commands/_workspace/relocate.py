@@ -24,6 +24,7 @@ from pathlib import Path
 from django.db import DatabaseError
 
 from teatree.config import OverlayEntry
+from teatree.config.checkout_roots import checkout_roots
 from teatree.core.models import Worktree
 from teatree.core.worktree.relocation import (
     RelocationCandidate,
@@ -93,6 +94,10 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
     self-healed — see :func:`_reconcile_half_move`.
     """
     result = RelocateResult(dry_run=dry_run)
+    if reason := checkout_roots().refusal(target_root, durable=True):
+        result.failed.append(reason)
+        io.write_err(f"  FAILED {reason}")
+        return result
     target_root_resolved = target_root.resolve()
     active_path = active_cwd()
 

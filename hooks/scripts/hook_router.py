@@ -13,7 +13,6 @@ Reads JSON from stdin. Writes JSON to stdout when blocking (PreToolUse deny).
 Exits 0 silently for passthrough.
 """
 
-import argparse
 import contextlib
 import json
 import os
@@ -52,6 +51,7 @@ from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
+from hooks.scripts.checkout_placement_gate import handle_block_worktree_checkout
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
@@ -160,6 +160,8 @@ from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
+from hooks.scripts.router_args import parse_args as _parse_args
+from hooks.scripts.router_args import read_input as _read_input
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import handle_block_self_dm_via_mcp
 from hooks.scripts.session_end_work_check import handle_session_end
@@ -215,12 +217,6 @@ def _current_hook_context() -> tuple[str, dict]:
 
 _FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified hook router")
-    parser.add_argument("--event", required=True, help="Hook event name")
-    return parser.parse_args()
 
 
 # Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
@@ -295,13 +291,6 @@ def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     # _sweep_stale_state_files swallows its own OSError, so no guard here.
     _sweep_stale_state_files()
-
-
-def _read_input() -> dict:
-    try:
-        return json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, OSError):
-        return {}
 
 
 def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
@@ -3640,6 +3629,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_cron_loop_shell,
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
+        handle_block_worktree_checkout,
         handle_block_second_branch,
         handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,

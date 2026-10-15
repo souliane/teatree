@@ -84,7 +84,7 @@ _SIGNATURE_STRIP_RE = re.compile(
     r"|general-purpose-ok|glab-base-ok|grant-ask-ok|headless-authoring-ok|main-clone-ok|merge-detect-ok"
     r"|orchestration-ok|quote-ok|reviewer-ok|scope-push-ok|single-branch-ok|skill-load-ok"
     r"|skip-answer-gate|skip-completion-gate|skip-evidence-gate|skip-plan-gate|slack-mcp-ok"
-    r"|standing-goal-hold|visible-plan-ok):[^\]]*\]"
+    r"|standing-goal-hold|visible-plan-ok|worktree-containment-ok):[^\]]*\]"
     r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
 )
 

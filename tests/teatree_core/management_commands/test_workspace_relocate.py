@@ -31,6 +31,7 @@ def _io() -> RelocateIO:
 class _RelocateCase(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        self.enterContext(patch.object(Path, "home", return_value=self._tmp()))
         self.old_ws = self._tmp() / "workspace"
         self.new_ws = self._tmp() / "workspace" / "t3-workspaces" / "test"
         self.clone = self.old_ws / "myrepo"
@@ -78,6 +79,18 @@ class _RelocateCase(TestCase):
 
 
 class TestMove(_RelocateCase):
+    def test_disallowed_target_root_refuses_before_moving(self) -> None:
+        worktree = self._make_row()
+        outside = self._tmp() / "elsewhere"
+
+        result = run_relocate("test", outside, _io(), dry_run=False)
+
+        assert not result.moved
+        assert any("outside allowed worktree roots" in line for line in result.failed)
+        assert self.old_wt.exists()
+        worktree.refresh_from_db()
+        assert worktree.worktree_path == str(self.old_wt)
+
     def test_moves_worktree_updates_git_metadata_and_db_row(self) -> None:
         wt = self._make_row()
         target = self.new_ws / self.branch / "myrepo"
@@ -147,15 +160,37 @@ class TestSkips(_RelocateCase):
 
 
 class TestIdempotentAndDryRun(_RelocateCase):
-    def test_idempotent_when_already_under_target(self) -> None:
-        # Point the target_root at the OLD workspace so the worktree is already under it.
+    def test_disallowed_old_clone_root_is_refused_even_when_worktree_is_already_under_it(self) -> None:
         wt = self._make_row()
         result = run_relocate("test", self.old_ws, _io(), dry_run=False)
         assert not result.moved
-        assert any("already under" in line for line in result.skipped)
+        assert any("outside allowed worktree roots" in line for line in result.failed)
         assert self.old_wt.exists()
         wt.refresh_from_db()
         assert wt.worktree_path == str(self.old_wt)
+
+    def test_idempotent_when_already_under_an_allowed_target(self) -> None:
+        settled = self.new_ws / self.branch / "myrepo"
+        settled.parent.mkdir(parents=True)
+        _run_git("worktree", "move", str(self.old_wt), str(settled), cwd=self.clone)
+        wt = self._make_row(wt_path=settled)
+
+        result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert not result.moved
+        assert not result.failed
+        assert any("already under" in line for line in result.skipped)
+        wt.refresh_from_db()
+        assert wt.worktree_path == str(settled)
+
+    def test_worktree_base_itself_is_an_allowed_target(self) -> None:
+        self._make_row()
+        base = self._tmp() / "workspace" / "t3-workspaces"
+
+        result = run_relocate("test", base, _io(), dry_run=True)
+
+        assert result.moved
+        assert not result.failed
 
     def test_dry_run_plans_without_moving(self) -> None:
         wt = self._make_row()

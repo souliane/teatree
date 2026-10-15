@@ -221,7 +221,7 @@ def plan_artifact_eviction(
     """
     deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     table = read_process_table()
-    if refusal := table.refuse_reason():
+    if refusal := table.eviction_refuse_reason():
         return ArtifactEvictionPlan(refusal=refusal)
     population = venue_population(workspace, deadline=deadline)
     classified = {checkout: _classify_artifacts_in(checkout) for checkout in one_spelling_each(population.candidates)}
@@ -321,7 +321,7 @@ def _fresh_guards(protection: ArtifactProtection) -> _Guards | str:
     if gaps := protection.refresh():
         return _enumeration_refusal(gaps)
     table = read_process_table()
-    if refusal := table.refuse_reason():
+    if refusal := table.eviction_refuse_reason():
         return f"the process table stopped answering mid-batch — {refusal}"
     return _Guards(table=table, protection=protection)
 

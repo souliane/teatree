@@ -214,6 +214,16 @@ class TestMainCloneGate:
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is True
 
 
+class TestWorktreeContainmentGate:
+    def test_disable_and_reenable(self, app: typer.Typer, canonical_db: Path) -> None:
+        runner = CliRunner()
+        key = "worktree_containment_gate_enabled"
+        assert runner.invoke(app, ["gate", "worktree-containment", "disable"]).exit_code == 0
+        assert _gate_value(canonical_db, key) is False
+        assert runner.invoke(app, ["gate", "worktree-containment", "enable"]).exit_code == 0
+        assert _gate_value(canonical_db, key) is True
+
+
 class TestGateRelaxationGate:
     """``t3 <overlay> gate gate-relaxation disable|enable`` — the anti-relaxation self-rescue (#850)."""
 

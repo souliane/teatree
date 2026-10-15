@@ -59,6 +59,7 @@ DECLARED_GATES = frozenset(
         "verbatim_operator_paste",
         "void_merge",
         "visible_plan_gate",
+        "worktree_containment",
     }
 )
 _PUBLIC_REASON_MARKERS = frozenset({"blocked", "skill-loading-enforcement"})

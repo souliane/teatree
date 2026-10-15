@@ -643,6 +643,49 @@ class TestFinalizeTicketProvision(TestCase):
         assert Ticket.objects.filter(pk=ticket.pk).exists()
         assert any("Provisioning failed" in line for line in errs)
 
+    def test_placement_refusal_keeps_new_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-keep"})
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(
+            ok=False, detail="outside_allowed_roots: fix workspace_dir", code="outside_allowed_roots"
+        )
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
+
+        assert rc == 0
+        assert Ticket.objects.filter(pk=ticket.pk).exists()
+        assert any("outside_allowed_roots" in line for line in errs)
+
+    def test_placement_refusal_on_an_in_flight_ticket_fails_without_a_summary(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-inflight"})
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="backend", branch="5247-inflight")
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(
+            ok=False, detail="outside_allowed_roots: fix workspace_dir", code="outside_allowed_roots"
+        )
+        out: list[str] = []
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(out.append, errs.append, ticket, None)
+
+        assert rc == 0
+        assert out == []
+        assert Ticket.objects.get(pk=ticket.pk).worktrees.count() == 1
+        assert any("Provisioning refused: outside_allowed_roots" in line for line in errs)
+
+    def test_detail_prefix_without_placement_code_does_not_claim_placement(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "5247-prefix"})
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=False, detail="outside_allowed_roots: unrelated failure")
+        errs: list[str] = []
+        with patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(pk=ticket.pk).exists()
+        assert any("Provisioning failed" in line for line in errs)
+
 
 class TestWorkspaceTicket(TestCase):
     def setUp(self) -> None:
@@ -659,6 +702,11 @@ class TestWorkspaceTicket(TestCase):
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend", "api", "web"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    def _allowed_root(self, temp: Path) -> Path:
+        home = temp / "home"
+        self.enterContext(patch.object(Path, "home", return_value=home))
+        return home / "workspace" / "t3-workspaces"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -684,6 +732,24 @@ class TestWorkspaceTicket(TestCase):
             with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
                 _refused_workspace_ticket("https://example.com/issues/42")
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_disallowed_worktree_root_keeps_the_ticket_and_creates_no_dir_or_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._allowed_root(Path(tmp))
+            capped = Path(tmp) / "capped"
+            with (
+                patch.object(workspace_mod, "_worktree_root", return_value=capped),
+                patch.object(provision_mod, "worktree_root", return_value=capped),
+                patch.object(provision_mod.git, "worktree_add") as worktree_add,
+            ):
+                err = _refused_workspace_ticket("https://example.com/issues/5247")
+            assert not capped.exists()
+        assert "Provisioning refused: outside_allowed_roots" in err
+        ticket = Ticket.objects.get(issue_url="https://example.com/issues/5247")
+        assert ticket.worktrees.count() == 0
+        worktree_add.assert_not_called()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -901,8 +967,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
 
             # Create git repos
             for repo_name in ("backend", "frontend"):
@@ -1000,8 +1066,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend" / ".git").mkdir(parents=True)
             (workspace / "frontend").mkdir()
 
@@ -1028,8 +1094,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1063,8 +1129,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1129,8 +1195,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
 
@@ -1170,8 +1236,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
-            workspace.mkdir()
+            workspace = self._allowed_root(tmp_path)
+            workspace.mkdir(parents=True)
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
             (workspace / "frontend").mkdir()
@@ -1216,7 +1282,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
-            workspace = tmp_path / "workspace"
+            workspace = self._allowed_root(tmp_path)
             (workspace / "org" / "backend").mkdir(parents=True)
             (workspace / "org" / "backend" / ".git").mkdir()
             (workspace / "org" / "frontend").mkdir(parents=True)
@@ -1267,7 +1333,7 @@ class TestWorkspaceTicket(TestCase):
     def test_core_issue_provisions_only_teatree_core_repo(self) -> None:
         """#727: a teatree-core issue URL provisions the core repo, not product repos."""
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
+            workspace = self._allowed_root(Path(tmp))
             core = workspace / "souliane" / "teatree"
             (core / ".git").mkdir(parents=True)
 
@@ -1294,7 +1360,7 @@ class TestWorkspaceTicket(TestCase):
     def test_product_issue_still_provisions_product_repos(self) -> None:
         """#727 regression guard: a product-repo issue keeps the product repo set."""
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
+            workspace = self._allowed_root(Path(tmp))
             core = workspace / "souliane" / "teatree"
             (core / ".git").mkdir(parents=True)
             for repo in ("backend", "frontend"):

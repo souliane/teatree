@@ -477,6 +477,11 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
     }
 
 
+def _worktree_checkout_input(ctx: GateContext, target: Path) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {**_bash(f"git worktree add {target} main"), "cwd": str(repo)}
+
+
 # headless-posture authoring gate (PreToolUse Edit): an interactive session editing
 # teatree's own source while the resolved runtime is headless denies; the same edit
 # carrying the audited single-use override token allows. The runtime is SEEDED into the
@@ -1269,6 +1274,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_main_clone_bash_deny,
         allow_input=_main_clone_bash_allow,
+    ),
+    GateRow(
+        gate_id="block-worktree-checkout",
+        handler=router.handle_block_worktree_checkout,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=lambda ctx: _worktree_checkout_input(ctx, ctx.home / "stray"),
+        allow_input=lambda ctx: _worktree_checkout_input(ctx, ctx.home / "workspace" / "t3-workspaces" / "ticket"),
     ),
     GateRow(
         gate_id="block-interactive-authoring",
