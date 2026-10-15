@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar
 
@@ -8,6 +9,9 @@ from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields, validated_worktree_extra
 from teatree.utils.postgres_secret import postgres_pass_key
+
+_CLAIM_FIELDS = ("occupied_by", "occupied_by_session", "occupied_at", "occupancy_expires_at")
+_PROOF_KEYS = ("attested_state", "checkout_custody", "auto_attestation")
 
 
 class WorktreeDbNameConflictError(RuntimeError):
@@ -86,6 +90,34 @@ class Worktree(models.Model):
 
     def __str__(self) -> str:
         return str(self.repo_path)
+
+    def save(
+        self,
+        force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        force_update: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        using: str | None = None,
+        update_fields: Iterable[str] | None = None,
+    ) -> None:
+        fields = None if update_fields is None else frozenset(update_fields)
+        if not self._state.adding and (fields is None or not fields.isdisjoint({"extra", *_CLAIM_FIELDS})):
+            alias = using or self._state.db
+            with transaction.atomic(using=alias):
+                live = type(self).objects.db_manager(alias).select_for_update().filter(pk=self.pk).first()
+                if live is not None:
+                    self._keep_live_ownership(live, fields)
+                super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=fields)
+            return
+        super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=fields)
+
+    def _keep_live_ownership(self, live: "Worktree", fields: frozenset[str] | None) -> None:
+        # Claims and checkout proof change only through their locked seams; a stale row must not rewrite them.
+        if fields is None or "extra" in fields:
+            live_extra = live.extra or {}
+            kept = {key: value for key, value in (self.extra or {}).items() if key not in _PROOF_KEYS}
+            self.extra = kept | {key: live_extra[key] for key in _PROOF_KEYS if key in live_extra}
+        for field in _CLAIM_FIELDS:
+            if fields is None or field in fields:
+                setattr(self, field, getattr(live, field))
 
     @property
     def worktree_path(self) -> str:
@@ -358,7 +390,7 @@ class Worktree(models.Model):
                 locked.extra = merged
                 changed_fields.append("extra")
             if changed_fields:
-                locked.save(update_fields=changed_fields)
+                super(Worktree, locked).save(update_fields=changed_fields)
             self.extra = merged
 
 

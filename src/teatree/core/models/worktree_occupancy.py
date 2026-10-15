@@ -26,6 +26,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, holder_confirmed_dead
+from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.task import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree import Worktree
@@ -169,6 +170,7 @@ def acquire(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
+    renewal: bool = False,
 ) -> OccupancyHolder:
     """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
 
@@ -192,16 +194,26 @@ def acquire(
         | Q(occupancy_expires_at__lte=now)
         | Q(occupied_by=holder, occupied_by_session=holder_session)
     )
-    won = (
-        Worktree.objects.filter(pk=worktree.pk)
-        .filter(grantable)
-        .update(
-            occupied_by=holder,
-            occupied_by_session=holder_session,
-            occupied_at=now,
-            occupancy_expires_at=expires,
+    with transaction.atomic():
+        won = (
+            Worktree.objects.filter(pk=worktree.pk)
+            .filter(grantable)
+            .update(
+                occupied_by=holder,
+                occupied_by_session=holder_session,
+                occupied_at=now,
+                occupancy_expires_at=expires,
+            )
         )
-    )
+        if won == 1:
+            extra = Worktree.objects.filter(pk=worktree.pk).values_list("extra", flat=True).get() or {}
+            custody = Custody.from_extra(extra)
+            if custody is not None:
+                updated = custody.opened(holder, holder_session, now, renewal=renewal)
+                if updated != custody:
+                    Worktree.objects.filter(pk=worktree.pk).update(
+                        extra={**extra, "checkout_custody": updated.as_dict()}
+                    )
     if won != 1:
         raise _occupied_error(worktree)
     worktree.refresh_from_db()
@@ -222,14 +234,41 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "", attest
         occupied_by=""
     )
     with transaction.atomic():
-        if attested_state is None:
-            freed = held.update(**_UNOCCUPIED)
+        extra = held.select_for_update().values_list("extra", flat=True).first()
+        if extra is None:
+            freed = 0
         else:
-            extra = held.select_for_update().values_list("extra", flat=True).first() or {}
-            freed = held.update(**_UNOCCUPIED, extra={**extra, "attested_state": attested_state})
+            custody = Custody.from_extra(extra)
+            if attested_state is None:
+                updated = custody.closed(holder, holder_session, timezone.now()) if custody is not None else None
+                fields = {"extra": {**extra, "checkout_custody": updated.as_dict()}} if updated is not None else {}
+            else:
+                fields = {
+                    "extra": {
+                        **extra,
+                        "attested_state": attested_state,
+                        "checkout_custody": Custody.reanchored(attested_state, None, "", "").as_dict(),
+                    }
+                }
+            freed = held.update(**_UNOCCUPIED, **fields)
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1
+
+
+def drop_refused_tenure(worktree: Worktree, *, holder: str, holder_session: str) -> None:
+    with transaction.atomic():
+        held = Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session).exclude(
+            occupied_by=""
+        )
+        extra = held.select_for_update().values_list("extra", flat=True).first()
+        if extra is None:
+            return
+        custody = Custody.from_extra(extra)
+        if custody is not None:
+            updated = custody.without_open(holder, holder_session)
+            if updated != custody:
+                held.update(extra={**extra, "checkout_custody": updated.as_dict()})
 
 
 def release_task_occupancy(task: Task, *, attested_state: str | None = None) -> bool:
