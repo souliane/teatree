@@ -126,17 +126,17 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
         return _gate_failure(ticket, exc)
     try:
         result = ShipExecutor(ticket, title_override=title).run()
+        if not result.ok:
+            return _sync_result(ticket, ok=False, detail=result.detail)
+        try:
+            with transaction.atomic():
+                fresh = Ticket.objects.select_for_update().get(pk=ticket.pk)
+                fresh.ship()
+                fresh.request_review()
+                fresh.save()
+        except (TransitionNotAllowed, InvalidTransitionError) as exc:
+            detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
+            return _sync_result(ticket, ok=False, detail=detail)
     except Exception as exc:  # noqa: BLE001 — surface the real cause, never an opaque rc=1
         return _sync_result(ticket, ok=False, detail=str(exc))
-    if not result.ok:
-        return _sync_result(ticket, ok=False, detail=result.detail)
-    try:
-        with transaction.atomic():
-            fresh = Ticket.objects.select_for_update().get(pk=ticket.pk)
-            fresh.ship()
-            fresh.request_review()
-            fresh.save()
-    except (TransitionNotAllowed, InvalidTransitionError) as exc:
-        detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
-        return _sync_result(ticket, ok=False, detail=detail)
     return _sync_result(ticket, ok=True, detail=result.detail)
