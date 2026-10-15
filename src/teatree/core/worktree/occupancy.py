@@ -60,6 +60,7 @@ from teatree.core.models.worktree_occupancy import (
     _occupied_error,
     _worktree_at,
     acquire,
+    held_dispatch_checkout,
     occupancy_holder,
     release,
     release_task_occupancy,
@@ -113,14 +114,12 @@ def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait:
 
 
 def _prepare_task_checkout_exit(
-    task: Task, worktree: Worktree, *, holder: str, holder_session: str
+    task: Task, ticket: "Ticket", *, holder: str, holder_session: str
 ) -> CheckoutExit | None:
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
-    row = Worktree.objects.get(pk=worktree.pk)
-    if (row.occupied_by, row.occupied_by_session) != (holder, holder_session):
-        return CheckoutExit(release=False)
-    return _settle_checkout_exit(task, row, attest=True)
+    row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
+    return None if row is None else _settle_checkout_exit(task, row, attest=True)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -142,9 +141,9 @@ def _release_if_finished_task(worktree: Worktree) -> None:
     release(worktree, holder=current.holder, holder_session=current.holder_session)
 
 
-def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: str, scope: CheckoutExitScope) -> None:
-    row = Worktree.objects.get(pk=worktree.pk)
-    if (row.occupied_by, row.occupied_by_session) != (holder, holder_session):
+def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str, scope: CheckoutExitScope) -> None:
+    row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
+    if row is None:
         return
     pk = holder.removeprefix("task:")
     task = Task.objects.filter(pk=int(pk)).first() if pk.isdigit() else None
@@ -169,26 +168,24 @@ def _finish_task_checkout(worktree: Worktree, *, holder: str, holder_session: st
 
 
 @contextmanager
-def _held_checkout(worktree: Worktree, *, holder: str, holder_session: str) -> Iterator[None]:
+def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Iterator[None]:
     with checkout_exit_scope(
-        lambda task: _prepare_task_checkout_exit(task, worktree, holder=holder, holder_session=holder_session)
+        lambda task: _prepare_task_checkout_exit(task, ticket, holder=holder, holder_session=holder_session)
     ) as scope:
         try:
             yield
         finally:
-            _finish_task_checkout(worktree, holder=holder, holder_session=holder_session, scope=scope)
+            _finish_task_checkout(ticket, holder=holder, holder_session=holder_session, scope=scope)
 
 
 @contextmanager
 def recording_task_checkout(task: Task) -> Iterator[bool]:
     """Settle a ``/loop`` record's checkout like a worker exit; yields whether the task held it."""
-    path = dispatch_worktree_path(task.ticket)
-    worktree = _worktree_at(task.ticket, path) if path else None
     holder, session = task_holder_id(task), task.claimed_by_session
-    if worktree is None or (worktree.occupied_by, worktree.occupied_by_session) != (holder, session):
+    if held_dispatch_checkout(task.ticket, holder=holder, holder_session=session) is None:
         yield False
         return
-    with _held_checkout(worktree, holder=holder, holder_session=session):
+    with _held_checkout(task.ticket, holder=holder, holder_session=session):
         yield True
 
 
@@ -205,19 +202,16 @@ def occupy_ticket_checkout(
     Yields the on-disk path an agent should run in, and settles the claim on exit:
     a surviving process of the run keeps it reserved and pages the owner.
 
-    Yields ``""`` and claims nothing when the ticket has no materialised checkout:
-    there is no shared resource yet, so there is nothing to contend on and a
-    pre-provision dispatch behaves exactly as it does today.
+    Yields ``""`` and claims nothing when the ticket has no materialised checkout yet.
+    A checkout the run creates is taken by :func:`renew_ticket_checkout` and settled
+    by this exit like one held from the start.
     """
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
-    if worktree is None:
-        yield path
-        return
-
-    _release_if_finished_task(worktree)
-    acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
-    with _held_checkout(worktree, holder=holder, holder_session=holder_session):
+    if worktree is not None:
+        _release_if_finished_task(worktree)
+        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
+    with _held_checkout(ticket, holder=holder, holder_session=holder_session):
         yield path
 
 
@@ -236,7 +230,7 @@ def renew_ticket_checkout(
     still writing to, not leave it advertised as free. A rival holding the
     checkout is the loss the caller has to abort on.
 
-    Renews nothing when the ticket has no materialised checkout.
+    Renews nothing when the ticket has no materialised checkout; takes over one the run created.
     """
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
