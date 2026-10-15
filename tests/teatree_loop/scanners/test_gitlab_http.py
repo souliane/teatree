@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.gitlab_http import MissingGitLabTokenError, gitlab_api_for
@@ -24,11 +25,11 @@ def test_live_overlay_routes_host_and_token(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_toml_only_overlay_routes_host_and_token(monkeypatch: pytest.MonkeyPatch) -> None:
     def missing(_name: str) -> object:
-        raise LookupError
+        raise ImproperlyConfigured
 
     monkeypatch.setattr("teatree.core.overlay_loader.get_overlay", missing)
     monkeypatch.setattr(
-        "teatree.config.load_config",
+        "teatree.loop.scanners.gitlab_http.load_config",
         lambda: SimpleNamespace(raw={"overlays": {"owner": {"gitlab_url": "https://toml.example/"}}}),
     )
     api = gitlab_api_for(_resolution())
