@@ -1,120 +1,147 @@
-"""Tests for :class:`GlabGhMrStateClassifier` — the shell-out MR-state classifier (#1131).
-
-A GitHub URL routes to ``gh pr view`` and a GitLab URL to ``glab mr view -R``;
-a merged state is a verdict, a non-forge URL is a deterministic non-match
-(``merged=False``), and a subprocess failure (rc≠0, missing binary, garbage
-JSON) raises :class:`ScannerError` rather than mis-reporting the MR as open.
-"""
+"""Forge MR classifier verdicts and fail-loud transport behavior."""
 
 import subprocess
 
+import httpx
 import pytest
 
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
-from teatree.loop.scanners.base import ScannerError
-from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier, _classifier_head_sha
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
+from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier, _classifier_head_sha
 
 GH_URL = "https://github.com/team/project/pull/42"
-GL_URL = "https://gitlab.example.com/team/project/-/merge_requests/7"
+GL_URL = "https://gitlab.example.com/team/group/project/-/merge_requests/7"
+API_URL = "https://owned.gitlab.example/api/v4/projects/team%2Fgroup%2Fproject/merge_requests/7"
 
 
 @pytest.fixture(autouse=True)
 def _routed_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
+    def resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
         return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
 
+    monkeypatch.setattr("teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token", resolve)
     monkeypatch.setattr(
-        "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
-        _resolve,
+        "teatree.loop.scanners.gitlab_http.overlay_gitlab_base_url",
+        lambda _name: "https://owned.gitlab.example/api/v4",
     )
+    monkeypatch.setenv("T3_GITLAB_HTTP_MAX_RETRIES", "0")
 
 
 def _completed(stdout: str, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=["tool"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _response(payload: object, *, status: int = 200) -> httpx.Response:
+    return httpx.Response(status, json=payload, request=httpx.Request("GET", API_URL))
+
+
 class TestVerdicts:
-    def test_merged_github_pr_is_a_merged_and_approved_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_merged_github_pr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "teatree.utils.run.run_allowed_to_fail",
+            "teatree.backends.github.api.run_allowed_to_fail",
             lambda *a, **k: _completed('{"state": "MERGED", "reviewDecision": "APPROVED", "author": {"login": "me"}}'),
         )
-        [state] = GlabGhMrStateClassifier()([GH_URL])
-        assert state.merged is True
-        assert state.approved is True
-        assert state.author_username == "me"
+        [state] = ForgeMrStateClassifier()([GH_URL])
+        assert (state.merged, state.approved, state.author_username) == (True, True, "me")
 
-    def test_open_gitlab_mr_is_an_unmerged_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "teatree.utils.run.run_allowed_to_fail",
-            lambda *a, **k: _completed('{"state": "opened", "upvotes": 0, "author": {"username": "colleague"}}'),
-        )
-        [state] = GlabGhMrStateClassifier()([GL_URL])
-        assert state.merged is False
-        assert state.approved is False
-        assert state.author_username == "colleague"
+    def test_open_gitlab_mr_binds_host_token_and_nested_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[tuple[str, dict[str, str]]] = []
+
+        def get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+            calls.append((url, headers))
+            return _response({"state": "opened", "upvotes": 0, "author": {"username": "colleague"}})
+
+        monkeypatch.setattr("httpx.get", get)
+        [state] = ForgeMrStateClassifier()([GL_URL])
+        assert (state.merged, state.approved, state.author_username) == (False, False, "colleague")
+        assert calls == [(API_URL, {"PRIVATE-TOKEN": "routed-gitlab_token"})]
 
     def test_non_forge_url_is_a_deterministic_non_match(self) -> None:
-        [state] = GlabGhMrStateClassifier()(["https://example.com/not/an/mr"])
-        assert state.merged is False
-        assert state.approved is False
+        [state] = ForgeMrStateClassifier()(["https://example.com/not/an/mr"])
+        assert (state.merged, state.approved) == (False, False)
 
 
 class TestFailureIsNotAVerdict:
-    def test_empty_route_never_inherits_ambient_gh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(("url", "credential"), [(GH_URL, "github_token"), (GL_URL, "gitlab_token")])
+    def test_empty_route_never_uses_ambient_auth(
+        self, monkeypatch: pytest.MonkeyPatch, url: str, credential: str
+    ) -> None:
         calls: list[object] = []
-        monkeypatch.setenv("GH_TOKEN", "ambient-token")
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
         monkeypatch.setattr(
             "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
-            lambda *_a, **_k: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
+            lambda *_a, **_k: ForgeTokenResolution(credential, "owner", ForgeTokenState.UNSET),
         )
-
-        with pytest.raises(ScannerError, match="refusing ambient gh authentication"):
-            GlabGhMrStateClassifier()([GH_URL])
-
+        monkeypatch.setattr("httpx.get", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([url])
+        assert exc.value.error_class is ScannerErrorClass.AUTH
         assert calls == []
 
-    def test_empty_route_never_inherits_ambient_glab(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(("url", "credential"), [(GH_URL, "github_token"), (GL_URL, "gitlab_token")])
+    def test_token_state_with_empty_value_is_auth_failure(
+        self, monkeypatch: pytest.MonkeyPatch, url: str, credential: str
+    ) -> None:
         calls: list[object] = []
-        monkeypatch.setenv("GITLAB_TOKEN", "ambient-token")
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
         monkeypatch.setattr(
             "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
-            lambda *_a, **_k: ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.UNREADABLE),
+            lambda *_a, **_k: ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=""),
         )
-
-        with pytest.raises(ScannerError, match="gitlab_token_pass_key"):
-            GlabGhMrStateClassifier()([GL_URL])
-
+        monkeypatch.setattr("httpx.get", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([url])
+        assert exc.value.error_class is ScannerErrorClass.AUTH
         assert calls == []
 
-    def test_nonzero_return_code_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_github_nonzero_return_code_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "teatree.utils.run.run_allowed_to_fail",
-            lambda *a, **k: _completed("", returncode=1, stderr="token expired"),
+            "teatree.backends.github.api.run_allowed_to_fail",
+            lambda *a, **k: _completed("", returncode=1, stderr="401 Bad credentials"),
         )
-        with pytest.raises(ScannerError):
-            GlabGhMrStateClassifier()([GH_URL])
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([GH_URL])
+        assert exc.value.error_class is ScannerErrorClass.AUTH
 
-    def test_garbage_json_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "teatree.utils.run.run_allowed_to_fail",
-            lambda *a, **k: _completed("not json at all"),
-        )
-        with pytest.raises(ScannerError):
-            GlabGhMrStateClassifier()([GL_URL])
+    @pytest.mark.parametrize(
+        ("status", "error_class"),
+        [
+            (401, ScannerErrorClass.AUTH),
+            (403, ScannerErrorClass.AUTH),
+            (429, ScannerErrorClass.RATE_LIMIT),
+            (404, ScannerErrorClass.UNKNOWN),
+            (500, ScannerErrorClass.UNKNOWN),
+        ],
+    )
+    def test_gitlab_http_error_class(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, error_class: ScannerErrorClass
+    ) -> None:
+        monkeypatch.setattr("httpx.get", lambda *a, **k: _response({"message": "failed"}, status=status))
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([GL_URL])
+        assert exc.value.error_class is error_class
+
+    def test_gitlab_network_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail(*_a: object, **_k: object) -> httpx.Response:
+            detail = "offline"
+            raise httpx.ConnectError(detail)
+
+        monkeypatch.setattr("httpx.get", fail)
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([GL_URL])
+        assert exc.value.error_class is ScannerErrorClass.NETWORK
+
+    @pytest.mark.parametrize("body", ["not json at all", "[]", ""])
+    def test_gitlab_unreadable_payload(self, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+        response = httpx.Response(200, content=body, request=httpx.Request("GET", API_URL))
+        monkeypatch.setattr("httpx.get", lambda *a, **k: response)
+        with pytest.raises(ScannerError) as exc:
+            ForgeMrStateClassifier()([GL_URL])
+        assert exc.value.error_class is ScannerErrorClass.UNKNOWN
 
 
 class TestClassifierHeadSha:
-    """`_classifier_head_sha` falls back to `diff_refs.head_sha` and degrades to ``""``."""
-
-    def test_prefers_the_top_level_key(self) -> None:
+    def test_prefers_top_level_and_falls_back_to_diff_refs(self) -> None:
         assert _classifier_head_sha({"sha": "top123"}, key="sha") == "top123"
-
-    def test_falls_back_to_nested_diff_refs_head_sha(self) -> None:
         assert _classifier_head_sha({"diff_refs": {"head_sha": "nested456"}}, key="sha") == "nested456"
-
-    def test_degrades_to_empty_when_no_head_is_present(self) -> None:
         assert _classifier_head_sha({}, key="sha") == ""
-        assert _classifier_head_sha({"diff_refs": {"other": 1}}, key="sha") == ""

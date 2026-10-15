@@ -8,10 +8,9 @@ PR already existed. Fixing that one call site leaves the class intact: the same
 omission sits one edit away in every other ``gh`` / ``glab`` invocation.
 
 The rule is one line at each call site — ``env=forge_cli_env()`` — so this walk
-pins it. Two whole packages are exempt because they already solve it another way:
-``teatree.backends`` threads an explicit token through its own runner
-(``_run_gh``), and ``teatree.loop.scanners`` builds ``{**os.environ, "GH_TOKEN":
-…}`` from its scanner factory.
+pins it. The backend package owns forge CLI transport and threads an explicit token
+through its runner. Loop scanners use that backend runner for GitHub and HTTP
+for GitLab; a separate test below pins their lack of direct forge binaries.
 
 Reach is a literal argv whose first element is ``gh`` or ``glab``, passed to a
 :mod:`teatree.utils.run` wrapper. An argv assembled elsewhere is out of an AST
@@ -20,11 +19,13 @@ writes its argv inline.
 """
 
 import ast
+from collections.abc import Iterable
 from pathlib import Path
 
 from tests.conformance._src_tree import SRC_DIR, parsed_modules
 
 _CORE_DIR = SRC_DIR / "core"
+_SCANNERS_DIR = SRC_DIR / "loop" / "scanners"
 _FORGE_BINARIES = frozenset({"gh", "glab"})
 _RUNNERS = frozenset({"run_checked", "run_allowed_to_fail", "run_streamed"})
 # Below this the walk cannot have been looking at the real source at all.
@@ -77,3 +78,28 @@ def test_every_core_forge_cli_call_carries_a_credential() -> None:
         "`env=forge_cli_env()` so the read sees what the write sees:\n"
         + "\n".join(f"  {path.relative_to(SRC_DIR.parent.parent)}:{line}" for path, line in bare)
     )
+
+
+def scanner_forge_binary_constants(modules: Iterable[tuple[Path, ast.AST]]) -> list[tuple[Path, int]]:
+    sites: list[tuple[Path, int]] = []
+    for path, tree in modules:
+        sites.extend(
+            (path, node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value in _FORGE_BINARIES
+        )
+    return sites
+
+
+def test_no_loop_scanner_names_a_forge_binary() -> None:
+    assert len(list(parsed_modules(_SCANNERS_DIR))) >= 10
+    assert scanner_forge_binary_constants(parsed_modules(_SCANNERS_DIR)) == []
+
+
+def test_scanner_forge_guard_red_control() -> None:
+    examples = (
+        "run_allowed_to_fail([shutil.which('glab') or 'glab', 'mr', 'view'])",
+        "['gh', 'pr', 'view']",
+    )
+    for source in examples:
+        assert scanner_forge_binary_constants([(Path("control.py"), ast.parse(source))])
