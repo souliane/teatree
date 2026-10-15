@@ -21,6 +21,7 @@ class CheckoutState:
     digest: str
     commits_ahead: int
     dirty: bool
+    branch: str
 
     @property
     def pristine(self) -> bool:
@@ -61,4 +62,4 @@ def checkout_state(checkout: Path, *, ticket: "Ticket | None" = None) -> Checkou
         else:
             digest.update(str(mode).encode())
         digest.update(b"\0")
-    return CheckoutState(digest.hexdigest(), commits_ahead, bool(status))
+    return CheckoutState(digest.hexdigest(), commits_ahead, bool(status), branch)

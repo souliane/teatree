@@ -729,9 +729,44 @@ class WorktreeSiblingFields(TypedDict, total=False):
     branch: str
 
 
+class CheckoutTenure(TypedDict):
+    holder: str
+    session: str
+    since: str
+    ended: str
+    ended_at: str
+
+
+class CheckoutCustody(TypedDict):
+    anchor: str
+    tenures: list[CheckoutTenure]
+
+
+class CheckoutProcessEvidence(TypedDict):
+    source: str
+    gaps: list[str]
+
+
+class CheckoutHolderEvidence(TypedDict):
+    id: str
+    session: str
+
+
+class AutoAttestation(TypedDict):
+    at: str
+    previous: str
+    digest: str
+    tenures: list[CheckoutTenure]
+    process_table: CheckoutProcessEvidence
+    branches: dict[str, str]
+    holder: CheckoutHolderEvidence
+
+
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
+    checkout_custody: CheckoutCustody
+    auto_attestation: AutoAttestation
     clone_path: str
     services: list[str]
     urls: dict[str, str]

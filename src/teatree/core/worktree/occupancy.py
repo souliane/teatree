@@ -237,7 +237,7 @@ def renew_ticket_checkout(
     if worktree is None:
         return
     try:
-        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
+        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds, renewal=True)
     except WorktreeOccupiedError as exc:
         raise WorktreeOccupancyLostError(str(exc)) from exc
 

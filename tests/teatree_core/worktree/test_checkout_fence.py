@@ -62,6 +62,27 @@ class CheckoutFenceTests(TestCase):
             with pytest.raises(CheckoutFenceError, match="attested"):
                 verify_task_checkout(self.task, str(self.checkout))
 
+    def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
+        self.worktree.refresh_from_db()
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            previous = TaskFactory(ticket=self.ticket, phase="coding")
+            acquire(self.worktree, holder=task_holder_id(previous))
+            (self.checkout / "change.txt").write_text("work from interrupted run")
+            run_strict(repo=str(self.checkout), args=["config", "user.email", "test@example.com"])
+            run_strict(repo=str(self.checkout), args=["config", "user.name", "Test"])
+            run_strict(repo=str(self.checkout), args=["add", "change.txt"])
+            run_strict(repo=str(self.checkout), args=["commit", "-m", "interrupted work"])
+            release(self.worktree, holder=task_holder_id(previous))
+            next_task = TaskFactory(ticket=self.ticket, phase="testing")
+            acquire(self.worktree, holder=task_holder_id(next_task))
+            verify_task_checkout(next_task, str(self.checkout))
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        assert self.worktree.get_extra()["auto_attestation"]["tenures"][0]["holder"] == task_holder_id(previous)
+
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):
             attempt = park_task_checkout(self.task, reason="foreign checkout state")
