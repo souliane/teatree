@@ -20,6 +20,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 
 _DEFAULT_REASON = "Agent needs human input"
 
@@ -78,6 +79,9 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
 
 def release_checkout_park(task: Task) -> bool:
     """Wake an unchanged pending checkout task after the owner accepts its state."""
+    latest_error = task.attempts.order_by("-pk").values_list("error", flat=True).first()
+    if not latest_error or not latest_error.startswith(CHECKOUT_PARKED_PREFIX):
+        return False
     updated = Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False).update(
         not_before=None
     )

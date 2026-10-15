@@ -158,6 +158,33 @@ class CheckoutFenceTests(TestCase):
         assert self.task.not_before is not None
         assert DeferredQuestionAudit.objects.filter(question=row, action="carried_out").count() == 0
 
+    def test_checkout_approval_does_not_release_a_later_usage_park(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            (self.checkout / "new.txt").write_text("foreign edit")
+            assert claim_task_checkout_or_park(self.task) is not None
+        row = self.task.deferred_questions.get()
+        row.slack_channel = "D0DEMOOWNER"
+        row.slack_ts = "1800000000.000100"
+        row.save(update_fields=["slack_channel", "slack_ts"])
+        later = timezone.now() + timedelta(hours=1)
+        TaskAttempt.objects.create(
+            task=self.task,
+            ended_at=timezone.now(),
+            exit_code=0,
+            error="limit_parked: subscription_session: window",
+            result={"summary": "limit_parked: subscription_session: window"},
+        )
+        self.task.park(not_before=later)
+        backend = MagicMock(user_id="U0DEMOOWNER")
+        backend.update_message.return_value = {"ok": True}
+        assert answer_from_click(_owner_tap(row, "Accept", 1), backend=backend)
+        with patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=clear):
+            assert carry_out_owner_actions() == [f"carried out {row.pk}"]
+        self.task.refresh_from_db()
+        assert self.task.not_before == later
+
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):
             attempt = park_task_checkout(self.task, reason="foreign checkout state")
