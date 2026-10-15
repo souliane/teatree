@@ -24,6 +24,7 @@ from django.db.backends.sqlite3.base import DatabaseWrapper as SQLiteDatabaseWra
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper
 
 from teatree.db.boundary import ControlDbBoundary, DbBoundaryError
+from teatree.db.journal_mode import ControlDbJournal
 
 type SqliteParam = str | int | float | bytes | None
 type SqliteParams = Sequence[SqliteParam] | Mapping[str, SqliteParam]
@@ -100,13 +101,13 @@ class DatabaseWrapper(SQLiteDatabaseWrapper):
             return params
         if boundary.read_write_allowed:
             boundary.claim_for_container()
+            self.init_commands = ControlDbJournal(boundary.db_path).init_commands(self.init_commands)
             return params
 
         self.boundary_read_only = True
         self._boundary = boundary
         params["database"] = boundary.readonly_uri
-        # The production OPTIONS' ``PRAGMA journal_mode=…`` needs the write lock;
-        # ``query_only`` is what a read-only connection wants in its place.
+        # Journal selection needs a write lock; read-only connections use query_only.
         self.init_commands = ["PRAGMA query_only=1"]
         # ``BEGIN IMMEDIATE`` takes SQLite's reserved write lock at transaction
         # start, so it would fail a read-only ``atomic()`` block that never writes.

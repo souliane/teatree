@@ -34,6 +34,44 @@ from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 
+def test_database_health_reports_wal_and_warns_when_sidecar_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    db = _sound_db(volume / "db.sqlite3")
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    for name in (
+        "_check_db_integrity",
+        "_check_db_is_off_the_host_filesystem",
+        "_check_no_host_process_holds_the_db_writable",
+        "_check_host_projection_is_current",
+    ):
+        monkeypatch.setattr(checks_db_integrity, name, lambda: True)
+
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO t(v) VALUES ('wal-resident')")
+        writer.commit()
+        assert Path(f"{db}-wal").stat().st_size > 0
+
+        monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1, raising=False)
+        assert checks_db_integrity._check_database_health() is True
+        output = capsys.readouterr().out
+        assert "Control DB journal: wal (control-DB volume)" in output
+        assert "WARN" in output
+        assert "-wal" in output
+
+        monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1_000_000_000)
+        assert checks_db_integrity._check_database_health() is True
+        assert "WARN" not in capsys.readouterr().out
+    finally:
+        writer.close()
+
+
 def _sound_db(path: Path) -> Path:
     conn = sqlite3.connect(path)
     try:

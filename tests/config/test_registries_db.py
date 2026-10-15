@@ -141,7 +141,7 @@ class TestAnUnreadableStoreIsNotAnEmptyRegistry:
 class TestAMomentarilyLockedStoreIsNotAnUnreadableOne:
     """Contention is transient by construction, so giving up on it reports a fault that is not one.
 
-    The control DB runs `journal_mode=TRUNCATE`, so a reader genuinely waits on a committing
+    A host-reachable copy runs `journal_mode=TRUNCATE`, so a reader waits on a committing
     writer; a cold read that gave up after 100ms recorded every such commit as a degraded config
     tier, and the safety clamp then resolved every autonomy/approval gate to its most restrictive
     value against a store that was perfectly readable a moment later.

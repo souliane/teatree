@@ -34,6 +34,11 @@ def _backup_into(source: sqlite3.Connection, dst: Path) -> None:
     dest = sqlite3.connect(dst)
     try:
         source.backup(dest)
+        dest.execute("PRAGMA locking_mode=EXCLUSIVE")
+        mode = dest.execute("PRAGMA journal_mode=TRUNCATE").fetchone()
+        if mode != ("truncate",):
+            msg = f"SQLite snapshot journal mode remained {mode!r} for {dst}"
+            raise sqlite3.OperationalError(msg)
     finally:
         dest.close()
 

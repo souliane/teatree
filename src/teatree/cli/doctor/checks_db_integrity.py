@@ -21,11 +21,12 @@ database, so they read a strictly-derived projection of it; only the owning side
 compare that projection's generation against the source, which makes this the one place
 a publisher that has stopped becomes visible instead of silently serving old values.
 
-All four run every time. Repairing pages a second writer will cross-link again is not a
+All five run every time. Repairing pages a second writer will cross-link again is not a
 fix, so no probe short-circuits the others.
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import typer
@@ -34,6 +35,7 @@ from django.db import DatabaseError, connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
+from teatree.db.journal_mode import JOURNAL_SIZE_LIMIT, ControlDbJournal
 from teatree.db.write_domain import (
     ControlDbWriteDomain,
     DescriptorTableUnavailableError,
@@ -252,9 +254,9 @@ def _check_host_projection_is_current() -> bool:
 
 
 def _check_database_health() -> bool:
-    """The database gate: corruption, a reachable database, a foreign writer, a stale projection.
+    """The database gate: corruption, isolation, writers, projection and journal mode.
 
-    All four always run. The filesystem and writer results are the CAUSE the integrity
+    All five always run. The filesystem and writer results are the CAUSE the integrity
     result is the symptom of, so reporting only the first failure found leaves the
     operator repairing pages that a second writer will cross-link again.
     """
@@ -262,4 +264,43 @@ def _check_database_health() -> bool:
     isolated = _check_db_is_off_the_host_filesystem()
     uncontended = _check_no_host_process_holds_the_db_writable()
     projected = _check_host_projection_is_current()
-    return sound and isolated and uncontended and projected
+    journal = _check_control_db_journal()
+    return sound and isolated and uncontended and projected and journal
+
+
+def _check_control_db_journal() -> bool:
+    path = TRUE_CANONICAL_DB
+    if not path.exists():
+        return True
+
+    expected = ControlDbJournal(path)
+    try:
+        with closing(sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)) as connection:
+            row = connection.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.Error as error:
+        typer.secho(f"FAIL  Control DB journal: unreadable ({error})", fg=typer.colors.RED)
+        return False
+
+    mode = str(row[0]) if row else "unknown"
+    if mode != expected.mode:
+        typer.secho(
+            f"FAIL  Control DB journal: {mode} ({expected.reason}); expected {expected.mode}. "
+            "Stop all database users before switching journal modes.",
+            fg=typer.colors.RED,
+        )
+        return False
+
+    typer.secho(f"OK    Control DB journal: {mode} ({expected.reason})", fg=typer.colors.GREEN)
+    wal_path = path.with_name(f"{path.name}-wal")
+    if mode == "wal" and wal_path.exists():
+        try:
+            size = wal_path.stat().st_size
+        except FileNotFoundError:
+            return True
+        if size > JOURNAL_SIZE_LIMIT:
+            typer.secho(
+                f"WARN  Control DB journal: {wal_path} is {size} bytes, above {JOURNAL_SIZE_LIMIT} bytes; "
+                "check for a long-running reader preventing checkpoints.",
+                fg=typer.colors.YELLOW,
+            )
+    return True

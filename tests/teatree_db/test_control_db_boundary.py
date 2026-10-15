@@ -14,13 +14,13 @@ the environment — not by patching the detector.
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from functools import partial
 from pathlib import Path
 
 import pytest
 from django.db.backends.base.base import BaseDatabaseWrapper
-from django.db.utils import ConnectionHandler
+from django.db.utils import ConnectionHandler, OperationalError
 from pytest_django.plugin import DjangoDbBlocker
 
 from teatree.config import cold_writer
@@ -149,6 +149,85 @@ class TestTheGuardedDjangoBackend:
         "VALUES ('', 'k', '1', 'now', 'now')"
     )
 
+    def test_control_volume_connection_uses_wal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, container: None, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        volume = tmp_path / "control"
+        volume.mkdir()
+        monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+        db = _config_db(volume / "db.sqlite3")
+
+        with _connection(db, django_db_blocker) as connection, connection.cursor() as cursor:
+            cursor.execute("PRAGMA journal_mode")
+            assert cursor.fetchone() == ("wal",)
+            assert db.read_bytes()[18] == 2
+
+    def test_host_path_keeps_truncate_and_custom_init_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, container: None, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path / "elsewhere"))
+        db = _config_db(tmp_path / "db.sqlite3")
+        handler = ConnectionHandler(
+            {
+                "default": {
+                    "ENGINE": SQLITE_BOUNDARY_ENGINE,
+                    "NAME": str(db),
+                    "OPTIONS": {
+                        **SQLITE_WRITE_SERIALIZATION_OPTIONS,
+                        "init_command": "PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;",
+                    },
+                }
+            }
+        )
+        try:
+            with django_db_blocker.unblock(), handler["default"].cursor() as cursor:
+                cursor.execute("PRAGMA journal_mode")
+                assert cursor.fetchone() == ("truncate",)
+                cursor.execute("PRAGMA foreign_keys")
+                assert cursor.fetchone() == (1,)
+        finally:
+            handler.close_all()
+
+    @pytest.mark.parametrize("location", ["control", "host"])
+    def test_writer_respects_reader_lock_for_selected_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        container: None,
+        django_db_blocker: DjangoDbBlocker,
+        location: str,
+    ) -> None:
+        volume = tmp_path / "control"
+        volume.mkdir()
+        monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+        db = _config_db((volume if location == "control" else tmp_path) / "db.sqlite3")
+        handler = ConnectionHandler(
+            {
+                "default": {
+                    "ENGINE": SQLITE_BOUNDARY_ENGINE,
+                    "NAME": str(db),
+                    "OPTIONS": {**SQLITE_WRITE_SERIALIZATION_OPTIONS, "timeout": 0.1},
+                }
+            }
+        )
+        reader = sqlite3.connect(db)
+        try:
+            with django_db_blocker.unblock():
+                connection = handler["default"]
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                reader.execute("BEGIN")
+                reader.execute("SELECT count(*) FROM teatree_config_setting").fetchone()
+                if location == "control":
+                    with connection.cursor() as cursor:
+                        cursor.execute(self._INSERT)
+                else:
+                    with pytest.raises(OperationalError, match="database is locked"), connection.cursor() as cursor:
+                        cursor.execute(self._INSERT)
+        finally:
+            reader.close()
+            handler.close_all()
+
     def test_a_host_connection_to_a_claimed_database_can_still_read(
         self, tmp_path: Path, host: None, django_db_blocker: DjangoDbBlocker
     ) -> None:
@@ -162,6 +241,22 @@ class TestTheGuardedDjangoBackend:
                 assert row is not None
                 assert row[0] == 0
             assert connection.boundary_read_only is True
+
+    def test_host_read_only_connection_preserves_wal_header_and_query_only(
+        self, tmp_path: Path, host: None, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        db = _claimed_config_db(tmp_path)
+        with closing(sqlite3.connect(db)) as writer:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        header = db.read_bytes()[18]
+        assert header == 2
+
+        with _connection(db, django_db_blocker) as connection, connection.cursor() as cursor:
+            cursor.execute("PRAGMA query_only")
+            assert cursor.fetchone() == (1,)
+            assert connection.init_commands == ["PRAGMA query_only=1"]
+            assert connection.transaction_mode is None
+        assert db.read_bytes()[18] == header
 
     def test_a_host_write_to_a_claimed_database_raises_the_boundary_error(
         self, tmp_path: Path, host: None, django_db_blocker: DjangoDbBlocker

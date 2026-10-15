@@ -32,10 +32,8 @@ from teatree.config.host_projection import HostProjection, ProjectionReader, war
 from teatree.paths import ControlDb
 
 #: How long a cold read waits for a contended lock before reporting the store UNREADABLE.
-#: The canonical DB runs `journal_mode=TRUNCATE` (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`
-#: dropped WAL), so a committing writer holds EXCLUSIVE and a reader genuinely blocks — the
-#: opposite of WAL, which is what the 100ms this replaces was sized for. This read
-#: wait stays far under the cold writer's and ORM tier's 30s write wait.
+#: A host-reachable copy can still run TRUNCATE, where a committing writer blocks
+#: readers. This wait stays below the cold writer's and ORM tier's 30s timeout.
 _BUSY_TIMEOUT_MS = 2000
 
 

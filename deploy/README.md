@@ -83,7 +83,7 @@ docker run --rm --pull never --network none \
   --mount "type=volume,src=${project}_teatree_control_db,dst=/db" \
   --mount "type=bind,src=$snapshot,dst=/snapshot,readonly" \
   --entrypoint sh "${TEATREE_IMAGE_REPOSITORY:-teatree-factory}:$previous_sha" \
-  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm'
+  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm /db/db.sqlite3-journal'
 deploy/roll.sh "$previous_sha"
 )
 ```
@@ -233,8 +233,8 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
-the worker read the **same** `db.sqlite3` (rollback journal, `BEGIN IMMEDIATE` —
-writers serialize and readers wait behind them; see `SQLITE_WRITE_SERIALIZATION_OPTIONS`):
+the worker read the **same** `db.sqlite3` (WAL on the control-DB volume,
+`BEGIN IMMEDIATE` for serialized writers; see `ControlDbJournal`):
 
 Every **container target** below is fixed — it is what `teatree.paths` resolves
 inside the container (`HOME=/home/teatree`, no `XDG_DATA_HOME`). Each **host
@@ -258,6 +258,16 @@ source == target (path identity).
 | universal skills | `/home/teatree/.agents` | — | named volume `teatree_agents_home` | skills.sh front doors installed by `t3 setup` |
 | interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
 | `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
+
+`ControlDbJournal` selects WAL with `synchronous=NORMAL` and a 64 MiB journal
+size limit on the named control-DB volume. Databases on host-reachable paths use
+TRUNCATE, because WAL's shared-memory sidecar is unsafe on Docker Desktop bind
+mounts. `T3_CONTROL_DB_JOURNAL_MODE=truncate` or `wal` in the box's
+`deploy/teatree.env` overrides that choice; other values fail at connection
+setup. The override takes effect when all connections reopen. Stop the stack
+before changing modes: a pre-change child opening TRUNCATE while WAL users are
+still connected can fail with `database is locked`. Do not run `deploy/roll.sh`
+across this journal-mode change without stopping the stack first.
 
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
 `$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the

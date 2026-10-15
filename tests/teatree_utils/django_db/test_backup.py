@@ -3,11 +3,16 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from shutil import copy2
 from unittest.mock import patch
 
 import pytest
 from django.db import connection
+from django.db.utils import ConnectionHandler
+from pytest_django.plugin import DjangoDbBlocker
 
+from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.django_db import backup
 
 
@@ -49,6 +54,49 @@ class TestArtifactTimestamp:
 
 
 class TestCreateBackup:
+    def test_wal_backup_reopens_from_a_new_control_volume(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        source = tmp_path / "live.sqlite3"
+        writer = sqlite3.connect(source)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("CREATE TABLE note(body TEXT)")
+            writer.execute("INSERT INTO note VALUES ('wal-resident')")
+            writer.commit()
+            assert Path(f"{source}-wal").stat().st_size > 0
+
+            artifact = backup.create_backup(source=source, backup_dir=tmp_path / "backups", now=datetime.now(tz=UTC))
+            assert artifact.read_bytes()[18] == 1
+            assert not Path(f"{artifact}-wal").exists()
+            assert not Path(f"{artifact}-shm").exists()
+
+            volume = tmp_path / "new-control"
+            volume.mkdir()
+            restored = volume / "db.sqlite3"
+            copy2(artifact, restored)
+            monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+            handler = ConnectionHandler(
+                {
+                    "default": {
+                        "ENGINE": SQLITE_BOUNDARY_ENGINE,
+                        "NAME": str(restored),
+                        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+                    }
+                }
+            )
+            try:
+                with django_db_blocker.unblock(), handler["default"].cursor() as cursor:
+                    cursor.execute("PRAGMA journal_mode")
+                    assert cursor.fetchone() == ("wal",)
+                    cursor.execute("SELECT body FROM note")
+                    assert cursor.fetchall() == [("wal-resident",)]
+            finally:
+                handler.close_all()
+        finally:
+            writer.close()
+
     def test_snapshots_source_contents(self, tmp_path: Path) -> None:
         source = tmp_path / "db.sqlite3"
         _make_db(source, rows=["alpha", "beta"])
