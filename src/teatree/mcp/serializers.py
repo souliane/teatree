@@ -69,7 +69,7 @@ def serialize_task(task: "Task") -> dict[str, Any]:
     """
     return {
         "id": task.pk,
-        "ticket_id": task.ticket_id,  # ty: ignore[unresolved-attribute]
+        "ticket_id": task.ticket_id,
         "ticket_number": task.ticket.ticket_number,
         "overlay": task.ticket.overlay,
         "phase": task.phase,
@@ -90,7 +90,7 @@ def serialize_worktree(worktree: "Worktree") -> dict[str, Any]:
     """
     return {
         "id": worktree.pk,
-        "ticket_id": worktree.ticket_id,  # ty: ignore[unresolved-attribute]
+        "ticket_id": worktree.ticket_id,
         "ticket_number": worktree.ticket.ticket_number,
         "overlay": worktree.overlay,
         "repo_path": worktree.repo_path,
@@ -119,7 +119,7 @@ def serialize_pull_request(pull_request: "PullRequest", *, merge_void: "MergeVoi
     """Project a :class:`PullRequest` onto its structured-search shape."""
     return {
         "id": pull_request.pk,
-        "ticket_id": pull_request.ticket_id,  # ty: ignore[unresolved-attribute]
+        "ticket_id": pull_request.ticket_id,
         "overlay": pull_request.overlay,
         "url": pull_request.url,
         "repo": pull_request.repo,

@@ -44,7 +44,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
 
         # DISPATCH + ATTEMPT — the overlay registers its own harness (overlay_sdk surface),
         # selects it, and drives the dispatch through overlay_sdk.run_agent.

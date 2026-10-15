@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django_fsm import FSMField, transition
@@ -38,6 +38,10 @@ class Worktree(models.Model):
 
     overlay = models.CharField(max_length=255)
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="worktrees")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        ticket_id: int
+
     repo_path = models.CharField(
         max_length=500,
         help_text="Repo identifier (e.g. 'org/repo' or a short slug) — NOT a filesystem path. "
@@ -108,7 +112,7 @@ class Worktree(models.Model):
         share one secret entry. Ticket-scoped — the same canonical key the
         db_name uses — so a ticket's sibling repos share one database password.
         """
-        return postgres_pass_key(self.ticket_id)  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        return postgres_pass_key(self.ticket_id)
 
     @transition(field="state", source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
@@ -266,7 +270,7 @@ class Worktree(models.Model):
         """
         if not self.db_name:
             return
-        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        ticket_pk = self.ticket_id
         conflict = (
             Worktree.objects.exclude(pk=self.pk)
             .exclude(ticket_id=ticket_pk)
@@ -300,7 +304,7 @@ class Worktree(models.Model):
         """
         if not self.compose_project:
             return
-        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        ticket_pk = self.ticket_id
         conflict = (
             Worktree.objects.exclude(pk=self.pk)
             .exclude(ticket_id=ticket_pk)

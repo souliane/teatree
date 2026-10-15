@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
@@ -65,6 +65,10 @@ class TicketTransitionQuerySet(models.QuerySet):
 
 class TicketTransition(models.Model):
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="transitions")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        ticket_id: int
+
     session = models.ForeignKey(
         "core.Session",
         on_delete=models.SET_NULL,

@@ -44,7 +44,7 @@ def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
     """Renew task/worktree leases and close this worker thread's DB connection."""
     try:
         task.renew_lease(lease_seconds=lease_seconds)
-        if task.ticket_id is not None:  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        if task.ticket_id is not None:
             renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
     except LeaseLostError as exc:
         raise LeaseLostError(describe_lease_loss(task)) from exc
@@ -89,7 +89,7 @@ async def drive_with_heartbeat(
 def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> LiveTask:
     return LiveTask(
         pk=task.pk,
-        ticket=task.ticket_id,  # ty: ignore[unresolved-attribute] — Django FK attname
+        ticket=task.ticket_id,
         phase=task.phase,
         harness=harness.name if isinstance(harness, GuardedHarness) else type(harness).__name__,
         model=options.model or "",

@@ -197,7 +197,8 @@ class TestThirdHarnessViaEntryPoint(TestCase):
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        task.renew_lease = lambda **_kw: None  # threaded ORM read is a TestCase artifact
+        # threaded ORM read is a TestCase artifact
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
         with (
             _register_third_harness_via_entry_point(self._monkeypatch),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
@@ -356,7 +357,7 @@ class TestDriveThroughThirdHarness(TestCase):
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
         options = _build_options(task, "ctx", phase="coding", skills=[])
         harness = FakeThirdHarness([assistant_text("hi"), result_message(session_id="s1")])
         with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
