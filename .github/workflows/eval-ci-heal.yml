@@ -262,7 +262,7 @@ jobs:
       # the reds must be triaged). The per-shard suffix keeps parallel legs distinct.
       - name: Upload this shard's publish-safe per-scenario JSON
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-heal*.json
@@ -272,7 +272,7 @@ jobs:
       # a red shard still captures it (the transcript is exactly what a fix diagnoses).
       - name: Upload this shard's private per-trial transcript
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-transcripts*.html
@@ -312,7 +312,7 @@ jobs:
       # the per-artifact subdirs). Only the `eval-heal-shard-<sha>-*` JSONs — never
       # the private `eval-heal-transcript-*` HTML.
       - name: Download every shard's publish-safe JSON
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: ${{ runner.temp }}/shards
           pattern: eval-heal-shard-${{ needs.prepare.outputs.sha }}-*
@@ -375,7 +375,7 @@ jobs:
       # sharded run indistinguishable from a single-invocation run to every consumer.
       - name: Upload the merged publish-safe eval-heal JSON
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-heal-${{ needs.prepare.outputs.sha }}
           path: ${{ runner.temp }}/combined/eval-heal-*.json
