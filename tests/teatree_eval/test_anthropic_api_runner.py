@@ -40,7 +40,7 @@ from teatree.eval.anthropic_api_runner import (
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, KNOWN_BACKENDS, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.pydantic_ai_runner import EVAL_CACHE_TTL, EvalDriveCaps
+from teatree.eval.pydantic_ai_runner import EvalDriveCaps
 from teatree.eval.report import evaluate
 from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialSpec
 
@@ -265,9 +265,11 @@ class TestOutputCeilingAndCachingReachTheAnthropicModel:
         settings = self._recorded_settings(max_tokens=0, effort="high")
         assert "max_tokens" not in settings
 
-    def test_the_instruction_cache_key_is_sent(self) -> None:
+    def test_the_unified_cache_and_diagnostics_are_sent(self) -> None:
         settings = self._recorded_settings()
-        assert settings.get("anthropic_cache_instructions") == EVAL_CACHE_TTL
+        assert settings.get("cache") == "5m"
+        assert settings.get("anthropic_cache_diagnostics") is True
+        assert "anthropic_cache_instructions" not in settings
 
     def test_the_ceiling_rides_alongside_the_effort(self) -> None:
         settings = self._recorded_settings(effort="high")
