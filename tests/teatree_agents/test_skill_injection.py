@@ -6,6 +6,7 @@ import pytest
 
 from teatree.agents import skill_injection
 from teatree.agents.context_budget import enforce_budget
+from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
@@ -48,6 +49,7 @@ def test_read_only_venue_embeds_the_rules_document_when_it_cannot_mount_files(
 
     assert "--- SKILL: rules ---" in rendered
     assert "# Always-On Rules\n0. Security first." in rendered
+    assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
 
 
 def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
@@ -55,25 +57,9 @@ def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
 ) -> None:
     _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
-    monkeypatch.setattr(skill_injection, "_SOURCE_RULES_MD", tmp_path / "source" / "RULES.md")
-
-    with pytest.raises(FileNotFoundError, match=r"RULES\.md"):
+    with pytest.raises(SkillDispatchError, match=r"rules/RULES\.md") as refused:
         read_only_venue_skill_contents(["rules"], {"rules"})
-
-
-def test_read_only_venue_uses_the_active_source_when_the_installed_rules_lag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
-    source_rules = tmp_path / "source" / "RULES.md"
-    source_rules.parent.mkdir()
-    source_rules.write_text("# Active rules\n0. Security first.\n", encoding="utf-8")
-    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
-    monkeypatch.setattr(skill_injection, "_SOURCE_RULES_MD", source_rules)
-
-    rendered = read_only_venue_skill_contents(["rules"], {"rules"})
-
-    assert "# Active rules\n0. Security first." in rendered
+    assert refused.value.assurance["missing"] == ["rules/RULES.md"]
 
 
 def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.utils.run import CommandFailedError
@@ -86,6 +87,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
     def setUp(self) -> None:
         self.skills: list[str] = []
+        skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        self.enterContext(patch.object(skill_index, "DEFAULT_SKILLS_DIR", skills_dir))
 
     def _task(self, ticket: Ticket | None = None) -> Task:
         ticket = ticket or self.ticket
@@ -159,7 +162,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         assert {"rules", "architecture-design"} <= set(skills)
         assert "--- SKILL: rules ---" in context
+        assert rules.with_name("RULES.md").read_text(encoding="utf-8") in context
         assert "--- SKILL: architecture-design ---" in context
+        assert len(context.encode()) <= MAX_APPEND_BYTES
         assert ABSENT_TOOL in context
         assert not _T3_INVOCATION.search(context), _T3_INVOCATION.findall(context)
         assert "mcp__teatree__" not in context

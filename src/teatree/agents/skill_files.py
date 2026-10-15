@@ -42,6 +42,10 @@ class SkillFileIndex:
 NO_SKILL_FILES = SkillFileIndex()
 
 
+def rules_document_path(skill_md: Path) -> Path:
+    return skill_md.with_name("RULES.md")
+
+
 def _skill_files(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
@@ -51,7 +55,7 @@ def _skill_files(root: Path) -> list[Path]:
         if not _is_plain_file(skill_md):
             continue
         found.append(skill_md)
-        rules_md = skill_dir / "RULES.md"
+        rules_md = rules_document_path(skill_md)
         if skill_dir.name == "rules" and _is_plain_file(rules_md):
             found.append(rules_md)
         references = skill_dir / "references"

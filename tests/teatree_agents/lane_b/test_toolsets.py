@@ -273,18 +273,10 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         named = {phase: _named_skill_files(_rendered_context(phase)) for phase in sorted(KNOWN_PHASES)}
         return {phase: keys for phase, keys in named.items() if keys and "read_file" in tools_for_phase(phase)}
 
-    def test_the_rules_document_is_named_and_readable_with_and_without_a_worktree(self) -> None:
-        key = "skills/rules/RULES.md"
-        assert key in _named_skill_files(_rendered_context("coding"))
-        expected = (_REPO_SKILLS / "rules" / "RULES.md").read_text(encoding="utf-8")
-        for fs_root in (self.scratch, None):
-            for spelling in _both_spellings(key):
-                returns, _ = _read_one(LaneBToolConfig(fs_root=fs_root, phase="coding"), spelling)
-                assert returns == [expected]
-
     def test_every_named_skill_file_reads_back_with_and_without_a_worktree(self) -> None:
         phases = self._reading_phases()
         assert phases, "no phase names a skill file — the path extraction went blind"
+        assert "skills/rules/RULES.md" in phases["coding"]
         worktree = self.scratch / "not-a-teatree-checkout"
         worktree.mkdir()
         unreadable: list[str] = []

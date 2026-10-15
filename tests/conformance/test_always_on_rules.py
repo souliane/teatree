@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents import skill_injection
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULES_FILE = _REPO_ROOT / "skills" / "rules" / "RULES.md"
 
@@ -33,7 +31,7 @@ def _links_before_first_section(page: Path, target: Path) -> bool:
     fence = ""
     for line in text.splitlines(keepends=True):
         if fence:
-            if line.strip().startswith(fence):
+            if re.fullmatch(rf"[ \t]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line.rstrip("\r\n")):
                 fence = ""
         elif match := _FENCE_START_RE.match(line):
             fence = match.group(1)
@@ -65,12 +63,6 @@ def test_an_entry_point_links_the_rules_before_its_first_section(page: str) -> N
     assert _links_before_first_section(_REPO_ROOT / page, _RULES_FILE)
 
 
-def test_read_only_venue_embeds_the_actual_rules_document(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [_REPO_ROOT / "skills"])
-    rendered = skill_injection.read_only_venue_skill_contents(["rules"], {"rules"})
-    assert _RULES_FILE.read_text(encoding="utf-8") in rendered
-
-
 @pytest.mark.parametrize(
     ("body", "linked"),
     [
@@ -79,8 +71,16 @@ def test_read_only_venue_embeds_the_actual_rules_document(monkeypatch: pytest.Mo
         ("# Page\n\nRead [the rules](rules/OTHER.md).\n\n## Section\n", False),
         ("# Page\n\n<!-- Read [the rules](rules/RULES.md). -->\n\n## Section\n", False),
         ("# Page\n\n```md\nRead [the rules](rules/RULES.md).\n```\n\n## Section\n", False),
+        ("# Page\n\n```md\n```md\nRead [the rules](rules/RULES.md).\n```\n\n## Section\n", False),
     ],
-    ids=["linked-in-preamble", "linked-after-first-section", "linked-to-another-file", "commented-link", "fenced-link"],
+    ids=[
+        "linked-in-preamble",
+        "linked-after-first-section",
+        "linked-to-another-file",
+        "commented-link",
+        "fenced-link",
+        "info-string-is-not-a-closer",
+    ],
 )
 def test_a_planted_page_is_judged_by_where_and_what_it_links(tmp_path: Path, body: str, *, linked: bool) -> None:
     (tmp_path / "rules").mkdir()

@@ -14,12 +14,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.agents.skill_files import reach_line
+from teatree.agents.skill_assurance import SkillDispatchError, required_load_line
+from teatree.agents.skill_files import reach_line, rules_document_path
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
-_SOURCE_RULES_MD = Path(__file__).resolve().parents[3] / "skills" / "rules" / "RULES.md"
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
@@ -35,14 +35,6 @@ def _skill_section(name: str, content: str) -> str:
 def _with_reach_line(sections: list[str], dirs: Sequence[Path]) -> str:
     """Join *sections* under the reach line, which leads so a budget cut can never drop it."""
     return "\n\n".join((reach_line(dirs[0]), *sections)) if sections else ""
-
-
-def required_load_line(name: str, skill_md: Path | None) -> str:
-    """One mandatory Skill-tool load, in the grammar ``skill_assurance`` recognises as delivered."""
-    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
-    if skill_md is None:
-        return f"{load}; no SKILL.md resolves for it on this host."
-    return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."
 
 
 def _is_stack_skill(name: str) -> bool:
@@ -157,12 +149,15 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
         if skill_md is None:
             absent.append(bare)
         else:
-            sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
             if bare == "rules":
-                rules_md = skill_md.with_name("RULES.md")
-                if not rules_md.is_file():
-                    rules_md = _SOURCE_RULES_MD
-                sections.append(f"--- RULES.md ---\n{rules_md.read_text(encoding='utf-8')}")
+                rules_md = rules_document_path(skill_md)
+                try:
+                    rules_text = rules_md.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    missing = f"{bare}/{rules_md.name}"
+                    raise SkillDispatchError.missing_document(missing) from exc
+                sections.append(f"--- RULES.md ---\n{rules_text}")
+            sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."

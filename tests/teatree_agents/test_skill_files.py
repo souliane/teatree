@@ -19,9 +19,13 @@ class TestRegistration:
         skill_dir = _skill(tmp_path, "rules")
         rules = skill_dir / "RULES.md"
         rules.write_text("# Rules\n", encoding="utf-8")
+        other = _skill(tmp_path, "other") / "RULES.md"
+        other.write_text("# Other\n", encoding="utf-8")
         index = SkillFileIndex.build([tmp_path])
         assert index.lookup("skills/rules/RULES.md") == rules
         assert index.lookup(str(rules)) == rules
+        assert index.lookup("skills/other/RULES.md") is None
+        assert index.lookup(str(other)) is None
 
     def test_refuses_a_symlinked_rules_document(self, tmp_path: Path) -> None:
         skill_dir = _skill(tmp_path, "rules")
