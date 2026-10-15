@@ -23,3 +23,20 @@ class TestCheckoutAttestCard(TestCase):
         assert "2 uncommitted files" in card.why
         assert "host process list is unavailable" in card.why
         assert card.to_evidence()["action"]["binding"] == "d" * 64
+
+    def test_long_legacy_title_keeps_the_card_answerable(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/repo/issues/17",
+            short_description="",
+            extra={"issue_title": "A checkout title that is much too long " * 8},
+        )
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(
+            worktree, CheckoutState("d" * 64, commits_ahead=1, dirty=True, uncommitted=2), host_evidence=True
+        )
+
+        question, card = attest_card(task, attestation)
+
+        assert card.problems(question) == []
+        assert "A checkout title" in question

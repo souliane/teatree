@@ -84,3 +84,13 @@ class TestVoidRequest(TestCase):
         assert row.is_pending
         assert "1800000000.000100" in captured.output[0]
         assert "U0SOMEONEELSE" not in captured.output[0]
+
+    def test_long_legacy_title_keeps_the_request_answerable(self) -> None:
+        self.ticket.short_description = ""
+        self.ticket.extra = {**self.ticket.extra, "issue_title": "A merge title that is much too long " * 8}
+        self.ticket.save(update_fields=["short_description", "extra"])
+
+        with stub_forge():
+            row = self._ask()
+
+        assert "A merge title" in row.question

@@ -8,7 +8,7 @@ from pathlib import Path
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_card_title
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.worktree_occupancy import occupancy_holder
@@ -91,9 +91,7 @@ def attest_checkout(
 
 def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, QuestionCard]:
     ticket = task.ticket
-    title = ticket.short_description or ticket.extra.get("issue_title", "") or "this ticket"
-    if internal_shorthand(title):
-        title = "this ticket"
+    title = safe_card_title(str(ticket.short_description or ticket.extra.get("issue_title", "")), "this ticket")
     subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else title
     state = attestation.state
     process_fact = (

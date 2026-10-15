@@ -3,7 +3,7 @@
 from teatree.core.merge.void_merge import VoidPlan, VoidRefusal, VoidRefusedError, plan_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_card_title
 from teatree.core.models import Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -12,8 +12,7 @@ def _subject(plan: VoidPlan) -> str:
     ticket_ids = [item["ticket_id"] for item in plan.restores]
     ticket = Ticket.objects.filter(pk__in=ticket_ids).order_by("pk").first()
     title = (ticket.short_description or ticket.extra.get("issue_title", "")) if ticket is not None else ""
-    if not title or internal_shorthand(title):
-        title = "this pull request"
+    title = safe_card_title(str(title), "this pull request")
     return f"<{plan.pr_url}|{title}>"
 
 

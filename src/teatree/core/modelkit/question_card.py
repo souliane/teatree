@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 MAX_WORDS = 120
 MAX_QUESTION_CHARS = 160
+MAX_CARD_TITLE_CHARS = 80
 MAX_SENTENCE_CHARS = 200
 MAX_LABEL_CHARS = 40
 MAX_CONSEQUENCE_CHARS = 160
@@ -80,6 +81,15 @@ def internal_shorthand(text: str) -> list[str]:
         found.extend((match.start(), match.group(0)) for match in pattern.finditer(working))
         working = pattern.sub(lambda match: " " * len(match.group(0)), working)
     return [token for _start, token in sorted(found)]
+
+
+def safe_card_title(title: str, fallback: str) -> str:
+    candidate = " ".join(title.split())
+    if len(candidate) > MAX_CARD_TITLE_CHARS:
+        candidate = f"{candidate[: MAX_CARD_TITLE_CHARS - 3].rsplit(' ', 1)[0].rstrip(' ,:;.-')}..."
+    if not candidate or internal_shorthand(candidate) or _SENTENCE_BREAK.search(_ABBREVIATION.sub("x", candidate)):
+        return fallback
+    return fallback if any(character in candidate for character in "<>|") else candidate
 
 
 class OptionDict(TypedDict):
