@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
+from teatree.core.modelkit.owner_action import ActionRequest
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class CardEvidence(TypedDict):
     blocker: str
     why: str
     quoted: NotRequired[str]
+    action: NotRequired[ActionRequest]
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +236,7 @@ class QuestionCard:
     why: str
     options: tuple[CardOption, ...] = ()
     quoted: str = ""
+    action: ActionRequest | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "checked", tuple(self.checked))
@@ -280,6 +283,8 @@ class QuestionCard:
         )
         if self.quoted:
             evidence["quoted"] = self.quoted
+        if self.action is not None:
+            evidence["action"] = self.action
         return evidence
 
     def option_dicts(self) -> list[OptionDict]:

@@ -11,6 +11,7 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 
 import logging
 
+from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import NoPlanArtifactError
@@ -62,6 +63,7 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
     """Resume *task* with *row*'s answer iff the owner answered an owner question about an open subject."""
     if (
         task is None
+        or read_action(row.evidence) is not None
         or row.audience != DeferredQuestion.Audience.OWNER_QUESTION
         or not row.answered_on_owner_channel
         or finished_subject_reason(row) is not None
@@ -72,6 +74,14 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
     except NoPlanArtifactError:
         logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
         return None
+
+
+def release_checkout_park(task: Task) -> bool:
+    """Wake an unchanged pending checkout task after the owner accepts its state."""
+    updated = Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False).update(
+        not_before=None
+    )
+    return bool(updated)
 
 
 def record_deferred_question(task: Task) -> DeferredQuestion:

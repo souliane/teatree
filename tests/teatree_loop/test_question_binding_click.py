@@ -13,6 +13,7 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
 from teatree.loop.question_binding import answer_from_click
 from tests._owner_channel import OWNER_CARD, OWNER_DECISION
@@ -72,6 +73,8 @@ class TestTheTapRoundTrip(TestCase):
         row.refresh_from_db()
         assert [question.pk for question in answered] == [row.pk]
         assert (row.answer_text, row.resolved_via) == ("Yes", "slack")
+        audit = DeferredQuestionAudit.objects.get(question=row, action="answered")
+        assert audit.resolver_id == f"slack:{_OWNER}"
         backend.update_message.assert_called_once()
         update = backend.update_message.call_args.kwargs
         assert (update["channel"], update["ts"]) == (_CHANNEL, _ROOT_TS)

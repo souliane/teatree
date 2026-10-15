@@ -21,6 +21,7 @@ class CheckoutState:
     digest: str
     commits_ahead: int
     dirty: bool
+    uncommitted: int = 0
 
     @property
     def pristine(self) -> bool:
@@ -61,4 +62,11 @@ def checkout_state(checkout: Path, *, ticket: "Ticket | None" = None) -> Checkou
         else:
             digest.update(str(mode).encode())
         digest.update(b"\0")
-    return CheckoutState(digest.hexdigest(), commits_ahead, bool(status))
+    entries = list(filter(None, status.split("\0")))
+    uncommitted = 0
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        uncommitted += 1
+        index += 2 if "R" in entry[:2] or "C" in entry[:2] else 1
+    return CheckoutState(digest.hexdigest(), commits_ahead, bool(status), uncommitted)

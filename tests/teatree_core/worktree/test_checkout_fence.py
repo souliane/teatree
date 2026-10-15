@@ -1,7 +1,7 @@
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from django.test import TestCase
@@ -14,11 +14,14 @@ from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models import DeferredQuestion, Task, TaskAttempt, Worktree
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
+from teatree.core.owner_actions import carry_out_owner_actions
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
+    claim_task_checkout_or_park,
     park_task_checkout,
     verify_task_checkout,
     writes_checkout,
@@ -33,10 +36,21 @@ from teatree.core.worktree.occupancy import (
     release,
     task_holder_id,
 )
+from teatree.loop.question_binding import answer_from_click
 from teatree.utils.git import run_strict
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core._self_review_helpers import completed_self_review
 from tests.teatree_core.models._shared import _init_repo_with_branch
+
+
+def _owner_tap(row: DeferredQuestion, label: str, index: int) -> dict:
+    return {
+        "type": "block_actions",
+        "user": {"id": "U0DEMOOWNER"},
+        "channel": {"id": row.slack_channel},
+        "message": {"ts": row.slack_ts},
+        "actions": [{"action_id": f"owner-question-option-{index}", "value": str(index), "text": {"text": label}}],
+    }
 
 
 class CheckoutFenceTests(TestCase):
@@ -61,6 +75,88 @@ class CheckoutFenceTests(TestCase):
             (self.checkout / "new.txt").write_text("foreign edit")
             with pytest.raises(CheckoutFenceError, match="attested"):
                 verify_task_checkout(self.task, str(self.checkout))
+
+    def test_a_foreign_edit_parks_with_an_owner_action_card(self) -> None:
+        with patch(
+            "teatree.core.worktree.checkout_fence.read_process_table",
+            return_value=ProcessTable(frozenset(), "/proc"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+            (self.checkout / "new.txt").write_text("foreign edit")
+            attempt = claim_task_checkout_or_park(self.task)
+            assert attempt is not None
+            assert "differs from its attested state" in attempt.error
+
+        row = self.task.deferred_questions.get()
+        assert row.is_pending
+        assert row.evidence["action"]["kind"] == "attest"
+        assert "1 uncommitted" in row.evidence["why"]
+
+    def test_owner_acceptance_attests_and_releases_the_park_once(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=clear),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+            (self.checkout / "new.txt").write_text("foreign edit")
+            assert claim_task_checkout_or_park(self.task) is not None
+            row = self.task.deferred_questions.get()
+            row.slack_channel = "D0DEMOOWNER"
+            row.slack_ts = "1800000000.000100"
+            row.save(update_fields=["slack_channel", "slack_ts"])
+            backend = MagicMock(user_id="U0DEMOOWNER")
+            backend.update_message.return_value = {"ok": True}
+            tap = _owner_tap(row, "Accept", 1)
+            assert answer_from_click(tap, backend=backend)
+            assert carry_out_owner_actions() == [f"carried out {row.pk}"]
+            assert not answer_from_click(tap, backend=backend)
+            assert carry_out_owner_actions() == []
+            self.task.refresh_from_db()
+            assert self.task.not_before is None
+            self.worktree.refresh_from_db()
+            assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+            assert claim_task_checkout_or_park(self.task) is None
+            assert DeferredQuestionAudit.objects.filter(question=row, action="carried_out").count() == 1
+
+    def test_owner_decline_keeps_the_checkout_parked(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            (self.checkout / "new.txt").write_text("foreign edit")
+            assert claim_task_checkout_or_park(self.task) is not None
+        row = self.task.deferred_questions.get()
+        row.slack_channel = "D0DEMOOWNER"
+        row.slack_ts = "1800000000.000100"
+        row.save(update_fields=["slack_channel", "slack_ts"])
+        backend = MagicMock(user_id="U0DEMOOWNER")
+        backend.update_message.return_value = {"ok": True}
+        assert answer_from_click(_owner_tap(row, "Decline", 2), backend=backend)
+        assert carry_out_owner_actions() == [f"declined {row.pk}"]
+        self.task.refresh_from_db()
+        self.worktree.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+
+    def test_owner_acceptance_refuses_a_checkout_that_changed_after_the_card(self) -> None:
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            (self.checkout / "new.txt").write_text("foreign edit")
+            assert claim_task_checkout_or_park(self.task) is not None
+        row = self.task.deferred_questions.get()
+        row.slack_channel = "D0DEMOOWNER"
+        row.slack_ts = "1800000000.000100"
+        row.save(update_fields=["slack_channel", "slack_ts"])
+        backend = MagicMock(user_id="U0DEMOOWNER")
+        backend.update_message.return_value = {"ok": True}
+        assert answer_from_click(_owner_tap(row, "Accept", 1), backend=backend)
+        (self.checkout / "new.txt").write_text("changed again")
+        with patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=clear):
+            assert carry_out_owner_actions() == [f"refused {row.pk}"]
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert DeferredQuestionAudit.objects.filter(question=row, action="carried_out").count() == 0
 
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):

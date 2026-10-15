@@ -75,6 +75,7 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
+from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -96,6 +97,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
     backend = messaging_from_overlay()
     user_id = resolve_user_id()
     return [
+        _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),

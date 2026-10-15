@@ -1,10 +1,12 @@
 """Void a forge merge whose content never reached the default branch: a read-only plan, then one approved write.
 
-Human-only by construction: the operator checks refuse the loop runner and any process a
-dispatched agent spawned, the write needs a real terminal answering yes, and the model
-mutators refuse without the :class:`MergeVoid` row this module alone creates.
+The direct command refuses the loop runner and any process a dispatched agent spawned,
+and it needs a real terminal answering yes. The separate Slack path requires a recorded
+owner answer and rechecks this module's plan before calling its writer.
 """
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -108,6 +110,23 @@ class VoidPlan:
     def fingerprint(self) -> tuple[object, ...]:
         facts = (self.snapshot.merge_commit, self.snapshot.content_head, self.snapshot.default_tip, self.verdict.kind)
         return (*facts, self.restores, self.kept, self.closes)
+
+    def binding(self) -> str:
+        facts = (
+            self.ref.host_kind,
+            self.ref.slug.casefold(),
+            self.ref.pr_id,
+            self.snapshot.merge_commit,
+            self.snapshot.content_head,
+            self.snapshot.default_branch,
+            self.verdict.kind,
+            self.verdict.changed,
+            self.verdict.absent,
+            self.restores,
+            self.kept,
+            self.closes,
+        )
+        return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
     def evidence(self) -> VoidEvidence:
         return VoidEvidence(
@@ -230,6 +249,17 @@ def apply_void(plan: VoidPlan, *, reason: str, actor: str, stdin: TextIO, stdout
     if fresh.fingerprint() != plan.fingerprint():
         raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the forge or the ledger moved since the plan; plan again")
     return _write(fresh, reason=reason.strip(), actor=actor.strip())
+
+
+def apply_owner_approved_void(pr_url: str, *, binding: str, reason: str, actor: str) -> MergeVoid:
+    if not reason.strip():
+        raise VoidRefusedError(VoidRefusal.REASON_MISSING, "the reason for voiding the merge is missing")
+    fresh = plan_void(pr_url)
+    if fresh.refusal is not None:
+        raise fresh.refusal
+    if fresh.binding() != binding:
+        raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the forge or ledger changed since the owner answered")
+    return _write(fresh, reason=reason.strip(), actor=actor)
 
 
 @transaction.atomic

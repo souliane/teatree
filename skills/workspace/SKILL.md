@@ -101,6 +101,11 @@ repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
 
+An attestable refusal also asks the owner in Slack. The card links the ticket and
+states the checkout's commit count, uncommitted-file count and process evidence.
+Accepting rechecks the checkout and releases the parked task; declining leaves it
+parked. The terminal command remains available for an owner with host access.
+
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
 the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an

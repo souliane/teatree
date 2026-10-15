@@ -24,7 +24,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.models import Worktree
-from teatree.core.worktree.checkout_fence import checkout_rows
+from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release
 from teatree.core.worktree.worktree_paths import paths_match
@@ -65,24 +65,13 @@ class OccupancyCommands(TyperCommand):
             self.stderr.write("  Refused: only a direct owner command may attest a checkout.")
             raise SystemExit(1)
         worktree = _worktree_for_path(path)
-        if len(checkout_rows(worktree.worktree_path)) != 1 or occupancy_holder(worktree) is not None:
-            self.stderr.write(f"  Refused: {path} needs one unoccupied Worktree row to attest.")
-            raise SystemExit(1)
-        table = read_process_table(exclude_ancestors=True)
-        if table.usable and table.holds(Path(worktree.worktree_path)):
-            self.stderr.write(f"  Refused: {path} has live or unverifiable processes: {table.refuse_reason()}")
-            raise SystemExit(1)
         try:
-            state = checkout_state(Path(worktree.worktree_path), ticket=worktree.ticket)
-            if checkout_state(Path(worktree.worktree_path), ticket=worktree.ticket).digest != state.digest:
-                self.stderr.write(f"  Refused: {path} changed while attesting.")
-                raise SystemExit(1)
-            worktree.merge_extra(set_keys={"attested_state": state.digest if table.usable else f"owner:{state.digest}"})
-        except (OSError, RuntimeError, ValueError) as exc:
-            self.stderr.write(f"  Refused: {path} state could not be read: {exc}")
+            attestation = attest_checkout(worktree, table_reader=read_process_table, state_reader=checkout_state)
+        except AttestRefusedError as exc:
+            self.stderr.write(f"  Refused: {path} {exc}")
             raise SystemExit(1) from exc
-        suffix = " (one dispatch; host process evidence unavailable)" if not table.usable else ""
-        self.stdout.write(f"  attested {worktree.worktree_path} at {state.digest}{suffix}")
+        suffix = " (one dispatch; host process evidence unavailable)" if not attestation.host_evidence else ""
+        self.stdout.write(f"  attested {worktree.worktree_path} at {attestation.state.digest}{suffix}")
 
     @command(name="claim-occupancy")
     def claim_occupancy(

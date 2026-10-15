@@ -30,13 +30,16 @@ Every applied answer, typed or tapped, closes the posted card in place.
 """
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from teatree.core.models import PendingChatInjection
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_text import options_digest
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
@@ -55,6 +58,7 @@ if TYPE_CHECKING:
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
 OPTION_ACTION_PREFIX = "owner-question-option-"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,7 @@ class BoundAnswer:
 
     question: DeferredQuestion
     answer: str
+    answered_by: str = ""
 
 
 def configured_owner_id(backend: object) -> str:
@@ -93,7 +98,7 @@ def bind_reply(
     if question is None:
         return None
     answer = resolve_answer(body, question, reader=reader)
-    return None if answer is None else BoundAnswer(question=question, answer=answer)
+    return None if answer is None else BoundAnswer(question=question, answer=answer, answered_by=reply.user_id)
 
 
 def apply_bound_answer(
@@ -107,7 +112,15 @@ def apply_bound_answer(
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
     """
-    applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+    with transaction.atomic():
+        applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        if applied is not None and bound.answered_by:
+            DeferredQuestionAudit.objects.create(
+                question=applied,
+                action="answered",
+                answer_text=applied.answer_text,
+                resolver_id=f"slack:{bound.answered_by}",
+            )
     if applied is None:
         return False
     from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
@@ -128,7 +141,10 @@ def answer_from_click(
 ) -> bool:
     """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
-    if tap is None or not _is_the_owner(tap.user_id, configured_owner_id(backend)):
+    if tap is None:
+        return False
+    if not _is_the_owner(tap.user_id, configured_owner_id(backend)):
+        logger.warning("Refused a tap on the card at message %s: not the owner", tap.root_ts)
         return False
     question = DeferredQuestion.objects.filter(
         slack_channel=tap.channel, slack_ts=tap.root_ts, audience=DeferredQuestion.Audience.OWNER_QUESTION
@@ -139,7 +155,9 @@ def answer_from_click(
         label = _tapped_label(question, tap)
         if label is None:
             return False
-        if apply_bound_answer(BoundAnswer(question=question, answer=label), backend=backend, on_answer=on_answer):
+        if apply_bound_answer(
+            BoundAnswer(question=question, answer=label, answered_by=tap.user_id), backend=backend, on_answer=on_answer
+        ):
             return True
         question.refresh_from_db()
     closing = NO_LONGER_NEEDED if question.dismissed_at else f"{ALREADY_ANSWERED}{question.answer_text}"

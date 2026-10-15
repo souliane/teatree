@@ -21,6 +21,7 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -29,7 +30,9 @@ _PARK_RETRY = timedelta(minutes=30)
 
 
 class CheckoutFenceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, attestable: CheckoutAttestation | None = None) -> None:
+        super().__init__(message)
+        self.attestable = attestable
 
 
 def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> None:
@@ -55,15 +58,6 @@ def verify_task_checkout(task: Task, path: str) -> None:
         _verify_one_checkout(task, candidate)
 
 
-def checkout_rows(path: str) -> list[Worktree]:
-    """Every ``Worktree`` row of ANY ticket recording *path*."""
-    return [
-        row
-        for row in Worktree.objects.exclude(extra__worktree_path__isnull=True).only("extra")
-        if row.worktree_path and paths_match(row.worktree_path, path)
-    ]
-
-
 def _verify_one_checkout(task: Task, path: str) -> None:
     rows = checkout_rows(path)
     if len(rows) != 1 or not Worktree.objects.filter(pk=rows[0].pk, ticket=task.ticket).exists():
@@ -83,7 +77,7 @@ def _verify_one_checkout(task: Task, path: str) -> None:
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:
         message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
-        raise CheckoutFenceError(message)
+        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=False))
     if attested == owner_attested:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
@@ -93,10 +87,10 @@ def _verify_one_checkout(task: Task, path: str) -> None:
         attested = state.digest
     if attested != state.digest:
         message = f"checkout {path} differs from its attested state"
-        raise CheckoutFenceError(message)
+        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=True))
 
 
-def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
+def park_task_checkout(task: Task, *, reason: str, attestable: CheckoutAttestation | None = None) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
     episode = (
@@ -118,6 +112,10 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         attempt.result = result
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
+    if attestable is not None:
+        question = ask_owner_to_attest(task, attestable)
+        if question is not None and question.is_pending:
+            return attempt
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
@@ -148,5 +146,5 @@ def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None)
         verify_task_checkout(task, path)
     except CheckoutFenceError as exc:
         release(worktree, holder=holder, holder_session=session)
-        return park_task_checkout(task, reason=str(exc))
+        return park_task_checkout(task, reason=str(exc), attestable=exc.attestable)
     return None
