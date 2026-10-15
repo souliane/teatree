@@ -85,6 +85,30 @@ class TestShipExecutor(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
 
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_pr_body_with_generic_finding_is_refused_before_create(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("feat: x", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+            ),  # privacy-scan:allow synthetic fixture
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_called_once()
+        host.create_pr.assert_not_called()
+
     def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
         # North-star PR-2: the autonomous loop's task-driven ship reaches
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the

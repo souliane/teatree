@@ -209,11 +209,37 @@ def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
         return False
 
     nonpublic = tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
-    skipped = nonpublic
-    term = None if skipped else banned_terms_scanner.scan_text(payload)
-    if term is None:
+    term = None if nonpublic else banned_terms_scanner.scan_text(payload)
+    if term is not None:
+        marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
+        if marker_decision is True:
+            return True
+        if marker_decision is None and emit_banned_term_deny(tool_name, command, payload, term, cwd_repo):
+            return True
+    return _generic_payload_blocks(payload, command, cwd_repo, nonpublic=nonpublic)
+
+
+def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *, nonpublic: bool) -> bool:
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
+    from teatree.hooks import forge_write_scope, publish_surface  # noqa: PLC0415 — cold-hook read
+    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-hook read
+    from teatree.hooks.leak_policy import LEAK, Surface, Verdict, Visibility, decide  # noqa: PLC0415 — cold-hook read
+    from teatree.hooks.privacy_generic_detectors import generic_findings  # noqa: PLC0415 — cold-hook read
+
+    local_commit = publish_surface.command_targets_local_commit(command, cwd_repo)
+    surface = Surface.LOCAL_COMMIT if local_commit else Surface.DIFF
+    verdict = decide(LEAK, Visibility.NON_PUBLIC if nonpublic else Visibility.UNKNOWN, surface)
+    if verdict is Verdict.ALLOW or not (local_commit or forge_write_scope.is_forge_write(command, cwd_repo)):
         return False
-    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
-    if marker_decision is not None:
-        return marker_decision
-    return emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
+    findings = generic_findings(payload, allowlist=allowlist_terms(), forge_write=not local_commit)
+    if not findings:
+        return False
+    if verdict is Verdict.WARN:
+        sys.stderr.write(
+            f"[teatree] NOTE: generic {findings[0].category} in a local commit; the push gate will rescan it.\n"
+        )
+        return False
+    return emit_pretooluse_deny(
+        f"BLOCKED: generic {findings[0].category} in a forge publish payload. Redact it before posting.",
+        gate_id="banned_terms",
+    )

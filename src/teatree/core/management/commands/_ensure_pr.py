@@ -37,6 +37,7 @@ from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
@@ -49,6 +50,7 @@ from teatree.core.runners.ship import (
     sanitize_close_keywords,
     should_close_ticket,
 )
+from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.quality.gate_receipt import append_gate_notice
@@ -406,14 +408,27 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         reviewers=pr_reviewers_for_remote(overlay, remote),
         draft=False,
     )
+    return _open_pr(host, spec, remote=remote, owning_ticket=owning_ticket)
+
+
+def _open_pr(
+    host: CodeHostBackend, spec: PullRequestSpec, *, remote: str, owning_ticket: "Ticket | None"
+) -> EnsurePrResult:
+    if refusal := refusal_for_pr_generic_findings(
+        title=spec.title,
+        description=spec.description,
+        target_repo=git_remote.slug_from_remote(remote),
+        forge=forge_from_url(remote),
+    ):
+        return EnsurePrResult(error=refusal)
     try:
         raw = host.create_pr(spec)
     except CommandFailedError as exc:
         if "no commits between" in (exc.stderr or str(exc)).lower():
-            return _owe_pr(repo_path, branch_name, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
+            return _owe_pr(spec.repo, spec.branch, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
         raise
-    result = _verified_pr_result(host, raw, branch_name)
-    _record_verified_url(owning_ticket, result, branch_name)
+    result = _verified_pr_result(host, raw, spec.branch)
+    _record_verified_url(owning_ticket, result, spec.branch)
     return result
 
 

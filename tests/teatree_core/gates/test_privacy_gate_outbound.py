@@ -14,14 +14,14 @@ against the real resolved config (the gap the prior version shipped: empty
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.gates import privacy_gate
-from teatree.core.gates.privacy_gate import scan_outbound_text
+from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
 from teatree.hooks import _repo_visibility, publish_destination
 from tests._send_gate import TEST_TERM_REGISTRY
 
@@ -245,3 +245,132 @@ def test_private_target_not_refused_even_when_rules_unresolvable(monkeypatch: py
     result = scan_outbound_text(text="A note.", target_repo="acme/private", forge="github")
     assert not result.refused
     assert result.is_public is False
+
+
+@pytest.mark.parametrize(
+    ("category", "body"),
+    [
+        ("email", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+        ("home_path", "Read /home/employee/report"),  # privacy-scan:allow synthetic fixture
+        ("private_ip", "Connect to 10.24.8.9"),  # privacy-scan:allow synthetic fixture
+        ("api_key", "Token glpat-XXXXXXXXXXXXXXXX"),  # privacy-scan:allow synthetic fixture
+        ("internal_hostname", "Host build.internal.corp"),  # privacy-scan:allow synthetic fixture
+    ],
+)
+def test_generic_detector_blocks_public_forge_write(
+    inject_rules: Callable[..., None], category: str, body: str
+) -> None:
+    inject_rules(public=True)
+
+    result = scan_outbound_text(text=body, target_repo=REAL_PUBLIC)
+
+    assert result.refused
+    assert category in [match.pattern_name for match in result.matches]
+
+
+def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps(
+            {
+                "leak": ["placeholder-leak"],
+                "prose_collider": [],
+                "tone": [],
+                "allow": ["person@firm.tld"],  # privacy-scan:allow synthetic fixture
+            }
+        ),
+    )  # privacy-scan:allow synthetic fixture
+    inject_rules(public=True)
+
+    assert not scan_outbound_text(
+        text="person@firm.tld",  # privacy-scan:allow synthetic fixture
+        target_repo=REAL_PUBLIC,
+    ).refused  # privacy-scan:allow synthetic fixture
+    assert scan_outbound_text(
+        text="person@firm.tld.biz",  # privacy-scan:allow synthetic fixture
+        target_repo=REAL_PUBLIC,
+    ).refused  # privacy-scan:allow synthetic fixture
+
+
+@pytest.mark.parametrize(
+    ("allowed", "body"),
+    [
+        ("jdoe", "jdoe@gmail.com"),  # privacy-scan:allow synthetic fixture
+        ("jdoe", "/home/jdoe/src"),  # privacy-scan:allow synthetic fixture
+        ("firm", "person@firm.tld"),  # privacy-scan:allow synthetic fixture
+    ],
+)
+def test_generic_detector_does_not_exempt_a_finding_containing_an_allowed_token(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch, allowed: str, body: str
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
+    )
+    inject_rules(public=True)
+
+    result = scan_outbound_text(text=body, target_repo=REAL_PUBLIC)
+
+    assert result.refused
+    assert body not in format_refusal(result)
+
+
+def test_generic_detector_exempts_public_ci_path_only_on_forge_write(inject_rules: Callable[..., None]) -> None:
+    inject_rules(public=True)
+    body = "/home/runner/work/project"  # privacy-scan:allow synthetic fixture
+
+    assert not scan_outbound_text(text=body, target_repo=REAL_PUBLIC).refused
+    assert any(hit.category == "home_path" for hit in privacy_gate.generic_findings(body))
+
+
+def test_pr_refusal_reports_only_generic_findings(inject_rules: Callable[..., None]) -> None:
+    inject_rules(public=True, redact=[REDACT])
+    body = f"{REDACT} owner person@firm.tld"  # privacy-scan:allow synthetic fixture
+
+    refusal = privacy_gate.refusal_for_pr_generic_findings(
+        title="fix", description=body, target_repo=REAL_PUBLIC, forge="github"
+    )
+
+    assert refusal is not None
+    assert "email" in refusal
+    assert REDACT not in refusal
+
+
+def test_pr_refusal_passes_an_exactly_allowed_address_next_to_a_term(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed = "person@firm.tld"  # privacy-scan:allow synthetic fixture
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
+    )
+    inject_rules(public=True, redact=[REDACT])
+
+    refusal = privacy_gate.refusal_for_pr_generic_findings(
+        title="fix", description=f"{REDACT} owner {allowed}", target_repo=REAL_PUBLIC, forge="github"
+    )
+
+    assert refusal is None
+
+
+def test_generic_detector_ignores_push_scanner_marker_on_forge_write(inject_rules: Callable[..., None]) -> None:
+    inject_rules(public=True)
+
+    result = scan_outbound_text(
+        text="Contact person@firm.tld # privacy-scan:allow", target_repo=REAL_PUBLIC
+    )  # privacy-scan:allow synthetic fixture
+
+    assert result.refused
+
+
+def test_generic_detector_skips_private_forge_target(inject_rules: Callable[..., None]) -> None:
+    inject_rules(public=False)
+
+    result = scan_outbound_text(
+        text="Contact person@firm.tld",  # privacy-scan:allow synthetic fixture
+        target_repo="acme/private",
+    )  # privacy-scan:allow synthetic fixture
+
+    assert not result.refused

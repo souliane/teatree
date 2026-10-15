@@ -12,6 +12,7 @@ from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incom
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -20,6 +21,7 @@ from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
+from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
@@ -441,6 +443,14 @@ class ShipExecutor(RunnerBase):
         for raw GitHub API payloads piped through other producers.
         """
         expected_slug = git.remote_slug(repo=spec.repo)
+        refusal = refusal_for_pr_generic_findings(
+            title=spec.title,
+            description=spec.description,
+            target_repo=expected_slug,
+            forge=forge_from_url(git.remote_url(repo=spec.repo)),
+        )
+        if refusal is not None:
+            return RunnerResult(ok=False, detail=refusal)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):

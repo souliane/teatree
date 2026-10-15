@@ -344,6 +344,28 @@ def test_live_hook_allows_customer_term_only_inside_own_repo_url_to_public_repo(
     assert "own configured repo" in captured.err
 
 
+@pytest.mark.parametrize(
+    "private_text",
+    ["person@firm.tld", "/home/employee/report"],  # privacy-scan:allow synthetic fixture
+)
+def test_own_repo_url_warning_still_blocks_generic_finding(
+    private_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _OWN_URL_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": f'gh issue comment 5 --repo souliane/teatree --body "See {_OWN_REPO_URL} and {private_text}"'
+        },
+        "cwd": str(_public_clone(tmp_path)),
+    }
+
+    assert handle_banned_terms_pretool(data)
+    assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
 def test_live_hook_blocks_bare_customer_term_alongside_own_repo_url_to_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1336,3 +1358,201 @@ def test_posting_body_file_resolves_against_cwd(tmp_path: Path) -> None:
     cfg = tmp_path / "cfg.sqlite3"
     _seed_config_db(cfg, {"banned_term_registry": {"leak": ["acmewidget"], "prose_collider": ["acmewidget"]}})
     assert banned_terms_scanner.scan_text(leaked, config_path=cfg) == "acmewidget"
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+@pytest.mark.parametrize(
+    ("category", "body"),
+    [
+        ("email", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+        ("home_path", "Read /home/employee/report"),  # privacy-scan:allow synthetic fixture
+        ("private_ip", "Connect to 10.24.8.9"),  # privacy-scan:allow synthetic fixture
+        ("internal_hostname", "Host build.internal.corp"),  # privacy-scan:allow synthetic fixture
+    ],
+)
+def test_generic_detector_denies_public_bash_forge_write(
+    category: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f'gh issue comment 5 --repo souliane/teatree --body "{body}"'},
+        "cwd": str(tmp_path),
+    }
+
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
+    assert category in captured.out
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+@pytest.mark.parametrize(("visibility", "expected"), [("PRIVATE", "allow"), (None, "block")])
+def test_generic_detector_respects_private_and_unknown_bash_targets(
+    visibility: str | None, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: visibility)
+    body = '"person@firm.tld"'  # privacy-scan:allow synthetic fixture
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"gh issue comment 5 --repo acme/widget --body {body}"},
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is (expected == "block")
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_warns_on_local_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'git commit -m "Contact person@firm.tld"'},  # privacy-scan:allow synthetic fixture
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is False
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "generic email" in captured.err
+    assert "person@firm.tld" not in captured.err  # privacy-scan:allow synthetic fixture
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_honors_exact_allow_but_not_an_extended_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps(
+            {
+                "leak": ["placeholder-leak"],
+                "prose_collider": [],
+                "tone": [],
+                "allow": ["person@firm.tld"],  # privacy-scan:allow synthetic fixture
+            }
+        ),
+    )  # privacy-scan:allow synthetic fixture
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+    def post(body: str) -> bool:
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f'gh issue comment 5 --repo souliane/teatree --body "{body}"'},
+            "cwd": str(tmp_path),
+        }
+        return handle_banned_terms_pretool(data)
+
+    assert post("person@firm.tld") is False  # privacy-scan:allow synthetic fixture
+    assert post("person@firm.tld.biz") is True  # privacy-scan:allow synthetic fixture
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+@pytest.mark.parametrize(
+    ("allowed", "body"),
+    [
+        ("jdoe", "jdoe@gmail.com"),  # privacy-scan:allow synthetic fixture
+        ("jdoe", "/home/jdoe/src"),  # privacy-scan:allow synthetic fixture
+        ("firm", "person@firm.tld"),  # privacy-scan:allow synthetic fixture
+    ],
+)
+def test_generic_detector_does_not_exempt_a_finding_containing_an_allowed_token(
+    allowed: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f'gh issue comment 5 --repo souliane/teatree --body "{body}"'},
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data)
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_does_not_scan_slack_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "curl -X POST -d "
+                "'text=/home/employee/report' "  # privacy-scan:allow synthetic fixture
+                "https://slack.com/api/chat.postMessage"
+            )
+        },
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is False
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_exempts_public_ci_home_path_on_forge_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "gh issue comment 5 --repo souliane/teatree --body "
+                '"CI at /home/runner/work/project"'  # privacy-scan:allow synthetic fixture
+            )
+        },
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is False
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_does_not_honor_push_scanner_marker_on_forge_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": 'gh issue comment 5 --repo souliane/teatree --body "person@firm.tld # privacy-scan:allow"'
+        },  # privacy-scan:allow synthetic fixture
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is True

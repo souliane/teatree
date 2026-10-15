@@ -139,6 +139,32 @@ class NonAssignableHost:
         return PrOpenState.OPEN
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
+class TestEnsurePrGenericPrivacyGate(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_generated_body_is_refused_before_create(self) -> None:
+        repo = _orphan_repo(self._tmp_path)
+        host = NonAssignableHost()
+        with (
+            patch.object(ensure_pr_mod, "code_host_for_repo_from_overlay", return_value=host),
+            patch.object(
+                ensure_pr_mod,
+                "_branch_own_commit_message",
+                return_value=("fix: subject", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+            ),  # privacy-scan:allow synthetic fixture
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = create_or_defer_pr(str(repo), ORPHAN_BRANCH)
+
+        assert "email" in result.get("error", "")
+        assert "person@firm.tld" not in result.get("error", "")  # privacy-scan:allow synthetic fixture
+        assert host.created_specs == []
+
+
 class TestNonAssignableIdentityRegression3100(TestCase):
     """``pr create`` must succeed when the host-token login is not assignable."""
 

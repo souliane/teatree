@@ -21,6 +21,9 @@ GATE_FILES = (
     PUSH_HOOK,
     PUBLISH_GATE,
     ROOT / "scripts" / "privacy_scan.py",
+    ROOT / "src" / "teatree" / "hooks" / "privacy_generic_detectors.py",
+    ROOT / "src" / "teatree" / "hooks" / "forge_write_scope.py",
+    ROOT / "src" / "teatree" / "core" / "gates" / "privacy_gate.py",
     ROOT / "src" / "teatree" / "hooks" / "term_refs.py",
 )
 
