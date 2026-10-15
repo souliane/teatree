@@ -47,10 +47,11 @@ from teatree.loop.scanners.review_request_send import (
     ReviewRequestSendScanner,
 )
 from teatree.types import RawAPIDict
+from tests._file_backed_db import file_backed_default_database
 from tests._owner_channel import answer_on_slack, assert_a_plain_card, owner_card
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
-from tests.teatree_loop.test_followup_dry_run import _file_backed_default_database, _InlineThreadPoolExecutor
+from tests.teatree_loop.test_followup_dry_run import _InlineThreadPoolExecutor
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 _OVERLAY = "t3-teatree"
@@ -866,7 +867,7 @@ class TestTheFollowupPreviewSendsNothing(TransactionTestCase):
         _ready_ticket()
 
         with (
-            _file_backed_default_database(),
+            file_backed_default_database(),
             patch.object(followup_dry_run, "_SubmitterContextPool", _InlineThreadPoolExecutor),
             _world(slack, forge) as data_dir,
         ):
