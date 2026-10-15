@@ -221,7 +221,7 @@ def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
 
 def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *, nonpublic: bool) -> bool:
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import forge_write_scope, publish_surface  # noqa: PLC0415 — cold-hook read
+    from teatree.hooks import ai_signature_scan, forge_write_scope, publish_surface  # noqa: PLC0415 — cold-hook read
     from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-hook read
     from teatree.hooks.leak_policy import LEAK, Surface, Verdict, Visibility, decide  # noqa: PLC0415 — cold-hook read
     from teatree.hooks.privacy_generic_detectors import generic_findings  # noqa: PLC0415 — cold-hook read
@@ -233,6 +233,12 @@ def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *
         return False
     findings = generic_findings(payload, allowlist=allowlist_terms(), forge_write=not local_commit)
     if not findings:
+        return False
+    # The later AI-signature gate owns trailer emails and gives the specific refusal.
+    signature_lines = [line for _, _, line in ai_signature_scan.scan_text(payload)]
+    if signature_lines and all(
+        finding.category == "email" and any(finding.match in line for line in signature_lines) for finding in findings
+    ):
         return False
     if verdict is Verdict.WARN:
         sys.stderr.write(
