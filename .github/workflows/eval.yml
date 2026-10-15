@@ -589,7 +589,7 @@ jobs:
       # The `artifact` suffix step runs earlier, just before the eval run.
       - name: Upload the per-trial transcript report
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
@@ -602,7 +602,7 @@ jobs:
       # dashboard. `if: always()` so a red shard still publishes its summary.
       - name: Upload the sanitized summary (publish-safe)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-summary-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
@@ -617,7 +617,7 @@ jobs:
       # unsanitized, so it stays out of the public dashboard alongside the private transcript.
       - name: Upload the raw eval run log
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
@@ -698,7 +698,7 @@ jobs:
       # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts
       # — the private transcripts are never downloaded here.
       - name: Download every shard's sanitized summary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: ${{ runner.temp }}/summaries
           pattern: eval-summary-*

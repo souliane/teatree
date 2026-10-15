@@ -1,16 +1,23 @@
+import asyncio
+import json
 import os
 import tempfile
-from collections.abc import Iterator
+import time
+from collections.abc import AsyncIterator, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import Any, Self
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
+import teatree.agents.harness as harness_mod
+import teatree.agents.runner as runner_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core import agent_runner as agent_runner_mod
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models import (
@@ -22,6 +29,7 @@ from teatree.core.models import (
     Task,
     TaskAttempt,
     Ticket,
+    Worktree,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
@@ -41,9 +49,17 @@ from teatree.core.tasks import (
     refresh_followup_snapshot,
     sync_followup,
 )
+from teatree.core.worktree.checkout_state import checkout_state
+from teatree.core.worktree.occupancy import occupancy_holder
 from teatree.loop.drain import DrainReport, set_worker_quiescing
+from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from teatree.loops.seed import seed_default_loops_and_prompts
+from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
 from tests.factories import MergeAuditFactory, planned_ticket, waive_rubric
+from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, fake_sdk, result_message
 from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.models._shared import _init_repo_with_branch
 from tests.teatree_core.test_managers_task_claim import a_drain_lands_mid_claim, admits_then_the_fleet_stops
 
 IMMEDIATE_BACKEND = {
@@ -1718,3 +1734,83 @@ class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
         assert "quiescing" in result.get("skipped", "")
         assert self.task.status == Task.Status.PENDING
         assert not TaskAttempt.objects.filter(task=self.task).exists()
+
+
+class _CheckoutCreatingSession:
+    """A coding run that creates its ticket's checkout itself, as a Codex run does, then reports."""
+
+    def __init__(self, checkout: Path, worktree: Worktree) -> None:
+        self._checkout = checkout
+        self._worktree = worktree
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def query(self, _prompt: str) -> None:
+        return None
+
+    async def interrupt(self) -> None:
+        return None
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        await asyncio.to_thread(_init_repo_with_branch, self._checkout, branch="feature", commits_ahead=1)
+        await asyncio.to_thread(self._wait_for_the_heartbeat_to_take_it)
+        result = {"summary": "implemented it", "files_modified": [{"path": "f0.txt", "action": "added"}]}
+        for message in (assistant_tool_use("Edit"), assistant_text(json.dumps(result)), result_message()):
+            yield message
+
+    def _wait_for_the_heartbeat_to_take_it(self) -> None:
+        deadline = time.monotonic() + 10
+        try:
+            while not Worktree.objects.filter(pk=self._worktree.pk).exclude(occupied_by="").exists():
+                assert time.monotonic() < deadline, "the heartbeat never took the checkout"
+                time.sleep(0.01)
+        finally:
+            close_thread_db_connections()
+
+
+class ExecuteTaskMidRunCheckoutTests(TransactionTestCase):
+    """A coding run that creates its own checkout hands the next phase a released, attested tree (#5272)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.checkout = Path(temporary.name) / "checkout"
+        self.enterContext(file_backed_default_database())
+        seed_default_loops_and_prompts()
+        seed_default_presets_and_schedules()
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED, overlay="t3-teatree")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="t3-teatree")
+        self.worktree = Worktree.objects.create(
+            ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.checkout)}
+        )
+
+    def test_the_testing_phase_dispatches_into_a_checkout_the_coding_run_created(self) -> None:
+        coding = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
+        clear = ProcessTable(frozenset(), "/proc")
+        with (
+            fake_sdk([]),
+            patch.object(
+                harness_mod, "ClaudeSDKClient", lambda **_: _CheckoutCreatingSession(self.checkout, self.worktree)
+            ),
+            patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+        ):
+            execute_task.func(coding.pk, "coding")
+            finished = Worktree.objects.get(pk=self.worktree.pk)
+            assert Task.objects.get(pk=coding.pk).status == Task.Status.COMPLETED
+            assert occupancy_holder(finished) is None
+            assert finished.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+
+            testing = Task.objects.get(ticket=self.ticket, phase="testing", status=Task.Status.PENDING)
+            with patch.object(runner_mod, "_run_agent", return_value=Mock(spec=TaskAttempt)) as drive:
+                execute_task.func(testing.pk, "testing")
+
+        drive.assert_called_once()
+        assert Task.objects.get(pk=testing.pk).status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=testing, error__startswith="checkout_parked:").exists()
