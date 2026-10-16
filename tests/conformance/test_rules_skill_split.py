@@ -21,12 +21,6 @@ _CORE = _RULES / "SKILL.md"
 # The fork's own non-negotiables add ~0.5 KiB to upstream's 18 KiB core; the phase-context budget still bounds it.
 _CORE_MAX_BYTES = 19_456
 
-
-def test_rules_preamble_names_the_reference_file_pattern() -> None:
-    preamble = _CORE.read_text(encoding="utf-8").split("## Index", 1)[0]
-    assert "skills/rules/references/<file>.md" in preamble
-
-
 _FENCE_RE = re.compile(r"^\s*```")
 _HEADING_RE = re.compile(r"^(#{2,3}) +(.+?)\s*$")
 _BOLD_LEAD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
@@ -192,6 +186,11 @@ def test_every_reference_file_is_named_by_path_in_the_core() -> None:
         if page.relative_to(_REPO_ROOT).as_posix() not in core
     ]
     assert not unnamed, f"reference files the core never names: {unnamed}"
+
+
+def test_rules_preamble_names_the_reference_file_pattern() -> None:
+    preamble = _CORE.read_text(encoding="utf-8").split("## Index", 1)[0]
+    assert "skills/rules/references/<file>.md" in preamble
 
 
 def test_the_core_fits_its_byte_ceiling() -> None:
