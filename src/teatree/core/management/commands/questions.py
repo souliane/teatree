@@ -31,7 +31,6 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.modelkit.owner_action import is_owner_action_marker
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -168,9 +167,6 @@ class Command(MachineOutputCommand):
         There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
         and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and sets them there.
         """
-        if is_owner_action_marker(dedupe_marker):
-            self.stderr.write("owner action markers are reserved for verified action cards")
-            raise SystemExit(2)
         kind = owner_decision(decision) if decision else None
         if decision and kind is None:
             self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OwnerDecision)}")

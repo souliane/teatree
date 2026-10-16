@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
-from teatree.core.modelkit.owner_action import ActionRequest
+from teatree.core.modelkit.owner_action import ActionRequest, read_action
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ MAX_CHECKED_FACTS = 4
 
 REPLY_LINE = "Or reply in this thread."
 REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
+TAP_LINE = "Tap an option above to decide."
 
 _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)
 _WORD = re.compile(r"[^\W_]+")
@@ -178,6 +179,7 @@ class CardView:
     options: tuple[CardOption, ...]
     quoted: str
     ref: int
+    action: bool = False
 
 
 def option_row(option: CardOption) -> str:
@@ -198,7 +200,8 @@ def layout(view: CardView, *, closing: str = "") -> list[list[str]]:
         return [*blocks, [closing, ref]]
     if view.options:
         blocks.append([option_row(option) for option in view.options])
-    return [*blocks, [REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS, ref]]
+    reply_line = TAP_LINE if view.action else REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS
+    return [*blocks, [reply_line, ref]]
 
 
 def plain_text(view: CardView, *, closing: str = "") -> str:
@@ -278,7 +281,9 @@ class QuestionCard:
         object.__setattr__(self, "options", tuple(self.options))
 
     def view(self, question: str, *, ref: int = 0) -> CardView:
-        return CardView(question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref)
+        return CardView(
+            question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref, self.action is not None
+        )
 
     def problems(self, question: str) -> list[str]:
         """Every reason this card may not be sent as an owner question, all at once."""
@@ -342,6 +347,7 @@ class QuestionCard:
             why=str(evidence["why"]),
             options=CardOption.parse_all(options_json),
             quoted=str(evidence.get("quoted", "")),
+            action=read_action(evidence),
         )
 
     @classmethod

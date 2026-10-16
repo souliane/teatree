@@ -34,6 +34,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from teatree import answer_handback
+from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_actions import held_question
 from teatree.core.models.question_subject import finished_subject_reason
@@ -202,13 +203,7 @@ class DeferredQuestion(models.Model):
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
     ) -> "DeferredQuestion":
-        """The single guarded factory: a refused record raises, listing every problem, and writes no row.
-
-        Only a :class:`QuestionCard` that passes every check makes an owner row (its ``evidence``), stored dismissed
-        when its subject has finished; no card is INTERNAL. ``dedupe_marker`` collapses repeats onto a pending row;
-        ordinary owner cards also hold answered or matching dismissed rows, while action cards can be asked again
-        after resolution. An owner card supersedes a pending internal row and inherits a withheld task.
-        """
+        """Record a guarded question; matching action cards alone may use reserved action markers."""
         clean_question = question.strip()
         if not clean_question:
             msg = "question is required and must be non-empty (#58)"
@@ -218,6 +213,11 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(msg)
         if card is not None and (problems := card.problems(clean_question)):
             raise DeferredQuestionError("; ".join(problems))
+        requested_action = card.action if card is not None else None
+        valid_action = requested_action is not None and dedupe_marker == action_marker(requested_action)
+        if (requested_action is not None or is_owner_action_marker(dedupe_marker)) and not valid_action:
+            message = "owner action markers are reserved for matching action cards"
+            raise DeferredQuestionError(message)
         if card is not None and card.options:
             options_json, options_hash = card.options_json(), options_hash or options_digest(card.option_dicts())
 

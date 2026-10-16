@@ -90,8 +90,11 @@ def _decide(row: DeferredQuestion, actor: str) -> _Decision:
     action = read_action(row.evidence)
     if action is None or row.dedupe_marker != action_marker(action):
         return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
-    if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or not actor:
-        return _Decision("refused", "Only an authenticated owner answer in Slack may approve this action.", notify=True)
+    tapped = DeferredQuestionAudit.objects.filter(
+        question=row, action="answered", resolver_id=actor, note="button"
+    ).exists()
+    if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or not actor or not tapped:
+        return _Decision("refused", "Only the owner's button tap in Slack may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
     if option is None:

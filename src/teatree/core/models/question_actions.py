@@ -3,7 +3,6 @@
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models.question_text import question_fingerprint
 
 if TYPE_CHECKING:
@@ -14,11 +13,12 @@ if TYPE_CHECKING:
 ACTION_OUTCOMES = ("carried_out", "declined", "refused")
 
 
+def is_action_question(row: "DeferredQuestion") -> bool:
+    return read_action(row.evidence) is not None
+
+
 def canonical_action_answer(row: "DeferredQuestion", answer: str) -> str | None:
-    if read_action(row.evidence) is None:
-        return answer
-    option = match_action_option(row.options_json, answer)
-    return option.label if option is not None else None
+    return answer if not is_action_question(row) else None
 
 
 def held_question(

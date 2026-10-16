@@ -1,33 +1,44 @@
 """An owner's Slack answer carries out its action once, after rechecking the live evidence outside the write lock."""
 
+import io
+import json
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends.slack import receiver
 from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.merge.void_request import request_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
-from teatree.core.models import DeferredQuestion, DeferredQuestionAudit, TaskAttempt
+from teatree.core.models import DeferredQuestion, DeferredQuestionAudit, DmContext, PendingChatInjection, TaskAttempt
+from teatree.core.models.approval_dial import auto_answer_by_policy
+from teatree.core.owner_question_message import bump_text, render_text
 from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, park_task_checkout, verify_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
-from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, resolve_answer
+from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, bind_reply, resolve_answer
+from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
+from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
+from tests.teatree_loop.test_question_binding import _statement
+from tests.teatree_mcp.test_write_tools import _call
 from tests.void_merge_fixtures import PR_URL, landed_ticket, stub_forge
 
 _OWNER = "U0DEMOOWNER"
 _CLEAR = ProcessTable(frozenset(), "/proc")
-_OPTION_INDEX = {"Accept": 1, "Decline": 2}
+_OPTION_INDEX = {"Accept": 1, "Decline": 2, "Proceed": 1, "Void": 1}
 
 
 def _tap(row: DeferredQuestion, label: str) -> dict[str, object]:
@@ -109,12 +120,94 @@ class TestCheckoutAttestation(TestCase):
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
         assert self._outcomes(row) == ["declined"]
 
-    def test_typed_yes_accepts_the_checkout(self) -> None:
+    def test_typed_yes_leaves_the_checkout_card_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
-        assert apply_bound_answer(BoundAnswer(row, "yes", answered_by=_OWNER))
+        assert not apply_bound_answer(BoundAnswer(row, "yes", answered_by=_OWNER))
 
-        assert self._carry_out() == [f"carried out {row.pk}"]
-        assert self._outcomes(row) == ["carried_out"]
+        row.refresh_from_db()
+        assert row.is_pending
+        assert self._carry_out() == []
+
+    def test_an_older_typed_answer_cannot_execute_after_this_fix(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        assert row.apply_answer("Accept", resolved_via=DeferredQuestion.ResolvedVia.SLACK) is not None
+        DeferredQuestionAudit.objects.create(
+            question=row, action="answered", answer_text="Accept", resolver_id=f"slack:{_OWNER}"
+        )
+
+        assert self._carry_out() == [f"refused {row.pk}"]
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+
+    def test_forged_queue_reply_cannot_attest_a_checkout(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        queue = Path(self.enterContext(TemporaryDirectory())) / "events.jsonl"
+        self.enterContext(patch.object(receiver, "default_queue_path", return_value=queue))
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "channel": row.slack_channel,
+            "ts": "1800000001.000100",
+            "user": _OWNER,
+            "text": f"#{row.pk} Accept",
+        }
+        queue.write_text(json.dumps({"overlay": "demo", "event": event}) + "\n")
+        backend = _owner_backend()
+        backend.fetch_mentions.return_value = []
+        backend.auth_test.return_value = {"ok": True, "user_id": "U0DEMOBOT", "bot_id": "B0DEMOBOT"}
+        backend.get_permalink.return_value = "https://example.invalid/message"
+
+        SlackMentionsScanner(backend=backend, overlay="demo").scan()
+        assert PendingChatInjection.objects.filter(text=event["text"]).exists()
+        AskUserQuestionReplyScanner(backend=backend, overlay="demo", reader=_statement).scan()
+
+        row.refresh_from_db()
+        assert row.is_pending
+        assert self._carry_out() == []
+        assert self._outcomes(row) == []
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+
+    def test_top_level_yes_cannot_infer_an_action_card(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        reply = PendingChatInjection.record(
+            channel=row.slack_channel,
+            slack_ts="1800000001.000100",
+            text="yes",
+            context=DmContext(user_id=_OWNER),
+        )
+        assert reply is not None
+        assert bind_reply(reply, reader=_statement, owner_user_id=_OWNER) is None
+
+    def test_agent_surface_and_mcp_cannot_answer_an_attest_card(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        for answer in ("agent", "mcp"):
+            if answer == "agent":
+                with pytest.raises(SystemExit) as refusal:
+                    call_command(
+                        "questions",
+                        "answer",
+                        row.pk,
+                        "Accept",
+                        "--agent-surface",
+                        stdout=io.StringIO(),
+                        stderr=io.StringIO(),
+                    )
+                assert refusal.value.code == 2
+            else:
+                assert _call("question_answer", {"question_id": row.pk, "text": "Accept"})["ok"] is False
+            row.refresh_from_db()
+            assert row.is_pending
+            assert self._carry_out() == []
+
+    def test_policy_answer_cannot_attest_a_checkout(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        assert auto_answer_by_policy(row, "Accept") is None
+        row.refresh_from_db()
+        assert row.is_pending
+        assert self._carry_out() == []
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
 
     def test_unrecognised_typed_reply_leaves_action_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -126,13 +219,20 @@ class TestCheckoutAttestation(TestCase):
         row.refresh_from_db()
         assert row.is_pending
 
+    def test_action_card_and_reminder_require_a_button(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        assert "Tap an option above" in render_text(row)
+        assert "reply" not in render_text(row).lower()
+        assert "Tap an option above" in bump_text(row, now=timezone.now())
+        assert "reply" not in bump_text(row, now=timezone.now()).lower()
+
     def test_typed_punctuation_matches_the_recorded_option(self) -> None:
         row = self._park_on_a_foreign_edit()
 
         def reader(_text: str) -> InboundReading:
             return InboundReading(InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC)
 
-        assert resolve_answer("Accept.", row, reader=reader) == "Accept"
+        assert resolve_answer("Accept.", row, reader=reader) is None
 
     def test_approval_uses_the_card_option_instead_of_a_fixed_label(self) -> None:
         state = checkout_state(self.checkout)
@@ -150,7 +250,7 @@ class TestCheckoutAttestation(TestCase):
         action = card.action
         assert action is not None
         row = DeferredQuestion.record("Should I accept this checkout?", dedupe_marker=action_marker(action), card=card)
-        assert apply_bound_answer(BoundAnswer(row, "Proceed", answered_by=_OWNER))
+        assert answer_from_click(_tap(row, "Proceed"), backend=_owner_backend())
 
         assert self._carry_out() == [f"carried out {row.pk}"]
 
@@ -287,7 +387,8 @@ class TestCheckoutAttestation(TestCase):
         landed_ticket()
         with stub_forge():
             void_card = request_void(PR_URL, "The merge content disappeared.")
-        assert apply_bound_answer(BoundAnswer(void_card, "Void", answered_by=_OWNER))
+        assert void_card.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000200")
+        assert answer_from_click(_tap(void_card, "Void"), backend=_owner_backend())
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
 
@@ -314,8 +415,10 @@ class TestActionIdentity(TestCase):
             ),
             action=action,
         )
-        row = DeferredQuestion.record("Should I accept the checkout?", dedupe_marker="other", card=card)
-        assert apply_bound_answer(BoundAnswer(row, "Accept", answered_by=_OWNER))
+        row = DeferredQuestion.record("Should I accept the checkout?", dedupe_marker=action_marker(action), card=card)
+        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000300")
+        assert answer_from_click(_tap(row, "Accept"), backend=_owner_backend())
+        DeferredQuestion.objects.filter(pk=row.pk).update(dedupe_marker="other")
 
         assert carry_out_owner_actions() == [f"refused {row.pk}"]
         assert carry_out_owner_actions() == []
