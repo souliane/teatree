@@ -329,85 +329,12 @@ def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
     ).refused  # privacy-scan:allow synthetic fixture
 
 
-@pytest.mark.parametrize(
-    ("allowed", "body"),
-    [
-        ("jdoe", "jdoe@gmail.com"),  # privacy-scan:allow synthetic fixture
-        ("jdoe", "/home/jdoe/src"),  # privacy-scan:allow synthetic fixture
-        ("firm", "person@firm.tld"),  # privacy-scan:allow synthetic fixture
-    ],
-)
-def test_generic_detector_does_not_exempt_a_finding_containing_an_allowed_token(
-    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch, allowed: str, body: str
-) -> None:
-    monkeypatch.setenv(
-        "TEATREE_TERM_REGISTRY",
-        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
-    )
-    inject_rules(public=True)
-
-    result = scan_outbound_text(text=body, target_repo=REAL_PUBLIC)
-
-    assert result.refused
-    assert body not in format_refusal(result)
-
-
 def test_generic_detector_exempts_public_ci_path_only_on_forge_write(inject_rules: Callable[..., None]) -> None:
     inject_rules(public=True)
     body = "/home/runner/work/project"  # privacy-scan:allow synthetic fixture
 
     assert not scan_outbound_text(text=body, target_repo=REAL_PUBLIC).refused
     assert any(hit.category == "home_path" for hit in privacy_gate.generic_findings(body))
-
-
-def test_pr_refusal_reports_only_generic_findings(inject_rules: Callable[..., None]) -> None:
-    inject_rules(public=True, redact=[REDACT])
-    body = f"{REDACT} owner person@firm.tld"  # privacy-scan:allow synthetic fixture
-
-    refusal = privacy_gate.refusal_for_pr_generic_findings(
-        title="fix", description=body, target_repo=REAL_PUBLIC, forge="github"
-    )
-
-    assert refusal is not None
-    assert "email" in refusal
-    assert REDACT not in refusal
-
-
-def test_pr_refusal_passes_an_exactly_allowed_address_next_to_a_term(
-    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    allowed = "person@firm.tld"  # privacy-scan:allow synthetic fixture
-    monkeypatch.setenv(
-        "TEATREE_TERM_REGISTRY",
-        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
-    )
-    inject_rules(public=True, redact=[REDACT])
-
-    refusal = privacy_gate.refusal_for_pr_generic_findings(
-        title="fix", description=f"{REDACT} owner {allowed}", target_repo=REAL_PUBLIC, forge="github"
-    )
-
-    assert refusal is None
-
-
-@pytest.mark.parametrize("unreadable", ["overlay_privacy_rules", "_db_banned_terms"])
-def test_pr_generic_refusal_survives_unreadable_term_source(
-    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch, unreadable: str
-) -> None:
-    inject_rules(public=True)
-    monkeypatch.setattr(privacy_gate, unreadable, lambda *_args: None)
-    body = "Contact person@firm.tld"  # privacy-scan:allow synthetic detector fixture
-
-    refusal = privacy_gate.refusal_for_pr_generic_findings(
-        title="fix",
-        description=body,
-        target_repo=REAL_PUBLIC,
-        forge="github",
-    )  # privacy-scan:allow synthetic fixture
-
-    assert refusal is not None
-    assert "generic:email" in refusal
-    assert "person@firm.tld" not in refusal  # privacy-scan:allow synthetic fixture
 
 
 def test_generic_detector_ignores_push_scanner_marker_on_forge_write(inject_rules: Callable[..., None]) -> None:

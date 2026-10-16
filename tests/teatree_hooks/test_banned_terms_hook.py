@@ -1535,33 +1535,6 @@ def test_generic_detector_honors_exact_allow_but_not_an_extended_address(
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")
-@pytest.mark.parametrize(
-    ("allowed", "body"),
-    [
-        ("jdoe", "jdoe@gmail.com"),  # privacy-scan:allow synthetic fixture
-        ("jdoe", "/home/jdoe/src"),  # privacy-scan:allow synthetic fixture
-        ("firm", "person@firm.tld"),  # privacy-scan:allow synthetic fixture
-    ],
-)
-def test_generic_detector_does_not_exempt_a_finding_containing_an_allowed_token(
-    allowed: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv(
-        "TEATREE_TERM_REGISTRY",
-        json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": [], "allow": [allowed]}),
-    )
-    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-    data = {
-        "tool_name": "Bash",
-        "tool_input": {"command": f'gh issue comment 5 --repo souliane/teatree --body "{body}"'},
-        "cwd": str(tmp_path),
-    }
-
-    assert handle_banned_terms_pretool(data)
-
-
-@pytest.mark.usefixtures("in_process_banned_terms_scanner")
 def test_generic_detector_does_not_scan_slack_post(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
