@@ -33,8 +33,10 @@ import pytest
 from django.db import connections
 
 from teatree.core.models import BotPing, DeliveryClaim
-from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import run_racing_threads
+from tests.db_alias import register_control_db_alias, run_racing_threads, wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _KEY = "concurrent-claim-key"
 
@@ -43,17 +45,7 @@ def _make_alias(tmp_path: Path) -> str:
     """Register a Django connection against a fresh file-backed SQLite DB with prod OPTIONS."""
     alias = f"notify_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": SQLITE_BOUNDARY_ENGINE,
-        "NAME": str(db_file),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
+    register_control_db_alias(alias, db_file)
     with connections[alias].cursor() as cur:
         cur.execute(
             """

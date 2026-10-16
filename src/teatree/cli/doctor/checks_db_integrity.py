@@ -27,11 +27,11 @@ fix, so no probe short-circuits the others.
 
 import shlex
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 
 import typer
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError, connections
 
 from teatree.config.cold_db import projection_dir_for
@@ -51,6 +51,8 @@ _SQLITE_OK = "ok"
 # quick_check reports one row per problem and a wide corruption can produce thousands.
 # The operator needs the shape of the failure, not a wall of page numbers.
 _MAX_REPORTED_PROBLEMS = 3
+_JOURNAL_HEADER_OFFSET = 18
+_WAL_HEADER_VALUE = 2
 
 
 def _sqlite_path() -> Path | None:
@@ -103,10 +105,14 @@ def _check_db_integrity() -> bool:
     source = shlex.quote(str(path))
     dump = shlex.quote(f"{path}.recovered.sql")
     recovered = shlex.quote(f"{path}.recovered")
+    trailer = shlex.quote("ROLLBACK; -- due to errors")
     typer.secho(
         f"FAIL  SQLite integrity: {path} FAILS PRAGMA quick_check — {shown}{suffix}. "
         "Stop every service; keep its -wal beside the source while recovering. Recover with: "
-        f"sqlite3 -readonly {source} '.dump' > {dump} && sqlite3 {recovered} < {dump} — verify "
+        f"sqlite3 -readonly {source} '.dump' > {dump} && "
+        f'if [ "$(tail -n 1 {dump})" = {trailer} ]; then '
+        "echo 'SQLite dump reports corruption; use .recover' >&2; false; "
+        f"else sqlite3 {recovered} < {dump}; fi — verify "
         "quick_check and row counts on the result. If dump reports corruption, use a SQLite build "
         "with a working .recover command. Only when swapping the recovered file into place, "
         "remove the old -wal/-shm that belong to the replaced file.",
@@ -276,24 +282,31 @@ def _check_control_db_journal() -> bool:
     if not path.exists():
         return True
 
-    expected = ControlDbJournal(path)
     try:
-        with closing(sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)) as connection:
-            row = connection.execute("PRAGMA journal_mode").fetchone()
-    except sqlite3.Error as error:
-        typer.secho(f"FAIL  Control DB journal: unreadable ({error})", fg=typer.colors.RED)
+        expected_mode, reason = ControlDbJournal(path).selection
+        with path.open("rb") as source:
+            header = source.read(_JOURNAL_HEADER_OFFSET + 1)
+    except (OSError, ImproperlyConfigured) as error:
+        typer.secho(f"FAIL  Control DB journal: cannot verify ({error})", fg=typer.colors.RED)
+        return False
+    if (
+        len(header) <= _JOURNAL_HEADER_OFFSET
+        or not header.startswith(b"SQLite format 3\x00")
+        or header[_JOURNAL_HEADER_OFFSET] not in {1, _WAL_HEADER_VALUE}
+    ):
+        typer.secho("FAIL  Control DB journal: invalid SQLite journal header", fg=typer.colors.RED)
         return False
 
-    mode = str(row[0]) if row else "unknown"
-    if mode != expected.mode:
+    mode = "wal" if header[_JOURNAL_HEADER_OFFSET] == _WAL_HEADER_VALUE else "truncate"
+    if mode != expected_mode:
         typer.secho(
-            f"FAIL  Control DB journal: {mode} ({expected.reason}); expected {expected.mode}. "
+            f"FAIL  Control DB journal: {mode} ({reason}); expected {expected_mode}. "
             "Stop all database users before switching journal modes.",
             fg=typer.colors.RED,
         )
         return False
 
-    typer.secho(f"OK    Control DB journal: {mode} ({expected.reason})", fg=typer.colors.GREEN)
+    typer.secho(f"OK    Control DB journal: {mode} ({reason})", fg=typer.colors.GREEN)
     wal_path = path.with_name(f"{path.name}-wal")
     if mode == "wal" and wal_path.exists():
         try:

@@ -41,7 +41,7 @@ _READ_ONLY_PRAGMA_CALLS = frozenset(
         "quick_check",
     }
 )
-_PRAGMA_CALL = re.compile(r"^pragma\s+(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*\(", re.IGNORECASE)
+_PRAGMA_CALL = re.compile(r"^pragma\s+(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*\([^()]*\)$", re.IGNORECASE)
 
 #: The post-DB step ``db migrate-app`` runs. Overlays name their app-database
 #: migrate step this, so the schema-catch-up verb reuses the step provisioning
@@ -76,13 +76,15 @@ def _is_read_only(sql: str) -> bool:
     # ``PRAGMA query_only=OFF``) — a write the read-only transaction cannot
     # block. Read-only introspection PRAGMAs never assign a value. Caveat:
     # benign maintenance PRAGMAs without '=' (``PRAGMA optimize``,
-    # ``wal_checkpoint``) still pass both layers — harmless for introspection.
+    # bare ``wal_checkpoint``) still pass both layers — harmless for introspection.
     if leading != "pragma":
         return True
     if "=" in stripped:
         return False
-    call = _PRAGMA_CALL.match(stripped)
-    return call is None or call.group(1).lower() in _READ_ONLY_PRAGMA_CALLS
+    if "(" not in stripped:
+        return True
+    call = _PRAGMA_CALL.fullmatch(stripped)
+    return call is not None and call.group(1).lower() in _READ_ONLY_PRAGMA_CALLS
 
 
 def _read_only_guard_sql(vendor: str) -> tuple[str | None, str | None]:

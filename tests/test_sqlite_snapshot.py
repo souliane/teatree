@@ -5,7 +5,46 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.sqlite_snapshot import _sqlite_snapshot
+from teatree.sqlite_snapshot import _sqlite_snapshot, uncheckpointed_wal
+
+
+def test_unreadable_wal_stat_fails_as_sqlite_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "db.sqlite3"
+    wal = Path(f"{db}-wal")
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == wal:
+            message = "permission denied"
+            raise PermissionError(message)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    with pytest.raises(sqlite3.OperationalError, match="Cannot inspect"):
+        uncheckpointed_wal(db)
+
+
+def test_snapshot_fails_when_wal_cannot_be_inspected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.sqlite3"
+    wal = Path(f"{source}-wal")
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == wal:
+            message = "permission denied"
+            raise PermissionError(message)
+        return original_stat(path, *args, **kwargs)
+
+    def refuse_readonly(path: str | Path, *, uri: bool = False) -> sqlite3.Connection:
+        message = "unable to open database file"
+        raise sqlite3.OperationalError(message)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    with (
+        patch("teatree.sqlite_snapshot.sqlite3.connect", side_effect=refuse_readonly),
+        pytest.raises(sqlite3.OperationalError, match="Cannot inspect"),
+    ):
+        _sqlite_snapshot(source, tmp_path / "copy.sqlite3")
 
 
 def test_wal_snapshot_is_a_standalone_rollback_file(tmp_path: Path) -> None:

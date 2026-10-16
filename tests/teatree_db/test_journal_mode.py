@@ -1,7 +1,9 @@
 import os
+import select
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +13,8 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.db.journal_mode import ControlDbJournal
 from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.sqlite_snapshot import _sqlite_snapshot
+from teatree.utils.mount_points import MountEntry
 
 
 @pytest.mark.parametrize(
@@ -40,6 +44,8 @@ def test_shell_child_selects_mode_from_its_database_path(
         env["T3_CONTROL_DB_JOURNAL_MODE"] = override
     command = (
         "from django.db import connection; from pathlib import Path; import os; "
+        "import teatree.db.write_domain as wd; from teatree.utils.mount_points import MountEntry; "
+        "wd.read_mount_entries=lambda: (MountEntry(Path('/'), 'ext4'),); "
         "connection.settings_dict['NAME'] = os.environ['T3_CONFIG_DB']; "
         "c = connection.cursor(); c.execute('PRAGMA journal_mode'); "
         "print(c.fetchone()[0], Path(connection.settings_dict['NAME']).read_bytes()[18]); c.close()"
@@ -60,9 +66,10 @@ def test_shell_child_selects_mode_from_its_database_path(
 def test_control_volume_selects_wal_and_preserves_other_init_commands(tmp_path: Path) -> None:
     volume = tmp_path / "control"
     volume.mkdir()
-    journal = ControlDbJournal(volume / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(volume)})
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=(MountEntry(Path("/"), "ext4"),)):
+        journal = ControlDbJournal(volume / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(volume)}, containerized=True)
+        assert journal.mode == "wal"
 
-    assert journal.mode == "wal"
     assert journal.init_commands(["PRAGMA journal_mode=TRUNCATE", "PRAGMA foreign_keys=ON"]) == [
         "PRAGMA journal_mode=WAL",
         "PRAGMA foreign_keys=ON",
@@ -78,6 +85,25 @@ def test_reconnecting_does_not_repeat_wal_init_commands(tmp_path: Path) -> None:
     once = journal.init_commands(initial)
 
     assert journal.init_commands(once) == once
+
+
+def test_explicit_synchronous_setting_is_preserved(tmp_path: Path) -> None:
+    journal = ControlDbJournal(tmp_path / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=True)
+    with patch("teatree.db.write_domain.read_mount_entries") as read_mount:
+        read_mount.return_value = (MountEntry(Path("/"), "ext4"),)
+        commands = journal.init_commands(["PRAGMA journal_mode=TRUNCATE", "PRAGMA synchronous=FULL"])
+    assert commands.count("PRAGMA synchronous=FULL") == 1
+    assert "PRAGMA synchronous=NORMAL" not in commands
+
+
+def test_selection_is_read_once_for_mode_reason_and_init_commands(tmp_path: Path) -> None:
+    mounts = (MountEntry(Path("/"), "ext4"),)
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=mounts) as read_mount:
+        journal = ControlDbJournal(tmp_path / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=True)
+        assert journal.mode == "wal"
+        assert journal.reason == "control-DB volume"
+        assert journal.init_commands([])[0] == "PRAGMA journal_mode=WAL"
+        read_mount.assert_called_once_with()
 
 
 def test_host_path_and_override_select_truncate(tmp_path: Path) -> None:
@@ -104,6 +130,228 @@ def test_symlinked_and_relative_paths_stay_in_rollback_mode(tmp_path: Path) -> N
 
     assert ControlDbJournal(link, env).mode == "truncate"
     assert ControlDbJournal(Path("db.sqlite3"), env).mode == "truncate"
+
+
+def test_ancestor_symlink_to_shared_mount_stays_in_rollback_mode(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    volume = link / "control"
+    volume.mkdir()
+    db = volume / "db.sqlite3"
+    mounts = (MountEntry(Path("/"), "overlay"), MountEntry(real, "virtiofs"))
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=mounts):
+        journal = ControlDbJournal(db, {CONTROL_DB_DIR_ENV: str(volume)}, containerized=True)
+        assert journal.mode == "truncate"
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("unreadable", "mount table"),
+        ("virtiofs", "not local"),
+        ("nfs", "not local"),
+        ("host", "outside the container"),
+        ("relative", "relative or symlinked"),
+        ("symlink", "relative or symlinked"),
+    ],
+)
+def test_child_process_fails_closed_on_unsafe_control_db(tmp_path: Path, case: str, reason: str) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    db = volume / "db.sqlite3"
+    if case == "relative":
+        db = Path("db.sqlite3")
+        volume = Path()
+    if case == "symlink":
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        volume = link / "control"
+        volume.mkdir()
+        db = volume / "db.sqlite3"
+    script = (
+        "import os; from pathlib import Path; from unittest.mock import patch; "
+        "from teatree.db.journal_mode import ControlDbJournal; "
+        "from teatree.utils.mount_points import MountEntry; "
+        "case=os.environ['CASE']; entries=None if case=='unreadable' else (MountEntry(Path('/'), "
+        "'nfs' if case=='nfs' else 'virtiofs' if case=='virtiofs' else 'ext4'),); "
+        "p=patch('teatree.db.write_domain.read_mount_entries', return_value=entries); p.start(); "
+        "print(*ControlDbJournal(Path(os.environ['DB']), {os.environ['CONTROL_KEY']:os.environ['CONTROL_DIR']}, "
+        "containerized=case!='host').selection)"
+    )
+    env = {
+        **os.environ,
+        "CASE": case,
+        "DB": str(db),
+        "CONTROL_KEY": CONTROL_DB_DIR_ENV,
+        "CONTROL_DIR": str(volume),
+    }
+    child = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.startswith("truncate ")
+    assert reason in child.stdout
+
+
+def test_truncate_opener_waits_for_wal_writer_then_converts_file(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("CREATE TABLE note(body TEXT)")
+        writer.commit()
+        script = (
+            "import django, os; django.setup(); from django.db.utils import ConnectionHandler; "
+            "from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS; "
+            "h=ConnectionHandler({'default': {'ENGINE':SQLITE_BOUNDARY_ENGINE, 'NAME':os.environ['DB'], "
+            "'OPTIONS':{**SQLITE_WRITE_SERIALIZATION_OPTIONS, 'timeout':0.2}}}); "
+            "c=h['default'].cursor(); c.execute('PRAGMA journal_mode'); "
+            "print(c.fetchone()[0]); c.close(); h.close_all()"
+        )
+        env = {
+            **os.environ,
+            "DB": str(db),
+            CONTROL_DB_DIR_ENV: str(tmp_path),
+            "T3_CONTROL_DB_JOURNAL_MODE": "truncate",
+            "TEATREE_ROLE": "worker",
+            "DJANGO_SETTINGS_MODULE": "teatree.settings",
+        }
+        locked = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+        )
+        assert locked.returncode != 0
+        assert "database is locked" in locked.stderr.lower()
+    finally:
+        writer.close()
+    converted = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+    )
+    assert converted.returncode == 0, converted.stderr
+    assert converted.stdout.strip() == "truncate"
+    assert db.read_bytes()[18] == 1
+
+
+def test_three_writer_processes_and_snapshot_reader_see_consistent_wal(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    with closing(sqlite3.connect(db)) as setup:
+        assert setup.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        setup.execute("CREATE TABLE note(writer INT, sequence INT, UNIQUE(writer, sequence))")
+        setup.commit()
+    script = (
+        "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1],timeout=30); "
+        "c.execute('PRAGMA wal_autocheckpoint=0'); "
+        "[(c.execute('INSERT INTO note VALUES (?,?)',(int(sys.argv[2]),i)), c.commit(), time.sleep(.01)) "
+        "for i in range(20)]; c.close()"
+    )
+    writers = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(db), str(i)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        for i in range(3)
+    ]
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with closing(sqlite3.connect(db)) as reader:
+                count = reader.execute("SELECT COUNT(*) FROM note").fetchone()[0]
+            if count >= 3:
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("writers did not commit before snapshot")
+        assert db.read_bytes()[18] == 2
+        assert Path(f"{db}-wal").stat().st_size > 0
+        snapshot = tmp_path / "snapshot.sqlite3"
+        _sqlite_snapshot(db, snapshot)
+        assert snapshot.read_bytes()[18] == 1
+        with closing(sqlite3.connect(snapshot)) as reader:
+            snapshot_count = reader.execute("SELECT COUNT(*) FROM note").fetchone()[0]
+            assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert 3 <= snapshot_count <= 60
+    finally:
+        for writer in writers:
+            try:
+                _, stderr = writer.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                writer.kill()
+                writer.communicate(timeout=5)
+                raise
+            assert writer.returncode == 0, stderr.decode()
+    with closing(sqlite3.connect(db)) as reader:
+        assert reader.execute("SELECT COUNT(*) FROM note").fetchone() == (60,)
+
+
+def test_four_processes_claim_one_wal_row_once(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    with closing(sqlite3.connect(db)) as setup:
+        assert setup.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        setup.execute("CREATE TABLE claim(id INTEGER PRIMARY KEY, owner TEXT)")
+        setup.execute("INSERT INTO claim VALUES (1, NULL)")
+        setup.commit()
+    script = (
+        "import sqlite3,sys,time; from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS as opts; "
+        "c=sqlite3.connect(sys.argv[1],timeout=opts['timeout']); "
+        "c.execute('BEGIN '+opts['transaction_mode']); "
+        "row=c.execute('SELECT owner FROM claim WHERE id=1').fetchone(); "
+        "won=row[0] is None; "
+        "c.execute('UPDATE claim SET owner=? WHERE id=1 AND owner IS NULL',(sys.argv[2],)) if won else None; "
+        "time.sleep(.05) if won else None; c.commit(); print('won' if won else 'lost'); c.close()"
+    )
+    claimers = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(db), str(i)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        for i in range(4)
+    ]
+    results = []
+    for claimer in claimers:
+        try:
+            stdout, stderr = claimer.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            claimer.kill()
+            claimer.communicate(timeout=5)
+            raise
+        assert claimer.returncode == 0, stderr.decode()
+        results.append(stdout.decode().strip())
+    assert sorted(results) == ["lost", "lost", "lost", "won"]
+    with closing(sqlite3.connect(db)) as reader:
+        assert reader.execute("SELECT owner FROM claim WHERE id=1").fetchone()[0] in {"0", "1", "2", "3"}
+        assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def test_sigkilled_writer_leaves_committed_wal_row_recoverable(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    script = (
+        "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); "
+        "c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA wal_autocheckpoint=0'); "
+        "c.execute('CREATE TABLE note(body TEXT)'); c.execute(\"INSERT INTO note VALUES ('committed')\"); "
+        "c.commit(); print('ready',flush=True); time.sleep(60)"
+    )
+    writer = subprocess.Popen([sys.executable, "-c", script, str(db)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert writer.stdout is not None
+        ready, _, _ = select.select([writer.stdout], [], [], 10)
+        assert ready, "writer did not signal a committed row"
+        assert writer.stdout.readline().strip() == b"ready"
+        writer.kill()
+        writer.communicate(timeout=5)
+        assert db.read_bytes()[18] == 2
+        assert Path(f"{db}-wal").stat().st_size > 0
+        with closing(sqlite3.connect(db)) as reader:
+            assert reader.execute("SELECT body FROM note").fetchall() == [("committed",)]
+            assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        snapshot = tmp_path / "snapshot.sqlite3"
+        _sqlite_snapshot(db, snapshot)
+        with closing(sqlite3.connect(snapshot)) as reader:
+            assert reader.execute("SELECT body FROM note").fetchall() == [("committed",)]
+    finally:
+        if writer.poll() is None:
+            writer.kill()
+            writer.communicate(timeout=5)
 
 
 def test_schema_qualified_and_mixed_case_journal_commands_are_replaced(tmp_path: Path) -> None:

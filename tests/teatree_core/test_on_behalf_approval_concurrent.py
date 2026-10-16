@@ -38,8 +38,9 @@ import pytest
 from django.db import connections
 
 from teatree.core.models import OnBehalfApproval
-from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import run_racing_threads
+from tests.db_alias import register_control_db_alias, run_racing_threads, wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 
 def _make_alias(tmp_path: Path) -> str:
@@ -51,17 +52,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"oba_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": SQLITE_BOUNDARY_ENGINE,
-        "NAME": str(db_file),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
+    register_control_db_alias(alias, db_file)
     # Create just the two on-behalf tables on the alias via raw SQL — using
     # ``call_command("migrate")`` here would replay a pre-existing data
     # migration (#541 rename) that queries ``Ticket.objects`` without a

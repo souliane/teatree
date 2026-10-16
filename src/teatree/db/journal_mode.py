@@ -1,6 +1,7 @@
 import os
 import re
 from collections.abc import Mapping, Sequence
+from functools import cached_property
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -19,13 +20,13 @@ class ControlDbJournal:
         self.env = env
         self.domain = ControlDbWriteDomain(db_path, env=env, containerized=containerized)
 
-    @property
+    @cached_property
     def selection(self) -> tuple[str, str]:
         override = self.env.get("T3_CONTROL_DB_JOURNAL_MODE", "").strip().lower()
         if override not in {"", "truncate", "wal"}:
             message = "T3_CONTROL_DB_JOURNAL_MODE must be 'truncate' or 'wal'"
             raise ImproperlyConfigured(message)
-        if self.db_path.parent != self.domain.expected_dir:
+        if not self.domain.in_control_dir:
             return "truncate", "outside the control-DB directory"
         if override == "truncate":
             return "truncate", "operator override"
@@ -59,6 +60,11 @@ class ControlDbJournal:
             commands.insert(0, selected)
         if mode == "wal":
             for command in ("PRAGMA synchronous=NORMAL", f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}"):
+                if command.startswith("PRAGMA synchronous") and any(
+                    re.match(r"^\s*PRAGMA\s+(?:[A-Za-z_]\w*\.)?synchronous\s*(?:=|\()", item, re.IGNORECASE)
+                    for item in commands
+                ):
+                    continue
                 if command not in commands:
                     commands.append(command)
         return commands

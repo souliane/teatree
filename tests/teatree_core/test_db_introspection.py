@@ -149,7 +149,15 @@ class TestDbQuery(TestCase):
             call_command("db", "query", "pragma writable_schema=1", stdout=StringIO())
 
     def test_parenthesized_pragma_setter_is_refused(self) -> None:
-        for sql in ("PRAGMA journal_mode(wal)", "PRAGMA writable_schema(1)"):
+        for sql in (
+            "PRAGMA journal_mode(wal)",
+            "PRAGMA writable_schema(1)",
+            'PRAGMA "writable_schema"(1)',
+            "PRAGMA /**/writable_schema(1)",
+            "PRAGMA main . writable_schema(1)",
+            "PRAGMA [query_only](0)",
+            'PRAGMA "journal_mode"(wal)',
+        ):
             with self.subTest(sql=sql), pytest.raises(SystemExit):
                 call_command("db", "query", sql, stdout=StringIO())
 

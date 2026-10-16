@@ -7,6 +7,9 @@ there), and the image pre-creates the mount point so a fresh volume inherits the
 user's ownership rather than root's.
 """
 
+import os
+import sqlite3
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -110,6 +113,34 @@ class TestImagePreCreatesTheMountPoint:
 
 
 class TestMigrationScriptIsShipped:
+    def test_online_backup_keeps_wal_resident_rows_and_header(self, tmp_path: Path) -> None:
+        source = tmp_path / "source.sqlite3"
+        target_dir = tmp_path / "volume"
+        writer = sqlite3.connect(source)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("CREATE TABLE note(body TEXT)")
+            writer.execute("INSERT INTO note VALUES ('wal-resident')")
+            writer.commit()
+            assert Path(f"{source}-wal").stat().st_size > 0
+            result = subprocess.run(
+                ["/bin/bash", str(_DEPLOY / "migrate-control-db-to-volume.sh")],
+                env={**os.environ, "MIGRATE_SOURCE_DB": str(source), "MIGRATE_TARGET_DIR": str(target_dir)},
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            target = target_dir / "db.sqlite3"
+            assert target.read_bytes()[18] == 2
+            with sqlite3.connect(target) as reader:
+                assert reader.execute("SELECT body FROM note").fetchall() == [("wal-resident",)]
+                assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        finally:
+            writer.close()
+
     def test_the_online_backup_migration_exists_and_is_executable(self) -> None:
         script = _DEPLOY / "migrate-control-db-to-volume.sh"
 

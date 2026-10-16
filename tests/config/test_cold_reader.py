@@ -68,6 +68,27 @@ def test_cold_read_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: 
         writer.close()
 
 
+def test_cold_reader_returns_none_when_wal_cannot_be_inspected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "db.sqlite3"
+    wal = Path(f"{db}-wal")
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == wal:
+            message = "permission denied"
+            raise PermissionError(message)
+        return original_stat(path, *args, **kwargs)
+
+    def refuse_readonly(path: Path, parameters: str, busy_timeout_ms: int) -> sqlite3.Connection:
+        error = sqlite3.OperationalError("unable to open database file")
+        error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+        raise error
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    monkeypatch.setattr(cold_db, "_open_readonly", refuse_readonly)
+    assert cold_db.fetch_one(db, "SELECT 1", ()) is None
+
+
 def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
     """Build a real `teatree_config_setting` DB matching the Django migration."""
     conn = sqlite3.connect(path)

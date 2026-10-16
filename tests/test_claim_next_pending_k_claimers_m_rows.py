@@ -30,6 +30,10 @@ import pytest
 from django.db import OperationalError, connections, transaction
 
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _M_ROWS = 5
 _K_CLAIMERS = 8  # more claimers than rows: the surplus must claim nothing

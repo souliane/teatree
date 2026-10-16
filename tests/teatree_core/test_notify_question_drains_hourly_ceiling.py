@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable, Generator
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.db import connections
 from django.db.models import F
 from django.test import TestCase
@@ -22,9 +23,11 @@ from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._owner_channel import OWNER_DECISION
-from tests.db_alias import run_racing_threads
+from tests.db_alias import run_racing_threads, wal_control_db
 from tests.teatree_core.conftest import SchemaGuardAlias
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 _CHANNEL = "D-USER"
 _QUESTION_PING_SLOT = "work:owner-question-ping"

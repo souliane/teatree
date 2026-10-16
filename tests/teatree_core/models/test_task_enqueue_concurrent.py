@@ -47,7 +47,16 @@ from teatree.core.models.task_enqueue import (
 )
 from teatree.core.models.ticket import Ticket
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_sqlite_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _PHASE = "reviewing"
 _REASON = "Review now."

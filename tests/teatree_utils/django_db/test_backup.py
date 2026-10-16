@@ -14,6 +14,7 @@ from pytest_django.plugin import DjangoDbBlocker
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.django_db import backup
+from teatree.utils.mount_points import MountEntry
 
 
 def _make_db(path: Path, *, rows: list[str]) -> None:
@@ -77,6 +78,8 @@ class TestCreateBackup:
             restored = volume / "db.sqlite3"
             copy2(artifact, restored)
             monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+            monkeypatch.setenv("TEATREE_ROLE", "worker")
+            monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
             handler = ConnectionHandler(
                 {
                     "default": {

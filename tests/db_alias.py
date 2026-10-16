@@ -17,11 +17,22 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
+import pytest
 from django.core.management import call_command
 from django.db import connections
 from django.test import override_settings
 
+from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.utils.mount_points import MountEntry
 from tests._db_template import restore_from_template
+
+
+@pytest.fixture
+def wal_control_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("TEATREE_ROLE", "worker")
+    monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
 
 
 class RouteAllToAlias:
@@ -54,6 +65,9 @@ def register_sqlite_alias(
     engine: str = "django.db.backends.sqlite3",
 ) -> None:
     """Register a private, file-backed SQLite connection under ``alias``."""
+    if engine == "django.db.backends.sqlite3" and options == SQLITE_WRITE_SERIALIZATION_OPTIONS:
+        message = "control DB serialization options require the boundary engine"
+        raise ValueError(message)
     connections.databases[alias] = {
         "ENGINE": engine,
         "NAME": str(db_file),
@@ -65,6 +79,14 @@ def register_sqlite_alias(
         "TIME_ZONE": None,
         "TEST": {},
     }
+
+
+def register_control_db_alias(alias: str, db_file: Path) -> None:
+    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
+    with connections[alias].cursor() as cursor:
+        cursor.execute("PRAGMA journal_mode")
+        assert cursor.fetchone() == ("wal",)
+    assert db_file.read_bytes()[18] == 2
 
 
 def register_migrated_sqlite_alias(alias: str, db_file: Path, template: Path | None) -> None:

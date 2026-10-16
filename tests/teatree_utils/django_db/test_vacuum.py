@@ -107,10 +107,12 @@ class TestVacuumSqlite:
         try:
             outcome = vacuum_sqlite(db)
             size_while_deferred = db.stat().st_size
+            wal_size_while_deferred = Path(f"{db}-wal").stat().st_size
         finally:
             reader.close()
 
         assert size_while_deferred == before, "control: the file has caught up, so nothing was deferred"
+        assert wal_size_while_deferred > 0
         assert outcome.ran
         assert outcome.bytes_reclaimed > 0
         assert outcome.pages_after < outcome.pages_before

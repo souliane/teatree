@@ -54,6 +54,7 @@ from django.db import OperationalError, connections, transaction
 
 from teatree.settings import DATABASES as PROD_DATABASES
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.utils.mount_points import MountEntry
 
 
 def _make_alias(tmp_path: Path, options: dict[str, object], *, engine: str = "django.db.backends.sqlite3") -> str:
@@ -229,6 +230,8 @@ class TestSqliteWriteSerialization:
         and is not vacuous.
         """
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path))
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+        monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
         alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
         try:
             with connections[alias].cursor() as cur:

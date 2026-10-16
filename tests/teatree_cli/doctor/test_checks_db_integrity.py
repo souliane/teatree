@@ -33,6 +33,7 @@ from teatree.cli.doctor.checks_db_integrity import (
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE, ProjectionPublisher, ProjectionReader
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.utils.mount_points import MountEntry
 
 
 def test_database_health_reports_wal_and_warns_when_sidecar_grows(
@@ -42,6 +43,8 @@ def test_database_health_reports_wal_and_warns_when_sidecar_grows(
     volume.mkdir()
     db = _sound_db(volume / "db.sqlite3")
     monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+    monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: True)
+    monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
     monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
     for name in (
         "_check_db_integrity",
@@ -98,6 +101,42 @@ def test_recovery_command_preserves_wal_resident_rows(tmp_path: Path, capsys: py
             assert recovered.execute("PRAGMA quick_check").fetchone() == ("ok",)
     finally:
         writer.close()
+
+
+def test_recovery_command_rejects_aborted_dump(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db = _corrupt_in_place(_sound_db(tmp_path / "source.sqlite3"))
+    with (
+        patch.object(checks_db_integrity, "_sqlite_path", return_value=db),
+        patch.object(checks_db_integrity, "_quick_check", return_value=["damaged"]),
+    ):
+        assert not _check_db_integrity()
+    command = capsys.readouterr().out.split("Recover with: ", 1)[1].split(" — verify", 1)[0]
+    result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=False, timeout=30)
+    assert result.returncode != 0
+    assert "corrupt" in result.stderr.lower() or "recover" in result.stderr.lower()
+
+
+def test_doctor_accepts_truncate_header_and_reports_invalid_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _sound_db(tmp_path / "db.sqlite3")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("PRAGMA journal_mode=TRUNCATE").fetchone() == ("truncate",)
+    assert checks_db_integrity._check_control_db_journal()
+    assert "OK    Control DB journal: truncate" in capsys.readouterr().out
+
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "invalid")
+    assert not checks_db_integrity._check_control_db_journal()
+    assert "FAIL  Control DB journal" in capsys.readouterr().out
+
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+    monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: True)
+    monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: None)
+    assert not checks_db_integrity._check_control_db_journal()
+    assert "mount table" in capsys.readouterr().out
 
 
 def _sound_db(path: Path) -> Path:

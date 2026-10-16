@@ -39,8 +39,16 @@ from django.test import override_settings
 
 from teatree.core.gates.review_request_guard import GuardTarget, _claim_or_reclaim, canonical_mr_url
 from teatree.core.models import ReviewRequestPost
-from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_control_db_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="review-channel", token="xoxb-bot")
@@ -55,7 +63,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"rrg_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
+    register_control_db_alias(alias, db_file)
     with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()

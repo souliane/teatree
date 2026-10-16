@@ -92,6 +92,10 @@ class ControlDbWriteDomain:
         return control_db_dir(self.env)
 
     @property
+    def in_control_dir(self) -> bool:
+        return self.db_path.parent == self.expected_dir
+
+    @property
     def on_host_filesystem(self) -> bool:
         """True when the database is somewhere a host process can name or reach.
 
@@ -99,15 +103,15 @@ class ControlDbWriteDomain:
         entirely (the pre-move layout, a bind-mounted data dir), or living at the
         right path on a filesystem the shared-folder layer serves from the host.
         """
-        return self.db_path.parent != self.expected_dir or self._fstype() in _HOST_SHARED_FSTYPES
+        return not self.in_control_dir or self._fstype() in _HOST_SHARED_FSTYPES
 
     @property
     def wal_eligible(self) -> tuple[bool, str]:
         if not self.containerized:
             return False, "process is outside the container"
-        if not self.db_path.is_absolute() or self.db_path.is_symlink() or self.db_path.parent.is_symlink():
+        if not self.db_path.is_absolute() or self.db_path.resolve() != self.db_path:
             return False, "database path is relative or symlinked"
-        if self.db_path.parent != self.expected_dir:
+        if not self.in_control_dir:
             return False, "database is outside the control-DB directory"
         fstype = self._fstype()
         if fstype is None:
@@ -143,7 +147,7 @@ class ControlDbWriteDomain:
         entries = read_mount_entries()
         if entries is None:
             return None
-        entry = mount_entry_for(self.db_path.parent, entries)
+        entry = mount_entry_for(self.db_path.parent.resolve(), entries)
         return entry.fstype if entry is not None else None
 
 

@@ -36,6 +36,9 @@ def uncheckpointed_wal(db: Path) -> Path | None:
         return wal if wal.stat().st_size > 0 else None
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        message = f"Cannot inspect {wal}: {exc}"
+        raise sqlite3.OperationalError(message) from exc
 
 
 def _backup_into(source: sqlite3.Connection, dst: Path) -> None:
