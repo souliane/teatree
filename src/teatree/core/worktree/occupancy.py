@@ -43,9 +43,10 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from django.db import transaction
+from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.cleanup.process_table import read_process_table
@@ -100,17 +101,39 @@ def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait:
     """Wait for the run's own processes, then say whether its checkout may be released and what it attests."""
     path = Path(worktree.worktree_path)
     if wait and wait_for_owned_checkout_processes(path):
-        return CheckoutExit(release=False)
+        return _defer_checkout_exit(task, worktree, attest=attest, cause="own_processes")
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(path):
-        return CheckoutExit(release=False)
+        return _defer_checkout_exit(task, worktree, attest=attest, cause="process_table")
     if not (attest and table.usable and writes_checkout(task)):
         return CheckoutExit(release=True)
+    return CheckoutExit(release=True, attested_state=_exit_digest(task, path))
+
+
+def _exit_digest(task: Task, path: Path) -> str | None:
     try:
-        return CheckoutExit(release=True, attested_state=checkout_state(path, ticket=task.ticket).digest)
+        return checkout_state(path, ticket=task.ticket).digest
     except (OSError, RuntimeError, ValueError):
-        logger.exception("Releasing checkout %s after task %s unattested: its state could not be read", path, task.pk)
-        return CheckoutExit(release=True)
+        logger.exception("Checkout %s after task %s remains unattested: its state could not be read", path, task.pk)
+        return None
+
+
+def _defer_checkout_exit(
+    task: Task, worktree: Worktree, *, attest: bool, cause: Literal["own_processes", "process_table"]
+) -> CheckoutExit:
+    if attest and writes_checkout(task) and (digest := _exit_digest(task, Path(worktree.worktree_path))) is not None:
+        worktree.merge_extra(
+            set_keys={
+                "deferred_exit": {
+                    "holder": worktree.occupied_by,
+                    "session": worktree.occupied_by_session,
+                    "digest": digest,
+                    "cause": cause,
+                    "at": timezone.now().isoformat(),
+                }
+            }
+        )
+    return CheckoutExit(release=False)
 
 
 def _prepare_task_checkout_exit(

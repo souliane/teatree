@@ -11,7 +11,8 @@ from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Task, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
-from teatree.core.models.types import AutoAttestation, WorktreeExtra
+from teatree.core.models.checkout_proof import AutoAttestation, DeferredExitAttestation
+from teatree.core.models.types import WorktreeExtra
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.utils.url_slug import pr_ref_from_url
@@ -106,15 +107,61 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
         "pull_requests": pull_requests,
         "holder": {"id": current.holder, "session": current.session},
     }
+    if not _attest(worktree, custody, state.digest, audit):
+        return False
+    logger.info("Re-attested checkout %s after task %s", worktree.pk, prior.pk)
+    return True
+
+
+def attest_deferred_exit(task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable) -> bool:
+    extra = worktree.get_extra()
+    record = extra.get("deferred_exit")
+    custody = Custody.from_extra(extra)
+    if not isinstance(record, dict) or any(
+        not isinstance(record.get(key), str) for key in ("holder", "session", "digest", "cause", "at")
+    ):
+        return False
+    if record["cause"] not in {"own_processes", "process_table"} or custody is None or len(custody.tenures) <= 1:
+        return False
+    if not table.usable or table.holds(Path(worktree.worktree_path)) or record["digest"] != state.digest:
+        return False
+    previous, current = custody.tenures[-2:]
+    claimant = (task_holder_id(task), task.claimed_by_session)
+    if (
+        not previous.ended
+        or (previous.holder, previous.session) != (record["holder"], record["session"])
+        or current.ended
+        or (current.holder, current.session) != claimant
+        or (worktree.occupied_by, worktree.occupied_by_session) != claimant
+    ):
+        return False
+    if not _state_unchanged(task, worktree, state):
+        return False
+    audit: DeferredExitAttestation = {
+        "at": timezone.now().isoformat(),
+        "previous": custody.anchor,
+        "digest": state.digest,
+        "tenures": [entry.as_dict() for entry in custody.tenures],
+        "process_table": {"source": table.source, "gaps": [*table.gaps, *table.eviction_gaps]},
+        "holder": {"id": current.holder, "session": current.session},
+        "deferred_exit": record,
+    }
+    attested = _attest(worktree, custody, state.digest, audit)
+    if attested:
+        logger.info("Attested deferred exit for checkout %s after %s", worktree.pk, previous.holder)
+    return attested
+
+
+def _attest(
+    worktree: Worktree, custody: Custody, digest: str, audit: AutoAttestation | DeferredExitAttestation
+) -> bool:
+    current = custody.tenures[-1]
     worktree.merge_extra(
         set_keys=WorktreeExtra(
-            attested_state=state.digest,
-            checkout_custody=Custody.reanchored(state.digest, custody, current.holder, current.session).as_dict(),
+            attested_state=digest,
+            checkout_custody=Custody.reanchored(digest, custody, current.holder, current.session).as_dict(),
             auto_attestation=audit,
         )
     )
     saved = Worktree.objects.get(pk=worktree.pk).get_extra()
-    if saved.get("attested_state") != state.digest or saved.get("auto_attestation") != audit:
-        return False
-    logger.info("Re-attested checkout %s after task %s", worktree.pk, prior.pk)
-    return True
+    return saved.get("attested_state") == digest and saved.get("auto_attestation") == audit

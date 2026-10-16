@@ -105,6 +105,8 @@ the recorded custody chain, a clear host process table, and every ticket checkou
 on its recorded branch or the forge-reported head branch of an open pull request
 owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
 records any qualifying pull request. Hand work still needs the owner's `worktree attest`.
+A writing run whose exit was deferred by a checkout process records that exit state;
+the next writer attests it only after the process is gone and the state is unchanged.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
