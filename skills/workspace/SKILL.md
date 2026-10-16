@@ -100,6 +100,9 @@ is still working there; a refused factory task parks without spending its
 repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
+An interrupted factory run is re-attested at the next writer's fence only when
+the recorded custody chain, a clear host process table, and every ticket branch
+prove it safe; hand work still needs the owner's `worktree attest`.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete

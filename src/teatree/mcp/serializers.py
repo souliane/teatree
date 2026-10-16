@@ -98,6 +98,7 @@ def serialize_worktree(worktree: "Worktree") -> dict[str, Any]:
         "state": worktree.state,
         "db_name": worktree.db_name,
         "worktree_path": worktree.worktree_path,
+        "auto_attestation": worktree.get_extra().get("auto_attestation"),
         "is_stale": worktree.is_stale,
     }
 
