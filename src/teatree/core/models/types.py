@@ -2,6 +2,13 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
+from teatree.core.models.checkout_proof import (
+    AutoAttestation,
+    CheckoutCustody,
+    DeferredCheckoutExit,
+    DeferredExitAttestation,
+)
+
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
 
@@ -729,44 +736,12 @@ class WorktreeSiblingFields(TypedDict, total=False):
     branch: str
 
 
-class CheckoutTenure(TypedDict):
-    holder: str
-    session: str
-    since: str
-    ended: str
-    ended_at: str
-
-
-class CheckoutCustody(TypedDict):
-    anchor: str
-    tenures: list[CheckoutTenure]
-
-
-class CheckoutProcessEvidence(TypedDict):
-    source: str
-    gaps: list[str]
-
-
-class CheckoutHolderEvidence(TypedDict):
-    id: str
-    session: str
-
-
-class AutoAttestation(TypedDict):
-    at: str
-    previous: str
-    digest: str
-    tenures: list[CheckoutTenure]
-    process_table: CheckoutProcessEvidence
-    branches: dict[str, str]
-    holder: CheckoutHolderEvidence
-
-
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
     checkout_custody: CheckoutCustody
-    auto_attestation: AutoAttestation
+    auto_attestation: AutoAttestation | DeferredExitAttestation
+    deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]
     urls: dict[str, str]
