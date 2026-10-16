@@ -26,7 +26,7 @@ import ast
 import json
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -81,7 +81,7 @@ def _create_in(repo: Path) -> dict:
 
 
 @contextmanager
-def _t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = None) -> Iterator[None]:
+def _t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = None) -> Generator[None]:
     """Fake ONLY the ``t3 tool diff-coverage`` shellout; let every git probe run for real.
 
     ``coverage_gate`` and ``hook_router`` share one ``subprocess`` module object, so a

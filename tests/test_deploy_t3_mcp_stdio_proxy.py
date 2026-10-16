@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -131,7 +131,7 @@ def build_layout(
 
 
 @contextlib.contextmanager
-def serving(layout: Layout, fake: FakeChild, *argv: str) -> Iterator[subprocess.Popen[bytes]]:
+def serving(layout: Layout, fake: FakeChild, *argv: str) -> Generator[subprocess.Popen[bytes]]:
     proc = subprocess.Popen(
         ["/bin/bash", str(layout.entry), *argv],
         stdin=subprocess.PIPE,

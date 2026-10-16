@@ -18,7 +18,7 @@ import io
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -33,7 +33,7 @@ _LOOP = "review"
 
 
 @contextmanager
-def _tick_env() -> Iterator[Path]:
+def _tick_env() -> Generator[Path]:
     """The live tick pipeline over a stub ``review`` mini-loop that scans nothing."""
     stub = MiniLoop(name=_LOOP, default_cadence_seconds=60, build_jobs=lambda **_: [])
     with (

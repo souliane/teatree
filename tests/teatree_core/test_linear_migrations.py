@@ -18,7 +18,7 @@ the anti-vacuity the per-condition sandbox tests cannot.
 
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -53,7 +53,7 @@ def _sandbox_migrations_app(
     *,
     migrations: dict[str, list[str]],
     max_migration: str | None,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Install a throwaway migrations app under ``tmp_path`` for the block.
 
     ``migrations`` maps a migration name to the names of its same-app

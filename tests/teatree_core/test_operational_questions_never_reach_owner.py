@@ -14,7 +14,7 @@ import inspect
 import io
 import tempfile
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -376,7 +376,7 @@ def _site_of(frames: list[inspect.FrameInfo]) -> Site | None:
 
 
 @contextlib.contextmanager
-def _recorded_by_site() -> Iterator[list[tuple[Site | None, DeferredQuestion]]]:
+def _recorded_by_site() -> Generator[list[tuple[Site | None, DeferredQuestion]]]:
     recorded: list[tuple[Site | None, DeferredQuestion]] = []
     record = DeferredQuestion.record.__func__
 

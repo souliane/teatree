@@ -6,22 +6,25 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.core.cleanup.process_table import read_process_table
+from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
     WorktreeOccupiedError,
     _worktree_at,
     acquire,
+    drop_refused_tenure,
     occupancy_holder,
     release,
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -54,8 +57,14 @@ def verify_task_checkout(task: Task, path: str) -> None:
     if not path or not writes_checkout(task):
         return
     others = (row.worktree_path for row in Worktree.objects.filter(ticket=task.ticket).only("extra"))
-    for candidate in [path, *(other for other in others if other and not paths_match(other, path))]:
-        _verify_one_checkout(task, candidate)
+    try:
+        for candidate in [path, *(other for other in others if other and not paths_match(other, path))]:
+            _verify_one_checkout(task, candidate)
+    except CheckoutFenceError:
+        held = _worktree_at(task.ticket, path)
+        if held is not None:
+            drop_refused_tenure(held, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+        raise
 
 
 def _verify_one_checkout(task: Task, path: str) -> None:
@@ -85,9 +94,32 @@ def _verify_one_checkout(task: Task, path: str) -> None:
     if attested is None and state.pristine:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
-    if attested != state.digest:
-        message = f"checkout {path} differs from its attested state"
+    _accept_changed_checkout(task, worktree, state, table, attested=attested)
+    _anchor_verified_checkout(task, worktree, state)
+
+
+def _accept_changed_checkout(
+    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, *, attested: str | None
+) -> None:
+    if attested != state.digest and not (
+        attest_deferred_exit(task, worktree, state, table) or reattest_on_proof(task, worktree, state, table)
+    ):
+        message = f"checkout {worktree.worktree_path} differs from its attested state"
         raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=True))
+
+
+def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> None:
+    current = Custody.from_extra(worktree.get_extra())
+    holder = task_holder_id(task)
+    if (worktree.occupied_by, worktree.occupied_by_session) == (holder, task.claimed_by_session):
+        if current is None or not current.tenures or current.tenures[-1].ended:
+            since = worktree.occupied_at.isoformat() if worktree.occupied_at else timezone.now().isoformat()
+            anchored = Custody(state.digest, (Tenure(holder, task.claimed_by_session, since),))
+        else:
+            anchored = Custody.reanchored(state.digest, current, holder, task.claimed_by_session)
+    else:
+        anchored = Custody(state.digest, ())
+    worktree.merge_extra(set_keys={"checkout_custody": anchored.as_dict()})
 
 
 def park_task_checkout(task: Task, *, reason: str, attestable: CheckoutAttestation | None = None) -> TaskAttempt:

@@ -7,7 +7,7 @@ so the assertions cover pure reads.
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -28,7 +28,7 @@ from teatree.loop.drain import set_worker_quiescing
 
 
 @contextmanager
-def _mocked_probes(*, orphans: list[BranchReport] | None = None) -> Iterator[None]:
+def _mocked_probes(*, orphans: list[BranchReport] | None = None) -> Generator[None]:
     """Stub the git/network/temp-scan seams so gather() runs against DB rows only."""
     with (
         patch("teatree.core.worktree.recover.run_boot_sweeps", return_value=BootSweepCounts()),

@@ -106,6 +106,27 @@ class CheckoutFenceTests(TestCase):
         notice.assert_called_once()
         assert self.task.deferred_questions.count() == 1
 
+    def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
+        self.worktree.refresh_from_db()
+        clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+            previous = TaskFactory(ticket=self.ticket, phase="coding")
+            acquire(self.worktree, holder=task_holder_id(previous))
+            (self.checkout / "change.txt").write_text("work from interrupted run")
+            run_strict(repo=str(self.checkout), args=["config", "user.email", "test@example.com"])
+            run_strict(repo=str(self.checkout), args=["config", "user.name", "Test"])
+            run_strict(repo=str(self.checkout), args=["add", "change.txt"])
+            run_strict(repo=str(self.checkout), args=["commit", "-m", "interrupted work"])
+            release(self.worktree, holder=task_holder_id(previous))
+            next_task = TaskFactory(ticket=self.ticket, phase="testing")
+            acquire(self.worktree, holder=task_holder_id(next_task))
+            verify_task_checkout(next_task, str(self.checkout))
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        assert self.worktree.get_extra()["auto_attestation"]["tenures"][0]["holder"] == task_holder_id(previous)
+
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):
             attempt = park_task_checkout(self.task, reason="foreign checkout state")
@@ -329,6 +350,38 @@ class CheckoutFenceTests(TestCase):
             occupy_ticket_checkout(self.ticket, holder="task:999", holder_session="s2"),
         ):
             pass
+
+    def test_deferred_exit_is_attested_by_the_next_claim_after_lease_lapse(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/host-proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+        busy = ProcessTable(frozenset({self.checkout}), "/host-proc")
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=busy),
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout"),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "new.txt").write_text("run output")
+            self.task.complete()
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert row.get_extra()["attested_state"] == initial
+        assert row.get_extra()["deferred_exit"]["digest"] == checkout_state(self.checkout).digest
+        Worktree.objects.filter(pk=row.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        next_task = TaskFactory(ticket=self.ticket, phase="testing")
+        next_task.claim(claimed_by="worker", claimed_by_session="s2")
+        container_table = ProcessTable(frozenset(), "/host-proc", (), ("pid 7 unreadable by this uid",))
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=container_table):
+            assert claim_task_checkout_or_park(next_task) is None
+        row.refresh_from_db()
+        assert row.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        audit = row.get_extra()["auto_attestation"]
+        assert "deferred_exit" in audit
+        deferred = audit["deferred_exit"]
+        assert isinstance(deferred, dict)
+        assert deferred["session"] == "s1"
 
     def test_a_finished_holder_whose_checkout_is_busy_is_not_self_healed(self) -> None:
         verify_task_checkout(self.task, str(self.checkout))

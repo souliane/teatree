@@ -5,7 +5,7 @@ import atexit
 import os
 import secrets
 import threading
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Final
@@ -232,7 +232,7 @@ atexit.register(reset_executor_app_servers)
 
 
 @asynccontextmanager
-async def executor_session(options: ClaudeAgentOptions, phase: str) -> AsyncIterator[SharedCodexSession]:
+async def executor_session(options: ClaudeAgentOptions, phase: str) -> AsyncGenerator[SharedCodexSession]:
     """Attest live, then open a thread on the executor's server; a refusal starts nothing."""
     try:
         attestation = await asyncio.to_thread(attest, phase, workspace_roots(HarnessOptions.from_sdk_options(options)))

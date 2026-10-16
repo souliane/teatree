@@ -100,6 +100,11 @@ is still working there; a refused factory task parks without spending its
 repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
+An interrupted factory run is re-attested at the next writer's fence only when
+the recorded custody chain, a clear host process table, and every ticket branch
+prove it safe; hand work still needs the owner's `worktree attest`.
+A writing run whose exit was deferred by a checkout process records that exit state;
+the next writer attests it only after the process is gone and the state is unchanged.
 
 An attestable refusal also asks the owner in Slack. The card links the ticket and
 states the checkout's commit count, uncommitted-file count and process evidence.

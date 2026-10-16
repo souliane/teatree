@@ -9,7 +9,7 @@ import json
 import signal
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -77,7 +77,7 @@ def _stamp(path: Path, overlay: str = "ov") -> float | None:
 
 
 @contextmanager
-def _running(tmp_path: Path, socket: FakeSocket, liveness: ConnectionLiveness) -> Iterator[None]:
+def _running(tmp_path: Path, socket: FakeSocket, liveness: ConnectionLiveness) -> Generator[None]:
     stop = threading.Event()
     with (
         patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=socket),

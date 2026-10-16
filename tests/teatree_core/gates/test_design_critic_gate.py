@@ -14,7 +14,7 @@ design critic never fires at mark_delivered/merge.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from django.test import TestCase
 
@@ -108,7 +108,7 @@ def _one_fail(slug: str, citation: str) -> list[dict]:
 
 
 @contextlib.contextmanager
-def _live() -> Iterator[None]:
+def _live() -> Generator[None]:
     yield
 
 

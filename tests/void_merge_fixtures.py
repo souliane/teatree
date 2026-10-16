@@ -5,7 +5,7 @@ State is built through the real seams (``reconcile_merged`` on a keystone audit,
 """
 
 import io
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -53,14 +53,14 @@ def terminal(typed: str = "yes\n", *, tty: bool = True) -> dict[str, Terminal]:
 
 
 @contextmanager
-def human_operator() -> Iterator[None]:
+def human_operator() -> Generator[None]:
     """Hermetic against a test run by a dispatched agent or inside a loop tick."""
     with pinned_loop_principal(), patched_environ({}, remove=(DISPATCHED_AGENT_ENV,)):
         yield
 
 
 @contextmanager
-def stub_forge(*snapshots: PrContentSnapshot | Exception) -> Iterator[MagicMock]:
+def stub_forge(*snapshots: PrContentSnapshot | Exception) -> Generator[MagicMock]:
     probe = MagicMock(side_effect=list(snapshots or (ABSENT, ABSENT)))
     with patch.object(CodeHostQuery, "pr_content_snapshot", probe):
         yield probe

@@ -251,6 +251,10 @@ class TaskAttempt(models.Model):
     FAILED_OUTCOMES: ClassVar[tuple[str, ...]] = (Outcome.REFUSAL, Outcome.CRASH)
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        task_id: int
+
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(blank=True)
@@ -494,5 +498,5 @@ class TaskAttempt(models.Model):
         # stamping one here disagrees with that query and leaves the park row carrying a
         # bogus work-iteration number that corrupts the "attempt N/max" display and the
         # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
-        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):  # ty: ignore[unresolved-attribute]
+        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):
             self.iteration = self.task.phase_iteration_count() + 1

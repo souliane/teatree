@@ -114,7 +114,7 @@ class TicketEvidenceModel(TicketFacet):
         threads = dict(stored) if isinstance(stored, dict) else {}
         raw = threads.pop(str(task_pk), None)
         if raw is not None:
-            self.merge_extra(set_keys=cast("TicketExtra", {TASK_THREADS_KEY: threads}))
+            self.merge_extra(set_keys={TASK_THREADS_KEY: threads})
         return raw
 
     def merge_extra(

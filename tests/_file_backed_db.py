@@ -5,7 +5,7 @@ would read an empty database. ``IMMEDIATE`` matches the production SQLite transa
 """
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +14,7 @@ from django.db import connections
 
 
 @contextmanager
-def file_backed_default_database() -> Iterator[Path]:
+def file_backed_default_database() -> Generator[Path]:
     wrapper = connections["default"]
     wrapper.ensure_connection()
     original_name = wrapper.settings_dict["NAME"]

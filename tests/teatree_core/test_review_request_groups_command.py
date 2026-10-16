@@ -7,7 +7,7 @@ non-zero rather than rendering an empty, reassuring survey.
 
 import contextlib
 import io
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
@@ -63,7 +63,7 @@ class _NeverPosts:
 
 
 @contextmanager
-def _forge(host: _Host | None) -> Iterator[None]:
+def _forge(host: _Host | None) -> Generator[None]:
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_GATE}.code_host_from_overlay", return_value=host))
         stack.enter_context(patch(_DRAFT_PROBE_FACTORY, return_value=host))

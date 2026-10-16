@@ -20,7 +20,7 @@ pre-conditions. These tests pin every branch of the decision ladder:
 """
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from unittest.mock import MagicMock, patch
@@ -140,7 +140,7 @@ def _red_blueprint_cross_pr() -> RawAPIDict:
 
 
 @contextmanager
-def _required(*names: str) -> Iterator[None]:
+def _required(*names: str) -> Generator[None]:
     """Stub the branch-protection required set the sweep's CI gate scopes to (#12).
 
     The autouse default is ``{"test (3.13)"}``; a case that expects a red/pending

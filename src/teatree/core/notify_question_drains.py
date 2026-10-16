@@ -34,7 +34,7 @@ import datetime as dt
 import logging
 import os
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from functools import reduce
 from operator import or_
@@ -168,7 +168,7 @@ def owner_quiet_now() -> bool:
 
 
 @contextmanager
-def _question_ping_slot(*, reserved: int = 0) -> Iterator[bool]:
+def _question_ping_slot(*, reserved: int = 0) -> Generator[bool]:
     if owner_quiet_now():
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
@@ -236,7 +236,7 @@ def _release_a_stranded_holder() -> None:
 
 
 @contextmanager
-def _held_question_ping_slot() -> Iterator[bool]:
+def _held_question_ping_slot() -> Generator[bool]:
     pid = os.getpid()
     session = f"{_QUESTION_PING_SESSION_PREFIX}{pid}:{_process_start_token(pid)}:{threading.get_ident()}"
     _release_a_stranded_holder()

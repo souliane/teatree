@@ -13,7 +13,7 @@ in-process against the ephemeral test DB, never the canonical queue.
 import datetime as dt
 import io
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -289,7 +289,7 @@ class TestWorkerSingletonProbe:
     """
 
     @contextmanager
-    def _hold_flock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Iterator[None]:
+    def _hold_flock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Generator[None]:
         from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
 
         monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)

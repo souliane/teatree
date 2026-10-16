@@ -12,7 +12,7 @@ rows; only the sweep-scanner builder (which would otherwise reach the forge over
 ``gh``) is stubbed with a fake whose single-PR evaluation is asserted.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from io import StringIO
@@ -97,7 +97,7 @@ class TestRecordTriggersSweep(TestCase):
 
 
 @contextmanager
-def _ambient_reads() -> Iterator[None]:
+def _ambient_reads() -> Generator[None]:
     with (
         patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value={"test (3.13)"}),
         patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths", return_value=["src/teatree/x.py"]),
