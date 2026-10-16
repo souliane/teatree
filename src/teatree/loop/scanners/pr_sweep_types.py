@@ -46,7 +46,7 @@ MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 # ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
 CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
 
-# The reason a PR carries when a HOLD stands at its live head that nobody took back
+# The reason a PR carries when a HOLD remains active at its live head
 # AND a non-stale ``merge_safe`` stands beside it, even under the same identity.
 # Recording order cannot lift the hold, so the autonomous no-CLEAR merge refuses
 # and reports the disagreement (#4380). Owner-audience — see ``OWNER_ESCALATION_FLAG_REASONS`` in

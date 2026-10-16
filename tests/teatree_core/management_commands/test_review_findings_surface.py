@@ -20,7 +20,7 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrReview
 from teatree.core.modelkit.forge_readability import LiveHeadRead
-from teatree.core.models import ConfigSetting, ReviewVerdict
+from teatree.core.models import ConfigSetting, Finding, ReviewVerdict
 from teatree.core.review.verdict_findings import marker_for
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_forge_repos
@@ -115,6 +115,29 @@ class _FindingsSurfaceBase(TestCase):
 
 
 class TestFindingsAreReadable(_FindingsSurfaceBase):
+    def test_all_reviewers_standing_holds_are_readable(self) -> None:
+        first = self._record()
+        second = ReviewVerdict.record(
+            pr_id=4476,
+            slug=_SLUG,
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer-b",
+            findings=[Finding(severity="major", summary="second blocker", file="c.py", line=4)],
+        )
+
+        status = self._status()
+        found = cast("dict[str, object]", call_command("review", "findings", _URL))
+
+        assert status["state"] == "not_safe"
+        assert status["findings_count"] == found["findings_count"] == 3
+        assert {row["summary"] for row in cast("list[dict[str, object]]", found["findings"])} == {
+            "unbounded loop",
+            "rename x",
+            "second blocker",
+        }
+        assert set(cast("list[int]", found["verdict_ids"])) == {first["verdict_id"], second.pk}
+
     def test_standing_hold_speaks_in_status_and_findings_after_later_pass(self) -> None:
         held = self._record()
         ReviewVerdict.record(
@@ -185,6 +208,28 @@ class TestFindingsAreReadable(_FindingsSurfaceBase):
 
 
 class TestFindingsReachThePr(_FindingsSurfaceBase):
+    def test_publish_findings_posts_each_standing_hold_once(self) -> None:
+        self._record()
+        second = ReviewVerdict.record(
+            pr_id=4476,
+            slug=_SLUG,
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer-b",
+            findings=[Finding(severity="major", summary="second blocker", file="c.py", line=4)],
+        )
+        self._allow_posting()
+
+        with patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host):
+            result = cast("dict[str, object]", call_command("review", "publish-findings", _URL))
+
+        assert result["published"]
+        assert len(self.host.posted) == 2
+        assert {review.marker for review in self.host.posted} == {
+            marker_for(row) for row in ReviewVerdict.objects.filter(pr_id=4476)
+        }
+        assert second.pk in cast("list[int]", result["verdict_ids"])
+
     def test_recording_a_hold_posts_its_findings_to_the_pr(self) -> None:
         self._allow_posting()
         result = self._record()

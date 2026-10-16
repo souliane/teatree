@@ -16,4 +16,6 @@ class Migration(migrations.Migration):
                 name="uniq_review_verdict_slug_pr_sha_reviewer_verdict",
             ),
         ),
+        # Rolling back would collapse distinct HOLD/PASS rows under the old key.
+        migrations.RunPython(migrations.RunPython.noop),
     ]

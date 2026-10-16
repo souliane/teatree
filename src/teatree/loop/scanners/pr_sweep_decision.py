@@ -187,11 +187,7 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
     it is the ordinary outcome of a cold review that holds, and reporting that as a
     disagreement would invent a second verdict.
 
-    Three lookups, and the middle one is why: ``standing_merge_safe_at`` asks who stands
-    beside the hold, ``authorizing_verdict_at`` asks what a merge may rest on, and only
-    the second is gated on the standing-hold rule. Asking one question for both made the wording of
-    a refusal depend on recording order. It costs ONE extra queryset scan per held-head
-    evaluation, on a path that already runs once per open PR per tick.
+    One head read supplies both the standing holds and any pass beside them.
 
     No ``try/except`` on purpose — unlike :func:`record_mergeable_notified`,
     where degrading to empty means "stay quiet", here it would mean "no hold,
@@ -202,9 +198,10 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
     """
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 
-    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-    standing = ReviewVerdict.objects.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-    authorizing = ReviewVerdict.objects.authorizing_verdict_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    at_head = ReviewVerdict.objects.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
+    standing = next((verdict for verdict in at_head if verdict.is_merge_safe()), None)
+    authorizing = standing if not holds else None
     return HeadReview(
         held_verdicts=tuple(_verdict_ref(hold) for hold in holds),
         authorizing_verdict=None if authorizing is None else _verdict_ref(authorizing),

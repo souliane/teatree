@@ -386,10 +386,10 @@ _FLAG_TEXTS: dict[str, str] = {
         "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
     ),
     _CONTESTED_HOLD_REASON: (
-        f"two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, so {_HELD_REMEDY}"
+        f"two cold reviews disagree at this PR's live head — a HOLD remains active at this head, so {_HELD_REMEDY}"
     ),
     _HOLD_AT_HEAD_REASON: (
-        f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
+        f"a cold review returned HOLD at this PR's live head and it remains active at this head, so {_HELD_REMEDY}"
     ),
     _NO_OWNING_TICKET_REASON: (
         "no ticket owns this PR, so no merge gate binds: `worktree adopt <checkout>` or `ticket clear`"

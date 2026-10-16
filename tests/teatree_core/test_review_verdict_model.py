@@ -17,6 +17,7 @@ from teatree.core.models import (
     MRReviewLock,
     ReviewVerdict,
     ReviewVerdictError,
+    Ticket,
     normalize_reviewer_identity,
 )
 from teatree.core.models.review_verdict import HeadVerdictState
@@ -420,7 +421,7 @@ class TestQueryHelpers(TestCase):
 
 
 class TestUnreconciledHoldsAt(TestCase):
-    """A HOLD nobody took back, found regardless of newest-wins supersession (#4380)."""
+    """Every HOLD at the reviewed head remains active."""
 
     def _record(self, *, verdict: str, reviewer: str, sha: str = _SHA) -> ReviewVerdict:
         return ReviewVerdict.record(
@@ -461,6 +462,53 @@ class TestUnreconciledHoldsAt(TestCase):
         held = self._record(verdict="hold", reviewer="cold-reviewer-a")
 
         assert [row.pk for row in self._holds(slug="Souliane/TeaTree")] == [held.pk]
+
+    def test_duplicate_hold_preserves_first_provenance_and_every_finding(self) -> None:
+        first_ticket = Ticket.objects.create(overlay="t3-teatree")
+        second_ticket = Ticket.objects.create(overlay="t3-teatree")
+        first = ReviewVerdict.record(
+            pr_id=4380,
+            slug="Souliane/TeaTree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer-a",
+            findings=[Finding(severity="major", summary="first blocker")],
+            ticket=first_ticket,
+        )
+        original_time = first.recorded_at
+        second = ReviewVerdict.record(
+            pr_id=4380,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="COLD-REVIEWER-A",
+            findings=[Finding(severity="minor", summary="later detail")],
+            ticket=second_ticket,
+        )
+
+        first.refresh_from_db()
+        assert second.pk == first.pk
+        assert first.recorded_at == original_time
+        assert first.reviewer_identity == "cold-reviewer-a"
+        assert first.ticket_id == first_ticket.pk
+        assert [finding.summary for finding in first.structured_findings] == ["first blocker", "later detail"]
+        again = ReviewVerdict.record(
+            pr_id=4380,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer-a",
+            findings=[Finding(severity="minor", summary="later detail")],
+        )
+        assert [finding.summary for finding in again.structured_findings] == ["first blocker", "later detail"]
+
+    def test_hold_only_head_is_held_even_without_a_pass(self) -> None:
+        self._record(verdict="hold", reviewer="cold-reviewer-a")
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=4380, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
 
 
 class TestStalenessAndSafety(TestCase):

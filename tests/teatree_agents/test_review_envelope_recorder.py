@@ -411,7 +411,7 @@ class TestARefusedGradeRollsTheVerdictBack(TestCase):
         assert task.status == Task.Status.FAILED
 
 
-class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):
+class TestDuplicateReviewTasksPreserveHolds(TestCase):
     def test_two_tasks_without_returned_identity_leave_first_hold_standing(self) -> None:
         _author_ticket(criteria=None)
         first_task = _reviewing_task_via_dispatch()
@@ -436,6 +436,8 @@ class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):
         assert held.structured_findings[0].summary == "fix the branch"
         assert verdict_at(ReviewTarget(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD, claim_head_sha=_HEAD)) is not None
 
+
+class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):
     def test_hold_with_a_fail_grade_is_recorded_and_the_bypass_never_overrides_it(self) -> None:
         ticket = _author_ticket()
         task = _reviewing_task_via_dispatch()

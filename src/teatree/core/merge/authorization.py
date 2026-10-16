@@ -14,7 +14,7 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict, standing_hold_remedy
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.utils.pr_ref import PrRef
@@ -446,10 +446,9 @@ def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
         )
         raise MergePreconditionError(msg)
     if state is HeadVerdictState.HOLD:
-        holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head)
         msg = (
             f"an independent reviewer recorded a HOLD at this head ({head}) for {slug}#{pr_id} — "
-            f"refusing to merge: {standing_hold_remedy(holds)}"
+            f"refusing to merge: {ReviewVerdict.objects.standing_hold_remedy_at(slug=slug, pr_id=pr_id, head_sha=head)}"
         )
         raise MergePreconditionError(msg)
 

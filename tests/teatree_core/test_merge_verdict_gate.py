@@ -4,14 +4,13 @@
 (the keystone CLEAR path and the solo-overlay bypass) converge on before the
 forge squash PUT. ``assert_review_verdict_gate`` runs at its top and refuses any
 merge that lacks a non-stale, INDEPENDENT ``merge_safe`` :class:`ReviewVerdict`
-at the live head — with the user-chosen newest-wins semantic: a later
-``merge_safe`` overrides an earlier HOLD, an even-later HOLD re-blocks.
+at the live head — every HOLD remains active until a newly reviewed head replaces it.
 
 The keystone-path tests drive the REAL ``merge_ticket_pr`` (so the gate is the
 production ``execute_bound_merge`` chokepoint, only the ``gh`` subprocess is
 stubbed). The solo-path tests drive ``PrSweepScanner._evaluate_solo_overlay``
 through ``scan()`` so the companion ``has_independent_cold_review`` predicate
-(the defence-in-depth flag) is exercised on the same newest-wins logic.
+(the defence-in-depth flag) is exercised on the same standing-hold rule.
 
 Every "refuse" scenario merges on the pre-#2829 code (no gate) — they are the
 RED-before-fix anti-vacuity proof: each asserts the PR is NOT merged AND the
@@ -47,7 +46,7 @@ _T0 = dt.datetime(2026, 6, 28, 12, 0, 0, tzinfo=dt.UTC)
 
 
 def _record(verdict: str, *, sha: str = _HEAD, reviewer: str = "cold-reviewer", at: dt.datetime | None = None) -> None:
-    """Record one verdict, optionally pinning ``recorded_at`` so newest-wins is deterministic."""
+    """Record one verdict, optionally pinning ``recorded_at`` for ordering cases."""
     row = ReviewVerdict.record(
         pr_id=_PR,
         slug=_SLUG,
@@ -137,7 +136,7 @@ class TestKeystoneMergeVerdictGate(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("hold", at=_T0)
-        with pytest.raises(MergePreconditionError, match="no recorded merge_safe ReviewVerdict at the live head"):
+        with pytest.raises(MergePreconditionError, match="standing HOLD verdict"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
@@ -168,7 +167,7 @@ class TestKeystoneMergeVerdictGate(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_4_merge_safe_then_later_hold_refuses(self) -> None:
-        # RED before #2829: an even-later HOLD re-blocks; the newest verdict wins.
+        # A HOLD blocks this head regardless of when the pass was recorded.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("merge_safe", reviewer="reviewer-a", at=_T0)
@@ -269,16 +268,8 @@ def _solo_pr() -> PrSummary:
     )
 
 
-class TestSoloOverlayPathHonoursNewestWins(TestCase):
-    """``_evaluate_solo_overlay`` under BOTH rules that govern the no-CLEAR bypass.
-
-    Newest-wins (#2829) decides what a merge may rest on, and the #4380 unreconciled-hold
-    refusal decides whether it may run at all — a hold nobody took back blocks the bypass
-    even where newest-wins says MERGE_SAFE. Verdicts are recorded under DISTINCT reviewer
-    identities wherever a scenario means two to coexist: ``ReviewVerdict.record`` is an
-    ``update_or_create`` keyed on the normalised identity, so the same name twice is one
-    row and the scenario silently becomes a single-verdict one.
-    """
+class TestSoloOverlayPathHonoursStandingHolds(TestCase):
+    """The #2829 gate and #4380 sweep both refuse a head with any standing HOLD."""
 
     @pytest.fixture(autouse=True)
     def _internal_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,7 +298,7 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         scanner, api, _keystone = _solo_scanner([_solo_pr()])
         signals = scanner.scan()
-        assert api.merge_pr_calls == []  # the newest non-stale verdict is a HOLD
+        assert api.merge_pr_calls == []
         # #4380: a held head is flagged as HELD, not as "no independent review" —
         # a reviewer looked and said no. Two reviewers really do disagree here, and
         # the HOLD landing second must not downgrade that to a lone hold.
@@ -324,16 +315,16 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         assert signals[0].kind == "pr_sweep.flag_held"
 
 
-class TestHasIndependentColdReviewNewestWins(TestCase):
-    """Scenario 7: the companion predicate returns False when the newest verdict is a HOLD."""
+class TestHasIndependentColdReviewStandingHolds(TestCase):
+    """Scenario 7: the companion predicate returns False when any verdict is a HOLD."""
 
-    def test_newest_hold_returns_false(self) -> None:
+    def test_hold_beside_pass_returns_false(self) -> None:
         _record("merge_safe", reviewer="reviewer-a", at=_T0)
         _record("hold", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is False
 
-    def test_newest_merge_safe_returns_true(self) -> None:
+    def test_later_merge_safe_does_not_override_hold(self) -> None:
         _record("hold", reviewer="reviewer-a", at=_T0)
         _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
@@ -348,14 +339,13 @@ class TestHasIndependentColdReviewNewestWins(TestCase):
         assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is False
 
 
-class TestEffectiveStateAtTieBreak(TestCase):
-    """The tie-break: a same-timestamp PASS+HOLD resolves to HOLD (the safe direction)."""
+class TestEffectiveStateAtHeldHead(TestCase):
+    """A same-timestamp PASS and HOLD still resolve to HOLD."""
 
     def test_same_timestamp_pass_and_hold_holds(self) -> None:
         # Low finding: an independent reviewer's HOLD recorded in the same instant
         # as another's PASS must NOT be silently overridden — the tie resolves to
-        # HOLD. Two distinct identities, since one identity's re-review is now a
-        # single idempotent row (F8).
+        # HOLD. Distinct reviewer identities make the two judgments explicit.
         _record("hold", reviewer="reviewer-a", at=_T0)
         _record("merge_safe", reviewer="reviewer-b", at=_T0)
         state = ReviewVerdict.objects.effective_state_at(slug=_SLUG, pr_id=_PR, head_sha=_HEAD)

@@ -37,7 +37,7 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
+from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
@@ -223,34 +223,42 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return None
         return self.speaking_verdict_at(slug=slug, pr_id=pr_id, head_sha=newest.reviewed_sha)
 
-    def _at_head(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+    def verdicts_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         head = head_sha.strip().lower()
         return [verdict for verdict in self.for_pr(slug, pr_id) if not verdict.is_stale_at(head)]
 
     def speaking_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
         """Prefer the newest standing hold, then the newest pass at this head."""
-        at_head = self._at_head(slug=slug, pr_id=pr_id, head_sha=head_sha)
-        return next((verdict for verdict in at_head if verdict.stands_as_hold()), at_head[0] if at_head else None)
+        return next(iter(self.speaking_verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)), None)
+
+    def speaking_verdicts_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+        """Every standing hold, or the newest pass when no hold stands."""
+        at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
+        return holds or at_head[:1]
 
     def effective_state_at(self, *, slug: str, pr_id: int, head_sha: str) -> "HeadVerdictState":
         """A pass authorizes only when no hold stands at the same head."""
-        at_head = self._at_head(slug=slug, pr_id=pr_id, head_sha=head_sha)
-        if not any(verdict.is_merge_safe() for verdict in at_head):
-            return HeadVerdictState.NO_MERGE_SAFE
+        at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
         if any(verdict.stands_as_hold() for verdict in at_head):
             return HeadVerdictState.HOLD
-        return HeadVerdictState.MERGE_SAFE
+        if any(verdict.is_merge_safe() for verdict in at_head):
+            return HeadVerdictState.MERGE_SAFE
+        return HeadVerdictState.NO_MERGE_SAFE
 
     def standing_merge_safe_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
         """The newest non-stale ``merge_safe`` at *head_sha*, even beside a hold.
 
         A pass beside a hold is shown as disagreement, never authorization.
         """
-        head = head_sha.strip().lower()
-        passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
-        if not passes:
-            return None
-        return max(passes, key=lambda verdict: verdict.recorded_at)
+        return next(
+            (
+                verdict
+                for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+                if verdict.is_merge_safe()
+            ),
+            None,
+        )
 
     def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
         """The non-stale ``merge_safe`` row authorizing this head, else ``None``.
@@ -272,8 +280,20 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
     def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         """Every standing hold at this head, including one followed by a pass."""
         return [
-            verdict for verdict in self._at_head(slug=slug, pr_id=pr_id, head_sha=head_sha) if verdict.stands_as_hold()
+            verdict
+            for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+            if verdict.stands_as_hold()
         ]
+
+    def standing_hold_remedy_at(self, *, slug: str, pr_id: int, head_sha: str) -> str:
+        """The refusal for active holds at this head, or an empty string."""
+        holds = self.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        return standing_hold_remedy(holds) if holds else ""
+
+    def assert_no_standing_hold_at(self, *, slug: str, pr_id: int, head_sha: str) -> None:
+        refusal = self.standing_hold_remedy_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        if refusal:
+            raise ClearIssuanceError(refusal)
 
 
 def standing_hold_remedy(holds: list["ReviewVerdict"]) -> str:
@@ -416,8 +436,7 @@ class ReviewVerdict(models.Model):
         normalized_sha = reviewed_sha.strip().lower()
         normalized_reviewer = normalize_reviewer_identity(reviewer)
         with transaction.atomic():
-            # Include the verdict so a pass cannot overwrite a hold under one identity.
-            recorded, _ = cls.objects.update_or_create(
+            recorded, created = cls.objects.get_or_create(
                 slug=cls.objects.slug_spelling_for(
                     slug,
                     pr_id,
@@ -438,6 +457,16 @@ class ReviewVerdict(models.Model):
                     "recorded_at": timezone.now(),
                 },
             )
+            if not created:
+                recorded = cls.objects.select_for_update().get(pk=recorded.pk)
+                if not isinstance(recorded.findings, list):
+                    msg = f"verdict {recorded.pk} findings is not a list"
+                    raise ReviewVerdictError(msg)
+                additions = [finding.as_dict() for finding in (findings or [])]
+                merged = [*recorded.findings, *(finding for finding in additions if finding not in recorded.findings)]
+                if merged != recorded.findings:
+                    recorded.findings = merged
+                    recorded.save(update_fields=["findings"])
             # Every claim this verdict concludes, retired in the same transaction
             # that records it. The per-HEAD dispatch claims are spent outright — a
             # verdict covers this exact tree, so re-arming either would be churn;

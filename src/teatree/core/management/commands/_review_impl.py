@@ -14,6 +14,7 @@ GitLab-side ``teatree.cli.review.post_impl`` uses.
 import json
 import os
 from dataclasses import dataclass
+from itertools import starmap
 from typing import TYPE_CHECKING, NoReturn, TypedDict
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
@@ -62,6 +63,7 @@ class StatusResult(TypedDict, total=False):
     reviewer_identity: str
     findings_count: int
     findings: list[FindingDict]
+    verdict_ids: list[int]
     findings_error: str
     error: str
 
@@ -76,6 +78,7 @@ class FindingsResult(TypedDict, total=False):
     reviewer_identity: str
     findings_count: int
     findings: list[FindingDict]
+    verdict_ids: list[int]
     error: str
 
 
@@ -83,6 +86,7 @@ class PublishFindingsResult(TypedDict, total=False):
     slug: str
     pr_id: int
     verdict_id: int
+    verdict_ids: list[int]
     published: bool
     skipped_existing: bool
     self_review: bool
@@ -122,10 +126,14 @@ def resolve_ref(command: "TyperCommand", mr_url: str) -> PrRef:
     return ref
 
 
-def _verdict_for(ref: PrRef, reviewed_sha: str) -> ReviewVerdict | None:
-    if not reviewed_sha.strip():
-        return ReviewVerdict.objects.latest_for_pr(ref.slug, ref.pr_id)
-    return ReviewVerdict.objects.speaking_verdict_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=reviewed_sha)
+def _verdicts_for(ref: PrRef, reviewed_sha: str) -> list[ReviewVerdict]:
+    head = reviewed_sha.strip()
+    if not head:
+        newest = ReviewVerdict.objects.latest_for_pr(ref.slug, ref.pr_id)
+        if newest is None:
+            return []
+        head = newest.reviewed_sha
+    return ReviewVerdict.objects.speaking_verdicts_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=head)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,7 +196,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
     lines = [
         (
             f"  recorded {recorded.verdict} verdict {recorded.pk} for "
-            f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
+            f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(recorded.findings)} finding(s))"
         ),
         *emit_review_done_signal(recorded),
         *trigger_sweep(recorded),
@@ -200,7 +208,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
         "pr_id": int(recorded.pr_id),
         "slug": recorded.slug,
         "verdict": recorded.verdict,
-        "findings_count": len(findings),
+        "findings_count": len(recorded.findings),
         "findings_published": published,
         "findings_publish_note": publish_line.strip(),
     }
@@ -276,15 +284,18 @@ def trigger_sweep(recorded: ReviewVerdict) -> list[str]:
 
 
 def emit_review_done_signal(recorded: ReviewVerdict) -> list[str]:
-    """Post the review-DONE Slack reaction set for *recorded* (#113/#88), best-effort."""
+    """Post the reaction set for the verdict standing at the reviewed head."""
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: lazy command import
     from teatree.loop.review_claim import emit_review_done_reactions  # noqa: PLC0415 — lazy command import
 
     try:
+        speaking = ReviewVerdict.objects.speaking_verdict_at(
+            slug=recorded.slug, pr_id=int(recorded.pr_id), head_sha=recorded.reviewed_sha
+        )
         posted = emit_review_done_reactions(
             slug=recorded.slug,
             pr_id=int(recorded.pr_id),
-            emojis=recorded.done_reaction_emojis(),
+            emojis=(speaking or recorded).done_reaction_emojis(),
             messaging=messaging_from_overlay(),
         )
     except Exception:  # noqa: BLE001 — the Slack signal must never break verdict recording.
@@ -292,6 +303,14 @@ def emit_review_done_signal(recorded: ReviewVerdict) -> list[str]:
     if posted:
         return [f"  posted review-DONE reaction(s) {', '.join(':' + e + ':' for e in posted)}"]
     return []
+
+
+def _readable_head_findings(speaking: list[ReviewVerdict]) -> tuple[list[FindingDict], int, str]:
+    readable = [readable_findings(row) for row in speaking]
+    errors = [f"verdict {row.pk}: {view.error}" for row, view in zip(speaking, readable, strict=True) if view.error]
+    payload = [] if errors else [finding for view in readable for finding in view.payload]
+    count = sum(view.recorded_count for view in readable) if errors else len(payload)
+    return payload, count, "; ".join(errors)
 
 
 def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, str]:
@@ -319,11 +338,10 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
             f"    why: {read_credential_state(ref.host_kind)}"
         )
         return {"state": "head_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human
-    current_head = head.sha
-    if recorded.is_stale_at(current_head):
+    if recorded.is_stale_at(head.sha):
         human = (
             f"  stale: verdict reviewed {recorded.reviewed_sha[:8]} but head moved to "
-            f"{(current_head[:8] or '<unknown>')} — re-review needed ({ref.slug}#{ref.pr_id})"
+            f"{(head.sha[:8] or '<unknown>')} — re-review needed ({ref.slug}#{ref.pr_id})"
         )
         return {
             "state": "stale",
@@ -331,7 +349,7 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
             "pr_id": ref.pr_id,
             "verdict": recorded.verdict,
             "reviewed_sha": recorded.reviewed_sha,
-            "current_head_sha": current_head,
+            "current_head_sha": head.sha,
         }, human
 
     live_checks = query.required_checks_status()
@@ -341,7 +359,7 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
             f"    why: {read_credential_state(ref.host_kind)}"
         )
         return {"state": "checks_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human
-    if recorded.is_safe_to_approve_at(current_head, live_checks_status=live_checks):
+    if recorded.is_safe_to_approve_at(head.sha, live_checks_status=live_checks):
         human = (
             f"  safe-to-approve: {recorded.verdict} at {recorded.reviewed_sha[:8]}, checks green "
             f"({ref.slug}#{ref.pr_id}, reviewer={recorded.reviewer_identity})"
@@ -351,49 +369,55 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
         reason = "verdict is HOLD" if recorded.stands_as_hold() else f"live checks {live_checks!r}"
         human = f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
         state = "not_safe"
-    readable = readable_findings(recorded)
+    speaking = _verdicts_for(ref, recorded.reviewed_sha)
+    payload, findings_count, findings_error = _readable_head_findings(speaking)
     result: StatusResult = {
         "state": state,
         "slug": ref.slug,
         "pr_id": ref.pr_id,
         "verdict": recorded.verdict,
         "reviewed_sha": recorded.reviewed_sha,
-        "current_head_sha": current_head,
+        "current_head_sha": head.sha,
         "live_checks": live_checks,
         "reviewer_identity": recorded.reviewer_identity,
-        "findings_count": readable.recorded_count if readable.error else len(readable.payload),
-        "findings": readable.payload,
+        "findings_count": findings_count,
+        "findings": payload,
+        "verdict_ids": [int(row.pk) for row in speaking],
     }
-    if readable.error:
-        result["findings_error"] = readable.error
+    if findings_error:
+        result["findings_error"] = findings_error
         unreadable = (
-            f"  findings unreadable ({readable.recorded_count} recorded): {readable.error} — the verdict "
+            f"  findings unreadable ({findings_count} recorded): {findings_error} — the verdict "
             f"above stands; read them with `t3 <overlay> review findings <pr-url>`"
         )
         return result, f"{human}\n{unreadable}"
-    return result, "\n".join([human, render_findings_text(recorded)]) if readable.payload else human
+    return result, "\n".join(
+        [human, *(render_findings_text(row) for row in speaking if row.findings)]
+    ) if payload else human
 
 
 def findings_result(command: "TyperCommand", mr_url: str, reviewed_sha: str) -> tuple[FindingsResult, str]:
     """The recorded findings for *mr_url* — the read surface a HOLD is acted on through."""
     ref = resolve_ref(command, mr_url)
-    recorded = _verdict_for(ref, reviewed_sha)
-    if recorded is None:
+    speaking = _verdicts_for(ref, reviewed_sha)
+    if not speaking:
         at = f" at {reviewed_sha.strip()[:8]}" if reviewed_sha.strip() else ""
         human = f"  no recorded verdict for {ref.slug}#{ref.pr_id}{at} — run a cold review first"
         return {"state": "no_verdict", "slug": ref.slug, "pr_id": ref.pr_id, "findings_count": 0}, human
 
-    payload = findings_payload(recorded)
+    recorded = speaking[0]
+    payload = [finding for row in speaking for finding in findings_payload(row)]
     return {
         "slug": ref.slug,
         "pr_id": ref.pr_id,
         "verdict_id": int(recorded.pk),
+        "verdict_ids": [int(row.pk) for row in speaking],
         "verdict": recorded.verdict,
         "reviewed_sha": recorded.reviewed_sha,
         "reviewer_identity": recorded.reviewer_identity,
         "findings_count": len(payload),
         "findings": payload,
-    }, render_findings_text(recorded)
+    }, "\n".join(render_findings_text(row) for row in speaking)
 
 
 def publish_findings_result(
@@ -401,30 +425,43 @@ def publish_findings_result(
 ) -> tuple[PublishFindingsResult, str]:
     """Post a recorded verdict's findings to its PR — the retry after an approval lands."""
     ref = resolve_ref(command, mr_url)
-    recorded = _verdict_for(ref, reviewed_sha)
-    if recorded is None:
+    speaking = _verdicts_for(ref, reviewed_sha)
+    if not speaking:
         human = f"  no recorded verdict for {ref.slug}#{ref.pr_id} — nothing to publish"
         return {"slug": ref.slug, "pr_id": ref.pr_id, "published": False, "note": human.strip()}, human
 
+    recorded = speaking[0]
+    rows_to_publish = [row for row in speaking if row.findings]
     try:
-        outcome = publish_verdict_findings(recorded, pr_url=mr_url)
+        outcomes = [publish_verdict_findings(row, pr_url=mr_url) for row in rows_to_publish]
     except (FindingsRenderError, FindingsPublishError, OutboundBlockedError) as exc:
         return {
             "slug": ref.slug,
             "pr_id": ref.pr_id,
             "verdict_id": int(recorded.pk),
+            "verdict_ids": [int(row.pk) for row in speaking],
             "published": False,
             "error": str(exc),
         }, f"  publish-findings refused: {exc}"
 
+    if not outcomes:
+        return {
+            "slug": ref.slug,
+            "pr_id": ref.pr_id,
+            "verdict_id": int(recorded.pk),
+            "verdict_ids": [int(row.pk) for row in speaking],
+            "published": False,
+            "note": "no findings recorded",
+        }, "  no findings recorded"
     return {
         "slug": ref.slug,
         "pr_id": ref.pr_id,
         "verdict_id": int(recorded.pk),
-        "published": outcome.published,
-        "skipped_existing": outcome.skipped_existing,
-        "self_review": outcome.self_review,
-        "comment_url": outcome.comment_url,
-        "blocked_reason": outcome.blocked_reason,
-        "note": outcome.note,
-    }, _publish_line(recorded, outcome)
+        "verdict_ids": [int(row.pk) for row in speaking],
+        "published": all(outcome.published for outcome in outcomes),
+        "skipped_existing": all(outcome.skipped_existing for outcome in outcomes),
+        "self_review": all(outcome.self_review for outcome in outcomes),
+        "comment_url": ", ".join(outcome.comment_url for outcome in outcomes if outcome.comment_url),
+        "blocked_reason": "; ".join(outcome.blocked_reason for outcome in outcomes if outcome.blocked_reason),
+        "note": "; ".join(outcome.note for outcome in outcomes if outcome.note),
+    }, "\n".join(starmap(_publish_line, zip(rows_to_publish, outcomes, strict=True)))
