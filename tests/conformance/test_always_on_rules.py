@@ -10,7 +10,7 @@ _RULES_FILE = _REPO_ROOT / "skills" / "rules" / "RULES.md"
 
 _TITLES = (
     "Nothing may endanger security or leak",
-    "Do not waste work, time, tokens or money",
+    "Do not waste work, time, tokens, money or the owner's energy",
     "The owner reaches the factory only through the messaging channels",
     "Drive owner interaction toward zero",
     "A thread with the owner opens with enough context, then stays the one place for that work",
@@ -44,6 +44,42 @@ def _links_before_first_section(page: Path, target: Path) -> bool:
 def test_the_rules_are_numbered_from_zero_by_importance() -> None:
     entries = _ENTRY_RE.findall(_RULES_FILE.read_text(encoding="utf-8"))
     assert entries == [(str(rank), title) for rank, title in enumerate(_TITLES)]
+
+
+@pytest.mark.parametrize(
+    ("rank", "expected"),
+    [
+        (
+            1,
+            (
+                "1. **Do not waste work, time, tokens, money or the owner's energy:** investigate before discarding "
+                "anything (compare by content against the default branch, because squash merges hide ancestry), never "
+                "repeat a check or run that was already done, take the smallest action that settles the question, and "
+                "reuse existing tickets, plans and reviews. The owner's energy counts as much as any of these: never "
+                "make him repeat himself, redo a step, decode shorthand or read what a link already says. "
+                "Spend the owner has already configured (an API-key fallback, a budget) needs no asking; "
+                "going beyond it does."
+            ),
+        ),
+        (
+            3,
+            (
+                "3. **Drive owner interaction toward zero:** investigate first, decide with sensible defaults, and ask "
+                "only what investigation cannot settle and is truly the owner's call (money beyond what is configured, "
+                "security, scope, policy, and any architectural or design decision that models cannot yet take wisely "
+                "on their own: one that is costly to reverse, changes who can control, reach or override the factory, "
+                "or trades safety against autonomy or cost), once, before acting, and with a recommendation. "
+                "Every time the owner has to step in is a defect to remove, and the factory stays safe, "
+                "self-repairing and self-improving: whatever it does by itself can be undone, never bypasses Rule 0, "
+                "and is reported."
+            ),
+        ),
+    ],
+    ids=["rule-1", "rule-3"],
+)
+def test_owner_amendments_are_verbatim(rank: int, expected: str) -> None:
+    lines = _RULES_FILE.read_text(encoding="utf-8").splitlines()
+    assert next(line for line in lines if line.startswith(f"{rank}. ")) == expected
 
 
 def test_the_rules_file_has_one_heading_and_no_nested_items() -> None:
