@@ -32,11 +32,14 @@ def test_wal_snapshot_is_a_standalone_rollback_file(tmp_path: Path) -> None:
         writer.close()
 
 
-def test_snapshot_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("destination", ["new", "existing"])
+def test_snapshot_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: Path, destination: str) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     source = source_dir / "db.sqlite3"
     dest = tmp_path / "copy.sqlite3"
+    if destination == "existing":
+        dest.write_bytes(b"existing copy")
     writer = sqlite3.connect(source)
     try:
         assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
@@ -59,6 +62,9 @@ def test_snapshot_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: P
             pytest.raises(sqlite3.OperationalError, match="-wal"),
         ):
             _sqlite_snapshot(source, dest)
-        assert not dest.exists()
+        if destination == "existing":
+            assert dest.read_bytes() == b"existing copy"
+        else:
+            assert not dest.exists()
     finally:
         writer.close()

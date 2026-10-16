@@ -84,6 +84,7 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
     # ``as_uri`` percent-encodes a path holding a URI-special character (space,
     # ``%``, ``?``, ``#``) instead of malforming the URI into a different open.
     base_uri = src.absolute().as_uri()
+    dst_existed = dst.exists()
     source: sqlite3.Connection | None = None
     try:
         source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
@@ -93,7 +94,8 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
         if not any(signal in str(exc) for signal in _NO_SHARED_MEMORY_SIGNALS):
             raise
         if wal := uncheckpointed_wal(src):
-            dst.unlink(missing_ok=True)
+            if not dst_existed:
+                dst.unlink(missing_ok=True)
             message = f"Cannot use immutable fallback while {wal} is nonempty"
             raise sqlite3.OperationalError(message) from exc
     else:
