@@ -147,6 +147,12 @@ class TestFindOpenPrForBranch:
         _fake_cli(monkeypatch, FileNotFoundError("gh"))
         assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
 
+    def test_github_timeout_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
+        _fake_cli(monkeypatch, subprocess.TimeoutExpired("gh", 30))
+        assert forge_pr_probe._open_pr_stdout(["gh", "pr", "list"], repo) is None
+        assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
+
     def test_unparsable_json_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
         _fake_cli(monkeypatch, _completed("not json at all"))

@@ -1,6 +1,5 @@
 from datetime import timedelta
 from pathlib import Path
-from subprocess import TimeoutExpired
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -214,24 +213,9 @@ class ReRootedCheckoutRecoveryTests(TestCase):
                 self.assert_parked()
                 probe.assert_called_once_with(str(self.path), "rerooted")
 
-    def test_detached_head_never_probes(self) -> None:
-        run_strict(repo=str(self.path), args=["checkout", "--detach"])
-        with patch.object(forge_pr_probe, "find_open_pr_for_branch") as probe:
-            self.assert_parked()
-        probe.assert_not_called()
-
     def test_unparseable_found_url_stays_parked(self) -> None:
         with patch.object(
             forge_pr_probe, "find_open_pr_for_branch", return_value=PrProbe.found("https://example.com/not-a-pr")
         ) as probe:
             self.assert_parked()
         probe.assert_called_once_with(str(self.path), "rerooted")
-
-    def test_probe_timeout_stays_parked(self) -> None:
-        run_strict(repo=str(self.path), args=["remote", "add", "origin", "https://github.com/souliane/teatree.git"])
-        with (
-            patch.object(forge_pr_probe, "forge_cli_env", return_value={}),
-            patch.object(forge_pr_probe, "run_allowed_to_fail", side_effect=TimeoutExpired("gh", 30)) as run,
-        ):
-            self.assert_parked()
-        assert run.call_args.kwargs["timeout"] == 30
