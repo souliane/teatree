@@ -58,5 +58,7 @@ class ControlDbJournal:
         if selected not in commands:
             commands.insert(0, selected)
         if mode == "wal":
-            commands.extend(["PRAGMA synchronous=NORMAL", f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}"])
+            for command in ("PRAGMA synchronous=NORMAL", f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}"):
+                if command not in commands:
+                    commands.append(command)
         return commands

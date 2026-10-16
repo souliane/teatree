@@ -34,7 +34,7 @@ from teatree.loop.scanners.review_request_resume import (
     _claim_resume,
 )
 from teatree.on_behalf_gate import OnBehalfContext
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
 from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
@@ -474,7 +474,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"resume_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
+    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
     with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()

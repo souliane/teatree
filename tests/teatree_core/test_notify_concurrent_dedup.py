@@ -33,7 +33,7 @@ import pytest
 from django.db import connections
 
 from teatree.core.models import BotPing, DeliveryClaim
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from tests.db_alias import run_racing_threads
 
 _KEY = "concurrent-claim-key"
@@ -44,7 +44,7 @@ def _make_alias(tmp_path: Path) -> str:
     alias = f"notify_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
     connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
         "NAME": str(db_file),
         "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
         "ATOMIC_REQUESTS": False,

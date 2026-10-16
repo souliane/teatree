@@ -51,10 +51,11 @@ def register_sqlite_alias(
     db_file: Path,
     *,
     options: dict[str, object] | None = None,
+    engine: str = "django.db.backends.sqlite3",
 ) -> None:
     """Register a private, file-backed SQLite connection under ``alias``."""
     connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": engine,
         "NAME": str(db_file),
         "OPTIONS": dict(options or {}),
         "ATOMIC_REQUESTS": False,

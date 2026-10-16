@@ -71,6 +71,15 @@ def test_control_volume_selects_wal_and_preserves_other_init_commands(tmp_path: 
     ]
 
 
+def test_reconnecting_does_not_repeat_wal_init_commands(tmp_path: Path) -> None:
+    journal = ControlDbJournal(tmp_path / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=True)
+    initial = ["PRAGMA journal_mode=TRUNCATE", "PRAGMA foreign_keys=ON"]
+
+    once = journal.init_commands(initial)
+
+    assert journal.init_commands(once) == once
+
+
 def test_host_path_and_override_select_truncate(tmp_path: Path) -> None:
     volume = tmp_path / "control"
     volume.mkdir()

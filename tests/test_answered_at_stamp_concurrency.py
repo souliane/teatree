@@ -41,7 +41,7 @@ from django.db import OperationalError, connections
 # serialization). The race test must run against the SAME options the
 # prod config ships, not a bare ``{}`` — otherwise it tests a backend
 # the user never runs.
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 
 def _make_alias(tmp_path: Path) -> str:
@@ -49,7 +49,7 @@ def _make_alias(tmp_path: Path) -> str:
     alias = f"ans_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
     connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
         "NAME": str(db_file),
         "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
         "ATOMIC_REQUESTS": False,

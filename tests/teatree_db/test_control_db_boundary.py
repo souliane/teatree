@@ -157,10 +157,17 @@ class TestTheGuardedDjangoBackend:
         monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
         db = _config_db(volume / "db.sqlite3")
 
-        with _connection(db, django_db_blocker) as connection, connection.cursor() as cursor:
-            cursor.execute("PRAGMA journal_mode")
-            assert cursor.fetchone() == ("wal",)
+        with _connection(db, django_db_blocker) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("PRAGMA journal_mode")
+                assert cursor.fetchone() == ("wal",)
             assert db.read_bytes()[18] == 2
+            connection.close()
+            with connection.cursor() as reopened:
+                reopened.execute("PRAGMA journal_mode")
+                assert reopened.fetchone() == ("wal",)
+            assert connection.init_commands.count("PRAGMA synchronous=NORMAL") == 1
+            assert connection.init_commands.count("PRAGMA journal_size_limit=67108864") == 1
 
     def test_host_path_keeps_truncate_and_custom_init_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, container: None, django_db_blocker: DjangoDbBlocker
