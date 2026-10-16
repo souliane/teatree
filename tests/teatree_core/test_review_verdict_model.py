@@ -1,7 +1,7 @@
 """``ReviewVerdict`` guarded factory + query/staleness helpers.
 
 The model is the persisted read-side sibling of ``MergeClear``: a recorded
-verdict keyed by ``(slug, pr_id, reviewed_sha)`` so a later ``review status``
+verdict keyed by ``(slug, pr_id, reviewed_sha, reviewer, verdict)`` so a later ``review status``
 lookup can answer "safe to approve at the current head?" without re-deriving a
 cold review. These cover the issue-time refusals, the structured-findings
 round-trip, and the staleness / safe-to-approve logic the status command reads.
@@ -20,6 +20,7 @@ from teatree.core.models import (
     normalize_reviewer_identity,
 )
 from teatree.core.models.review_verdict import HeadVerdictState
+from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -222,14 +223,14 @@ class TestCarryForward(TestCase):
 
 
 class TestReviewerIdentityIdempotency(TestCase):
-    """The (slug, pr, sha, normalized-identity) idempotency contract (F8)."""
+    """The (slug, pr, sha, normalized-identity, verdict) idempotency contract."""
 
     def test_normalize_collapses_case_and_whitespace_only(self) -> None:
         assert normalize_reviewer_identity("  Codex  Reviewer ") == normalize_reviewer_identity("codex reviewer")
         # Genuinely distinct identities stay distinct — no role-prefix stripping.
         assert normalize_reviewer_identity("t3:reviewer") != normalize_reviewer_identity("reviewer")
 
-    def test_re_review_of_one_head_by_one_identity_is_a_single_row(self) -> None:
+    def test_re_review_of_one_head_by_one_identity_keeps_both_verdicts(self) -> None:
         first = ReviewVerdict.record(
             pr_id=1,
             slug="souliane/teatree",
@@ -245,9 +246,13 @@ class TestReviewerIdentityIdempotency(TestCase):
             verdict="merge_safe",
             reviewer_identity="cold-reviewer ",  # same identity, different spelling
         )
-        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
-        assert second.pk == first.pk
-        assert second.is_merge_safe()  # newest verdict wins in the one row
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+        assert second.pk != first.pk
+        assert first.stands_as_hold()
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=1, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
 
     def test_distinct_identities_at_one_head_coexist(self) -> None:
         ReviewVerdict.record(
@@ -266,6 +271,24 @@ class TestReviewerIdentityIdempotency(TestCase):
             reviewer_identity="reviewer-b",
         )
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+
+    def test_same_verdict_re_record_keeps_one_row(self) -> None:
+        first = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="Cold-Reviewer",
+        )
+        second = ReviewVerdict.record(
+            pr_id=1,
+            slug="Souliane/TeaTree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer ",
+        )
+        assert second.pk == first.pk
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
 
     def test_a_differently_cased_slug_is_the_same_forge_repo(self) -> None:
         # Forge slugs are case-insensitive: an exact-match lookup hid the later HOLD
@@ -293,7 +316,7 @@ class TestReviewerIdentityIdempotency(TestCase):
             is HeadVerdictState.HOLD
         )
 
-    def test_a_differently_cased_slug_updates_the_one_row(self) -> None:
+    def test_a_differently_cased_slug_keeps_the_hold(self) -> None:
         first = ReviewVerdict.record(
             pr_id=1,
             slug="Souliane/TeaTree",
@@ -310,8 +333,12 @@ class TestReviewerIdentityIdempotency(TestCase):
             reviewer_identity="reviewer-a",
         )
 
-        assert second.pk == first.pk
-        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
+        assert second.pk != first.pk
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=1, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
 
     def test_a_moved_head_records_a_fresh_row(self) -> None:
         ReviewVerdict.record(
@@ -332,6 +359,27 @@ class TestReviewerIdentityIdempotency(TestCase):
 
 
 class TestQueryHelpers(TestCase):
+    def test_latest_for_pr_prefers_standing_hold_at_newest_head(self) -> None:
+        held = ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer-1",
+        )
+        ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer-2",
+        )
+        assert ReviewVerdict.objects.latest_for_pr("souliane/teatree", 7) == held
+        assert (
+            RecordedVerdictReader().state_for(url="https://github.com/souliane/teatree/pull/7", head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
+
     def test_latest_for_pr_returns_the_freshest_verdict(self) -> None:
         ReviewVerdict.record(
             pr_id=7,
@@ -387,22 +435,20 @@ class TestUnreconciledHoldsAt(TestCase):
         return ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=4380, head_sha=head)
 
     def test_hold_survives_a_later_merge_safe_from_another_reviewer(self) -> None:
-        # The #4380 shape: newest-wins says MERGE_SAFE, but nobody reconciled the hold.
         held = self._record(verdict="hold", reviewer="cold-reviewer-a")
         self._record(verdict="merge_safe", reviewer="cold-reviewer-b")
 
         assert (
             ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=4380, head_sha=_SHA)
-            is HeadVerdictState.MERGE_SAFE
+            is HeadVerdictState.HOLD
         )
         assert [row.pk for row in self._holds()] == [held.pk]
 
-    def test_same_reviewer_lifting_own_hold_leaves_none(self) -> None:
-        # F8 update_or_create: one identity re-recording at one head owns one row.
+    def test_same_reviewer_pass_leaves_hold_standing(self) -> None:
         self._record(verdict="hold", reviewer="cold-reviewer-a")
         self._record(verdict="merge_safe", reviewer="cold-reviewer-a")
 
-        assert self._holds() == []
+        assert len(self._holds()) == 1
 
     def test_stale_hold_is_not_returned_for_the_moved_head(self) -> None:
         self._record(verdict="hold", reviewer="cold-reviewer-a", sha=_OTHER_SHA)

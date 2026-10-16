@@ -115,6 +115,24 @@ class _FindingsSurfaceBase(TestCase):
 
 
 class TestFindingsAreReadable(_FindingsSurfaceBase):
+    def test_standing_hold_speaks_in_status_and_findings_after_later_pass(self) -> None:
+        held = self._record()
+        ReviewVerdict.record(
+            pr_id=4476,
+            slug=_SLUG,
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer-b",
+        )
+        status = self._status()
+        assert status["state"] == "not_safe"
+        assert status["verdict"] == "hold"
+        assert cast("list[dict[str, object]]", status["findings"])[0]["summary"] == "unbounded loop"
+        for kwargs in ({}, {"reviewed_sha": _SHA}):
+            found = cast("dict[str, object]", call_command("review", "findings", _URL, **kwargs))
+            assert found["verdict_id"] == held["verdict_id"]
+            assert cast("list[dict[str, object]]", found["findings"])[0]["summary"] == "unbounded loop"
+
     def test_status_reports_the_findings_not_only_their_count(self) -> None:
         self._record()
         result = self._status()

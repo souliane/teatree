@@ -39,6 +39,8 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.review_target import ReviewTarget, verdict_at
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.core.review.live_head import LiveHeadRead
 
@@ -410,6 +412,30 @@ class TestARefusedGradeRollsTheVerdictBack(TestCase):
 
 
 class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):
+    def test_two_tasks_without_returned_identity_leave_first_hold_standing(self) -> None:
+        _author_ticket(criteria=None)
+        first_task = _reviewing_task_via_dispatch()
+        first_result = _envelope(verdict="hold", reviewer="")
+        first_verdict = first_result["review_verdict"]
+        assert isinstance(first_verdict, dict)
+        first_verdict["findings"] = [{"severity": "major", "summary": "fix the branch", "file": "a.py", "line": 1}]
+        assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
+
+        first_task.ticket.extra = {**first_task.ticket.extra, "reviewed_sha": _HEAD}
+        first_task.ticket.save(update_fields=["extra"])
+        second_task = Task.objects.create(ticket=first_task.ticket, session=first_task.session, phase="reviewing")
+        second_task.claim(claimed_by="headless-reviewer")
+        assert record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing").error == ""
+
+        rows = list(ReviewVerdict.objects.for_pr(_SLUG, _PR_ID))
+        assert len(rows) == 2
+        assert {row.reviewer_identity for row in rows} == {assigned_reviewer_identity(_PR_ID)}
+        held = ReviewVerdict.objects.latest_for_pr(_SLUG, _PR_ID)
+        assert held is not None
+        assert held.stands_as_hold()
+        assert held.structured_findings[0].summary == "fix the branch"
+        assert verdict_at(ReviewTarget(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD, claim_head_sha=_HEAD)) is not None
+
     def test_hold_with_a_fail_grade_is_recorded_and_the_bypass_never_overrides_it(self) -> None:
         ticket = _author_ticket()
         task = _reviewing_task_via_dispatch()

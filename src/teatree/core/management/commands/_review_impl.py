@@ -125,7 +125,7 @@ def resolve_ref(command: "TyperCommand", mr_url: str) -> PrRef:
 def _verdict_for(ref: PrRef, reviewed_sha: str) -> ReviewVerdict | None:
     if not reviewed_sha.strip():
         return ReviewVerdict.objects.latest_for_pr(ref.slug, ref.pr_id)
-    return ReviewVerdict.objects.for_pr(ref.slug, ref.pr_id).filter(reviewed_sha=reviewed_sha.strip().lower()).first()
+    return ReviewVerdict.objects.speaking_verdict_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=reviewed_sha)
 
 
 @dataclass(frozen=True, slots=True)

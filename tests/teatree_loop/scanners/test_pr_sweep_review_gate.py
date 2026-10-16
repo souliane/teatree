@@ -212,13 +212,13 @@ class TestHeadReviewState:
         # The #4332 shape: newest-wins says MERGE_SAFE, the hold still stands. TWO
         # reviewers really do disagree here, so the contested wording is earned.
         hold = _record(verdict="hold", reviewer="cold-reviewer-a", at=_EARLIER)
-        allow = _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
 
         review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
         assert review.hold_reason == CONTESTED_HOLD_REASON
         assert review.held_verdicts == ((hold.pk, "cold-reviewer-a"),)
-        assert review.authorizing_verdict == (allow.pk, "cold-reviewer-b")
+        assert review.authorizing_verdict is None
 
     def test_lone_hold_is_not_reported_as_a_disagreement(self) -> None:
         # The ORDINARY outcome of a cold review that holds — one verdict, nobody
@@ -257,11 +257,11 @@ class TestHeadReviewState:
         assert review.held_verdicts
         assert review.hold_reason == HOLD_AT_HEAD_REASON
 
-    def test_reviewer_lifting_their_own_hold_clears_it(self) -> None:
+    def test_reviewer_pass_leaves_their_own_hold(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a")
         _record(verdict="merge_safe", reviewer="cold-reviewer-a")
 
-        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts == ()
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts
 
     def test_hold_at_a_superseded_head_does_not_block(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a", sha=STALE)

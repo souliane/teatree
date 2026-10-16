@@ -143,22 +143,29 @@ class TestKeystoneMergeVerdictGate(TestCase):
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
-    def test_3_hold_then_later_merge_safe_allows(self) -> None:
-        # The user-chosen override: a later PASS supersedes an earlier HOLD. DISTINCT
-        # reviewers, because ``record`` is an update_or_create keyed on the normalised
-        # identity — one reviewer re-recording overwrites their own row, so the default
-        # name would collapse the two verdicts into one and pin nothing about newest-wins.
+    def test_3_hold_then_later_merge_safe_refuses(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("hold", reviewer="reviewer-a", at=_T0)
+        hold = ReviewVerdict.objects.get(reviewer_identity="reviewer-a")
         _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
-        outcome = _merge(clear)
+        with pytest.raises(MergePreconditionError, match=rf"HOLD.*#{hold.pk}.*push a fix"):
+            _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert clear.consumed_at is None
+
+    def test_hold_at_older_head_and_pass_at_live_head_merges(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        clear = _clear(ticket=ticket)
+        _record("hold", sha=_OTHER, reviewer="reviewer-a")
+        _record("merge_safe", sha=_HEAD, reviewer="reviewer-b")
+        outcome = _merge(clear)
         assert outcome.merged_sha
+        ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
-        assert clear.consumed_at is not None
 
     def test_4_merge_safe_then_later_hold_refuses(self) -> None:
         # RED before #2829: an even-later HOLD re-blocks; the newest verdict wins.
@@ -307,17 +314,14 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         assert signals[0].kind == "pr_sweep.flag_held"
         assert signals[0].payload["reason"] == "contested_hold_at_head"
 
-    def test_the_holding_reviewer_lifting_their_own_hold_merges(self) -> None:
-        # The #4380 escape hatch, and why it needs no machinery: ``record`` is an
-        # update_or_create on the normalised identity, so the same reviewer re-recording
-        # at one head OVERWRITES their own row. One verdict remains and nothing is held.
+    def test_the_holding_reviewer_pass_does_not_lift_their_hold(self) -> None:
         _record("hold", at=_T0)
         _record("merge_safe", at=_T0 + dt.timedelta(seconds=1))
-        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 1
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         scanner, api, _keystone = _solo_scanner([_solo_pr()])
         signals = scanner.scan()
-        assert api.merge_pr_calls == [(_SLUG, _PR, _HEAD)]
-        assert signals[0].kind == "pr_sweep.merged"
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_held"
 
 
 class TestHasIndependentColdReviewNewestWins(TestCase):
@@ -333,7 +337,7 @@ class TestHasIndependentColdReviewNewestWins(TestCase):
         _record("hold", reviewer="reviewer-a", at=_T0)
         _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
-        assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is True
+        assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is False
 
     def test_no_merge_safe_returns_false(self) -> None:
         _record("hold", at=_T0)

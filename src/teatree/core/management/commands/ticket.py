@@ -38,8 +38,15 @@ from teatree.core.merge import (
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
+from teatree.core.models.review_verdict import standing_hold_remedy
 from teatree.core.send_proxy import forge_from_url, route_forge_write
 from teatree.utils.url_slug import project_slug_from_ref
+
+
+def _assert_no_standing_hold(*, slug: str, pr_id: int, head_sha: str) -> None:
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    if holds:
+        raise ClearIssuanceError(standing_hold_remedy(holds))
 
 
 class CreateSubResult(TypedDict, total=False):
@@ -413,6 +420,7 @@ class Command(
             request = dataclasses.replace(request, host_kind=resolve_host_kind(request, repo_slug=verdict_slug))
             verdict_slug = _verdict_slug(request, verdict_slug)
             with transaction.atomic():
+                _assert_no_standing_hold(slug=verdict_slug, pr_id=request.pr_id, head_sha=request.reviewed_sha)
                 clear = MergeClear.issue(request)
                 # Record the durable read-side sibling (a merge-safe judgment by
                 # construction — issuance refused any non-green verdict) so a later

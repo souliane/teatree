@@ -145,6 +145,28 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
 class TestClearIssuanceSeam(TestCase):
     """``t3 ... ticket clear`` records the orchestrator's per-diff CLEAR."""
 
+    def test_clear_under_holding_identity_keeps_hold_and_writes_no_clear(self) -> None:
+        held = ReviewVerdict.record(
+            pr_id=859,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.HOLD,
+            reviewer_identity="cold-reviewer",
+        )
+        refusal = _refused_clear(
+            "859",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="docs",
+        )
+        held.refresh_from_db()
+        assert str(held.pk) in refusal
+        assert held.verdict == ReviewVerdict.Verdict.HOLD
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 859).count() == 1
+        assert not MergeClear.objects.filter(pr_id=859).exists()
+
     def test_clear_creates_actionable_mergeclear_row(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint

@@ -378,10 +378,7 @@ OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
     }
 )
 
-_HELD_REMEDY = (
-    "the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at that SHA, "
-    "or a new commit moves the head"
-)
+_HELD_REMEDY = "the auto-merge is refused; push a fix and get the new head reviewed"
 
 _FLAG_TEXTS: dict[str, str] = {
     _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
