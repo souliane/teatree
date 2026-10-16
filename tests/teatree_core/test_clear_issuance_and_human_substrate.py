@@ -24,7 +24,7 @@ teatree model / FSM / DB write is real.
 """
 
 import io
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import cast
 from unittest.mock import patch
@@ -73,7 +73,7 @@ def _refused_clear(*args: object, **kwargs: object) -> str:
 
 
 @contextmanager
-def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
+def _overlay_autonomy(overlay: str, autonomy: str) -> Generator[None]:
     """Stage ``overlay``'s ``autonomy`` and wire it in.
 
     ``autonomy`` is DB-home (#1775, no ``T3_*`` env var), staged in the
@@ -87,7 +87,7 @@ def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
 
 
 @contextmanager
-def _overlay_substrate_signoff(overlay: str, *, autonomy: str, substrate_self_signoff: bool) -> Iterator[None]:
+def _overlay_substrate_signoff(overlay: str, *, autonomy: str, substrate_self_signoff: bool) -> Generator[None]:
     """Stage ``overlay``'s ``autonomy`` AND the #3223 ``substrate_self_signoff`` opt-in.
 
     Both are DB-home (#1775) ``ConfigSetting`` rows scoped to the overlay, so a
@@ -105,7 +105,7 @@ def _overlay_substrate_signoff(overlay: str, *, autonomy: str, substrate_self_si
 
 
 @contextmanager
-def _overlay_standing_signoff(overlay: str, *, autonomy: str, require_human_approval_to_merge: bool) -> Iterator[None]:
+def _overlay_standing_signoff(overlay: str, *, autonomy: str, require_human_approval_to_merge: bool) -> Generator[None]:
     """Stage ``overlay``'s ``autonomy`` AND ``require_human_approval_to_merge`` together.
 
     Both are DB-home (#1775) so they are staged as ``ConfigSetting`` rows scoped
@@ -1039,7 +1039,7 @@ _FOREIGN_REPO = "foreign-org/foreign-product"
 
 
 @contextmanager
-def _teatree_owns(*repo_slugs: str) -> Iterator[None]:
+def _teatree_owns(*repo_slugs: str) -> Generator[None]:
     """Make the bundled ``t3-teatree`` overlay own *repo_slugs* (workspace repos).
 
     A second repo the bundled overlay governs is declared in its
@@ -1609,7 +1609,7 @@ _DELEGATE = "owner:standing"
 
 
 @contextmanager
-def _overlay_standing_delegation(overlay: str, *, authorized_by: str) -> Iterator[None]:
+def _overlay_standing_delegation(overlay: str, *, authorized_by: str) -> Generator[None]:
     """Stage ``overlay``'s ``substrate_auto_merge_authorized_by`` standing delegation (#3413).
 
     DB-home (#1775) ``ConfigSetting`` row scoped to the overlay — the config WRITE

@@ -36,7 +36,7 @@ import fcntl
 import json
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -306,7 +306,7 @@ def _recorded_pid(path: Path) -> int:
 
 
 @contextmanager
-def singleton(name: str, *, pid_path: Path | None = None) -> Iterator[Path]:
+def singleton(name: str, *, pid_path: Path | None = None) -> Generator[Path]:
     """Acquire a singleton lock named ``name`` for the lifetime of the block.
 
     Raises :class:`AlreadyRunningError` if another live process owns the

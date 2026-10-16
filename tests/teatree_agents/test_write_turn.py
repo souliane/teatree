@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -53,7 +53,7 @@ class _ScriptedHarness(FakeHarness):
         self.sessions: list[_ScriptedSession] = []
 
     @contextlib.asynccontextmanager
-    async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[_ScriptedSession]:
+    async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator[_ScriptedSession]:
         self.opened_options = options
         session = _ScriptedSession(options, compacts=self._compacts)
         self.sessions.append(session)

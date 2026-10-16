@@ -6,7 +6,7 @@ import io
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -267,7 +267,7 @@ def _seed_followup_loop(*, enabled: bool) -> Loop:
 
 
 @contextmanager
-def _previewed_jobs(jobs: list[_ScannerJob]) -> Iterator[None]:
+def _previewed_jobs(jobs: list[_ScannerJob]) -> Generator[None]:
     """Hand the command a fixed job selection — ``preview_loop_jobs`` has its own tests."""
     with ExitStack() as stack:
         stack.enter_context(patch.object(loops_tick_module.Command, "_build_request", return_value=TickRequest()))
@@ -306,7 +306,7 @@ def _review_request_post_checksum(path: Path) -> tuple[int, str]:
 
 
 @contextmanager
-def _scanner_dependencies(*, inline_workers: bool = True) -> Iterator[Path]:
+def _scanner_dependencies(*, inline_workers: bool = True) -> Generator[Path]:
     config = TeaTreeConfig(user=UserSettings(review_nag_max_interval_days=30))
     target = GuardTarget(channel_id=_CHANNEL, channel_name="review", token="unused")
     with ExitStack() as stack:

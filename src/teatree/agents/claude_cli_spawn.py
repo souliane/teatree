@@ -22,7 +22,7 @@ dependency on an internal that can change under us.
 import json
 import os
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -69,7 +69,7 @@ def _without_append(prompt: SystemPromptPreset) -> SystemPromptPreset:
 
 
 @contextmanager
-def prepared_spawn(options: ClaudeAgentOptions) -> Iterator[ClaudeAgentOptions]:
+def prepared_spawn(options: ClaudeAgentOptions) -> Generator[ClaudeAgentOptions]:
     """Yield *options* with the account skills off and the system-prompt append moved into a temp file.
 
     The prompt is left in place when there is no preset append to move (an inline-string

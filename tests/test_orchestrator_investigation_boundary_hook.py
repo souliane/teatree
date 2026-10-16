@@ -19,7 +19,7 @@ import ast
 import contextlib
 import io
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -41,7 +41,7 @@ _OWNER = "sess-owner"
 
 
 @contextlib.contextmanager
-def _capture_stderr() -> Iterator[io.StringIO]:
+def _capture_stderr() -> Generator[io.StringIO]:
     """Capture ``sys.stderr`` writes inside a Django ``TestCase`` (no ``capsys``)."""
     buffer = io.StringIO()
     original = sys.stderr

@@ -14,7 +14,7 @@ then re-renders in the same request read its own writes.
 """
 
 import inspect
-from collections.abc import Callable, Hashable, Iterator
+from collections.abc import Callable, Generator, Hashable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -25,7 +25,7 @@ _ACTIVE: ContextVar["dict[Hashable, object] | None"] = ContextVar("teatree_reque
 
 
 @contextmanager
-def request_scope() -> Iterator[None]:
+def request_scope() -> Generator[None]:
     """Memoize :func:`cached_per_request` reads for the duration of the block."""
     token = _ACTIVE.set({})
     try:

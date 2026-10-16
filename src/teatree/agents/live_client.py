@@ -73,9 +73,7 @@ class LiveClient:
                 self.unreachable[worker.stem] = str(exc)
                 continue
             answered += 1
-            rows.extend(
-                cast("WorkerSessionFacts", {**row, "worker": worker.stem}) for row in cast("list[SessionFacts]", listed)
-            )
+            rows.extend({**row, "worker": worker.stem} for row in cast("list[SessionFacts]", listed))
         if not answered:
             reasons = ", ".join(f"{name} ({why})" for name, why in self.unreachable.items()) or "no worker socket"
             msg = f"no live worker answered on this host: {reasons}"
@@ -89,7 +87,7 @@ class LiveClient:
         except (_UnreachableError, _AnswerLostError) as exc:
             msg = f"worker {worker.stem} stopped answering: {exc}"
             raise LiveOfflineError(msg) from exc
-        return cast("WorkerSessionFacts", {**cast("SessionFacts", facts), "worker": worker.stem})
+        return {**cast("SessionFacts", facts), "worker": worker.stem}
 
     def steer(
         self,

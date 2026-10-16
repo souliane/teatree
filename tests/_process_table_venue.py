@@ -7,7 +7,7 @@ in a container and fails on a host — the exact venue-dependence #4244 is about
 Both helpers name every source, so the answer is the test's own.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -22,7 +22,7 @@ THIS_PROCESS_PID = str(2**22 + 1)
 
 
 @contextmanager
-def pinned_process_table(*, venue: Path, host: Path) -> Iterator[None]:
+def pinned_process_table(*, venue: Path, host: Path) -> Generator[None]:
     """Both roots named, so which table answers is the test's choice and not the box's."""
     with (
         patch.object(process_table, "_HOST_PROC_ROOT", host),
@@ -55,7 +55,7 @@ def holding(pid_dir: Path, path: Path, *, descriptor: str = "3") -> None:
 
 
 @contextmanager
-def blinded_process_table(absent: Path) -> Iterator[None]:
+def blinded_process_table(absent: Path) -> Generator[None]:
     """No table this venue can read — the fail-closed case."""
     with pinned_process_table(venue=absent, host=absent):
         yield

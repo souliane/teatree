@@ -17,7 +17,7 @@ import shutil
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -99,7 +99,7 @@ def wrapper(tmp_path: Path) -> Path:
 
 
 @contextmanager
-def _held_lock(path: Path) -> Iterator[None]:
+def _held_lock(path: Path) -> Generator[None]:
     """Hold a REAL flock on *path* for the body, the way a live deploy.sh does."""
     path.touch()
     assert _FLOCK is not None

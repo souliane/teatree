@@ -19,7 +19,7 @@ overlay owns has no overlay tier of its own — inheriting the ambient overlay's
 mis-attribution the gate closes. :data:`OWNED_REPO` supplies the other half.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -33,14 +33,14 @@ OWNED_REPO = "souliane/teatree"
 
 
 @contextmanager
-def posture_permits_cm() -> Iterator[None]:
+def posture_permits_cm() -> Generator[None]:
     """Context manager: the active posture lets the owner's voice out inside the block."""
     with patch(_POSTURE_SEAM, return_value=False):
         yield
 
 
 @contextmanager
-def posture_forbids_cm() -> Iterator[None]:
+def posture_forbids_cm() -> Generator[None]:
     """Context manager: the active posture refuses colleague-visible posts inside the block."""
     with patch(_POSTURE_SEAM, return_value=True):
         yield

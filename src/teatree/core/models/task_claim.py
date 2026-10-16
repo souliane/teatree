@@ -13,7 +13,7 @@ the model class through the instance, so this module needs no runtime import of
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -71,7 +71,7 @@ def parked_until(task: "Task", now: datetime | None = None) -> datetime | None:
 
 
 @contextmanager
-def drive_claim(task: "Task") -> Iterator[None]:
+def drive_claim(task: "Task") -> Generator[None]:
     """Mark *task* as executing — in-process AND cross-process (#4164 follow-up).
 
     Pairs :func:`~teatree.core.claim_liveness.driving` (the in-memory registry a

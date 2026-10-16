@@ -23,7 +23,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -142,7 +142,7 @@ def release_process_locks() -> None:
 
 
 @contextmanager
-def _claim_for_reap(lock: Path) -> Iterator[bool]:
+def _claim_for_reap(lock: Path) -> Generator[bool]:
     """Hold *lock* exclusively for the body, yielding whether the claim succeeded.
 
     The reaper cannot ask :func:`flock_is_held` and then delete: that probe acquires

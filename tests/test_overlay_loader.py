@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -27,6 +27,9 @@ from teatree.core.overlay_loader import (
     resolve_overlay_name,
     ticket_repo_is_overlay_own,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.overlay_metadata import OverlayMetadata
 
 owned_repos_for_overlay = OverlayConfigResolver.owned_repos
 path_only_owned_scopes = OverlayConfigResolver.path_only_owned_scopes
@@ -882,7 +885,7 @@ class _NarrowValidatePr:
 class _NonConformingOverlay(OverlayBase):
     """Registry overlay whose validate_pr cannot accept the documented keyword."""
 
-    metadata = _NarrowValidatePr()
+    metadata = cast("OverlayMetadata", _NarrowValidatePr())
 
     def get_repos(self) -> list[str]:
         return []

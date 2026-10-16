@@ -19,7 +19,7 @@ turns the block tests red — the anti-vacuity guarantee.
 
 import json
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,7 +115,7 @@ def t3_reports(
     raises: Exception | None = None,
     open_pr: str = NO_OPEN_PR,
     clock: MeasurementClock | None = None,
-) -> Iterator[T3Measurement]:
+) -> Generator[T3Measurement]:
     """Fake ONLY the ``t3 tool`` shellouts; let every git probe run for real.
 
     The gate resolves its scope with real ``git`` reads against the repo under

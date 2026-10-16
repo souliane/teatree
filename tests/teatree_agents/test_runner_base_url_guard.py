@@ -13,7 +13,7 @@ one unambiguously-sanctioned shape: a metered key with no subscription token bes
 """
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -39,7 +39,7 @@ _GATEWAY = "https://gateway.example.invalid/v1"
 
 
 @contextmanager
-def _ambient(**values: str) -> Iterator[None]:
+def _ambient(**values: str) -> Generator[None]:
     """Patch ``os.environ`` so exactly the named auth vars are set and no others.
 
     ``patch.dict`` restores the whole mapping on exit, including the keys popped

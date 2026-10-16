@@ -6,7 +6,7 @@ per-generation drain waits on, and the roller advances; ``drain_deadline`` is th
 end of a drain that a host-side heuristic used to have to guess.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import ClassVar
@@ -170,7 +170,7 @@ class WorkerGeneration(models.Model):
         )
 
     @contextmanager
-    def _locked(self) -> Iterator[str]:
+    def _locked(self) -> Generator[str]:
         with transaction.atomic():
             self.state = type(self).objects.select_for_update().values_list("state", flat=True).get(pk=self.pk)
             yield self.state

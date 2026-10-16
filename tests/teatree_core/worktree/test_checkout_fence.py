@@ -19,6 +19,7 @@ from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
+    claim_task_checkout_or_park,
     park_task_checkout,
     verify_task_checkout,
     writes_checkout,
@@ -306,6 +307,38 @@ class CheckoutFenceTests(TestCase):
             occupy_ticket_checkout(self.ticket, holder="task:999", holder_session="s2"),
         ):
             pass
+
+    def test_deferred_exit_is_attested_by_the_next_claim_after_lease_lapse(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/host-proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(self.task, str(self.checkout))
+        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+        busy = ProcessTable(frozenset({self.checkout}), "/host-proc")
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=busy),
+            patch("teatree.core.worktree.occupancy.page_surviving_checkout"),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "new.txt").write_text("run output")
+            self.task.complete()
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert row.get_extra()["attested_state"] == initial
+        assert row.get_extra()["deferred_exit"]["digest"] == checkout_state(self.checkout).digest
+        Worktree.objects.filter(pk=row.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        next_task = TaskFactory(ticket=self.ticket, phase="testing")
+        next_task.claim(claimed_by="worker", claimed_by_session="s2")
+        container_table = ProcessTable(frozenset(), "/host-proc", (), ("pid 7 unreadable by this uid",))
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=container_table):
+            assert claim_task_checkout_or_park(next_task) is None
+        row.refresh_from_db()
+        assert row.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        audit = row.get_extra()["auto_attestation"]
+        assert "deferred_exit" in audit
+        deferred = audit["deferred_exit"]
+        assert isinstance(deferred, dict)
+        assert deferred["session"] == "s1"
 
     def test_a_finished_holder_whose_checkout_is_busy_is_not_self_healed(self) -> None:
         verify_task_checkout(self.task, str(self.checkout))

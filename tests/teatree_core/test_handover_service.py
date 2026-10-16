@@ -9,7 +9,7 @@ import contextlib
 import datetime as dt
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
@@ -33,7 +33,7 @@ from teatree.core.session_handover_manager import SessionHandoverQuerySet
 
 
 @contextlib.contextmanager
-def _tmp_env(var: str) -> Iterator[str]:
+def _tmp_env(var: str) -> Generator[str]:
     """Set ``var`` to a fresh temp dir for the duration, restoring the prior value."""
     prior = os.environ.get(var)
     with tempfile.TemporaryDirectory() as directory:

@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -1142,7 +1142,7 @@ def test_internal_error_does_not_block_a_command_that_publishes_nothing(
 
 
 @contextlib.contextmanager
-def _teatree_cannot_be_imported() -> Iterator[None]:
+def _teatree_cannot_be_imported() -> Generator[None]:
     msg = "teatree is not importable here"
     raise ImportError(msg)
     yield
