@@ -1,6 +1,6 @@
 """The global tick reports each answered action card it carried out, declined or refused."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.db import OperationalError
@@ -10,7 +10,7 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
+from teatree.loop.question_binding import answer_from_click
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
 
 
@@ -29,7 +29,16 @@ class TestOwnerActionScanner(TestCase):
             action=action,
         )
         row = DeferredQuestion.record("Should I accept this checkout?", dedupe_marker=action_marker(action), card=card)
-        assert apply_bound_answer(BoundAnswer(row, "Accept", answered_by="U0DEMOOWNER"))
+        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+        assert answer_from_click(
+            {
+                "user": {"id": "U0DEMOOWNER"},
+                "channel": {"id": row.slack_channel},
+                "message": {"ts": row.slack_ts},
+                "actions": [{"action_id": "owner-question-option-1", "value": "1", "text": {"text": "Accept"}}],
+            },
+            backend=Mock(user_id="U0DEMOOWNER"),
+        )
 
         with patch("teatree.core.answering.owner_actions.notify_user"):
             signals = OwnerActionScanner().scan()

@@ -34,7 +34,7 @@ from teatree.core.worktree.occupancy import (
     release,
     task_holder_id,
 )
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
+from teatree.loop.question_binding import answer_from_click
 from teatree.utils.git import run_strict
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core._self_review_helpers import completed_self_review
@@ -99,7 +99,16 @@ class CheckoutFenceTests(TestCase):
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             self._park_on_a_foreign_edit()
             row = self.task.deferred_questions.get()
-            assert apply_bound_answer(BoundAnswer(row, "Decline", answered_by="U0DEMOOWNER"))
+            assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+            assert answer_from_click(
+                {
+                    "user": {"id": "U0DEMOOWNER"},
+                    "channel": {"id": row.slack_channel},
+                    "message": {"ts": row.slack_ts},
+                    "actions": [{"action_id": "owner-question-option-2", "value": "2", "text": {"text": "Decline"}}],
+                },
+                backend=Mock(user_id="U0DEMOOWNER"),
+            )
             with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
                 assert claim_task_checkout_or_park(self.task) is not None
 
