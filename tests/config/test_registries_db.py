@@ -17,7 +17,7 @@ leak into discovery). ``_isolate_env`` (conftest) clears ``T3_CONFIG_DB`` /
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,7 +32,7 @@ _LOCK_HELD_SECONDS = 0.4
 
 
 @contextmanager
-def _a_writer_holding_the_store_locked(db: Path) -> Iterator[None]:
+def _a_writer_holding_the_store_locked(db: Path) -> Generator[None]:
     """Hold EXCLUSIVE on *db* for `_LOCK_HELD_SECONDS`, the way a committing writer does.
 
     Entered only once the lock is actually held, so the read inside the block cannot pass by

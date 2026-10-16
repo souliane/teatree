@@ -8,7 +8,7 @@ Both ``test_session_end_work_check`` (what an end leaves for the next session) a
 import contextlib
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +25,7 @@ GIT = shutil.which("git") or "git"
 
 
 @contextlib.contextmanager
-def session_end_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def session_end_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     """An isolated hook state dir, and never a shell-out to the real t3 / gh from a unit test."""
     original = router.STATE_DIR
     router.STATE_DIR = tmp_path / "state"

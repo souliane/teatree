@@ -28,7 +28,7 @@ given the resuming ``Task``. The transport stays pure/injectable — persistence
 lives in the sibling module, never inside the harness classes themselves.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol, cast
@@ -148,7 +148,7 @@ class ClaudeSdkHarness:
 
     @staticmethod
     @asynccontextmanager
-    async def open(options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
+    async def open(options: ClaudeAgentOptions) -> AsyncGenerator[HarnessSession]:
         """Spawn the CLI child with the system prompt on a FILE, and name an E2BIG death (#4301).
 
         Only the CONNECT is wrapped: an exception from the driver's own body must never be
@@ -315,7 +315,7 @@ class PydanticAiHarness:
         return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend, run))
 
     @asynccontextmanager
-    async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
+    async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator[HarnessSession]:
         # AH-2: adapt the vendor options into the neutral HarnessOptions ONCE at the boundary,
         # then thread only the neutral type through the provider-agnostic build below — the
         # ``ClaudeAgentOptions`` type never reaches ``_resolve_model`` / ``resolve_effort`` /

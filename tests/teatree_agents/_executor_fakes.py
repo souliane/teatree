@@ -9,7 +9,7 @@ import socket
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -408,7 +408,7 @@ class FakeExecutor:
         return state not in {"Z", "X"}
 
     @contextmanager
-    def running(self) -> Iterator[None]:
+    def running(self) -> Generator[None]:
         """The container's keeper: a tini-like PID 1 whose ``sleep`` child the container lives and dies with."""
         keeper = self._spawn([sys.executable, "-c", _KEEPER], {})
         try:

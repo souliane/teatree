@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
     from teatree.loops.dream.engine import DreamRunResult
 
@@ -85,7 +85,7 @@ class TailTimings:
     phases: list[tuple[str, float]] = field(default_factory=list)
 
     @contextmanager
-    def phase(self, label: str) -> "Iterator[None]":
+    def phase(self, label: str) -> "Generator[None]":
         """Time one tail phase, recording it even when the phase raises."""
         started = self.clock()
         try:

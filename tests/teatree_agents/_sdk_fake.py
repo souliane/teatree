@@ -21,7 +21,7 @@ artifact that deadlocks the connection — not production behaviour.
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Generator
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
@@ -173,7 +173,7 @@ class FakeHarness:
         self.opened_options: Any = None
 
     @contextlib.asynccontextmanager
-    async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: Any) -> AsyncGenerator[FakeHarnessSession]:
         self.opened_options = options
         yield FakeHarnessSession(self._messages, delay=self._delay)
 
@@ -216,7 +216,7 @@ class OneSessionHarness:
         self.session = session
 
     @contextlib.asynccontextmanager
-    async def open(self, _options: Any) -> AsyncIterator[InterruptibleSession]:
+    async def open(self, _options: Any) -> AsyncGenerator[InterruptibleSession]:
         yield self.session
 
 
@@ -226,7 +226,7 @@ def fake_sdk(
     *,
     delay: float = 0.0,
     task_usage: TaskUsage | None = None,
-) -> Iterator[type[FakeHarnessSession]]:
+) -> Generator[type[FakeHarnessSession]]:
     """Patch the default backend's SDK boundary (+ ``TaskUsage.for_task``).
 
     The patch target is ``teatree.agents.harness.ClaudeSDKClient`` — the SDK the

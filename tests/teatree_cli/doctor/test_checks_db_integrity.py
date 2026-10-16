@@ -9,7 +9,7 @@ corrupt file, so a refactor that stops actually running the PRAGMA goes red.
 import json
 import sqlite3
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -156,7 +156,7 @@ def _databases(db: Path, engine: str) -> dict[str, dict[str, object]]:
 
 
 @contextmanager
-def _database_config(db: Path, engine: str) -> Iterator[None]:
+def _database_config(db: Path, engine: str) -> Generator[None]:
     """Point ``settings.DATABASES`` at *db* without ``override_settings``.
 
     ``override_settings(DATABASES=…)`` warns (a COMPLEX_OVERRIDE_SETTING) and the
@@ -169,7 +169,7 @@ def _database_config(db: Path, engine: str) -> Iterator[None]:
 
 
 @contextmanager
-def _guarded_default_connection(db: Path, blocker: DjangoDbBlocker) -> Iterator[None]:
+def _guarded_default_connection(db: Path, blocker: DjangoDbBlocker) -> Generator[None]:
     """Make ``connections['default']`` a real guarded connection to *db*, then restore it.
 
     The check interrogates the live default connection on purpose (one connection

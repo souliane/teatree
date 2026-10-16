@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
@@ -15,7 +15,8 @@ class TicketFacet(models.Model):
     (overlay attribution, phase sessions, scheduling, evidence, introspection)
     subclasses this so its methods type-check against the model's fields without
     redeclaring them. Abstract with no fields, so it contributes no migration and
-    the multiple-inheritance diamond into ``Ticket`` cannot clash.
+    the multiple-inheritance diamond into ``Ticket`` cannot clash. The fields are
+    declared as never-executed field instances so ``Ticket``'s own fields match them.
     """
 
     class Meta:
@@ -23,19 +24,22 @@ class TicketFacet(models.Model):
 
     if TYPE_CHECKING:
         pk: int
-        issue_url: str
-        overlay: str
-        state: str
-        role: str
-        extra: dict[str, Any]
-        context: str
-        short_description: str
-        remote_missing: bool
-        expedited: bool
-        issue_number: str
+        issue_url = models.URLField()
+        overlay = models.CharField()
+        state = models.CharField()
+        role = models.CharField()
+        extra = models.JSONField()
+        context = models.TextField()
+        short_description = models.CharField()
+        remote_missing = models.BooleanField()
+        expedited = models.BooleanField()
+        issue_number = models.CharField()
         # Present only on rows from ``TicketQuerySet.unfindable()``, which annotates it;
         # ``Ticket`` carries no creation stamp, so its oldest task IS the row's age.
         oldest_task: "datetime | None"
+        # Present only on rows whose queryset annotates the newest task's stamp or pk.
+        newest_task: "datetime | None"
+        newest_task_pk: "int | None"
         State: type["Ticket.State"]
         Role: type["Ticket.Role"]
         _SETTLED_STATES: ClassVar[frozenset[str]]

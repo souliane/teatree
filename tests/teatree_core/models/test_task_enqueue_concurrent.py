@@ -29,7 +29,7 @@ is what makes the green a measurement rather than an absence of evidence.
 
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -96,7 +96,7 @@ def _migrated_file_backed_db(tmp_path: Path) -> tuple[str, Path]:
 
 
 @contextmanager
-def _default_pointed_at(db_file: Path) -> Iterator[None]:
+def _default_pointed_at(db_file: Path) -> Generator[None]:
     """Point ``default`` at *db_file* under the production write-serialization OPTIONS.
 
     The settings dict is mutated in place rather than replaced: the already-open

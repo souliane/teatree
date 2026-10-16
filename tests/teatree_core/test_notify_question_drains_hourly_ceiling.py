@@ -5,7 +5,7 @@ import datetime as dt
 import itertools
 import os
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from unittest.mock import MagicMock, patch
 
 from django.db import connections
@@ -43,7 +43,7 @@ class _NoInProcessGuard:
 
 
 @contextlib.contextmanager
-def _as_another_live_process() -> Iterator[None]:
+def _as_another_live_process() -> Generator[None]:
     own_pid = os.getpid()
     with (
         patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", threading.Lock(), create=True),

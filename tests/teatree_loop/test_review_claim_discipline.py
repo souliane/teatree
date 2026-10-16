@@ -15,7 +15,7 @@ The binding rules, each pinned by a symmetric must-fire / must-NOT-fire pair:
     author DM.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -95,7 +95,7 @@ class _FakeMessaging:
 
 
 @contextmanager
-def _review_loop_disabled() -> Iterator[None]:
+def _review_loop_disabled() -> Generator[None]:
     """Disable the review mini-loop via the durable DB ``LoopState`` for the block.
 
     Loop control is DB-only — ``t3 loop disable review`` (a ``DISABLED``

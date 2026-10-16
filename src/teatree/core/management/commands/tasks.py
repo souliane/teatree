@@ -550,14 +550,14 @@ class Command(TyperCommand):
 def _task_row(task: Task) -> TaskRow:
     return TaskRow(
         task_id=task.pk,
-        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_id=task.ticket_id,
         ticket_title=task.ticket.short_description,
         status=task.status,
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
         admission_score=getattr(task, ADMISSION_SCORE_ALIAS),
-        parent_task_id=task.parent_task_id,  # ty: ignore[unresolved-attribute]
+        parent_task_id=task.parent_task_id,
         failure_kind=task.failure_kind,
         failure_reason=task.failure_reason,
         failure_environmental=is_environmental(task.failure_kind),

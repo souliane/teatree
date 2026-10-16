@@ -55,7 +55,7 @@ import re
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -430,7 +430,7 @@ class _Scope:
 
 
 @contextlib.contextmanager
-def _ephemeral_odb(repo: str, remote: str, extra_env: Mapping[str, str]) -> Iterator[_Scope]:
+def _ephemeral_odb(repo: str, remote: str, extra_env: Mapping[str, str]) -> Generator[_Scope]:
     """A scope routing every object git WRITES during one claim op into a throwaway dir.
 
     The clone's real object DB is attached as a read-only alternate — push and

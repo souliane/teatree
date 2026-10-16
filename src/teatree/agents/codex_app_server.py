@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import shutil
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -450,7 +450,7 @@ class CodexAppServerHarness:
         self.read_only_phase = read_only_phase
 
     @asynccontextmanager
-    async def open(self, options: ClaudeAgentOptions) -> AsyncIterator["HarnessSession"]:
+    async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator["HarnessSession"]:
         if self.refusal:
             raise HarnessFallbackError(self.refusal, kind=HarnessFallbackKind.ACCESS, side_effects_started=False)
         from teatree.agents import (  # noqa: PLC0415 — late import avoids a transport cycle

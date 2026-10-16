@@ -9,7 +9,7 @@ string, an int, or a list all round-trip into the override store.
 import json
 import re
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -53,7 +53,7 @@ def _teatree(document: dict[str, object]) -> dict[str, object]:
 
 
 @contextmanager
-def _fixture_flag() -> Iterator[None]:
+def _fixture_flag() -> Generator[None]:
     flag = FeatureFlag(field="contribute", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture")
     with mock.patch.dict(FEATURE_FLAGS, {"contribute": flag}):
         taxonomy.cache_clear()

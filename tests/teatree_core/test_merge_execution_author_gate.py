@@ -14,7 +14,7 @@ instead of raising — the gate is what makes them pass.
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -201,7 +201,7 @@ class TestProvenanceGateUnit(TestCase):
         _seed_known()
 
     @contextmanager
-    def _private_repos(self, entries: list[str]) -> Iterator[None]:
+    def _private_repos(self, entries: list[str]) -> Generator[None]:
         with TemporaryDirectory() as temporary:
             config_db = Path(temporary) / "config.sqlite3"
             with closing(sqlite3.connect(config_db)) as conn, conn:

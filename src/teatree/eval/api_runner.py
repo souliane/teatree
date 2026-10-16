@@ -40,7 +40,7 @@ import dataclasses
 import functools
 import shutil
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -588,7 +588,7 @@ class ApiInProcessRunner:
             return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=watchdog)
 
     @contextmanager
-    def _resolve_eval_target(self, spec: EvalSpec) -> Iterator[tuple[Path, str, dict[str, str]]]:
+    def _resolve_eval_target(self, spec: EvalSpec) -> Generator[tuple[Path, str, dict[str, str]]]:
         """Yield ``(workspace, cwd, env)`` — ISOLATED to a throwaway for spawning scenarios.
 
         A non-spawning scenario keeps the clean-room shape (configured ``workspace``,

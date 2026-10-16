@@ -12,7 +12,7 @@ The configured skill is pinned per test via ``configured_review_skill`` rather
 than the host machine's config, so the suite is deterministic regardless of it.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -34,7 +34,7 @@ from tests.teatree_core.conftest import record_review_context_for_test
 
 
 @contextmanager
-def _configured_review_skill(skill: str, *alternates: str) -> Iterator[None]:
+def _configured_review_skill(skill: str, *alternates: str) -> Generator[None]:
     with (
         patch("teatree.core.gates.review_skill_gate.configured_review_skill", return_value=skill),
         patch(
@@ -46,7 +46,7 @@ def _configured_review_skill(skill: str, *alternates: str) -> Iterator[None]:
 
 
 @contextmanager
-def _repo_is_overlay_own(*, is_own: bool) -> Iterator[None]:
+def _repo_is_overlay_own(*, is_own: bool) -> Generator[None]:
     with patch("teatree.core.gates.review_skill_gate.ticket_repo_is_overlay_own", return_value=is_own):
         yield
 
@@ -246,7 +246,7 @@ class TestPerPrReviewTierScoping(TestCase):
     """souliane/teatree#3530 — a per-PR ship is not accountable for the periodic sweep."""
 
     @contextmanager
-    def _tiers(self, *, review: str, architectural: str = "architectural-review") -> Iterator[None]:
+    def _tiers(self, *, review: str, architectural: str = "architectural-review") -> Generator[None]:
         with (
             _configured_review_skill(review),
             patch(
