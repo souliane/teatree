@@ -72,14 +72,14 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.164"
+_PINNED_SDK_VERSION = "0.2.165"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.292 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.292"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.294 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.294"
 
 #: The deployed runtime's pin: the lowest version the tier assertions allow, the SDK bundle's own.
-_RUNTIME_CLI_VERSION = "2.1.292"
+_RUNTIME_CLI_VERSION = "2.1.294"
 
 _FRONTIER_MODEL = TIER_MODELS["frontier"]
 _FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
