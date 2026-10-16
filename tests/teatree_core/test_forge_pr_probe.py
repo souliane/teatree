@@ -149,9 +149,17 @@ class TestFindOpenPrForBranch:
 
     def test_github_timeout_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
-        _fake_cli(monkeypatch, subprocess.TimeoutExpired("gh", 30))
+        assert forge_pr_probe._PROBE_TIMEOUT_SECONDS == 30
+        seen: list[dict[str, Any]] = []
+
+        def _run(_cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs)
+            raise subprocess.TimeoutExpired(_cmd, forge_pr_probe._PROBE_TIMEOUT_SECONDS)
+
+        monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
         assert forge_pr_probe._open_pr_stdout(["gh", "pr", "list"], repo) is None
         assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
+        assert [kwargs.get("timeout") for kwargs in seen] == [forge_pr_probe._PROBE_TIMEOUT_SECONDS] * 2
 
     def test_unparsable_json_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
