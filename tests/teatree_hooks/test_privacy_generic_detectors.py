@@ -35,7 +35,14 @@ def test_empty_text_has_no_findings() -> None:
         ("glpat-XXXXXXXXXXXXXXXXXXXX", "glpat-XXXXXXXXXXXXXXXXXXXX", []),  # privacy-scan:allow synthetic fixture
         ("jdoe", "jdoe@gmail.com", ["email"]),  # privacy-scan:allow synthetic fixture
         ("jdoe", "/home/jdoe/src", ["home_path"]),  # privacy-scan:allow synthetic fixture
+        ("/home/jdoe", "/home/jdoe/src", []),  # privacy-scan:allow synthetic fixture
     ],
 )
 def test_allow_entry_exempts_only_a_finding_it_wholly_covers(allowed: str, text: str, categories: list[str]) -> None:
     assert [hit.category for hit in generic_findings(text, allowlist=(allowed,))] == categories
+
+
+def test_macos_runner_workspace_is_exempt_only_on_forge_writes() -> None:
+    path = "/Users/runner/work/project"  # privacy-scan:allow synthetic fixture
+    assert generic_findings(path, forge_write=True) == []
+    assert [hit.category for hit in generic_findings(path)] == ["home_path"]

@@ -90,24 +90,27 @@ class TestShipExecutor(TestCase):
         ticket = self._ticket_with_worktree()
         host = MagicMock()
         host.current_user.return_value = "souliane"
+        remote = "git@gitlab.corp.example:group/repo.git"
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
                 return_value=("feat: x", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
             ),  # privacy-scan:allow synthetic fixture
-            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True) as visibility,
         ):
             result = ShipExecutor(ticket).run()
 
         assert not result.ok
         assert "email" in result.detail
         assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
-        push.assert_called_once()
+        push.assert_not_called()
         host.create_pr.assert_not_called()
+        visibility.assert_called_with(remote, "")
 
     def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
         # North-star PR-2: the autonomous loop's task-driven ship reaches

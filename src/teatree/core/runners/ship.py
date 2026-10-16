@@ -336,12 +336,23 @@ class ShipExecutor(RunnerBase):
         # may run in an async worker after a window where ``origin/<target>``
         # advanced again. Abort only when the branch now *conflicts* with target.
         currency_error = self._check_branch_currency(ticket, repo_path, branch)
-        if currency_error is not None:
-            return RunnerResult(ok=False, detail=currency_error)
-
-        refusal = self._refusal_before_outward_write(ticket, host, repo_path)
+        refusal = (
+            RunnerResult(ok=False, detail=currency_error)
+            if currency_error is not None
+            else self._refusal_before_outward_write(ticket, host, repo_path)
+        )
         if refusal is not None:
             return refusal
+
+        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
+        remote_url = git.remote_url(repo=repo_path)
+        if refusal := refusal_for_pr_generic_findings(
+            title=spec.title,
+            description=spec.description,
+            target_repo=remote_url,
+            forge=forge_from_url(remote_url),
+        ):
+            return RunnerResult(ok=False, detail=refusal)
 
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
@@ -355,7 +366,6 @@ class ShipExecutor(RunnerBase):
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
-        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, host, spec)
 
     @staticmethod
@@ -443,14 +453,6 @@ class ShipExecutor(RunnerBase):
         for raw GitHub API payloads piped through other producers.
         """
         expected_slug = git.remote_slug(repo=spec.repo)
-        refusal = refusal_for_pr_generic_findings(
-            title=spec.title,
-            description=spec.description,
-            target_repo=expected_slug,
-            forge=forge_from_url(git.remote_url(repo=spec.repo)),
-        )
-        if refusal is not None:
-            return RunnerResult(ok=False, detail=refusal)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):

@@ -417,7 +417,7 @@ def _open_pr(
     if refusal := refusal_for_pr_generic_findings(
         title=spec.title,
         description=spec.description,
-        target_repo=git_remote.slug_from_remote(remote),
+        target_repo=remote,
         forge=forge_from_url(remote),
     ):
         return EnsurePrResult(error=refusal)

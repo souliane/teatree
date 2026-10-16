@@ -68,6 +68,21 @@ class TestRouteForgeWriteCleanPath(TestCase):
 
 
 class TestRouteForgeWriteLeakGate(TestCase):
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_api_key_refusal_names_generic_category_without_displaying_token(self) -> None:
+        token = "glpat-XXXXXXXXXXXXXXXXXXXX"  # privacy-scan:allow synthetic fixture
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            pytest.raises(OutboundLeakError) as blocked,
+        ):
+            route_forge_write(
+                forge="github", repo="souliane/teatree", text=f"Token {token}", action="issue_create", target="t"
+            )
+        assert "generic:api_key" in str(blocked.value)
+        assert token not in str(blocked.value)
+        assert SendAudit.objects.count() == 0
+
     def test_customer_codename_to_a_public_repo_raises_before_any_audit(self) -> None:
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),

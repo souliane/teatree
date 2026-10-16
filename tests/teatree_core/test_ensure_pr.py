@@ -164,6 +164,18 @@ class TestEnsurePrGenericPrivacyGate(TestCase):
         assert "person@firm.tld" not in result.get("error", "")  # privacy-scan:allow synthetic fixture
         assert host.created_specs == []
 
+    def test_generated_pr_check_receives_the_host_qualified_remote(self) -> None:
+        remote = "git@gitlab.corp.example:group/repo.git"
+        spec = PullRequestSpec(
+            repo="/tmp/repo", branch="fix/test", title="fix", description="Contact person@example.invalid"
+        )
+        host = NonAssignableHost()
+        with patch.object(ensure_pr_mod, "refusal_for_pr_generic_findings", return_value=None) as refusal:
+            ensure_pr_mod._open_pr(host, spec, remote=remote, owning_ticket=None)
+
+        assert refusal.call_args.kwargs["target_repo"] == remote
+        assert len(host.created_specs) == 1
+
 
 class TestNonAssignableIdentityRegression3100(TestCase):
     """``pr create`` must succeed when the host-token login is not assignable."""

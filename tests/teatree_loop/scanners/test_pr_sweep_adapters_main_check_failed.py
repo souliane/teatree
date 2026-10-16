@@ -10,7 +10,7 @@ the ``PrApiClient`` port instead.
 
 from collections.abc import Callable
 
-import teatree.loop.scanners.pr_sweep_adapters as adapters_mod
+import teatree.backends.github.api as github_api
 from teatree.loop.main_check_runs import PAGE_SIZE
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient
 from tests.teatree_loop.conftest import FakeGhCheckRuns, check_run
@@ -23,7 +23,7 @@ StubGh = Callable[..., FakeGhCheckRuns]
 
 class TestMainCheckFailed:
     def test_requests_every_page(self, gh_check_runs: StubGh) -> None:
-        fake = gh_check_runs(adapters_mod, runs=[check_run(CHECK)])
+        fake = gh_check_runs(github_api, runs=[check_run(CHECK)])
 
         GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK)
 
@@ -35,32 +35,32 @@ class TestMainCheckFailed:
         assert endpoint.startswith(f"repos/{SLUG}/commits/main/check-runs")
 
     def test_true_when_the_named_check_failed(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, runs=[check_run(CHECK, conclusion="failure")])
+        gh_check_runs(github_api, runs=[check_run(CHECK, conclusion="failure")])
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is True
 
     def test_false_when_the_named_check_succeeded(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, runs=[check_run(CHECK)])
+        gh_check_runs(github_api, runs=[check_run(CHECK)])
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_when_the_named_check_is_pending(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, runs=[check_run(CHECK, status="in_progress", conclusion="")])
+        gh_check_runs(github_api, runs=[check_run(CHECK, status="in_progress", conclusion="")])
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_when_the_named_check_is_absent(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, runs=[check_run("lint")])
+        gh_check_runs(github_api, runs=[check_run("lint")])
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_on_non_zero_rc(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, returncode=1)
+        gh_check_runs(github_api, returncode=1)
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_on_unparsable_output(self, gh_check_runs: StubGh) -> None:
-        gh_check_runs(adapters_mod, raw_stdout="not json")
+        gh_check_runs(github_api, raw_stdout="not json")
 
         assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
@@ -74,7 +74,7 @@ class TestMainCheckFailed:
         ``runs_served`` is the truncation an unpaginated read suffers.
         """
         runs = [check_run(f"job-{i}") for i in range(PAGE_SIZE)] + [check_run(CHECK, conclusion="failure")]
-        fake = gh_check_runs(adapters_mod, runs=runs)
+        fake = gh_check_runs(github_api, runs=runs)
 
         failed = GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK)
 

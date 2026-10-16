@@ -163,6 +163,28 @@ class TestFullForgeUrlTarget:
         assert result.is_public
         assert result.refused
 
+    def test_self_hosted_private_remote_exempts_generated_pr_body(
+        self, internal_config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        conn = sqlite3.connect(str(internal_config))
+        conn.execute(
+            "UPDATE teatree_config_setting SET value = ? WHERE key = 'private_repos'",
+            (json.dumps(["gitlab.corp.example/group/repo"]),),
+        )
+        conn.commit()
+        conn.close()
+
+        assert (
+            privacy_gate.refusal_for_pr_generic_findings(
+                title="fix",
+                description="Contact person@firm.tld",  # privacy-scan:allow synthetic detector fixture
+                target_repo="git@gitlab.corp.example:group/repo.git",
+                forge="",
+            )
+            is None
+        )  # privacy-scan:allow synthetic fixture
+
 
 def test_classification_error_fails_closed_to_scanning(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_args: object, **_kwargs: object) -> bool:
@@ -265,7 +287,20 @@ def test_generic_detector_blocks_public_forge_write(
     result = scan_outbound_text(text=body, target_repo=REAL_PUBLIC)
 
     assert result.refused
-    assert category in [match.pattern_name for match in result.matches]
+    assert f"generic:{category}" in [match.pattern_name for match in result.matches]
+
+
+def test_legacy_bare_generic_name_stays_redacted() -> None:
+    synthetic_api_key = "glpat-XXXXXXXXXXXXXXXX"  # privacy-scan:allow synthetic detector fixture
+    result = privacy_gate.PrivacyGateResult(
+        target_repo=REAL_PUBLIC,
+        is_public=True,
+        matches=(privacy_gate.PrivacyMatch("api_key", synthetic_api_key, 0),),
+    )  # privacy-scan:allow synthetic fixture
+
+    refusal = format_refusal(result)
+    assert "glpat-XXXXXXXXXXXXXXXX" not in refusal  # privacy-scan:allow synthetic fixture
+    assert "[redacted]" in refusal
 
 
 def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
@@ -353,6 +388,26 @@ def test_pr_refusal_passes_an_exactly_allowed_address_next_to_a_term(
     )
 
     assert refusal is None
+
+
+@pytest.mark.parametrize("unreadable", ["overlay_privacy_rules", "_db_banned_terms"])
+def test_pr_generic_refusal_survives_unreadable_term_source(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch, unreadable: str
+) -> None:
+    inject_rules(public=True)
+    monkeypatch.setattr(privacy_gate, unreadable, lambda *_args: None)
+    body = "Contact person@firm.tld"  # privacy-scan:allow synthetic detector fixture
+
+    refusal = privacy_gate.refusal_for_pr_generic_findings(
+        title="fix",
+        description=body,
+        target_repo=REAL_PUBLIC,
+        forge="github",
+    )  # privacy-scan:allow synthetic fixture
+
+    assert refusal is not None
+    assert "generic:email" in refusal
+    assert "person@firm.tld" not in refusal  # privacy-scan:allow synthetic fixture
 
 
 def test_generic_detector_ignores_push_scanner_marker_on_forge_write(inject_rules: Callable[..., None]) -> None:

@@ -235,10 +235,13 @@ def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *
     if not findings:
         return False
     # The later AI-signature gate owns trailer emails and gives the specific refusal.
-    signature_lines = [line for _, _, line in ai_signature_scan.scan_text(payload)]
-    if signature_lines and all(
-        finding.category == "email" and any(finding.match in line for line in signature_lines) for finding in findings
-    ):
+    signature_lines = {lineno for lineno, _, _ in ai_signature_scan.scan_text(payload)}
+    findings = [
+        finding
+        for finding in findings
+        if finding.category != "email" or payload.count("\n", 0, finding.position) + 1 not in signature_lines
+    ]
+    if not findings:
         return False
     if verdict is Verdict.WARN:
         sys.stderr.write(
@@ -246,6 +249,7 @@ def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *
         )
         return False
     return emit_pretooluse_deny(
-        f"BLOCKED: generic {findings[0].category} in a forge publish payload. Redact it before posting.",
+        f"BLOCKED: generic {findings[0].category} in a forge publish payload. Redact it before posting. "
+        "If the repo is private, add its host-qualified name to private_repos or verify forge visibility.",
         gate_id="banned_terms",
     )

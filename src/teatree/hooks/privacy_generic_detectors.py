@@ -47,6 +47,7 @@ _RESERVED_DOMAIN_RE = re.compile(r"(?:^|\.)(?:example\.(?:com|org|net)|example|i
 # followed by ``:<path>`` — a real email never has a ``:path`` after the
 # domain — so this is a tight, non-weakening exclusion.
 _SSH_GIT_REMOTE_RE = re.compile(r"\bgit@[a-zA-Z0-9.-]+:[A-Za-z0-9._/~-]+")
+_CI_RUNNER_WORKSPACES = ("/home/runner/work/", "/Users/runner/work/")  # privacy-scan:allow CI path
 
 
 def _is_reserved_domain(address_or_host: str) -> bool:
@@ -65,6 +66,7 @@ def _is_exempt(masked: str, start: int, end: int) -> bool:
 def generic_findings(text: str, *, allowlist: tuple[str, ...] = (), forge_write: bool = False) -> list[GenericFinding]:
     findings: list[GenericFinding] = []
     masked = mask_exempt(text, allowlist) if allowlist else text
+    allowed_paths = {entry.casefold() for entry in allowlist if entry.startswith("/")}
     offset = 0
     for line in text.splitlines(keepends=True):
         findings.extend(
@@ -78,9 +80,8 @@ def generic_findings(text: str, *, allowlist: tuple[str, ...] = (), forge_write:
             GenericFinding("home_path", match.group(), offset + match.start())
             for match in _HOME_PATH_RE.finditer(line)
             if not _is_exempt(masked, offset + match.start(), offset + match.end())
-            and not (
-                forge_write and line[match.start() :].startswith("/home/runner/work/")  # privacy-scan:allow CI path
-            )
+            and match.group().casefold() not in allowed_paths
+            and not (forge_write and line[match.start() :].startswith(_CI_RUNNER_WORKSPACES))
         )
         findings.extend(
             GenericFinding("private_ip", match.group(), offset + match.start())

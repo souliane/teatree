@@ -18,7 +18,7 @@ self-asserted flag the executing agent can set for itself.
 
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -32,6 +32,7 @@ from teatree.utils.exact_carve_out import mask_exempt
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
+_REDACTED_GENERIC_NAMES = GENERIC_CATEGORIES | frozenset(f"generic:{category}" for category in GENERIC_CATEGORIES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,12 +151,10 @@ def _publication_matches(
 
 def format_refusal(result: PrivacyGateResult) -> str:
     """Render the structured error message the gate returns to the caller."""
-    lines = [
-        f"privacy gate refused: {result.target_repo} is in `public_repos`, found {len(result.matches)} matches:",
-    ]
+    lines = [f"privacy gate refused: {result.target_repo} is public/unknown; {len(result.matches)} matches:"]
     lines.extend(
         f"  - {match.pattern_name} at position {match.position}: "
-        f"{('[redacted]' if match.pattern_name in GENERIC_CATEGORIES else match.matched_text)!r}"
+        f"{('[redacted]' if match.pattern_name in _REDACTED_GENERIC_NAMES else match.matched_text)!r}"
         for match in result.matches
     )
     lines.append("Redact the flagged text before publishing — there is no self-asserted bypass.")
@@ -384,20 +383,23 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
         list(dict.fromkeys([*block_patterns, *union_block])),
     )
-    matches += tuple(
-        PrivacyMatch(pattern_name=hit.category, matched_text=hit.match, position=hit.position)
-        for hit in generic_findings(text, allowlist=allowlist, forge_write=True)
-    )
+    matches += _generic_matches(text, allowlist)
     return PrivacyGateResult(target_repo=target_repo, is_public=True, matches=matches)
 
 
+def _generic_matches(text: str, allowlist: tuple[str, ...]) -> tuple[PrivacyMatch, ...]:
+    return tuple(
+        PrivacyMatch(pattern_name=f"generic:{hit.category}", matched_text=hit.match, position=hit.position)
+        for hit in generic_findings(text, allowlist=allowlist, forge_write=True)
+    )
+
+
 def refusal_for_pr_generic_findings(*, title: str, description: str, target_repo: str, forge: str) -> str | None:
-    text = f"{title}\n{description}"
-    if not generic_findings(text, allowlist=_db_allowlist(), forge_write=True):
+    if not _target_is_public(target_repo, forge):
         return None
-    result = scan_outbound_text(text=text, target_repo=target_repo, forge=forge)
-    generic = tuple(match for match in result.matches if match.pattern_name in GENERIC_CATEGORIES)
-    return format_refusal(replace(result, matches=generic)) if generic else None
+    matches = _generic_matches(f"{title}\n{description}", _db_allowlist())
+    result = PrivacyGateResult(target_repo=target_repo, is_public=True, matches=matches)
+    return format_refusal(result) if matches else None
 
 
 def _db_allowlist() -> tuple[str, ...]:
