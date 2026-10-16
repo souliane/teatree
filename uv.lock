@@ -3638,7 +3638,7 @@ dev = [
     { name = "slack-sdk", specifier = ">=3.35" },
     { name = "tach", specifier = ">=0.34" },
     { name = "trogon", extras = ["typer"], specifier = ">=0.6" },
-    { name = "ty", specifier = ">=0.0.18,!=0.0.82" },
+    { name = "ty", specifier = ">=0.0.85" },
     { name = "typer", specifier = ">=0.12,<0.26" },
 ]
 docs = [
