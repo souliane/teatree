@@ -354,7 +354,7 @@ class ShipExecutor(RunnerBase):
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
-        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
+        spec = self.build_pr_spec(host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, host, spec)
 
     @staticmethod
@@ -546,14 +546,24 @@ class ShipExecutor(RunnerBase):
                 return recorded
         return ""
 
+    @staticmethod
     def _build_pr_spec(
-        self,
         ticket: "Ticket",
         host: "CodeHostBackend",
         repo_path: str,
         branch: str,
         extra: "TicketExtra",
     ) -> PullRequestSpec:
+        return ShipExecutor(ticket).build_pr_spec(host, repo_path, branch, extra)
+
+    def build_pr_spec(
+        self,
+        host: "CodeHostBackend",
+        repo_path: str,
+        branch: str,
+        extra: "TicketExtra",
+    ) -> PullRequestSpec:
+        ticket = self.ticket
         subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
         overlay = get_overlay_for_ticket(ticket)
         # PRODUCE the title via the shared resolver so the ship and the
