@@ -8,7 +8,7 @@ exhaustion, a 7-day weekly cap, a success mislabel, or a real crash).
 """
 
 from teatree.eval.api_errors import ThrottleKind, classify_transient_throttle
-from teatree.llm.anthropic_limits import LimitCause, window_horizon
+from teatree.llm.anthropic_limits import LimitCause
 
 #: The exact string the SDK surfaces when the subprocess CLI dies mid-stream with
 #: NO ``result`` event: the message reader's bare ``ProcessError`` (subprocess_cli
@@ -90,14 +90,8 @@ class TestClassifyTransientThrottle:
         wrapped = "Claude Code returned an error result: error_during_execution: command failed with exit code 1"
         assert classify_transient_throttle(wrapped) is None
 
-    def test_session_limit_is_sustained_with_window_wait(self) -> None:
-        signal = classify_transient_throttle("session limit reached")
-        assert signal is not None
-        assert signal.kind is ThrottleKind.SUSTAINED
-        assert signal.cause is LimitCause.SUBSCRIPTION_SESSION
-        horizon = window_horizon(LimitCause.SUBSCRIPTION_SESSION)
-        assert horizon is not None
-        assert signal.wait_seconds == horizon.total_seconds()
+    def test_session_limit_is_not_retried(self) -> None:
+        assert classify_transient_throttle("session limit reached") is None
 
     def test_api_credit_is_never_retried(self) -> None:
         # A $0 metered key has no time-based recovery — fail loud, never retry.

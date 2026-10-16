@@ -20,6 +20,7 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from claude_agent_sdk.types import HookEventMessage
 
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.api_runner import (
     _DEFAULT_CONFLICTING_VARS,
     CLAUDE_RESOLVE_MAX_ATTEMPTS,
@@ -54,7 +55,6 @@ from teatree.eval.models import (
 from teatree.eval.production_hooks import t3_plugin, teatree_root
 from teatree.eval.resource_caps import DEFAULT_WATCHDOG_SECONDS
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
-from teatree.eval.throttle_retry import THROTTLE_WINDOW_WAIT_MAX_SECONDS
 from teatree.eval.toolset import (
     DELEGATION_SUBAGENT_NAME,
     KNOWN_BUILTIN_TOOLS,
@@ -2481,21 +2481,26 @@ class TestThrottleRetry:
         with (
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
-            pytest.raises(RuntimeError, match="weekly limit"),
+            pytest.raises(UsageLimitReachedError, match="weekly limit"),
         ):
             ApiInProcessRunner(runner_params).run(spec)
         assert calls["n"] == 1  # a 7-day wait is never right inside a run
         assert sleeps == []
 
-    def test_session_window_wait_is_bounded_by_the_cap(self, tmp_path: Path) -> None:
+    def test_session_limit_parks_without_wait_or_retry(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         session = RuntimeError("Claude Code returned an error result: session limit reached")
-        run, calls, sleeps = self._run(spec, [session, [_result()]], workspace=tmp_path)
-        assert calls["n"] == 2
-        assert run.is_error is False
-        # The ~5h session horizon is clamped to the bounded window cap so a real
-        # session cap surfaces loud after a finite wait, never hangs forever.
-        assert sleeps == [pytest.approx(THROTTLE_WINDOW_WAIT_MAX_SECONDS)]
+        query, calls = _scripted_query([session, [_result()]])
+        sleeps: list[float] = []
+        runner_params = ApiRunnerParams(workspace=tmp_path, sleep=sleeps.append, rand=lambda: 0.0)
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+            pytest.raises(UsageLimitReachedError, match="session limit"),
+        ):
+            ApiInProcessRunner(runner_params).run(spec)
+        assert calls["n"] == 1
+        assert sleeps == []
 
     def test_empty_trajectory_timeout_is_retried(self, tmp_path: Path) -> None:
         # The infra-hang signature: an empty-trajectory watchdog timeout is ridden

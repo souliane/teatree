@@ -29,6 +29,7 @@ import traceback
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.backends import EvalRunner
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.anthropic_limits import CreditExhaustedError
@@ -153,7 +154,7 @@ def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFA
         return []
     workers = max(1, min(parallel, len(specs), MAX_PARALLEL))
     if workers == 1:
-        return [_safe_run(runner, spec) for spec in specs]
+        return _run_serial(runner, specs)
 
     # A shared flag, set by the first scenario to exhaust the metered key. A
     # worker that picks up a queued scenario after the flag is set short-circuits
@@ -161,32 +162,17 @@ def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFA
     # though every spec was submitted to the pool up front (workers pull from the
     # queue faster than the consumer could cancel them otherwise).
     aborted = threading.Event()
+    limited = threading.Event()
     # An AIMD governor over the shared OAuth token: each worker acquires a slot,
     # and a throttled completion shrinks the ceiling so the suite backs its
     # parallel load off the token (grown back on clean completions).
     governor = ConcurrencyGovernor(workers)
 
-    def _guarded(spec: EvalSpec) -> EvalRun:
-        try:
-            _refuse_if_aborted(aborted)
-            with governor.slot():
-                # Re-checked UNDER the permit: a worker parked here while the ceiling was
-                # shrunken can wait out the sibling scenario that kills the key.
-                _refuse_if_aborted(aborted)
-                run = _safe_run(runner, spec)
-        except CreditExhaustedError:
-            aborted.set()
-            raise
-        else:
-            governor.record_completion(run)
-            return run
-        finally:
-            # A runner resolves its model tier and effective settings from the
-            # ConfigSetting store — an ORM read on this pool worker thread.
-            close_thread_db_connections()
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_guarded, spec): index for index, spec in enumerate(specs)}
+        futures = {
+            pool.submit(_guarded_run, runner, spec, governor, aborted, limited): index
+            for index, spec in enumerate(specs)
+        }
         completed: dict[int, EvalRun] = {}
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -198,9 +184,64 @@ def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFA
         return [completed[index] for index in range(len(specs))]
 
 
+def _guarded_run(
+    runner: EvalRunner,
+    spec: EvalSpec,
+    governor: ConcurrencyGovernor,
+    aborted: threading.Event,
+    limited: threading.Event,
+) -> EvalRun:
+    try:
+        _refuse_if_aborted(aborted)
+        if limited.is_set():
+            return _usage_limit_skip(spec.name)
+        with governor.slot():
+            # Re-checked UNDER the permit: a worker parked here while the ceiling was
+            # shrunken can wait out the sibling scenario that kills the key.
+            _refuse_if_aborted(aborted)
+            if limited.is_set():
+                return _usage_limit_skip(spec.name)
+            run = _safe_run(runner, spec)
+            if _is_usage_limit_skip(run):
+                limited.set()
+    except CreditExhaustedError:
+        aborted.set()
+        raise
+    else:
+        governor.record_completion(run)
+        return run
+    finally:
+        # A runner resolves its model tier and effective settings from the
+        # ConfigSetting store — an ORM read on this pool worker thread.
+        close_thread_db_connections()
+
+
+def _run_serial(runner: EvalRunner, specs: list[EvalSpec]) -> list[EvalRun]:
+    runs: list[EvalRun] = []
+    limited = False
+    for spec in specs:
+        if limited:
+            runs.append(_usage_limit_skip(spec.name))
+            continue
+        run = _safe_run(runner, spec)
+        runs.append(run)
+        limited = _is_usage_limit_skip(run)
+    return runs
+
+
+def _usage_limit_skip(name: str) -> EvalRun:
+    return EvalRun.skipped(name, f"{USAGE_LIMIT_REACHED_REASON}: subscription window reached")
+
+
+def _is_usage_limit_skip(run: EvalRun) -> bool:
+    return run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")
+
+
 def _safe_run(runner: EvalRunner, spec: EvalSpec) -> EvalRun:
     try:
         return runner.run(spec)
+    except UsageLimitReachedError:
+        return _usage_limit_skip(spec.name)
     except CreditExhaustedError:
         # A $0 metered key is terminal for the WHOLE suite, not one scenario:
         # propagate so run_specs aborts the run instead of redding every

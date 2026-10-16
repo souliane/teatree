@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, run_specs
 from teatree.llm.anthropic_limits import CreditExhaustedError
@@ -86,6 +87,23 @@ class TestRunSpecs:
         runs = run_specs(runner, specs, parallel=1)
         assert runner.peak_in_flight == 1
         assert [r.spec_name for r in runs] == [s.name for s in specs]
+
+    def test_subscription_limit_parks_remaining_serial_scenarios(self, tmp_path: Path) -> None:
+        specs = [_spec(tmp_path, name=name) for name in ("first", "limited", "remaining")]
+        called: list[str] = []
+
+        class _LimitRunner:
+            def run(self, spec: EvalSpec) -> EvalRun:
+                called.append(spec.name)
+                if spec.name == "limited":
+                    msg = "weekly limit reached"
+                    raise UsageLimitReachedError(msg)
+                return EvalRun.skipped(spec.name, "other")
+
+        runs = run_specs(_LimitRunner(), specs, parallel=1)
+        assert called == ["first", "limited"]
+        assert [run.spec_name for run in runs] == [spec.name for spec in specs]
+        assert all(run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}") for run in runs[1:])
 
     def test_empty_specs_yields_empty(self) -> None:
         assert run_specs(_RecordingRunner(), [], parallel=4) == []

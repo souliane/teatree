@@ -183,7 +183,13 @@ _RESULT_EVENT_WRAPPER = "returned an error result:"
 #: remaining causes ARE retriable — RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a
 #: bounded SUSTAINED window wait.
 _NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset(
-    {LimitCause.API_CREDIT, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.PROVIDER_BUDGET, LimitCause.LEAK_BLOCKED}
+    {
+        LimitCause.API_CREDIT,
+        LimitCause.SUBSCRIPTION_SESSION,
+        LimitCause.SUBSCRIPTION_WEEKLY,
+        LimitCause.PROVIDER_BUDGET,
+        LimitCause.LEAK_BLOCKED,
+    }
 )
 
 #: Exception types no retry loop may ever ride out, on ANY lane — the typed

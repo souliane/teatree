@@ -22,7 +22,8 @@ a token value.
 """
 
 import datetime as dt
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from teatree.llm.rate_limits import used_fraction
@@ -76,3 +77,40 @@ def sort_key(entry: AccountHeadroom) -> tuple[float, float, int, str]:
 def rank(entries: Iterable[AccountHeadroom]) -> tuple[AccountHeadroom, ...]:
     """*entries* richest-first, deterministically — equal health always ranks the same way."""
     return tuple(sorted(entries, key=sort_key))
+
+
+@dataclass(frozen=True)
+class WindowReserve:
+    min_5h_free: float = 0.40
+    min_7d_free: float = 0.30
+
+    def __post_init__(self) -> None:
+        for value in (self.min_5h_free, self.min_7d_free):
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                msg = "eval reserve fractions must be finite values in [0, 1]"
+                raise ValueError(msg)
+
+    @classmethod
+    def from_environment(cls, env: Mapping[str, str]) -> "WindowReserve":
+        def read(name: str, default: float) -> float:
+            raw = env.get(name, "").strip()
+            return float(raw) if raw else default
+
+        return cls(
+            min_5h_free=read("EVAL_RESERVE_5H_FREE", cls.min_5h_free),
+            min_7d_free=read("EVAL_RESERVE_7D_FREE", cls.min_7d_free),
+        )
+
+    def allows(
+        self,
+        utilization_5h: float | None,
+        reset_5h: dt.datetime | None,
+        utilization_7d: float | None,
+        reset_7d: dt.datetime | None,
+        at: dt.datetime,
+    ) -> bool:
+        if utilization_5h is None or utilization_7d is None:
+            return False
+        free_5h = headroom_at(utilization_5h, reset_5h, at)[0]
+        free_7d = headroom_at(utilization_7d, reset_7d, at)[0]
+        return free_5h >= self.min_5h_free and free_7d >= self.min_7d_free

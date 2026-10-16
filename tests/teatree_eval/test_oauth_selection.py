@@ -9,6 +9,7 @@ real ``/v1/messages`` call. Mock tokens are synthetic — no real credential app
 
 import datetime as dt
 import pathlib
+from dataclasses import replace
 
 import pytest
 
@@ -134,6 +135,18 @@ class TestSelectFreshest:
         unreachable = selection.candidates[0]
         assert unreachable.status is TokenProbeStatus.UNREACHABLE
         assert unreachable.is_eligible is False
+
+    def test_low_five_hour_reserve_parks_the_only_account(self) -> None:
+        reader = _MockReader({MIDDLING: _snapshot(u5h=0.65, u7d=0.10)})
+        selection = select_freshest([MIDDLING], reader=reader, now=RUN_START)
+        assert selection.winner is None
+        assert selection.candidates[0].status is TokenProbeStatus.BELOW_RESERVE
+
+    def test_unmeasured_window_is_ineligible(self) -> None:
+        reader = _MockReader({FRESH: replace(_snapshot(u5h=0.1, u7d=0.1), unified_7d_utilization=None)})
+        selection = select_freshest([FRESH], reader=reader, now=RUN_START)
+        assert selection.winner is None
+        assert selection.candidates[0].status is TokenProbeStatus.UNKNOWN
 
     def test_exact_tie_breaks_on_input_position_deterministic_first(self) -> None:
         identical = _snapshot(u5h=0.20, u7d=0.20)

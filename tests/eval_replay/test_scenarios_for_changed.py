@@ -177,6 +177,7 @@ class TestTruncationSurfaced:
         assert selection.truncated
         assert selection.total_matched == total
         assert selection.deferred == 50
+        assert selection.deferred_names == tuple(f"s{n:04d}" for n in range(MAX_SELECTIVE_PR_SCENARIOS, total))
         assert len(selection.names) == MAX_SELECTIVE_PR_SCENARIOS
         note = selection.truncation_note()
         assert note is not None
@@ -195,7 +196,8 @@ class TestMain:
         all_files = sorted({_relative_to_root(s.source_path, _REPO_ROOT) for s in discover_specs()})
         monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(all_files) + "\n"))
         metadata = tmp_path / "selection.env"
-        code = main(["--metadata-env", str(metadata)])
+        deferred_out = tmp_path / "deferred.txt"
+        code = main(["--metadata-env", str(metadata), "--deferred-out", str(deferred_out)])
         captured = capsys.readouterr()
         assert code == 0
         assert "capped to" in captured.err
@@ -203,6 +205,7 @@ class TestMain:
         assert len([line for line in captured.out.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
         deferred = len(discover_specs()) - MAX_SELECTIVE_PR_SCENARIOS
         assert metadata.read_text(encoding="utf-8") == f"EVAL_DEFERRED={deferred}\n"
+        assert len(deferred_out.read_text(encoding="utf-8").splitlines()) == deferred
 
     def test_real_catalog_file_prints_names_and_exits_zero(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

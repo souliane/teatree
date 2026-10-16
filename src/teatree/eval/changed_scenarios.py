@@ -89,6 +89,7 @@ class ScenarioSelection:
     total_matched: int
     cap: int
     quarantined: tuple[str, ...] = ()
+    deferred_names: tuple[str, ...] = ()
 
     @property
     def truncated(self) -> bool:
@@ -192,6 +193,7 @@ def selection_for_changed(
     # deterministic, so the same diff always selects the same bounded subset.
     return ScenarioSelection(
         names=[name for _, name in kept][:MAX_SELECTIVE_PR_SCENARIOS],
+        deferred_names=tuple(name for _, name in kept[MAX_SELECTIVE_PR_SCENARIOS:]),
         total_matched=len(kept),
         cap=MAX_SELECTIVE_PR_SCENARIOS,
         quarantined=tuple(suppressed),
