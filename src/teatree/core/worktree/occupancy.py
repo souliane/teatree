@@ -114,7 +114,7 @@ def _exit_digest(task: Task, path: Path) -> str | None:
     try:
         return checkout_state(path, ticket=task.ticket).digest
     except (OSError, RuntimeError, ValueError):
-        logger.exception("Releasing checkout %s after task %s unattested: its state could not be read", path, task.pk)
+        logger.exception("Checkout %s after task %s remains unattested: its state could not be read", path, task.pk)
         return None
 
 
