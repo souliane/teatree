@@ -45,6 +45,7 @@ from teatree.agents.live_federation import (
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 from teatree.config import AgentHarness
+from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
@@ -505,28 +506,32 @@ def bound_task_mailbox(
         return
     teatree_stdio = cast("McpStdioServerConfig", teatree)
     label = f"{task.phase} task {task.pk}"
-    try:
-        active = broker or shared_broker()
-        identity = active.register(
-            room=str(task.ticket), harness=task.harness, label=label, task=task.pk, phase=task.phase
-        )
-    except Exception:
-        logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
-        yield None
-        return
     env = teatree_stdio.get("env")
+    child_env = {**(env if isinstance(env, dict) else {}), **dispatched_agent_env()}
     options.mcp_servers = cast(
         "dict[str, McpServerConfig]",
-        {
-            **servers,
-            "teatree": {**teatree_stdio, "env": {**(env if isinstance(env, dict) else {}), **identity.mcp_env()}},
-        },
+        {**servers, "teatree": {**teatree_stdio, "env": child_env}},
     )
+    active: LiveMailboxBroker | None = None
+    identity: MailboxIdentity | None = None
     try:
+        try:
+            active = broker or shared_broker()
+            identity = active.register(
+                room=str(task.ticket), harness=task.harness, label=label, task=task.pk, phase=task.phase
+            )
+        except Exception:
+            logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
+        if identity is not None:
+            options.mcp_servers = cast(
+                "dict[str, McpServerConfig]",
+                {**servers, "teatree": {**teatree_stdio, "env": {**child_env, **identity.mcp_env()}}},
+            )
         yield identity
     finally:
         options.mcp_servers = original
-        active.unregister(identity.address)
+        if identity is not None and active is not None:
+            active.unregister(identity.address)
 
 
 def reset_shared_brokers() -> None:
