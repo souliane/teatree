@@ -137,10 +137,14 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
     question, card = attest_card(task, attestation)
     try:
         marker = action_marker(attestation.action)
-        answered = DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=False)
-        for row in answered:
-            option = match_action_option(row.options_json, row.answer_text)
-            if option is not None and not option.recommended and owner_answerer(row, DeferredQuestionAudit):
+        latest = (
+            DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=False)
+            .order_by("-answered_at", "-pk")
+            .first()
+        )
+        if latest is not None and latest.parked_task_id == task.pk:
+            option = match_action_option(latest.options_json, latest.answer_text)
+            if option is not None and not option.recommended and owner_answerer(latest, DeferredQuestionAudit):
                 return None
         with transaction.atomic():
             obsolete = (

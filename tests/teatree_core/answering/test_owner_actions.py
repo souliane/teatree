@@ -128,6 +128,89 @@ class TestCheckoutAttestation(TestCase):
         assert row.is_pending
         assert self._carry_out() == []
 
+    def test_verified_typed_yes_attests_from_the_real_reply_scanner(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        reply = PendingChatInjection.record(
+            channel=row.slack_channel,
+            slack_ts="1800000001.000100",
+            text="yes",
+            context=DmContext(user_id=_OWNER, thread_ts=row.slack_ts),
+        )
+        assert reply is not None
+        backend = _owner_backend()
+        backend.fetch_thread_replies.return_value = [
+            {"ts": reply.slack_ts, "thread_ts": row.slack_ts, "user": _OWNER, "text": "yes"}
+        ]
+
+        AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
+
+        row.refresh_from_db()
+        assert row.answer_text == "Accept"
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        assert (
+            DeferredQuestionAudit.objects.get(question=row, action="answered").note
+            == f"verified-typed:{reply.slack_ts}"
+        )
+
+    def test_verified_typed_no_declines_without_attesting(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        reply = PendingChatInjection.record(
+            channel=row.slack_channel,
+            slack_ts="1800000001.000100",
+            text="no",
+            context=DmContext(user_id=_OWNER, thread_ts=row.slack_ts),
+        )
+        assert reply is not None
+        backend = _owner_backend()
+        backend.fetch_thread_replies.return_value = [
+            {"ts": reply.slack_ts, "thread_ts": row.slack_ts, "user": _OWNER, "text": "no"}
+        ]
+
+        AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
+
+        row.refresh_from_db()
+        assert row.answer_text == "Decline"
+        assert self._carry_out() == [f"declined {row.pk}"]
+
+    def test_numbered_typed_reply_in_the_card_thread_can_attest(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        reply = PendingChatInjection.record(
+            channel=row.slack_channel,
+            slack_ts="1800000001.000100",
+            text=f"#{row.pk} yes",
+            context=DmContext(user_id=_OWNER, thread_ts=row.slack_ts),
+        )
+        assert reply is not None
+        backend = _owner_backend()
+        backend.fetch_thread_replies.return_value = [
+            {"ts": reply.slack_ts, "thread_ts": row.slack_ts, "user": _OWNER, "text": reply.text}
+        ]
+
+        AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
+
+        row.refresh_from_db()
+        assert row.answer_text == "Accept"
+        assert self._carry_out() == [f"carried out {row.pk}"]
+
+    def test_queued_typed_reply_without_live_slack_match_cannot_attest(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        reply = PendingChatInjection.record(
+            channel=row.slack_channel,
+            slack_ts="1800000001.000100",
+            text="Accept",
+            context=DmContext(user_id=_OWNER, thread_ts=row.slack_ts),
+        )
+        assert reply is not None
+        bound = bind_reply(reply, reader=_statement, owner_user_id=_OWNER)
+        assert bound is not None
+        backend = _owner_backend()
+        backend.fetch_thread_replies.return_value = []
+
+        assert not apply_bound_answer(bound, backend=backend)
+        row.refresh_from_db()
+        assert row.is_pending
+        assert self._carry_out() == []
+
     def test_an_older_typed_answer_cannot_execute_after_this_fix(self) -> None:
         row = self._park_on_a_foreign_edit()
         assert row.apply_answer("Accept", resolved_via=DeferredQuestion.ResolvedVia.SLACK) is not None
@@ -148,6 +231,7 @@ class TestCheckoutAttestation(TestCase):
             "channel_type": "im",
             "channel": row.slack_channel,
             "ts": "1800000001.000100",
+            "thread_ts": row.slack_ts,
             "user": _OWNER,
             "text": f"#{row.pk} Accept",
         }
@@ -219,12 +303,12 @@ class TestCheckoutAttestation(TestCase):
         row.refresh_from_db()
         assert row.is_pending
 
-    def test_action_card_and_reminder_require_a_button(self) -> None:
+    def test_action_card_and_reminder_offer_tap_or_reply(self) -> None:
         row = self._park_on_a_foreign_edit()
         assert "Tap an option above" in render_text(row)
-        assert "reply" not in render_text(row).lower()
+        assert "reply" in render_text(row).lower()
         assert "Tap an option above" in bump_text(row, now=timezone.now())
-        assert "reply" not in bump_text(row, now=timezone.now()).lower()
+        assert "reply" in bump_text(row, now=timezone.now()).lower()
 
     def test_typed_punctuation_matches_the_recorded_option(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -232,7 +316,7 @@ class TestCheckoutAttestation(TestCase):
         def reader(_text: str) -> InboundReading:
             return InboundReading(InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC)
 
-        assert resolve_answer("Accept.", row, reader=reader) is None
+        assert resolve_answer("Accept.", row, reader=reader) == "Accept"
 
     def test_approval_uses_the_card_option_instead_of_a_fixed_label(self) -> None:
         state = checkout_state(self.checkout)
@@ -266,7 +350,9 @@ class TestCheckoutAttestation(TestCase):
         self._answer(reused, "Accept")
 
         assert self._carry_out() == [f"carried out {row.pk}"]
+        self.task.refresh_from_db()
         later.refresh_from_db()
+        assert self.task.not_before is None
         assert later.not_before is None
 
     def test_answered_action_can_be_asked_again_for_the_same_state(self) -> None:
@@ -279,6 +365,20 @@ class TestCheckoutAttestation(TestCase):
 
         assert renewed is not None
         assert renewed.pk != row.pk
+        assert renewed.is_pending
+
+    def test_new_task_can_ask_after_a_prior_task_declined_the_same_state(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Decline")
+        assert self._carry_out() == [f"declined {row.pk}"]
+        later = TaskFactory(ticket=self.task.ticket, phase="coding")
+        state = checkout_state(self.checkout)
+
+        renewed = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
+
+        assert renewed is not None
+        assert renewed.pk != row.pk
+        assert renewed.parked_task_id == later.pk
         assert renewed.is_pending
 
     def test_card_without_host_evidence_keeps_its_one_run_binding(self) -> None:

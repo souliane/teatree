@@ -110,6 +110,8 @@ An attestable refusal also asks the owner in Slack. The card links the ticket an
 states the checkout's commit count, uncommitted-file count and process evidence.
 Accepting rechecks the checkout and releases the parked task; declining leaves it
 parked. The terminal command remains available for an owner with host access.
+The owner may tap an option or reply in the card's thread; a typed decision is
+checked against the live Slack message before it can act.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete

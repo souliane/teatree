@@ -27,8 +27,8 @@ class TestQuestionActions(TestCase):
         )
         row = DeferredQuestion.record("Should I accept this checkout?", dedupe_marker=action_marker(action), card=card)
 
-        assert canonical_action_answer(row, "yes") is None
-        assert canonical_action_answer(row, "Leave") is None
+        assert canonical_action_answer(row, "yes") == "Proceed"
+        assert canonical_action_answer(row, "Leave") == "Leave"
         assert canonical_action_answer(row, "maybe") is None
 
     def test_plain_question_keeps_its_free_text(self) -> None:

@@ -12,7 +12,7 @@ from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
-from teatree.core.models import Worktree
+from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import ACTION_OUTCOMES, action_awaiting_outcome, owner_answerer
 from teatree.core.models.task_handoff import release_checkout_park
@@ -42,7 +42,7 @@ class _Decision:
     write: _Write | None = None
 
 
-def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
+def _prepare_attest(_row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
     worktree = Worktree.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
     if worktree is None:
         message = "The checkout no longer has a record."
@@ -61,8 +61,8 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
 
     def write() -> str:
         attestation.record()
-        if row.parked_task is not None:
-            release_checkout_park(row.parked_task)
+        for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
+            release_checkout_park(parked)
         return f"Attested the checkout at {attestation.state.digest}."
 
     return write
@@ -90,11 +90,16 @@ def _decide(row: DeferredQuestion, actor: str) -> _Decision:
     action = read_action(row.evidence)
     if action is None or row.dedupe_marker != action_marker(action):
         return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
-    tapped = DeferredQuestionAudit.objects.filter(
-        question=row, action="answered", resolver_id=actor, note="button"
-    ).exists()
-    if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or not actor or not tapped:
-        return _Decision("refused", "Only the owner's button tap in Slack may approve this action.", notify=True)
+    proof = (
+        DeferredQuestionAudit.objects.filter(question=row, action="answered", resolver_id=actor).order_by("-pk").first()
+    )
+    if (
+        row.resolved_via != DeferredQuestion.ResolvedVia.SLACK
+        or not actor
+        or proof is None
+        or (proof.note != "button" and not proof.note.startswith("verified-typed:"))
+    ):
+        return _Decision("refused", "Only the owner's verified Slack answer may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
     if option is None:

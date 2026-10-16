@@ -143,7 +143,7 @@ def bump_text(row: DeferredQuestion, *, now: dt.datetime) -> str:
     """The re-ping posted into the question's own thread: how long it has waited and how to answer."""
     view = _view(row)
     if view.action:
-        way = "Tap an option above to decide."
+        way = "Tap an option above, or reply here."
     else:
         way = "Tap an option above, or reply here." if view.options else "Reply here."
     return f"Still waiting for your decision; I asked {age_phrase(now - _asked_at(row))}. {way}"

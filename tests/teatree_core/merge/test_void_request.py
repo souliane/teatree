@@ -8,8 +8,10 @@ from django.test import TestCase
 from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.void_request import request_void
-from teatree.core.models import DeferredQuestion, MergeVoid, PullRequest, Ticket
+from teatree.core.models import DeferredQuestion, DmContext, MergeVoid, PendingChatInjection, PullRequest, Ticket
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import answer_from_click
+from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from tests.void_merge_fixtures import ABSENT, PR_URL, landed_ticket, stub_forge
 
 _OWNER = "U0DEMOOWNER"
@@ -98,6 +100,34 @@ class TestVoidRequest(TestCase):
         self.ticket.refresh_from_db()
         assert self.ticket.state == Ticket.State.CODED
         assert PullRequest.objects.get(ticket=self.ticket).state == PullRequest.State.CLOSED
+
+    def test_verified_typed_reply_voids_once(self) -> None:
+        with stub_forge():
+            row = self._ask()
+            reply = PendingChatInjection.record(
+                channel=row.slack_channel,
+                slack_ts="1800000001.000100",
+                text="go ahead",
+                context=DmContext(user_id=_OWNER, thread_ts=row.slack_ts),
+            )
+            assert reply is not None
+            self.backend.fetch_thread_replies.return_value = [
+                {"ts": reply.slack_ts, "thread_ts": row.slack_ts, "user": _OWNER, "text": reply.text}
+            ]
+            self.backend.get_permalink.return_value = "https://example.invalid/reply"
+
+            def reader(_text: str) -> InboundReading:
+                return InboundReading(
+                    InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC
+                )
+
+            AskUserQuestionReplyScanner(backend=self.backend, reader=reader).scan()
+            row.refresh_from_db()
+            assert row.answer_text == "Void"
+            assert carry_out_owner_actions() == [f"carried out {row.pk}"]
+            assert carry_out_owner_actions() == []
+
+        assert MergeVoid.objects.count() == 1
 
     def test_keep_records_a_decline_and_changes_nothing(self) -> None:
         with stub_forge():

@@ -22,7 +22,10 @@ MARKER_PREFIX = "owner-action:"
 
 
 def action_marker(action: ActionRequest) -> str:
-    identity = "\0".join((action["kind"], action["target"], action["binding"]))
+    parts = [action["kind"], action["target"], action["binding"]]
+    if "host_evidence" in action:
+        parts.append(f"host_evidence:{action['host_evidence']}")
+    identity = "\0".join(parts)
     digest = hashlib.sha256(identity.encode()).hexdigest()[:40]
     return f"{MARKER_PREFIX}{action['kind']}:{digest}"
 

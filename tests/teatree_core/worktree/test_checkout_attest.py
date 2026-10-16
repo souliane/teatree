@@ -9,6 +9,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.models import DeferredQuestion
 from teatree.core.worktree.checkout_attest import (
     AttestRefusedError,
     CheckoutAttestation,
@@ -74,6 +75,22 @@ class TestCheckoutAttestCard(TestCase):
 
         with patch("teatree.core.worktree.checkout_attest.DeferredQuestion.record", side_effect=OperationalError("db")):
             assert ask_owner_to_attest(task, attestation) is None
+
+    def test_changed_host_evidence_supersedes_the_old_pending_card(self) -> None:
+        task = TaskFactory(ticket=TicketFactory())
+        worktree = WorktreeFactory(ticket=task.ticket)
+        state = CheckoutState("d" * 64, 0, 1)
+        old = ask_owner_to_attest(task, CheckoutAttestation(worktree, state, host_evidence=True))
+
+        renewed = ask_owner_to_attest(task, CheckoutAttestation(worktree, state, host_evidence=False))
+
+        assert old is not None
+        assert renewed is not None
+        old.refresh_from_db()
+        assert old.dismissed_at is not None
+        assert renewed.pk != old.pk
+        assert renewed.evidence["action"]["host_evidence"] is False
+        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 1
 
 
 class TestReadAttestation(TestCase):

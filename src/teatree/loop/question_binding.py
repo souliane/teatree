@@ -70,6 +70,7 @@ class BoundAnswer:
     answer: str
     answered_by: str = ""
     from_click: bool = False
+    source_reply: PendingChatInjection | None = None
 
 
 def configured_owner_id(backend: object) -> str:
@@ -99,8 +100,48 @@ def bind_reply(
         question = _inferred_question(reply)
     if question is None:
         return None
+    if is_action_question(question) and reply.thread_ts != question.slack_ts:
+        return None
     answer = resolve_answer(body, question, reader=reader)
-    return None if answer is None else BoundAnswer(question=question, answer=answer, answered_by=reply.user_id)
+    return (
+        None
+        if answer is None
+        else BoundAnswer(question=question, answer=answer, answered_by=reply.user_id, source_reply=reply)
+    )
+
+
+def _verified_typed_action(bound: BoundAnswer, backend: "MessagingBackend | None") -> bool:
+    reply = bound.source_reply
+    question = bound.question
+    if backend is None or reply is None:
+        return False
+    if (
+        not _is_the_owner(reply.user_id, configured_owner_id(backend))
+        or bound.answered_by != reply.user_id
+        or reply.channel != question.slack_channel
+        or reply.thread_ts != question.slack_ts
+        or not reply.slack_ts
+    ):
+        return False
+    addressed = _addressed(reply.text)
+    if addressed is not None and addressed[0] != question.pk:
+        return False
+    body = addressed[1] if addressed is not None else reply.text
+    if canonical_action_answer(question, body) != bound.answer:
+        return False
+    try:
+        messages = backend.fetch_thread_replies(channel=reply.channel, thread_ts=reply.thread_ts)
+    except Exception:
+        logger.warning("Could not verify typed owner reply for question %s", question.pk, exc_info=True)
+        return False
+    return isinstance(messages, list) and any(
+        isinstance(message, dict)
+        and message.get("ts") == reply.slack_ts
+        and message.get("thread_ts") == reply.thread_ts
+        and message.get("user") == reply.user_id
+        and message.get("text") == reply.text
+        for message in messages
+    )
 
 
 def apply_bound_answer(
@@ -114,7 +155,7 @@ def apply_bound_answer(
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
     """
-    if is_action_question(bound.question) and not bound.from_click:
+    if is_action_question(bound.question) and not bound.from_click and not _verified_typed_action(bound, backend):
         return False
     with transaction.atomic():
         applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
@@ -124,7 +165,11 @@ def apply_bound_answer(
                 action="answered",
                 answer_text=applied.answer_text,
                 resolver_id=f"slack:{bound.answered_by}",
-                note="button" if bound.from_click else "",
+                note="button"
+                if bound.from_click
+                else f"verified-typed:{bound.source_reply.slack_ts}"
+                if is_action_question(applied) and bound.source_reply is not None
+                else "",
             )
     if applied is None:
         return False
