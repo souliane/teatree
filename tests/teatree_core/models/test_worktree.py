@@ -175,6 +175,35 @@ class TestWorktree(TestCase):
         assert saved.occupied_by == ""
         assert "attested_state" not in saved.extra
 
+    def test_stale_save_preserves_live_deferred_exit(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5297")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="ticket-5297")
+        stale = Worktree.objects.get(pk=worktree.pk)
+        record = {
+            "holder": "task:5297",
+            "session": "run",
+            "digest": "state",
+            "cause": "process_table",
+            "at": "2026-10-16T00:00:00+00:00",
+        }
+        worktree.merge_extra(set_keys={"deferred_exit": record})
+        stale.extra = {"worktree_path": "/tmp/updated"}
+        stale.save()
+        assert Worktree.objects.get(pk=worktree.pk).get_extra()["deferred_exit"] == record
+
+    def test_stale_save_cannot_restore_removed_deferred_exit(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5298")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="ticket-5298",
+            extra={"deferred_exit": {"digest": "old"}},
+        )
+        stale = Worktree.objects.get(pk=worktree.pk)
+        Worktree.objects.filter(pk=worktree.pk).update(extra={})
+        stale.save()
+        assert "deferred_exit" not in Worktree.objects.get(pk=worktree.pk).extra
+
     def test_save_of_a_deleted_row_writes_it_back(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/5279")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="ticket-5279")

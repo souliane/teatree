@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Self
 
-from teatree.core.models.types import CheckoutCustody, CheckoutTenure
+from teatree.core.models.checkout_proof import CheckoutCustody, CheckoutTenure
 
 _MAX_TENURES = 16
 
