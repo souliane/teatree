@@ -348,7 +348,7 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
         )
         state = "safe_to_approve"
     else:
-        reason = "verdict is HOLD" if not recorded.is_merge_safe() else f"live checks {live_checks!r}"
+        reason = "verdict is HOLD" if recorded.stands_as_hold() else f"live checks {live_checks!r}"
         human = f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
         state = "not_safe"
     readable = readable_findings(recorded)
