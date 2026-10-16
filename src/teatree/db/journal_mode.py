@@ -12,29 +12,36 @@ _JOURNAL_COMMAND = re.compile(r"^\s*PRAGMA\s+(?:[A-Za-z_]\w*\.)?journal_mode\s*(
 
 
 class ControlDbJournal:
-    def __init__(self, db_path: Path, env: Mapping[str, str] = os.environ) -> None:
+    def __init__(
+        self, db_path: Path, env: Mapping[str, str] = os.environ, *, containerized: bool | None = None
+    ) -> None:
         self.db_path = db_path
         self.env = env
+        self.domain = ControlDbWriteDomain(db_path, env=env, containerized=containerized)
+
+    @property
+    def selection(self) -> tuple[str, str]:
+        override = self.env.get("T3_CONTROL_DB_JOURNAL_MODE", "").strip().lower()
+        if override not in {"", "truncate", "wal"}:
+            message = "T3_CONTROL_DB_JOURNAL_MODE must be 'truncate' or 'wal'"
+            raise ImproperlyConfigured(message)
+        if self.db_path.parent != self.domain.expected_dir:
+            return "truncate", "outside the control-DB directory"
+        if override == "truncate":
+            return "truncate", "operator override"
+        eligible, reason = self.domain.wal_eligible
+        if override == "wal" and not eligible:
+            message = f"T3_CONTROL_DB_JOURNAL_MODE=wal refused: {reason}"
+            raise ImproperlyConfigured(message)
+        return ("wal" if eligible else "truncate"), ("operator override" if override else reason)
 
     @property
     def mode(self) -> str:
-        override = self.env.get("T3_CONTROL_DB_JOURNAL_MODE")
-        if override is not None:
-            if override not in {"truncate", "wal"}:
-                message = "T3_CONTROL_DB_JOURNAL_MODE must be 'truncate' or 'wal'"
-                raise ImproperlyConfigured(message)
-            return override
-        if not self.db_path.is_absolute() or self.db_path.is_symlink() or self.db_path.parent.is_symlink():
-            return "truncate"
-        return "truncate" if ControlDbWriteDomain(self.db_path, env=self.env).on_host_filesystem else "wal"
+        return self.selection[0]
 
     @property
     def reason(self) -> str:
-        if "T3_CONTROL_DB_JOURNAL_MODE" in self.env:
-            return "operator override"
-        if self.mode == "wal":
-            return "control-DB volume"
-        return "host-reachable filesystem"
+        return self.selection[1]
 
     def init_commands(self, existing: Sequence[str]) -> list[str]:
         mode = self.mode

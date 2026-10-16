@@ -30,6 +30,7 @@ from typing import cast
 
 from teatree.config.host_projection import HostProjection, ProjectionReader, warn_once
 from teatree.paths import ControlDb
+from teatree.sqlite_snapshot import uncheckpointed_wal
 
 #: How long a cold read waits for a contended lock before reporting the store UNREADABLE.
 #: A host-reachable copy can still run TRUNCATE, where a committing writer blocks
@@ -124,16 +125,22 @@ def read_readonly[T](
 
     A WAL-format file with no live writer has no `-shm`/`-wal` sidecars, and `mode=ro` fails
     its first read when it cannot create them: `SQLITE_CANTOPEN` on older SQLite,
-    `SQLITE_READONLY_DIRECTORY` on newer. Only those codes retry; a lock is never bypassed.
+    `SQLITE_READONLY_DIRECTORY` on newer. Only those codes retry, and a nonempty
+    `-wal` forbids the immutable fallback; a lock is never bypassed.
     """
-    connection = _open_readonly(db, "mode=ro", busy_timeout_ms)
+    connection: sqlite3.Connection | None = None
     try:
+        connection = _open_readonly(db, "mode=ro", busy_timeout_ms)
         return read(connection)
     except sqlite3.OperationalError as exc:
         if exc.sqlite_errorcode not in _QUIESCENT_WAL_READ_ERRORS:
             raise
+        if wal := uncheckpointed_wal(db):
+            message = f"Cannot use immutable fallback while {wal} is nonempty"
+            raise sqlite3.OperationalError(message) from exc
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     connection = _open_readonly(db, "immutable=1", busy_timeout_ms)
     try:
         return read(connection)

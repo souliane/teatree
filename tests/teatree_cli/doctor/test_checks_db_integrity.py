@@ -8,8 +8,9 @@ corrupt file, so a refactor that stops actually running the PRAGMA goes red.
 
 import json
 import sqlite3
+import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,6 +69,33 @@ def test_database_health_reports_wal_and_warns_when_sidecar_grows(
         monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1_000_000_000)
         assert checks_db_integrity._check_database_health() is True
         assert "WARN" not in capsys.readouterr().out
+    finally:
+        writer.close()
+
+
+def test_recovery_command_preserves_wal_resident_rows(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db = _sound_db(tmp_path / "source.sqlite3")
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO t(v) VALUES ('wal-resident')")
+        writer.commit()
+        assert Path(f"{db}-wal").stat().st_size > 0
+        with (
+            patch.object(checks_db_integrity, "_sqlite_path", return_value=db),
+            patch.object(checks_db_integrity, "_quick_check", return_value=["damaged"]),
+        ):
+            assert not _check_db_integrity()
+        output = capsys.readouterr().out
+        assert "Stop every service" in output
+        assert "keep its -wal" in output
+        command = output.split("Recover with: ", 1)[1].split(" — verify", 1)[0]
+        result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=False, timeout=30)
+        assert result.returncode == 0, result.stderr
+        with closing(sqlite3.connect(Path(f"{db}.recovered"))) as recovered:
+            assert recovered.execute("SELECT v FROM t WHERE v='wal-resident'").fetchone() == ("wal-resident",)
+            assert recovered.execute("PRAGMA quick_check").fetchone() == ("ok",)
     finally:
         writer.close()
 

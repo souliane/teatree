@@ -260,14 +260,32 @@ source == target (path identity).
 | `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
 
 `ControlDbJournal` selects WAL with `synchronous=NORMAL` and a 64 MiB journal
-size limit on the named control-DB volume. Databases on host-reachable paths use
-TRUNCATE, because WAL's shared-memory sidecar is unsafe on Docker Desktop bind
-mounts. `T3_CONTROL_DB_JOURNAL_MODE=truncate` or `wal` in the box's
-`deploy/teatree.env` overrides that choice; other values fail at connection
-setup. The override takes effect when all connections reopen. Stop the stack
-before changing modes: a pre-change child opening TRUNCATE while WAL users are
-still connected can fail with `database is locked`. Do not run `deploy/roll.sh`
-across this journal-mode change without stopping the stack first.
+size limit only when the container sees the control DB in its named directory
+on a proven local filesystem. An unreadable mount table, a host process, a
+symlinked path, or a shared or network filesystem selects TRUNCATE. All other
+database paths also select TRUNCATE. `T3_CONTROL_DB_JOURNAL_MODE=truncate` in
+the box's `deploy/teatree.env` forces rollback mode for the control DB;
+`wal` asserts that WAL is eligible and fails at connection setup if it is not.
+Values are case-insensitive and may have surrounding whitespace; other values
+fail at connection setup. The file's mode can change only when a connection
+opens, and a TRUNCATE opener fails with `database is locked` while another
+process holds a WAL connection open.
+
+On the first deploy, the new init may switch the file to WAL before the old
+admin and listener are replaced. Old processes can report `database is locked`
+on new connections during this bounded replacement window. The worker is
+drained during the roll; an exclusive SQLite mode change cannot corrupt the
+file. Confirm the journal mode with `t3 doctor` after the roll.
+
+To return to TRUNCATE or roll back to an image from before this change, set
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
+in the Compose project including the watchdog, and confirm `docker ps` lists
+none before starting any service. Stopping only the worker or recreating the
+services together leaves an old WAL connection open and can make the staged
+init fail. Keep the `-wal` beside `db.sqlite3`: the first process to open it
+alone replays its committed rows while converting the file to TRUNCATE. Delete
+old sidecars only when replacing `db.sqlite3` with a verified snapshot, as in
+the database restore procedure above.
 
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
 `$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the

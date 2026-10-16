@@ -1,6 +1,7 @@
 """Database operations: migrate, refresh, restore from CI, reset passwords, introspect."""
 
 import json
+import re
 import sys
 
 import typer
@@ -26,6 +27,21 @@ from teatree.utils.env import patched_environ
 #: is the enforced read-only transaction in :meth:`Command.query`; this filter
 #: only rejects the obvious cases early with a clearer message (#774).
 _READ_ONLY_LEADING = frozenset({"select", "pragma", "explain"})
+_READ_ONLY_PRAGMA_CALLS = frozenset(
+    {
+        "table_info",
+        "table_xinfo",
+        "table_list",
+        "index_list",
+        "index_info",
+        "index_xinfo",
+        "foreign_key_list",
+        "foreign_key_check",
+        "integrity_check",
+        "quick_check",
+    }
+)
+_PRAGMA_CALL = re.compile(r"^pragma\s+(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*\(", re.IGNORECASE)
 
 #: The post-DB step ``db migrate-app`` runs. Overlays name their app-database
 #: migrate step this, so the schema-catch-up verb reuses the step provisioning
@@ -61,7 +77,12 @@ def _is_read_only(sql: str) -> bool:
     # block. Read-only introspection PRAGMAs never assign a value. Caveat:
     # benign maintenance PRAGMAs without '=' (``PRAGMA optimize``,
     # ``wal_checkpoint``) still pass both layers — harmless for introspection.
-    return not (leading == "pragma" and "=" in stripped)
+    if leading != "pragma":
+        return True
+    if "=" in stripped:
+        return False
+    call = _PRAGMA_CALL.match(stripped)
+    return call is None or call.group(1).lower() in _READ_ONLY_PRAGMA_CALLS
 
 
 def _read_only_guard_sql(vendor: str) -> tuple[str | None, str | None]:

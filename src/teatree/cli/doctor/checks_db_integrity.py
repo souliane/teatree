@@ -25,6 +25,7 @@ All five run every time. Repairing pages a second writer will cross-link again i
 fix, so no probe short-circuits the others.
 """
 
+import shlex
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -99,14 +100,16 @@ def _check_db_integrity() -> bool:
     shown = "; ".join(problems[:_MAX_REPORTED_PROBLEMS])
     hidden = len(problems) - _MAX_REPORTED_PROBLEMS
     suffix = f" (+{hidden} more)" if hidden > 0 else ""
+    source = shlex.quote(str(path))
+    dump = shlex.quote(f"{path}.recovered.sql")
+    recovered = shlex.quote(f"{path}.recovered")
     typer.secho(
         f"FAIL  SQLite integrity: {path} FAILS PRAGMA quick_check — {shown}{suffix}. "
-        "Reads still serve most tables, so this stays invisible until a write to an "
-        "AUTOINCREMENT table throws DatabaseError. Recover with: "
-        f"sqlite3 {path} '.recover' | sqlite3 {path}.recovered — verify quick_check on the "
-        "result, compare row counts, then swap it in with the stale -wal/-shm REMOVED "
-        "(replaying them reintroduces the bad pages). "
-        "Concurrent writers across a VM boundary in WAL mode are the usual cause.",
+        "Stop every service; keep its -wal beside the source while recovering. Recover with: "
+        f"sqlite3 -readonly {source} '.dump' > {dump} && sqlite3 {recovered} < {dump} — verify "
+        "quick_check and row counts on the result. If dump reports corruption, use a SQLite build "
+        "with a working .recover command. Only when swapping the recovered file into place, "
+        "remove the old -wal/-shm that belong to the replaced file.",
         fg=typer.colors.RED,
     )
     return False

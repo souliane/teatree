@@ -30,6 +30,14 @@ def _exclusive_lock(lock_path: Path) -> Iterator[None]:
 _NO_SHARED_MEMORY_SIGNALS = ("unable to open database file", "readonly database")
 
 
+def uncheckpointed_wal(db: Path) -> Path | None:
+    wal = db.with_name(f"{db.name}-wal")
+    try:
+        return wal if wal.stat().st_size > 0 else None
+    except FileNotFoundError:
+        return None
+
+
 def _backup_into(source: sqlite3.Connection, dst: Path) -> None:
     dest = sqlite3.connect(dst)
     try:
@@ -76,17 +84,23 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
     # ``as_uri`` percent-encodes a path holding a URI-special character (space,
     # ``%``, ``?``, ``#``) instead of malforming the URI into a different open.
     base_uri = src.absolute().as_uri()
-    source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
+    source: sqlite3.Connection | None = None
     try:
+        source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
         source.execute("SELECT 1").fetchone()
         _backup_into(source, dst)
     except sqlite3.OperationalError as exc:
         if not any(signal in str(exc) for signal in _NO_SHARED_MEMORY_SIGNALS):
             raise
+        if wal := uncheckpointed_wal(src):
+            dst.unlink(missing_ok=True)
+            message = f"Cannot use immutable fallback while {wal} is nonempty"
+            raise sqlite3.OperationalError(message) from exc
     else:
         return
     finally:
-        source.close()
+        if source is not None:
+            source.close()
 
     source = sqlite3.connect(f"{base_uri}?immutable=1", uri=True)
     try:

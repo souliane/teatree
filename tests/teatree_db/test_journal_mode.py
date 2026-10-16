@@ -4,6 +4,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
@@ -107,3 +108,52 @@ def test_schema_qualified_and_mixed_case_journal_commands_are_replaced(tmp_path:
             "",
         ]
     ) == ["PRAGMA journal_mode=TRUNCATE", "PRAGMA foreign_keys=ON"]
+
+
+def test_unreadable_mount_table_falls_back_to_truncate(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=None):
+        journal = ControlDbJournal(db, {CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=True)
+        assert journal.mode == "truncate"
+        assert "mount" in journal.reason
+
+
+def test_wal_override_refuses_uncertain_control_db_without_changing_file(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    with closing(sqlite3.connect(db)) as connection:
+        connection.execute("CREATE TABLE note(body TEXT)")
+    before = db.read_bytes()[18]
+
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=None):
+        journal = ControlDbJournal(
+            db,
+            {CONTROL_DB_DIR_ENV: str(tmp_path), "T3_CONTROL_DB_JOURNAL_MODE": " WAL "},
+            containerized=True,
+        )
+        with pytest.raises(ImproperlyConfigured, match="mount"):
+            _ = journal.mode
+    assert db.read_bytes()[18] == before
+
+
+def test_override_is_scoped_to_control_db_directory(tmp_path: Path) -> None:
+    db = tmp_path / "isolated.sqlite3"
+    journal = ControlDbJournal(
+        db,
+        {CONTROL_DB_DIR_ENV: str(tmp_path / "control"), "T3_CONTROL_DB_JOURNAL_MODE": "wal"},
+        containerized=True,
+    )
+    assert journal.mode == "truncate"
+
+
+def test_host_process_cannot_select_wal_for_control_db(tmp_path: Path) -> None:
+    journal = ControlDbJournal(tmp_path / "db.sqlite3", {CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=False)
+    assert journal.mode == "truncate"
+    assert "container" in journal.reason
+
+
+def test_blank_override_is_unset_and_values_are_normalized(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    env = {CONTROL_DB_DIR_ENV: str(tmp_path)}
+    assert ControlDbJournal(db, {**env, "T3_CONTROL_DB_JOURNAL_MODE": "  TrUnCaTe  "}).mode == "truncate"
+    with patch("teatree.db.write_domain.read_mount_entries", return_value=None):
+        assert ControlDbJournal(db, {**env, "T3_CONTROL_DB_JOURNAL_MODE": " "}, containerized=True).mode == "truncate"

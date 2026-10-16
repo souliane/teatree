@@ -141,7 +141,7 @@ TEMPLATES = [
 # racing — restoring the invariant the ``select_for_update()`` calls assume.
 #
 # Journal mode is selected per file-backed connection in the boundary engine:
-# WAL on the control volume, TRUNCATE on host-reachable paths. Writer
+# WAL only on a proven local control volume, TRUNCATE on uncertain and host-reachable paths. Writer
 # serialization comes from ``transaction_mode`` and ``timeout`` below.
 #
 # ``timeout`` maps to SQLite's ``busy_timeout``: a blocked writer waits this

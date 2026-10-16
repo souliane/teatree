@@ -148,6 +148,14 @@ class TestDbQuery(TestCase):
         with pytest.raises(SystemExit):
             call_command("db", "query", "pragma writable_schema=1", stdout=StringIO())
 
+    def test_parenthesized_pragma_setter_is_refused(self) -> None:
+        for sql in ("PRAGMA journal_mode(wal)", "PRAGMA writable_schema(1)"):
+            with self.subTest(sql=sql), pytest.raises(SystemExit):
+                call_command("db", "query", sql, stdout=StringIO())
+
+    def test_bare_journal_mode_remains_readable(self) -> None:
+        assert json.loads(self._run_query("PRAGMA journal_mode"))
+
     def test_read_only_introspection_pragma_is_allowed(self) -> None:
         """A non-setter PRAGMA (no ``=``) stays usable for introspection.
 

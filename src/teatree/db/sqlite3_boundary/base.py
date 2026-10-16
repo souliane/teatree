@@ -101,7 +101,9 @@ class DatabaseWrapper(SQLiteDatabaseWrapper):
             return params
         if boundary.read_write_allowed:
             boundary.claim_for_container()
-            self.init_commands = ControlDbJournal(boundary.db_path).init_commands(self.init_commands)
+            self.init_commands = ControlDbJournal(boundary.db_path, containerized=boundary.containerized).init_commands(
+                self.init_commands
+            )
             return params
 
         self.boundary_read_only = True
