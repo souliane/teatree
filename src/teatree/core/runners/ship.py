@@ -266,8 +266,7 @@ class ShipExecutor(RunnerBase):
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
-        pinned_title = {"pr_title_override": self.title_override} if self.title_override else {}
-        extra = cast("TicketExtra", {**(ticket.extra or {}), **pinned_title})
+        extra = cast("TicketExtra", ticket.extra or {})
 
         try:
             worktree = resolve_ship_worktree(ticket, extra)
@@ -547,8 +546,8 @@ class ShipExecutor(RunnerBase):
                 return recorded
         return ""
 
-    @staticmethod
     def _build_pr_spec(
+        self,
         ticket: "Ticket",
         host: "CodeHostBackend",
         repo_path: str,
@@ -564,7 +563,7 @@ class ShipExecutor(RunnerBase):
         title = resolve_pr_title(
             ticket,
             extra,
-            PrTitleInputs(branch=branch, subject=subject, body=body or ""),
+            PrTitleInputs(branch=branch, subject=subject, body=body or "", title_override=self.title_override),
         )
         close_ticket = should_close_ticket(
             extra,

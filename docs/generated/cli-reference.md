@@ -10683,8 +10683,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  queue. The result carries an explicit ``warning`` so a no-worker
  context does not look like a completed ship (#708).
 
- ``--sync``: run ``execute_ship`` inline in this process so the push
- and PR happen before the command returns — no worker required. Use
+ ``--sync``: push and open the PR inline before advancing the FSM, so
+ both finish before the command returns — no worker required. Use
  this for interactive / ``uv run`` invocations where nothing is
  draining the queue.
 

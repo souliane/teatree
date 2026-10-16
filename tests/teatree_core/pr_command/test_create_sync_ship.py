@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.db import connection
+from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase, override_settings
 
 from teatree.core.management.commands import _pr_preview
@@ -92,6 +92,83 @@ class TestPrCreateSyncShip(TestCase):
         assert result["ok"] is False
         assert "push rejected" in str(result["detail"])
         assert result["state"] == Ticket.State.SELF_REVIEWED
+
+    def test_unexpected_preflight_error_is_structured(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch(
+                "teatree.core.models.ticket_scheduling.collect_dirty_worktree_paths",
+                side_effect=RuntimeError("git status failed"),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["synced"] is True
+        assert result["ok"] is False
+        assert "git status failed" in str(result["detail"])
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_sync_adopts_pr_url_recorded_during_gates(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def record_existing_pr(*_args: object, **_kwargs: object) -> None:
+            Ticket.objects.filter(pk=ticket.pk).update(
+                extra={"pr_url_by_branch": {"feature-branch": _PR_URL}, "pr_urls": [_PR_URL]}
+            )
+
+        with (
+            _ship_externals(host) as push,
+            patch.object(pr_command, "_run_visual_qa_gate", side_effect=record_existing_pr),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_commit_error_after_pr_open_reports_the_url(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with (
+            _ship_externals(host),
+            _gates_pass(),
+            patch.object(Ticket, "request_review", side_effect=OperationalError("database is locked")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is False
+        assert _PR_URL in str(result["detail"])
+        assert "database is locked" in str(result["detail"])
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
+
+    def test_concurrent_completed_ship_reports_success(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def open_after_concurrent_ship(_spec: object) -> dict[str, str]:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_REQUESTED)
+            return {"web_url": _PR_URL}
+
+        host.create_pr.side_effect = open_after_concurrent_ship
+        with _ship_externals(host), _gates_pass():
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
 
     def test_sync_title_ships_without_staying_pinned_on_the_ticket(self) -> None:
         ticket = _shippable_ticket()
@@ -331,10 +408,8 @@ class TestPrCreateSyncShipAtomic(TestCase):
     structured CLI result, not masked as a bare ``rc=1`` — reverting
     the surfacing fix turns that assertion RED.
 
-    ``execute_ship`` is deliberately NOT mocked — the real task path is
-    what masks the error and commits the partial state, so a faithful
-    repro must exercise it. Only the unstoppable external (the ``git
-    push`` subprocess inside the ship runner) is stubbed to raise.
+    The sync path runs the real ``ShipExecutor``. Only the external
+    ``git push`` subprocess is stubbed to raise.
     """
 
     @override_settings(**_SHIP_BACKEND)
@@ -389,13 +464,12 @@ class TestPrCreateSyncShipAtomic(TestCase):
         ``ShipExecutor.run()`` also has non-raising precondition exits
         (``"no code host configured"``, ``"no worktree on ticket"``,
         ``"branch ... already merged into base"``) that return
-        ``RunnerResult(ok=False)`` instead of raising. ``execute_ship``
-        then returns a normal ``{"ok": False}`` dict, its
-        ``transaction.atomic()`` commits, and pre-fix the outer
-        ``_ship_sync`` transaction committed too — leaving the FSM in a
+        ``RunnerResult(ok=False)`` instead of raising. The old sync path
+        returned a normal ``{"ok": False}`` dict, so the outer
+        ``_ship_sync`` transaction committed — leaving the FSM in a
         partial ``PR_OPENED`` with no push and no PR. This regression drives
-        the structured-failure path through the real (un-mocked)
-        ``execute_ship`` and asserts the FSM is NOT left at ``PR_OPENED``.
+        the structured-failure path through the real ``ShipExecutor`` and
+        asserts the FSM is NOT left at ``PR_OPENED``.
         """
         ticket = _shippable_ticket()
 

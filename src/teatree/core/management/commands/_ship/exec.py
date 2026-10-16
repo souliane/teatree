@@ -3,7 +3,7 @@
 ``pr create`` validates the deterministic gates, then either *enqueues* ``execute_ship``
 (default) or ships *inline* (``--sync``). The inline ship pushes and opens the PR with no
 transaction open, then commits ``ship()`` + ``request_review()`` in one short block: the
-SQLite write lock is never held across network I/O, and the FSM moves only once the PR exists.
+SQLite write lock does not cover push or PR-open I/O, and the FSM moves only once the PR exists.
 """
 
 from typing import TypedDict
@@ -120,23 +120,28 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
     A failed push or PR-open leaves the FSM untouched (#838, #860); a PR whose advance is then
     refused stays recorded, so a re-run adopts it instead of opening a second one.
     """
+    opened_pr_url = ""
     try:
-        ticket.refuse_unless_shippable()
-    except (TransitionNotAllowed, InvalidTransitionError) as exc:
-        return _gate_failure(ticket, exc)
-    try:
+        try:
+            ticket.refuse_unless_shippable()
+        except (TransitionNotAllowed, InvalidTransitionError) as exc:
+            return _gate_failure(ticket, exc)
+        ticket.refresh_from_db()
         result = ShipExecutor(ticket, title_override=title).run()
         if not result.ok:
             return _sync_result(ticket, ok=False, detail=result.detail)
+        opened_pr_url = result.detail
         try:
             with transaction.atomic():
                 fresh = Ticket.objects.select_for_update().get(pk=ticket.pk)
-                fresh.ship()
-                fresh.request_review()
-                fresh.save()
+                if fresh.state != Ticket.State.REVIEW_REQUESTED:
+                    fresh.ship()
+                    fresh.request_review()
+                    fresh.save()
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
             return _sync_result(ticket, ok=False, detail=detail)
     except Exception as exc:  # noqa: BLE001 — surface the real cause, never an opaque rc=1
-        return _sync_result(ticket, ok=False, detail=str(exc))
+        detail = f"PR {opened_pr_url} opened but the FSM advance failed: {exc}" if opened_pr_url else str(exc)
+        return _sync_result(ticket, ok=False, detail=detail)
     return _sync_result(ticket, ok=True, detail=result.detail)

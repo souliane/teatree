@@ -1,9 +1,8 @@
-"""Pull request helpers: gate-validate then enqueue ship transition.
+"""Pull request helpers: validate gates and start an async or inline ship.
 
-The actual push + PR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
-inside the ``execute_ship`` task. This command is a deterministic CLI wrapper:
-it runs the deterministic gates, calls ``ticket.ship()`` to enter PR_OPENED, and
-returns the PR URL once the worker completes.
+Push and PR creation live in ``ShipExecutor`` (BLUEPRINT §4). The default path
+enqueues ``execute_ship`` after ``ticket.ship()``; ``--sync`` runs the executor
+before the FSM advances and returns the PR URL inline.
 """
 
 import os
@@ -341,8 +340,8 @@ class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
         queue. The result carries an explicit ``warning`` so a no-worker
         context does not look like a completed ship (#708).
 
-        ``--sync``: run ``execute_ship`` inline in this process so the push
-        and PR happen before the command returns — no worker required. Use
+        ``--sync``: push and open the PR inline before advancing the FSM, so
+        both finish before the command returns — no worker required. Use
         this for interactive / ``uv run`` invocations where nothing is
         draining the queue.
 
