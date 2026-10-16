@@ -324,12 +324,12 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> RunnerResult:
-        """Fence the push and PR-open separately, scanning text before each write.
+        """Fence both writes and scan the completed PR before pushing.
 
         Split out of ``run`` so each half stays within the return-count gate. The
         fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
-        before EACH outward write. Commit text is checked before the push; the
-        completed PR spec is checked before creation.
+        before EACH outward write. Commit text and the completed PR spec are
+        checked before the push.
         """
         # #940 defense-in-depth: re-check branch currency before pushing. The
         # `pr create` gate already auto-merged the target, but ``execute_ship``
@@ -348,11 +348,12 @@ class ShipExecutor(RunnerBase):
         if fence is not None:
             return fence
 
+        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
         subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
         remote_url = git.remote_url(repo=repo_path)
         if refusal := refusal_for_pr_generic_findings(
-            title=f"{subject}\n{extra.get('pr_title_override') or ''}",
-            description=body or "",
+            title=f"{subject}\n{extra.get('pr_title_override') or ''}\n{spec.title}",
+            description=f"{body or ''}\n{spec.description}",
             target_repo=remote_url,
             forge=forge_from_url(remote_url),
         ):
@@ -366,7 +367,6 @@ class ShipExecutor(RunnerBase):
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
-        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, host, spec)
 
     @staticmethod
@@ -442,8 +442,8 @@ class ShipExecutor(RunnerBase):
     ) -> RunnerResult:
         """Open the PR, verify the URL is present, and record it on the ticket.
 
-        The completed PR text is checked before ``host.create_pr`` so a refusal
-        cannot be reported after a PR exists.
+        The completed PR text was checked before the branch push, so no privacy
+        refusal can strand a pushed branch without a PR.
 
         #1222 / #1226 verify-by-re-read: a backend that returns a payload
         without a URL (or with the wrong field name) MUST surface as
@@ -453,14 +453,6 @@ class ShipExecutor(RunnerBase):
         for raw GitHub API payloads piped through other producers.
         """
         expected_slug = git.remote_slug(repo=spec.repo)
-        remote_url = git.remote_url(repo=spec.repo)
-        if refusal := refusal_for_pr_generic_findings(
-            title=spec.title,
-            description=spec.description,
-            target_repo=remote_url,
-            forge=forge_from_url(remote_url),
-        ):
-            return RunnerResult(ok=False, detail=refusal)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):

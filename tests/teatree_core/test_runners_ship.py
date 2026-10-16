@@ -112,6 +112,84 @@ class TestShipExecutor(TestCase):
         host.create_pr.assert_not_called()
         visibility.assert_called_with(remote, "")
 
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_title_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch.object(
+                _MOCK_OVERLAY["test"].metadata,
+                "build_pr_title",
+                return_value="Contact person@firm.tld",  # privacy-scan:allow synthetic fixture
+            ),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: clean", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_section_default_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch.object(_MOCK_OVERLAY["test"].metadata, "get_required_description_sections", return_value=["Contact"]),
+            patch.object(
+                _MOCK_OVERLAY["test"].metadata,
+                "get_description_section_defaults",
+                return_value={"Contact": "Reach person@firm.tld"},  # privacy-scan:allow synthetic fixture
+            ),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: clean", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_issue_url_fallback_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        ticket.issue_url = "https://jira.corp.tld/issues/77"  # privacy-scan:allow synthetic fixture
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:internal_hostname" in result.detail
+        assert "jira.corp.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
     def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
         # North-star PR-2: the autonomous loop's task-driven ship reaches
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
