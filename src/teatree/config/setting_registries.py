@@ -170,6 +170,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # overlay (empty list = no override, credential keeps its built-in path).
     "anthropic_oauth_pass_paths": _parse_str_list,
     "anthropic_api_key_pass_paths": _parse_str_list,
+    "eval_ci_account_allowlist": _parse_str_list,
     # DB-home cutover: ``orchestrator_bash_gate_enabled``'s reader
     # (``teatree_gate._gate_key_is_enabled``) is already DB-first via ``cold_reader``
     # (toml fallback for the cold self-rescue). Its former carve-out siblings

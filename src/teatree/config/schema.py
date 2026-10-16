@@ -178,6 +178,7 @@ class TeatreeSettingsSchema(BaseSettings):
     ] = None
     anthropic_api_key_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     anthropic_oauth_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
+    eval_ci_account_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     approved_recipe_sha: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     architectural_review_after_merge_count: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     architectural_review_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.backends.github.ci_eval_client import DEFAULT_CI_EVAL_REPO
+from teatree.config import get_effective_settings
 
 if TYPE_CHECKING:
     from teatree.token_rows import TokenAccountRow
@@ -26,6 +27,17 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
             typer.echo(f"WARN  Could not read cached CI OAuth pool health: {type(exc).__name__}: {exc}")
             return True
     oauth = [row for row in rows if row.kind is TokenKind.OAUTH and row.source is TokenSource.STORE]
+    allowlist = None
+    if check_membership:
+        allowlist = get_effective_settings().eval_ci_account_allowlist
+        if not allowlist:
+            typer.echo("FAIL  CI eval account allowlist is empty; configure it before trusting CI evals.")
+            return False
+        missing = sorted(set(allowlist) - {row.account for row in oauth})
+        if missing:
+            typer.echo(f"FAIL  CI eval allowlisted accounts have no stored OAuth row: {missing}.")
+            return False
+        oauth = [row for row in oauth if row.account in allowlist]
     if not oauth:
         return True
     membership_ok = True
@@ -33,7 +45,7 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
         from teatree.ci_oauth_switch import CiAccountSwitcher  # noqa: PLC0415 — doctor-time dependency
 
         membership_ok = check_ci_oauth_pool_membership(
-            oauth, CiAccountSwitcher(repo=DEFAULT_CI_EVAL_REPO).active_pool_accounts()
+            oauth, CiAccountSwitcher(repo=DEFAULT_CI_EVAL_REPO).active_pool_accounts(), allowlist=allowlist
         )
     unknown = [row.account for row in oauth if row.status in {TokenStatus.UNCACHED, TokenStatus.UNREACHABLE}]
     if unknown:
@@ -54,12 +66,19 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
     return membership_ok
 
 
-def check_ci_oauth_pool_membership(rows: Sequence["TokenAccountRow"], pool_accounts: tuple[str, ...] | None) -> bool:
+def check_ci_oauth_pool_membership(
+    rows: Sequence["TokenAccountRow"], pool_accounts: tuple[str, ...] | None, *, allowlist: Sequence[str] | None = None
+) -> bool:
     """Fail if the readable CI receipt differs from configured OAuth entries."""
     from teatree.credential_config import TokenKind  # noqa: PLC0415 — defer CLI boot dependency
     from teatree.token_rows import TokenSource  # noqa: PLC0415 — Django app registry
 
     configured = {row.account for row in rows if row.kind is TokenKind.OAUTH and row.source is TokenSource.STORE}
+    if allowlist is not None:
+        if not allowlist:
+            typer.echo("FAIL  CI eval account allowlist is empty.")
+            return False
+        configured = set(allowlist)
     if not configured:
         return True
     if pool_accounts is None:

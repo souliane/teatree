@@ -50,3 +50,14 @@ def test_unknown_pool_membership_fails_loud(capsys) -> None:
 def test_matching_pool_membership_passes(capsys) -> None:
     assert check_ci_oauth_pool_membership([_row("primary", TokenStatus.HEALTHY)], ("primary",)) is True
     assert "FAIL" not in capsys.readouterr().out
+
+
+def test_pool_membership_checks_allowlist_instead_of_all_stored_accounts(capsys) -> None:
+    rows = [_row("primary", TokenStatus.HEALTHY), _row("spare", TokenStatus.HEALTHY)]
+    assert check_ci_oauth_pool_membership(rows, ("primary",), allowlist=("primary",)) is True
+    assert "FAIL" not in capsys.readouterr().out
+
+
+def test_pool_membership_rejects_empty_allowlist(capsys) -> None:
+    assert check_ci_oauth_pool_membership([_row("primary", TokenStatus.HEALTHY)], (), allowlist=()) is False
+    assert "FAIL" in capsys.readouterr().out

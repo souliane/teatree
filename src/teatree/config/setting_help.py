@@ -50,6 +50,7 @@ SETTING_HELP: dict[str, str] = {
     "agent_tier_models": "which model each cost tier resolves to",
     "anthropic_api_key_pass_paths": "password-store paths the Anthropic API key is read from",
     "anthropic_oauth_pass_paths": "password-store paths the Anthropic OAuth credential is read from",
+    "eval_ci_account_allowlist": "password-store OAuth accounts allowed in the CI eval pool",
     "approved_recipe_sha": "commit of the provisioning recipe the operator reviewed and approved",
     "architectural_review_after_merge_count": "merges that must land before another architectural review is due",
     "architectural_review_cadence_hours": "hours between architectural review runs",

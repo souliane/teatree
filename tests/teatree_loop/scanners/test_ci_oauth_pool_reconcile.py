@@ -20,12 +20,13 @@ def test_scanner_reconciles_cached_configured_rows() -> None:
         repo="souliane/teatree",
         deployment_repo="souliane/teatree",
         rows=lambda: rows,
+        allowlist=lambda: ("primary", "spare"),
         switcher=lambda _: switcher,
     )
 
     signals = scanner.scan()
 
-    switcher.reconcile_pool.assert_called_once_with(rows)
+    switcher.reconcile_pool.assert_called_once_with(rows, allowlist=("primary", "spare"))
     assert signals[0].kind == "ci_oauth_pool.reconciled"
     assert "2" in signals[0].summary
 

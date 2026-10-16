@@ -21,6 +21,7 @@ from teatree.ci_oauth_switch import (
     WEIGHT_5H,
     WEIGHT_7D,
     CiAccountSwitcher,
+    CiAccountSwitchError,
     NoEligibleAccountError,
     select_account,
 )
@@ -109,6 +110,25 @@ def _switcher(gh: FakeGh) -> CiAccountSwitcher:
 
 
 class TestPoolReconciliation:
+    def test_unset_allowlist_refuses_without_touching_github(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(RuntimeError, match="allowlist"):
+            _switcher(gh).reconcile_pool(_live_rows())
+        assert gh.calls == []
+
+    def test_only_allowlisted_accounts_are_published(self) -> None:
+        gh = FakeGh()
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda account: account)
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+        assert accounts == (SOULIANE,)
+        assert gh.stdin[0] == SOULIANE
+
+    def test_allowlisted_account_missing_from_store_refuses_before_writing(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(CiAccountSwitchError, match="not configured"):
+            _switcher(gh).reconcile_pool(_live_rows(), allowlist=("missing",))
+        assert gh.calls == []
+
     def test_readable_pool_membership_is_read_back(self) -> None:
         gh = FakeGh(pool_accounts=json.dumps([SOULIANE, SPARE_ACCOUNT]))
         assert _switcher(gh).active_pool_accounts() == (SOULIANE, SPARE_ACCOUNT)
@@ -121,7 +141,7 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two", SPENT_ACCOUNT: "sk-token-three"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        accounts = switcher.reconcile_pool(_live_rows())
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=tuple(tokens))
 
         assert accounts == tuple(sorted(tokens))
         pool_writes = [i for i, args in enumerate(gh.calls) if args[:3] == ["secret", "set", CI_OAUTH_POOL_SECRET]]
@@ -134,8 +154,8 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        switcher.reconcile_pool(_live_rows()[:2])
-        assert switcher.reconcile_pool(_live_rows()[:1]) == (SOULIANE,)
+        switcher.reconcile_pool(_live_rows()[:2], allowlist=tuple(tokens))
+        assert switcher.reconcile_pool(_live_rows()[:1], allowlist=(SOULIANE,)) == (SOULIANE,)
 
         bodies = [body for args, body in zip(gh.calls, gh.stdin, strict=True) if CI_OAUTH_POOL_SECRET in args]
         assert bodies == ["sk-token-one\nsk-token-two", "sk-token-one"]
@@ -145,7 +165,7 @@ class TestPoolReconciliation:
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _: "")
 
         with pytest.raises(RuntimeError, match="no token stored"):
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert not gh.wrote_secret
 
     def test_failed_pool_write_reports_gh_error_without_leaking_token(self) -> None:
@@ -153,7 +173,7 @@ class TestPoolReconciliation:
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert "permission denied" in str(caught.value)
         assert SECRET_TOKEN not in str(caught.value)
 

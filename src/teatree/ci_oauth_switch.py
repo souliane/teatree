@@ -246,17 +246,23 @@ class CiAccountSwitcher:
             return None
         return tuple(accounts)
 
-    def reconcile_pool(self, rows: Sequence[TokenAccountRow]) -> tuple[str, ...]:
-        """Replace CI's eval pool with every configured pass-backed OAuth account.
+    def reconcile_pool(self, rows: Sequence[TokenAccountRow], *, allowlist: Sequence[str] = ()) -> tuple[str, ...]:
+        """Replace CI's eval pool with allowlisted pass-backed OAuth accounts.
 
         The GitHub secret is write-only, so refresh it every reconciliation cycle.
         All pass entries are resolved before the first write; one missing token cannot
         silently shrink the pool. A readable identity variable is written only after
         the secret succeeds, letting doctor detect configuration drift.
         """
-        accounts = tuple(sorted({row.account for row in rows if _is_candidate(row)}))
-        if not accounts:
-            raise CiAccountSwitchError(_NO_CANDIDATES)
+        if not allowlist:
+            message = "eval CI account allowlist is empty; pool was left untouched"
+            raise CiAccountSwitchError(message)
+        configured = {row.account for row in rows if _is_candidate(row)}
+        accounts = tuple(sorted(set(allowlist)))
+        missing = set(accounts) - configured
+        if missing:
+            message = f"allowlisted accounts are not configured: {sorted(missing)}"
+            raise CiAccountSwitchError(message)
         tokens: list[str] = []
         for account in accounts:
             token = self._secret_reader(account)
