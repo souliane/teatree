@@ -9,7 +9,7 @@ message that is pulled and not acknowledged is leased and only comes back throug
 
 import base64
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 from unittest import mock
@@ -120,7 +120,7 @@ class FakePubsub:
         return httpx.Response(200, json={})
 
     @contextmanager
-    def installed(self) -> Iterator["FakePubsub"]:
+    def installed(self) -> Generator["FakePubsub"]:
         """Point every ``httpx.Client`` in the process at this double, with a millisecond retry backoff."""
         original = httpx.Client.__init__
 

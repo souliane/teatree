@@ -2,7 +2,7 @@ import fcntl
 import json
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -370,7 +370,7 @@ def _preserve_claude_copy(home: Path, name: str) -> None:
 
 
 @contextmanager
-def _preserve_codex_installation(home: Path, name: str, *, enabled: bool) -> Iterator[None]:
+def _preserve_codex_installation(home: Path, name: str, *, enabled: bool) -> Generator[None]:
     """Restore Codex's shared front door if a Claude-only CLI removal deletes it."""
     universal = home / ".agents" / "skills" / name
     if not enabled or not _path_exists(universal):
@@ -477,7 +477,7 @@ def refresh_inventory_receipt(
 
 
 @contextmanager
-def _inventory_refresh_lock(path: Path) -> Iterator[None]:
+def _inventory_refresh_lock(path: Path) -> Generator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f".{path.name}.lock")
     with lock_path.open("a", encoding="utf-8") as lock_handle:

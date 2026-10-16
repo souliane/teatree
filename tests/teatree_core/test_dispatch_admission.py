@@ -9,7 +9,7 @@ the core-side seam the dispatch gate consults.
 """
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
@@ -59,7 +59,7 @@ def _admits(*, ceiling: int) -> AdmissionDecision:
 
 
 @contextmanager
-def _signals(*, load1: float = 1.0, quota: QuotaSignal | None = None) -> Iterator[None]:
+def _signals(*, load1: float = 1.0, quota: QuotaSignal | None = None) -> Generator[None]:
     machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0)
     with ExitStack() as stack:
         stack.enter_context(patch.object(gate_mod, "read_quota_signal", return_value=quota or _healthy_quota()))

@@ -40,7 +40,7 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -168,7 +168,7 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
 
 
 @contextmanager
-def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Iterator[None]:
+def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Generator[None]:
     with checkout_exit_scope(
         lambda task: _prepare_task_checkout_exit(task, ticket, holder=holder, holder_session=holder_session)
     ) as scope:
@@ -179,7 +179,7 @@ def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Ite
 
 
 @contextmanager
-def recording_task_checkout(task: Task) -> Iterator[bool]:
+def recording_task_checkout(task: Task) -> Generator[bool]:
     """Settle a ``/loop`` record's checkout like a worker exit; yields whether the task held it."""
     holder, session = task_holder_id(task), task.claimed_by_session
     if held_dispatch_checkout(task.ticket, holder=holder, holder_session=session) is None:
@@ -196,7 +196,7 @@ def occupy_ticket_checkout(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
-) -> Iterator[str]:
+) -> Generator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
     Yields the on-disk path an agent should run in, and settles the claim on exit:

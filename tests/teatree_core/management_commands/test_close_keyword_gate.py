@@ -9,7 +9,7 @@ only the unstoppable git subprocess + visual-QA boundary are patched.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import cast
 from unittest.mock import patch
 
@@ -63,7 +63,7 @@ def _git_boundary(
     subject: str = "feat: x",
     body: str = "",
     commit_bodies: list[str] | None = None,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Patch the git boundary the gate + ``ship_preview`` reach.
 
     ``last_commit_message`` is the raw MR-description source the gate scans

@@ -160,7 +160,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]] | Task
     skill_bundle = _resolve_skill_bundle(task)
     if isinstance(skill_bundle, TaskAttempt):
         return skill_bundle
-    session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
+    session_id = task.session.agent_id if task.session_id else None
     model = resolve_spawn_model(
         normalize_phase(task.phase),
         skills=skill_bundle,

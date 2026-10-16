@@ -143,14 +143,23 @@ class TestWorktree(TestCase):
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/5277")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="ticket-5277")
         stale = Worktree.objects.get(pk=worktree.pk)
-        worktree.merge_extra(set_keys={"attested_state": "anchor", "auto_attestation": {"proof": "live"}})
+        live_attestation = {
+            "at": "2026-10-16T00:00:00Z",
+            "previous": "anchor",
+            "digest": "live",
+            "tenures": [],
+            "process_table": {"source": "proc", "gaps": []},
+            "branches": {},
+            "holder": {"id": "task:5277", "session": "run"},
+        }
+        worktree.merge_extra(set_keys={"attested_state": "anchor", "auto_attestation": live_attestation})
         stale.extra = {"worktree_path": "/tmp/updated"}
         stale.save(update_fields=["extra"])
 
         saved = Worktree.objects.get(pk=worktree.pk)
         assert saved.extra["worktree_path"] == "/tmp/updated"
         assert saved.extra["attested_state"] == "anchor"
-        assert saved.extra["auto_attestation"] == {"proof": "live"}
+        assert saved.extra["auto_attestation"] == live_attestation
 
     def test_stale_save_cannot_restore_a_released_claim_or_a_dropped_proof(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/5278")

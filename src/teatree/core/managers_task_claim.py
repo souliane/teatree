@@ -9,7 +9,7 @@ re-exports :class:`ClaimOrder` and :func:`_claimable_now_q`, so existing
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -163,7 +163,7 @@ class ClaimWindow:
 
 
 @contextmanager
-def claim_window() -> Iterator[ClaimWindow]:
+def claim_window() -> Generator[ClaimWindow]:
     """The admission re-read and the claim in one transaction, fenced against a quiesce that commits in between."""
     with transaction.atomic():
         generation = quiesce_fence_generation(lock=True)
@@ -172,7 +172,7 @@ def claim_window() -> Iterator[ClaimWindow]:
 
 
 @contextmanager
-def redispatch_window() -> Iterator[str]:
+def redispatch_window() -> Generator[str]:
     """A re-dispatch's write transaction, yielding the claim refusal read inside it so a stop committed first wins."""
     with transaction.atomic():
         yield claim_admission_block_reason()

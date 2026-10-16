@@ -218,7 +218,7 @@ def start_services_or_enqueue(worktree: Worktree, *, services: list[str], write_
     with transaction.atomic():
         if limit > 0:
             _, holders = _stack_holders(worktree)
-            if len({row.ticket_id for row in holders}) >= limit:  # ty: ignore[unresolved-attribute]  # Django FK
+            if len({row.ticket_id for row in holders}) >= limit:
                 from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
 
                 LocalStackQueueItem.objects.enqueue(worktree)

@@ -10,7 +10,7 @@ mock; the shared module-level ``_patch_*`` decorators and the
 import contextlib
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -64,7 +64,7 @@ _TIP = "a" * 40
 
 
 @contextlib.contextmanager
-def _forge_merged(*, recorded_tip: str, local_tip: str) -> Iterator[None]:
+def _forge_merged(*, recorded_tip: str, local_tip: str) -> Generator[None]:
     """The forge reports this branch name's PR merged at *recorded_tip*; the local branch sits at *local_tip*."""
     local_git = MagicMock()
     local_git.run.return_value = local_tip

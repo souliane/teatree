@@ -9,7 +9,7 @@ invariant turns on.
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest import mock
 
@@ -26,7 +26,7 @@ runner = CliRunner()
 
 
 @contextmanager
-def _fixture_flag() -> Iterator[None]:
+def _fixture_flag() -> Generator[None]:
     flag = FeatureFlag(field="contribute", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture")
     with mock.patch.dict(FEATURE_FLAGS, {"contribute": flag}):
         yield

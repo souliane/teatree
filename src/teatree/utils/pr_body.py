@@ -11,7 +11,7 @@ on exit. Callers pass body *content*, never a path they name themselves.
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -22,7 +22,7 @@ _SUFFIX = ".md"
 
 
 @contextmanager
-def pr_body_tempfile(content: str) -> Iterator[Path]:
+def pr_body_tempfile(content: str) -> Generator[Path]:
     """Yield a unique temp file holding *content*; remove it on exit.
 
     ``mkstemp`` guarantees a distinct path per call, so two overlapping shippers

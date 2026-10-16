@@ -111,7 +111,7 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
-    existing = task.child_tasks.filter(  # ty: ignore[unresolved-attribute]
+    existing = task.child_tasks.filter(
         status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
     ).first()
     if existing is not None:

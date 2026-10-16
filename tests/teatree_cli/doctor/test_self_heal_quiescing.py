@@ -11,7 +11,7 @@ FAIL (the doctor exit code the watchdog keys on) wherever that proof is unavaila
 import datetime as dt
 import io
 import pathlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, redirect_stdout
 from unittest import mock
 
@@ -41,7 +41,7 @@ def _age_the_gate(seconds: float) -> None:
 
 
 @contextmanager
-def _liveness(verdict: DeployLiveness) -> Iterator[None]:
+def _liveness(verdict: DeployLiveness) -> Generator[None]:
     """Pin what the venue can see about the convergence, so no test reads the real box."""
     with mock.patch.object(self_heal_quiescing, "probe_deploy_liveness", return_value=verdict):
         yield
@@ -288,7 +288,7 @@ _DRAIN_STAGE_SECONDS = 600
 
 
 @contextmanager
-def _drain_stage_of(seconds: int) -> Iterator[None]:
+def _drain_stage_of(seconds: int) -> Generator[None]:
     with mock.patch.dict("os.environ", {"TEATREE_DRAIN_TIMEOUT": str(seconds)}):
         yield
 

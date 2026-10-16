@@ -1175,7 +1175,7 @@ class TestDriveWithHeartbeat(TestCase):
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         # Threaded ORM access under TestCase's wrapping transaction is a
         # harness artifact, not production behaviour — stub the lease renewal.
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def _options(self) -> Any:
         return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
@@ -1200,7 +1200,7 @@ class TestDriveWithHeartbeat(TestCase):
             nonlocal renew_count
             renew_count += 1
 
-        self.task.renew_lease = counting_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=counting_renew))
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
@@ -1222,7 +1222,7 @@ class TestDriveWithHeartbeat(TestCase):
         def capturing_renew(*, lease_seconds: int = 300, **_kwargs: object) -> None:
             seen_lease.append(lease_seconds)
 
-        self.task.renew_lease = capturing_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=capturing_renew))
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
@@ -1257,7 +1257,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = "DB connection lost"
             raise RuntimeError(msg)
 
-        self.task.renew_lease = failing_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=failing_renew))
         messages = [_assistant_text("ok"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with (
@@ -1282,7 +1282,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = f"lease lost for task {self.task.pk}"
             raise LeaseLostError(msg)
 
-        self.task.renew_lease = lease_lost_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=lease_lost_renew))
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
@@ -1305,7 +1305,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = f"lease lost for task {self.task.pk}"
             raise LeaseLostError(msg)
 
-        self.task.renew_lease = lease_lost_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=lease_lost_renew))
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
@@ -1332,7 +1332,7 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
         self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def _options(self) -> Any:
         return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
@@ -1424,7 +1424,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session)
         TaskAttempt.objects.create(task=task, num_turns=500)
-        task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
 
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=200, max_cost_usd=0.0)
         # A long never-terminating stream: the watchdog must interrupt it on the

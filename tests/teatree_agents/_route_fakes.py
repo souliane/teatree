@@ -1,7 +1,7 @@
 """Inert registered harnesses and a route-config patch for tests of ordered skill routes."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
@@ -36,7 +36,7 @@ class StubHarness:
         self.session = session
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield self.session(success_stream({"summary": "done"}))
 

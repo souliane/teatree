@@ -11,7 +11,7 @@ The promoted tag the watchdog restarts from moves only once N+1 is verified.
 
 import logging
 import signal
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -43,7 +43,7 @@ class RollInterruptedError(BaseException):
 
 
 @contextmanager
-def termination_signals_interrupt() -> Iterator[None]:
+def termination_signals_interrupt() -> Generator[None]:
     """Turn SIGTERM/SIGHUP into :class:`RollInterruptedError` so a killed roll still restores what serves."""
 
     def _interrupt(signum: int, _frame: FrameType | None) -> None:

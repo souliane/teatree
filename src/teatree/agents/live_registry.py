@@ -4,7 +4,7 @@ import asyncio
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -35,7 +35,7 @@ class LiveSessionRegistry:
         self._closed: OrderedDict[int, LiveSessionController] = OrderedDict()
 
     @asynccontextmanager
-    async def attach(self, task: LiveTask, capture: StreamFacts) -> AsyncIterator[LiveSessionController]:
+    async def attach(self, task: LiveTask, capture: StreamFacts) -> AsyncGenerator[LiveSessionController]:
         """Publish *task* for the life of the block; its controller closes and settles on exit."""
         entry = _LiveEntry(LiveSessionController(task, capture), asyncio.get_running_loop())
         with self._lock:

@@ -17,7 +17,7 @@ the same error, and stays gated even when the ambient overlay carves that action
 
 import builtins
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
@@ -78,7 +78,7 @@ class TestGateResolutionFollowsThePosture(TestCase):
 
 
 @contextmanager
-def _owned_by(repos: dict[str, list[str]], scopes: dict[str, dict[str, list[str]]] | None = None) -> Iterator[None]:
+def _owned_by(repos: dict[str, list[str]], scopes: dict[str, dict[str, list[str]]] | None = None) -> Generator[None]:
     """Registry where *repos* is the whole of enumerated ownership and *scopes* the declared groups."""
     declared = scopes or {}
     with (
