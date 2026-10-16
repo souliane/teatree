@@ -56,6 +56,7 @@ from teatree.core.models.checkout_exit import CheckoutExit, CheckoutExitScope, c
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import (
     OccupancyHolder,
+    TenureOptions,
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
     _occupied_error,
@@ -219,6 +220,7 @@ def occupy_ticket_checkout(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
+    namespace: str = "",
 ) -> Generator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
@@ -233,7 +235,13 @@ def occupy_ticket_checkout(
     worktree = _worktree_at(ticket, path) if path else None
     if worktree is not None:
         _release_if_finished_task(worktree)
-        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
+        acquire(
+            worktree,
+            holder=holder,
+            holder_session=holder_session,
+            lease_seconds=lease_seconds,
+            tenure=TenureOptions(namespace=namespace),
+        )
     with _held_checkout(ticket, holder=holder, holder_session=holder_session):
         yield path
 
@@ -260,7 +268,13 @@ def renew_ticket_checkout(
     if worktree is None:
         return
     try:
-        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds, renewal=True)
+        acquire(
+            worktree,
+            holder=holder,
+            holder_session=holder_session,
+            lease_seconds=lease_seconds,
+            tenure=TenureOptions(renewal=True),
+        )
     except WorktreeOccupiedError as exc:
         raise WorktreeOccupancyLostError(str(exc)) from exc
 

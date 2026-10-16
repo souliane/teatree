@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from teatree.core.cleanup.process_table import venue_proc_root
+from teatree.core.cleanup.process_table import current_pid_namespace, venue_proc_root
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 OWN_PROCESS_BEAT_SECONDS = 60
@@ -133,16 +133,6 @@ def wait_for_owned_checkout_processes(
             return ()
         time.sleep(beat_seconds)
     return owned_checkout_processes(checkout)
-
-
-def current_pid_namespace() -> str:
-    root = venue_proc_root()
-    if root is None:
-        return ""
-    try:
-        return str((root / "self" / "ns" / "pid").readlink())
-    except OSError:
-        return ""
 
 
 def _syscall(number: int, *args: int | None) -> int:

@@ -84,6 +84,17 @@ class CheckoutFenceTests(TestCase):
         assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
         assert self.worktree.get_extra()["auto_attestation"]["tenures"][0]["holder"] == task_holder_id(previous)
 
+    def test_a_fence_minting_the_first_tenure_records_the_writers_namespace(self) -> None:
+        acquire(self.worktree, holder=task_holder_id(self.task))
+        with patch(
+            "teatree.core.worktree.checkout_fence.read_process_table",
+            return_value=ProcessTable(frozenset(), "/proc"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout), namespace="pid:[42]")
+        self.worktree.refresh_from_db()
+        tenures = self.worktree.get_extra()["checkout_custody"]["tenures"]
+        assert [entry["namespace"] for entry in tenures] == ["pid:[42]"]
+
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):
             attempt = park_task_checkout(self.task, reason="foreign checkout state")

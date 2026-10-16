@@ -50,13 +50,13 @@ def writes_checkout(task: Task) -> bool:
     return bool(tools_for_phase(task.phase) & {"write_file", "edit_file", MCP_WRITE})
 
 
-def verify_task_checkout(task: Task, path: str) -> None:
+def verify_task_checkout(task: Task, path: str, *, namespace: str = "") -> None:
     if not path or not writes_checkout(task):
         return
     others = (row.worktree_path for row in Worktree.objects.filter(ticket=task.ticket).only("extra"))
     try:
         for candidate in [path, *(other for other in others if other and not paths_match(other, path))]:
-            _verify_one_checkout(task, candidate)
+            _verify_one_checkout(task, candidate, namespace=namespace)
     except CheckoutFenceError:
         held = _worktree_at(task.ticket, path)
         if held is not None:
@@ -73,7 +73,7 @@ def checkout_rows(path: str) -> list[Worktree]:
     ]
 
 
-def _verify_one_checkout(task: Task, path: str) -> None:
+def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
     rows = checkout_rows(path)
     if len(rows) != 1 or not Worktree.objects.filter(pk=rows[0].pk, ticket=task.ticket).exists():
         message = f"checkout {path} needs exactly one Worktree row; found {len(rows)}"
@@ -101,7 +101,7 @@ def _verify_one_checkout(task: Task, path: str) -> None:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
     _accept_changed_checkout(task, worktree, state, table, attested=attested)
-    _anchor_verified_checkout(task, worktree, state)
+    _anchor_verified_checkout(task, worktree, state, namespace=namespace)
 
 
 def _accept_changed_checkout(
@@ -114,13 +114,13 @@ def _accept_changed_checkout(
         raise CheckoutFenceError(message)
 
 
-def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> None:
+def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState, *, namespace: str = "") -> None:
     current = Custody.from_extra(worktree.get_extra())
     holder = task_holder_id(task)
     if (worktree.occupied_by, worktree.occupied_by_session) == (holder, task.claimed_by_session):
         if current is None or not current.tenures or current.tenures[-1].ended:
             since = worktree.occupied_at.isoformat() if worktree.occupied_at else timezone.now().isoformat()
-            anchored = Custody(state.digest, (Tenure(holder, task.claimed_by_session, since),))
+            anchored = Custody(state.digest, (Tenure(holder, task.claimed_by_session, since, namespace=namespace),))
         else:
             anchored = Custody.reanchored(state.digest, current, holder, task.claimed_by_session)
     else:

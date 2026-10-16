@@ -92,6 +92,7 @@ from teatree.agents.usage_window import (
 )
 from teatree.config import AgentHarnessProvider
 from teatree.config.agent_spawn import InvalidAgentConfigError
+from teatree.core.cleanup.process_table import nested_pid_namespace
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
@@ -314,11 +315,12 @@ def run_agent(
     before any lease work happens, and ``drive_claim`` then keeps the lease alive for the
     run occupancy admitted. Collapsing either one re-opens the bug the other closes.
     """
+    namespace = nested_pid_namespace()
     try:
         with occupy_ticket_checkout(
-            task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session
+            task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session, namespace=namespace
         ) as path:
-            verify_task_checkout(task, path)
+            verify_task_checkout(task, path, namespace=namespace)
             with drive_claim(task), delivered_phase_handoff(task) as handoff:
                 try:
                     return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)

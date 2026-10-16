@@ -105,6 +105,8 @@ the recorded custody chain, a clear host process table, and every ticket checkou
 on its recorded branch or the forge-reported head branch of an open pull request
 owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
 records any qualifying pull request. Hand work still needs the owner's `worktree attest`.
+For a headless run recorded in a nested PID namespace, unreadable host-root namespace
+processes may be set aside and named in the audit; legacy and namespace-less tenures stay strict.
 A writing run whose exit was deferred by a checkout process records that exit state;
 the next writer attests it only after the process is gone and the state is unchanged.
 
