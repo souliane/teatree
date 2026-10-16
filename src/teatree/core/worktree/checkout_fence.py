@@ -23,7 +23,7 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_recovery import reattest_on_proof
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -107,7 +107,9 @@ def _verify_one_checkout(task: Task, path: str) -> None:
 def _accept_changed_checkout(
     task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, *, attested: str | None
 ) -> None:
-    if attested != state.digest and not reattest_on_proof(task, worktree, state, table):
+    if attested != state.digest and not (
+        attest_deferred_exit(task, worktree, state, table) or reattest_on_proof(task, worktree, state, table)
+    ):
         message = f"checkout {worktree.worktree_path} differs from its attested state"
         raise CheckoutFenceError(message)
 
