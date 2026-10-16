@@ -155,7 +155,7 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
                     rules_text = rules_md.read_text(encoding="utf-8")
                 except (OSError, UnicodeError) as exc:
                     missing = f"{bare}/{rules_md.name}"
-                    raise SkillDispatchError.missing_document(missing) from exc
+                    raise SkillDispatchError.missing_document(bare, missing) from exc
                 sections.append(f"--- RULES.md ---\n{rules_text}")
             sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."

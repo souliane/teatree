@@ -283,6 +283,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "PHASE: reviewing" in self._system_context(prepared)
         assert "INTAKE LANDSCAPE SURVEY" not in prepared.prompt
         assert "--- SKILL: review ---" in self._system_context(prepared)
+        assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
 
     def test_pre_pr_self_review_can_judge_the_branch_without_a_ci_claim(self) -> None:
         self.skills = self._phase_bundle("reviewing")
@@ -309,6 +310,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "INTAKE LANDSCAPE SURVEY" not in prepared.prompt
         assert "critic_reviewing" in self._system_context(prepared)
         assert "--- SKILL: review ---" in self._system_context(prepared)
+        assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
 
     def test_remote_review_gets_the_dispatched_head_and_full_diff_from_the_worker(self) -> None:
         head = "a" * 40

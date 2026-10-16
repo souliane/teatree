@@ -59,7 +59,10 @@ def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
     with pytest.raises(SkillDispatchError, match=r"rules/RULES\.md") as refused:
         read_only_venue_skill_contents(["rules"], {"rules"})
-    assert refused.value.assurance["missing"] == ["rules/RULES.md"]
+    assert refused.value.assurance["requested"] == ["rules"]
+    assert refused.value.assurance["found"] == ["rules"]
+    assert refused.value.assurance["missing"] == []
+    assert refused.value.assurance["status"] == "injection_gap"
 
 
 def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:

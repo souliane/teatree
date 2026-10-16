@@ -37,24 +37,27 @@ class SkillAssurance(TypedDict):
 class SkillDispatchError(ValueError):
     """A mandatory skill was absent or not delivered before a billable turn."""
 
-    def __init__(self, assurance: SkillAssurance) -> None:
+    def __init__(self, assurance: SkillAssurance, *, detail: str | None = None) -> None:
         self.assurance = assurance
-        detail = ", ".join(assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"])))
+        detail = detail or ", ".join(
+            assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"]))
+        )
         super().__init__(f"skill {assurance['status']}: {detail}")
 
     @classmethod
-    def missing_document(cls, path: str) -> "SkillDispatchError":
+    def missing_document(cls, skill: str, path: str) -> "SkillDispatchError":
         return cls(
             {
-                "requested": [path],
-                "found": [],
+                "requested": [skill],
+                "found": [skill],
                 "injected": [],
                 "explicit_load": [],
-                "missing": [path],
+                "missing": [],
                 "evidence": [],
                 "observed_loads": [],
-                "status": "missing",
-            }
+                "status": "injection_gap",
+            },
+            detail=path,
         )
 
 
