@@ -759,6 +759,7 @@ class AutoAttestation(TypedDict):
     tenures: list[CheckoutTenure]
     process_table: CheckoutProcessEvidence
     branches: dict[str, str]
+    pull_requests: dict[str, str]
     holder: CheckoutHolderEvidence
 
 

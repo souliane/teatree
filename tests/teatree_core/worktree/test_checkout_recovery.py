@@ -1,19 +1,24 @@
+from datetime import timedelta
 from pathlib import Path
+from subprocess import TimeoutExpired
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
+from teatree.core import forge_pr_probe
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, Worktree
-from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
+from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
 from teatree.utils.git import run_strict
-from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
+from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -114,9 +119,13 @@ class CheckoutRecoveryTests(TestCase):
         self.assert_parked()
 
     def test_audit_is_exposed_without_a_page(self) -> None:
-        with patch("teatree.core.worktree.checkout_fence.notify_user") as page:
+        with (
+            patch("teatree.core.worktree.checkout_fence.notify_user") as page,
+            patch.object(forge_pr_probe, "find_open_pr_for_branch") as probe,
+        ):
             self.dispatch()
         page.assert_not_called()
+        probe.assert_not_called()
         self.worktree.refresh_from_db()
         audit = self.worktree.get_extra()["auto_attestation"]
         assert audit["previous"] == self.anchor
@@ -124,4 +133,105 @@ class CheckoutRecoveryTests(TestCase):
         assert audit["tenures"][0]["holder"] == task_holder_id(self.previous)
         assert audit["process_table"] == {"source": "/proc", "gaps": []}
         assert audit["branches"] == {str(self.path): "feature"}
+        assert audit["pull_requests"] == {}
         assert serialize_worktree(self.worktree)["auto_attestation"] == audit
+
+
+class ReRootedCheckoutRecoveryTests(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "checkout"
+        _init_repo_with_branch(self.path, branch="feature", commits_ahead=0)
+        self.ticket = TicketFactory()
+        self.previous = TaskFactory(ticket=self.ticket, phase="coding")
+        self.next_task = TaskFactory(ticket=self.ticket, phase="shipping")
+        self.worktree = WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.path)})
+        self.clear = ProcessTable(frozenset(), "/proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear):
+            verify_task_checkout(self.previous, str(self.path))
+        self.worktree.refresh_from_db()
+        self.anchor = self.worktree.get_extra()["attested_state"]
+        acquire(self.worktree, holder=task_holder_id(self.previous))
+        run_strict(repo=str(self.path), args=["checkout", "-b", "rerooted"])
+        (self.path / "change.txt").write_text("interrupted change")
+        run_strict(repo=str(self.path), args=["config", "user.email", "test@example.com"])
+        run_strict(repo=str(self.path), args=["config", "user.name", "Test"])
+        run_strict(repo=str(self.path), args=["add", "change.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "interrupted change"])
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        self.pr = PullRequestFactory(ticket=self.ticket)
+
+    def claim(self) -> TaskAttempt | None:
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
+            patch("teatree.core.worktree.checkout_fence.notify_user"),
+        ):
+            return claim_task_checkout_or_park(self.next_task)
+
+    def assert_parked(self) -> None:
+        attempt = self.claim()
+        assert attempt is not None
+        assert "checkout_parked:" in attempt.result["summary"]
+        assert "differs from its attested state" in attempt.result["summary"]
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+
+    def test_a_checkout_on_its_pull_requests_head_branch_is_claimed(self) -> None:
+        with patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=PrProbe.found(self.pr.url)) as probe:
+            assert self.claim() is None
+        probe.assert_called_once_with(str(self.path), "rerooted")
+        self.worktree.refresh_from_db()
+        audit = self.worktree.get_extra()["auto_attestation"]
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.path).digest
+        assert self.worktree.branch == "feature"
+        assert audit["branches"] == {str(self.path): "rerooted"}
+        assert audit["pull_requests"] == {str(self.path): self.pr.url}
+        assert audit["tenures"][0]["ended"] == "abandoned"
+
+    def test_a_sibling_on_its_pull_requests_head_branch_is_claimed(self) -> None:
+        sibling = self.path.parent / "sibling"
+        _init_repo_with_branch(sibling, branch="feature", commits_ahead=0)
+        WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(sibling)})
+        run_strict(repo=str(sibling), args=["checkout", "-b", "rerooted"])
+        with patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=PrProbe.found(self.pr.url)) as probe:
+            assert self.claim() is None
+        probe.assert_any_call(str(self.path), "rerooted")
+        probe.assert_any_call(str(sibling), "rerooted")
+        assert probe.call_count == 2
+        self.worktree.refresh_from_db()
+        audit = self.worktree.get_extra()["auto_attestation"]
+        assert audit["pull_requests"] == {str(self.path): self.pr.url, str(sibling): self.pr.url}
+
+    def test_a_branch_the_ticket_does_not_own_stays_parked(self) -> None:
+        foreign = PullRequestFactory(ticket=TicketFactory())
+        for answer in (PrProbe.none(), PrProbe.unknown(), PrProbe.found(foreign.url)):
+            with (
+                self.subTest(answer=answer),
+                patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=answer) as probe,
+            ):
+                self.assert_parked()
+                probe.assert_called_once_with(str(self.path), "rerooted")
+
+    def test_detached_head_never_probes(self) -> None:
+        run_strict(repo=str(self.path), args=["checkout", "--detach"])
+        with patch.object(forge_pr_probe, "find_open_pr_for_branch") as probe:
+            self.assert_parked()
+        probe.assert_not_called()
+
+    def test_unparseable_found_url_stays_parked(self) -> None:
+        with patch.object(
+            forge_pr_probe, "find_open_pr_for_branch", return_value=PrProbe.found("https://example.com/not-a-pr")
+        ) as probe:
+            self.assert_parked()
+        probe.assert_called_once_with(str(self.path), "rerooted")
+
+    def test_probe_timeout_stays_parked(self) -> None:
+        run_strict(repo=str(self.path), args=["remote", "add", "origin", "https://github.com/souliane/teatree.git"])
+        with (
+            patch.object(forge_pr_probe, "forge_cli_env", return_value={}),
+            patch.object(forge_pr_probe, "run_allowed_to_fail", side_effect=TimeoutExpired("gh", 30)) as run,
+        ):
+            self.assert_parked()
+        assert run.call_args.kwargs["timeout"] == 30

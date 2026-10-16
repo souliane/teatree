@@ -34,7 +34,7 @@ from pathlib import Path
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -255,8 +255,8 @@ def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
         logger.warning("open-PR probe has no routed GitHub token for %s — unknown", repo_dir)
         return None
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=env)
-    except OSError:
+        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=env, timeout=30)
+    except (OSError, TimeoutExpired):
         logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
         return None
     if result.returncode != 0:
