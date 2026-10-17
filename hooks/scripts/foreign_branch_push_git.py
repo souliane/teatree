@@ -11,10 +11,12 @@ Every mutation of untrusted text here operates on ALREADY-REDACTED text: both
 :func:`bounded` and :func:`_one_line` scrub before they clip or join.
 """
 
+import os
 import re
 import shlex
 import subprocess  # noqa: S404 -- hook code legitimately shells out to Git.
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
@@ -26,6 +28,11 @@ _HEADS_PREFIX: Final[str] = "refs/heads/"
 _LS_REMOTE_COLUMN_COUNT: Final[int] = 2
 _LS_REMOTE_TIMEOUT_S: Final[float] = 12.0
 _GIT_TIMEOUT_S: Final[float] = 5.0
+# `git remote get-url` exits 2 for a name that is no configured remote; git then reads the name as a location.
+_REMOTE_NOT_CONFIGURED: Final[int] = 2
+_REMOTE_AUTH_REFUSED: Final[re.Pattern[str]] = re.compile(
+    r"HTTP 401|401 Unauthorized|Authentication failed for|could not read (?:Username|Password) for", re.IGNORECASE
+)
 # A refusal is read in a terminal, so git's output — stderr and stdout alike — is truncated past this, not dropped.
 _MAX_QUOTED_CHARS: Final[int] = 400
 # `git config --get` exits 1 for a key nobody set, which is an ANSWER and not a failure.
@@ -48,6 +55,7 @@ class GitProbe:
     out: str
     code: int | None = None
     err: str = ""
+    credential_refused: bool = False
 
 
 def push_work_dir(tokens: list[str], cwd: str) -> tuple[str, str]:
@@ -101,7 +109,7 @@ def _one_line(stderr: str) -> str:
     wall-clock budget. It was also weaker, since `str.splitlines` splits on six
     characters the scanner treats as no boundary at all.
     """
-    scrubbed = redact_credentials(stderr)
+    scrubbed = redact_credentials(_without_active_tokens(stderr))
     return clip("; ".join(line.strip() for line in scrubbed.splitlines() if line.strip()), _MAX_QUOTED_CHARS)
 
 
@@ -113,7 +121,14 @@ def bounded(text: str) -> str:
     refusal afterwards matches nothing and the surviving prefix of a token is
     published.
     """
-    return clip(redact_credentials(text), _MAX_QUOTED_CHARS)
+    return clip(redact_credentials(_without_active_tokens(text)), _MAX_QUOTED_CHARS)
+
+
+def _without_active_tokens(text: str) -> str:
+    with teatree_src_on_path():
+        from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
+
+    return scrub_active_tokens(text, os.environ)
 
 
 def probe_cause(probe: GitProbe) -> str:
@@ -161,8 +176,19 @@ def repository_at(work_dir: str) -> GitProbe:
 def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
     """Return the advertised branch OID, empty when absent, or ``ok=False``."""
     ref = f"{_HEADS_PREFIX}{branch}"
-    probe = git_probe(work_dir, "ls-remote", "--heads", remote, ref, timeout=_LS_REMOTE_TIMEOUT_S)
-    if not probe.ok or not probe.out:
+    resolved = _remote_url(work_dir, remote)
+    if not resolved.ok:
+        return resolved
+    try:
+        with tempfile.TemporaryDirectory(prefix="t3-git-probe-") as neutral_dir:
+            probe = git_probe(
+                neutral_dir, "ls-remote", "--heads", "--", resolved.out, ref, timeout=_LS_REMOTE_TIMEOUT_S
+            )
+    except OSError as exc:
+        return GitProbe(ok=False, out="", err=f"could not create neutral git probe directory: {exc}")
+    if not probe.ok:
+        return replace(probe, credential_refused=bool(_REMOTE_AUTH_REFUSED.search(probe.err)))
+    if not probe.out:
         return probe
     for line in probe.out.splitlines():
         columns = line.split()
@@ -187,6 +213,25 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
     )
 
 
+def _remote_url(work_dir: str, remote: str) -> GitProbe:
+    """The location git contacts for *remote* — a name's first URL, a relative path anchored at the repo root."""
+    url = remote
+    if ":" not in remote and "/" not in remote:
+        configured = git_probe(work_dir, "remote", "get-url", remote)
+        if configured.ok:
+            url = configured.out
+        elif configured.code != _REMOTE_NOT_CONFIGURED:
+            return configured
+    if not url or url.startswith("-"):
+        return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")
+    if not Path(url).is_absolute() and ":" not in url:
+        root = git_probe(work_dir, "rev-parse", "--show-toplevel")
+        if not root.ok and root.code is None:
+            return root
+        url = str((Path(root.out or work_dir) / url).resolve())
+    return GitProbe(ok=True, out=url)
+
+
 @dataclass(frozen=True, slots=True)
 class LiveRange:
     """A stable live remote range, or the probe that would not establish one.
@@ -201,6 +246,7 @@ class LiveRange:
     base_oid: str
     failed: str
     probe: "GitProbe | None" = None
+    authors: tuple[str, ...] = ()
 
 
 def live_remote_range(work_dir: str, remote: str, branch: str, branch_oid: str) -> LiveRange:
@@ -214,22 +260,51 @@ def live_remote_range(work_dir: str, remote: str, branch: str, branch_oid: str) 
     if not base_ref.ok or not base_ref.out:
         failed = f"`git ls-remote --heads {remote} {base_branch}` (the live default branch)"
         return LiveRange("", "", failed, base_ref)
-    for oid, label in ((base_ref.out, base_branch), (branch_oid, branch)):
-        fetched = git_probe(
-            work_dir,
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--no-write-fetch-head",
-            remote,
-            f"{_HEADS_PREFIX}{label}",
-            timeout=_LS_REMOTE_TIMEOUT_S,
-        )
-        still_live = remote_branch_oid(work_dir, remote, label)
-        if not fetched.ok or not still_live.ok or still_live.out != oid:
-            failed = f"`git fetch {remote} {label}` (a stable live remote commit)"
-            return LiveRange("", "", failed, fetched if not fetched.ok else still_live)
-    return LiveRange(base_branch, base_ref.out, "")
+    resolved = _remote_url(work_dir, remote)
+    if not resolved.ok:
+        return LiveRange("", "", f"`git remote get-url {remote}`", resolved)
+    return _fetch_live_authors(work_dir, remote, (base_branch, base_ref.out), (branch, branch_oid), resolved.out)
+
+
+def _fetch_live_authors(
+    work_dir: str, remote: str, base_ref: tuple[str, str], branch_ref: tuple[str, str], url: str
+) -> LiveRange:
+    base_branch, base_oid = base_ref
+    branch, branch_oid = branch_ref
+    local = git_probe(work_dir, "rev-parse", "--show-object-format", "--path-format=absolute", "--git-path", "objects")
+    object_format, _, objects = local.out.partition("\n")
+    if not local.ok or not objects:
+        return LiveRange("", "", "`git rev-parse --git-path objects` (the checkout's object store)", local)
+    try:
+        with tempfile.TemporaryDirectory(prefix="t3-git-fetch-") as neutral_dir:
+            repo = str(Path(neutral_dir) / "probe.git")
+            initialized = git_probe(neutral_dir, "init", "--quiet", "--bare", f"--object-format={object_format}", repo)
+            if not initialized.ok:
+                return LiveRange("", "", "`git init --bare` (the neutral fetch repository)", initialized)
+            # Borrowing the checkout's objects keeps the fetch incremental, as it was inside the checkout.
+            (Path(repo) / "objects" / "info" / "alternates").write_text(f"{objects}\n", encoding="utf-8")
+            for oid, label in ((base_oid, base_branch), (branch_oid, branch)):
+                fetched = git_probe(
+                    repo,
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--",
+                    url,
+                    f"{_HEADS_PREFIX}{label}",
+                    timeout=_LS_REMOTE_TIMEOUT_S,
+                )
+                still_live = remote_branch_oid(work_dir, remote, label)
+                if not fetched.ok or not still_live.ok or still_live.out != oid:
+                    failed = f"`git fetch {remote} {label}` (a stable live remote commit)"
+                    return LiveRange("", "", failed, fetched if not fetched.ok else still_live)
+            log = git_probe(repo, "log", "--format=%ae%n%an", f"{base_oid}..{branch_oid}")
+            if not log.ok:
+                return LiveRange("", "", f"`git log <live-{base_branch}>..<live-{branch}>`", log)
+            return LiveRange(base_branch, base_oid, "", authors=tuple(line for line in log.out.splitlines() if line))
+    except OSError as exc:
+        return LiveRange("", "", "the neutral fetch repository", GitProbe(ok=False, out="", err=str(exc)))
 
 
 @dataclass(frozen=True, slots=True)
