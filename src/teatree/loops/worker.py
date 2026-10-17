@@ -77,7 +77,7 @@ def loops_executor_count() -> int:
 def agent_executor_queues(widths: "LaneWidths | None") -> tuple[str, ...]:
     """One executor per seat the verdict can admit, so no admitted seat lapses waiting for a thread."""
     if widths is None:
-        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",)
+        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",) * 2
     return ("default",) * widths.expensive + ("cheap",) * widths.cheap
 
 

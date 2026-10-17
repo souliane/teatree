@@ -21,21 +21,20 @@ merges). :func:`agent_admission_verdict` therefore probes ONCE and resolves
 that probe per :class:`~teatree.core.modelkit.phases.PhaseCost`, so a drain costs
 one probe however many rows it walks.
 
-**The review lane sits outside the coding ceiling (#5051).** Reviewing must never be
-queued behind coding: the governor's ceiling bounds the EXPENSIVE lane alone, and the
-CHEAP (review) lane is ``cheap_phase_admission_ceiling`` wide beside it, so a full coding
-lane still admits that many reviews.
+**Cheap work sits outside the coding ceiling (#5051, #5327).** The governor's ceiling
+bounds EXPENSIVE work alone. Reviews have ``cheap_phase_admission_ceiling`` seats;
+shipping and review requests have one separate seat that reviews cannot take.
 
 It lives in ``teatree.core`` (not ``teatree.loop``) so the core chokepoints can
 consult it without a backwards dependency edge; the loop-side ``governor_verdict``
 is the richer interactive variant carrying the brake-hysteresis sidecar. Both
-route through the one pure decision function, so the two lanes can never diverge
+route through the one pure decision function, so the classes can never diverge
 on the quota/machine/ceiling verdict.
 
 
-Fail-OPEN by construction: any signal-read failure admits BOTH classes — a governor that cannot read its
+Fail-OPEN by construction: any signal-read failure admits ALL classes — a governor that cannot read its
 own signals must never wedge the factory. A claim-admission refusal (the ``off`` posture,
-a quiescing worker, schema skew) is not a governor signal, so it denies both classes before
+a quiescing worker, schema skew) is not a governor signal, so it denies all classes before
 the governor is read. A refusal is never silent: this is the
 only seam that returns a DENY reason, and every caller logs it at WARNING.
 """
@@ -65,7 +64,7 @@ from teatree.core.admission_pressure import (
     QuotaSignal,
 )
 from teatree.core.managers_task_claim import claim_admission_block_reason
-from teatree.core.modelkit.phases import PhaseCost, phase_cost
+from teatree.core.modelkit.phases import RETIRING_PHASES, REVIEW_PHASES, CheapClass, PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
@@ -106,7 +105,12 @@ class LaneBound:
 @dataclass(frozen=True)
 class _LaneOccupancy:
     expensive: int
-    cheap: int
+    review: int
+    retiring: int
+
+    @property
+    def cheap(self) -> int:
+        return self.review + self.retiring
 
 
 @dataclass
@@ -118,29 +122,37 @@ class AgentAdmission:
     affordable at all — nothing changes between iterations of that loop, so re-probing
     per row would return the same answer N times at N times the cost.
 
-    Each class carries its own :class:`LaneBound`: the cheap one is the review lane width,
-    the expensive one is the governor's ceiling.
+    Each class carries its own :class:`LaneBound`: review and retiring have separate
+    widths, and the expensive one has the governor's ceiling.
     """
 
     expensive_denied: str | None
-    cheap_denied: str | None
-    cheap_lane: LaneBound = field(default_factory=LaneBound)
+    review_denied: str | None
+    retiring_denied: str | None
+    review_lane: LaneBound = field(default_factory=LaneBound)
+    retiring_lane: LaneBound = field(default_factory=LaneBound)
     expensive_lane: LaneBound = field(default_factory=LaneBound)
     seats_released: int = 0
     _announced: set[str] = field(default_factory=set)
 
-    def lane_for(self, cost: PhaseCost) -> LaneBound:
+    def lane_for(self, cost: PhaseCost, *, cheap_class: CheapClass | None = None) -> LaneBound:
         """The bound governing *cost*'s lane — the one seam both the check and the seat read."""
-        return self.cheap_lane if cost is PhaseCost.CHEAP else self.expensive_lane
+        if cost is PhaseCost.EXPENSIVE:
+            return self.expensive_lane
+        return self.retiring_lane if cheap_class is CheapClass.RETIRING else self.review_lane
 
-    def denied_for(self, cost: PhaseCost) -> str | None:
+    def denied_for(self, cost: PhaseCost, *, cheap_class: CheapClass | None = None) -> str | None:
         """The reason to refuse one more admission of *cost*, or ``None`` to admit."""
-        denied = self.cheap_denied if cost is PhaseCost.CHEAP else self.expensive_denied
+        if cost is PhaseCost.EXPENSIVE:
+            denied = self.expensive_denied
+        else:
+            denied = self.retiring_denied if cheap_class is CheapClass.RETIRING else self.review_denied
         if denied is not None:
             return denied
-        lane = self.lane_for(cost)
+        lane = self.lane_for(cost, cheap_class=cheap_class)
         if lane.spent():
-            return f"{cost} headroom spent this pass ({lane.admitted} admitted, lane ceiling reached)"
+            name = cheap_class or cost
+            return f"{name} headroom spent this pass ({lane.admitted} admitted, lane ceiling reached)"
         return None
 
     def denied_reason(self, phase: str = "") -> str | None:
@@ -149,7 +161,7 @@ class AgentAdmission:
         A blank or unregistered phase classifies EXPENSIVE, so a caller that cannot
         name its phase gets the braked answer rather than the exemption.
         """
-        return self.denied_for(phase_cost(phase))
+        return self.denied_for(phase_cost(phase), cheap_class=CheapClass.of(phase))
 
     def admit(self, task_pk: int, phase: str, *, at: str) -> bool:
         """True when *task_pk* now holds a seat and may be dispatched — else refuse, at *at*.
@@ -183,13 +195,12 @@ class AgentAdmission:
         there rather than trusting this verdict's probe (#4125).
         """
         cost = phase_cost(phase)
-        lane = self.lane_for(cost)
-        if not _task_model().objects.record_admission(
-            task_pk, cheap=cost is PhaseCost.CHEAP, lane_ceiling=lane.ceiling
-        ):
+        cheap_class = CheapClass.of(phase)
+        lane = self.lane_for(cost, cheap_class=cheap_class)
+        if not _task_model().objects.record_admission(task_pk, cheap_class=cheap_class, lane_ceiling=lane.ceiling):
             if lane.ceiling is None:
                 return "already dispatched this window"
-            return f"no {cost}-phase seat: already dispatched this window, or a racer took the last one"
+            return f"no {cheap_class or cost}-phase seat: already dispatched this window, or a racer took the last one"
         lane.admitted += 1
         return None
 
@@ -204,14 +215,22 @@ class AgentAdmission:
         A released seat is announced alongside: it is the state in which the ceiling is
         SOFT, and it arrives with no refusal of its own to carry it.
         """
-        for cost in PhaseCost:
-            denied = self.denied_for(cost)
+        for cost, cheap_class in (
+            (PhaseCost.EXPENSIVE, None),
+            (PhaseCost.CHEAP, CheapClass.REVIEW),
+            (PhaseCost.CHEAP, CheapClass.RETIRING),
+        ):
+            denied = self.denied_for(cost, cheap_class=cheap_class)
             if denied is not None:
                 self._announced.add(denied)
-                logger.warning("Governor DENIED headless admission of %s work: %s (rows stay queued)", cost, denied)
+                logger.warning(
+                    "Governor DENIED headless admission of %s work: %s (rows stay queued)",
+                    cheap_class or cost,
+                    denied,
+                )
         if self.seats_released:
             logger.warning(
-                "Review lane released %s unclaimed seat(s) — the runner backlog outran the seat window, "
+                "Cheap lanes released %s unclaimed seat(s) — the runner backlog outran the seat window, "
                 "so the ceiling is soft until it drains",
                 self.seats_released,
             )
@@ -231,7 +250,7 @@ def _task_model() -> "type[Task]":
 
 def _admit_all() -> AgentAdmission:
     """Admit everything, unbounded — the kill-switch answer and the fail-open answer alike."""
-    return AgentAdmission(expensive_denied=None, cheap_denied=None)
+    return AgentAdmission(expensive_denied=None, review_denied=None, retiring_denied=None)
 
 
 def review_lane_width() -> int:
@@ -280,18 +299,26 @@ def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
 
 @dataclass(frozen=True)
 class LaneWidths:
-    """Coding fills the ceiling and reviews sit beside it; the worker runs one executor per seat."""
+    """Coding, review and retiring seats; the worker runs one executor per seat."""
 
     ceiling: AdmissionCeiling
-    cheap: int
+    review: int
 
     @property
     def expensive(self) -> int:
         return self.ceiling.value
 
+    @property
+    def retiring(self) -> int:
+        return 1
+
+    @property
+    def cheap(self) -> int:
+        return self.review + self.retiring
+
 
 def _lane_widths(quota: QuotaSignal, machine: MachineSignal) -> LaneWidths:
-    return LaneWidths(ceiling=admission_ceiling(quota, machine), cheap=review_lane_width())
+    return LaneWidths(ceiling=admission_ceiling(quota, machine), review=review_lane_width())
 
 
 class HeadlessAdmissionJson(TypedDict):
@@ -302,12 +329,19 @@ class HeadlessAdmissionJson(TypedDict):
     weekly_pace: float | None
     expensive_lane: int
     cheap_lane: int
+    review_lane: int
+    retiring_lane: int
     expensive_occupied: int
     cheap_occupied: int
+    review_occupied: int
+    retiring_occupied: int
+    review_phases: list[str]
+    retiring_phases: list[str]
     pressure: float
     band: str
     expensive_denied: str | None
-    cheap_denied: str | None
+    review_denied: str | None
+    retiring_denied: str | None
 
 
 @dataclass(frozen=True)
@@ -323,7 +357,9 @@ class HeadlessAdmissionStatus:
 
     def verdict(self) -> AgentAdmission:
         if self.blocked:
-            return AgentAdmission(expensive_denied=self.blocked, cheap_denied=self.blocked)
+            return AgentAdmission(
+                expensive_denied=self.blocked, review_denied=self.blocked, retiring_denied=self.blocked
+            )
         widths, occupied = self.widths, self.occupied
         expensive = (
             self.pressure.reason
@@ -333,12 +369,19 @@ class HeadlessAdmissionStatus:
         cheap = (
             self.exempt.reason
             if self.exempt.band is PressureBand.HALT
-            else _ceiling_denial(widths.cheap, occupied.cheap, lane="review")
+            else _ceiling_denial(widths.review, occupied.review, lane="review")
+        )
+        retiring = (
+            self.exempt.reason
+            if self.exempt.band is PressureBand.HALT
+            else _ceiling_denial(widths.retiring, occupied.retiring, lane="retiring")
         )
         return AgentAdmission(
             expensive_denied=expensive,
-            cheap_denied=cheap,
-            cheap_lane=LaneBound(ceiling=widths.cheap, headroom=max(0, widths.cheap - occupied.cheap)),
+            review_denied=cheap,
+            retiring_denied=retiring,
+            review_lane=LaneBound(ceiling=widths.review, headroom=max(0, widths.review - occupied.review)),
+            retiring_lane=LaneBound(ceiling=widths.retiring, headroom=max(0, widths.retiring - occupied.retiring)),
             expensive_lane=LaneBound(ceiling=widths.expensive, headroom=max(0, widths.expensive - occupied.expensive)),
             seats_released=self.seats_released,
         )
@@ -349,13 +392,19 @@ class HeadlessAdmissionStatus:
             pace = "weekly pace unread (unscaled)"
         else:
             pace = f"weekly pace {ceiling.pace:.2f}" + (" (scaling capped at 1)" if ceiling.pace > 1 else "")
-        denied = ((PhaseCost.EXPENSIVE, verdict.expensive_denied), (PhaseCost.CHEAP, verdict.cheap_denied))
-        denials = "".join(f"; {cost} denied: {reason}" for cost, reason in denied if reason is not None)
+        denied = (
+            ("expensive", verdict.expensive_denied),
+            ("review", verdict.review_denied),
+            ("retiring", verdict.retiring_denied),
+        )
+        denials = "".join(f"; {name} denied: {reason}" for name, reason in denied if reason is not None)
         return (
             f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
-            f"({ceiling.machine}) x {pace}; lanes {widths.expensive} expensive + {widths.cheap} cheap "
-            f"(review lane outside the ceiling); occupied {self.occupied.expensive} expensive + "
-            f"{self.occupied.cheap} cheap; pressure {self.pressure.value:.2f} {self.pressure.band}{denials}"
+            f"({ceiling.machine}) x {pace}; lanes {widths.expensive} expensive + {widths.review} review "
+            f"({', '.join(sorted(REVIEW_PHASES))}) + {widths.retiring} retiring "
+            f"({', '.join(sorted(RETIRING_PHASES))}); occupied {self.occupied.expensive} expensive + "
+            f"{self.occupied.review} review + {self.occupied.retiring} retiring; "
+            f"pressure {self.pressure.value:.2f} {self.pressure.band}{denials}"
         )
 
     def as_json(self) -> HeadlessAdmissionJson:
@@ -368,12 +417,19 @@ class HeadlessAdmissionStatus:
             weekly_pace=ceiling.pace,
             expensive_lane=self.widths.expensive,
             cheap_lane=self.widths.cheap,
+            review_lane=self.widths.review,
+            retiring_lane=self.widths.retiring,
             expensive_occupied=self.occupied.expensive,
             cheap_occupied=self.occupied.cheap,
+            review_occupied=self.occupied.review,
+            retiring_occupied=self.occupied.retiring,
+            review_phases=sorted(REVIEW_PHASES),
+            retiring_phases=sorted(RETIRING_PHASES),
             pressure=self.pressure.value,
             band=str(self.pressure.band),
             expensive_denied=verdict.expensive_denied,
-            cheap_denied=verdict.cheap_denied,
+            review_denied=verdict.review_denied,
+            retiring_denied=verdict.retiring_denied,
         )
 
 
@@ -387,7 +443,8 @@ def _read_admission(
         exempt=pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False)),
         occupied=_LaneOccupancy(
             expensive=task_model.objects.expensive_lane_occupancy(),
-            cheap=task_model.objects.cheap_lane_occupancy(),
+            review=task_model.objects.cheap_class_occupancy(CheapClass.REVIEW),
+            retiring=task_model.objects.cheap_class_occupancy(CheapClass.RETIRING),
         ),
         seats_released=task_model.objects.cheap_lane_seats_released(),
         blocked=blocked,
@@ -422,7 +479,7 @@ def agent_admission_verdict() -> AgentAdmission:
     machine-derived ceiling rather than leaving it unbounded (#4097).
     """
     if blocked := claim_admission_block_reason():
-        return AgentAdmission(expensive_denied=blocked, cheap_denied=blocked)
+        return AgentAdmission(expensive_denied=blocked, review_denied=blocked, retiring_denied=blocked)
     try:
         quota, metered = _lane_budget()
         machine = read_machine_signal()

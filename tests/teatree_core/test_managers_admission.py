@@ -6,6 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW, _lane_occupancy_q
+from teatree.core.modelkit.phases import CheapClass
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -24,7 +25,9 @@ class TestAdmissionSeatPredicates(TestCase):
             admitted_at=now - ADMITTED_INFLIGHT_WINDOW - timedelta(seconds=1),
         )
 
-        assert set(Task.objects.filter(_lane_occupancy_q(now, cheap=True)).values_list("pk", flat=True)) == {
-            reviewing.pk
+        assert set(
+            Task.objects.filter(_lane_occupancy_q(now, cheap_class=CheapClass.REVIEW)).values_list("pk", flat=True)
+        ) == {reviewing.pk}
+        assert set(Task.objects.filter(_lane_occupancy_q(now, cheap_class=None)).values_list("pk", flat=True)) == {
+            coding.pk
         }
-        assert set(Task.objects.filter(_lane_occupancy_q(now, cheap=False)).values_list("pk", flat=True)) == {coding.pk}

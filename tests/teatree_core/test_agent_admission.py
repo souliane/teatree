@@ -43,7 +43,7 @@ from teatree.core.agent_admission import (
     review_lane_width,
 )
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
-from teatree.core.modelkit.phases import PhaseCost
+from teatree.core.modelkit.phases import RETIRING_PHASES, REVIEW_PHASES, CheapClass, PhaseCost
 from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.tasks import execute_task
 from tests.teatree_core.conftest import IMMEDIATE_BACKEND
@@ -79,11 +79,11 @@ def _machine(load1: float = 1.0, *, cores: int = 8) -> MachineSignal:
 
 
 def _denied(reason: str) -> AgentAdmission:
-    return AgentAdmission(expensive_denied=reason, cheap_denied=reason)
+    return AgentAdmission(expensive_denied=reason, review_denied=reason, retiring_denied=reason)
 
 
 def _admitted() -> AgentAdmission:
-    return AgentAdmission(expensive_denied=None, cheap_denied=None)
+    return AgentAdmission(expensive_denied=None, review_denied=None, retiring_denied=None)
 
 
 class TestAgentAdmissionDeniedReason(TestCase):
@@ -129,6 +129,12 @@ class TestAgentAdmissionDeniedReason(TestCase):
             reason = agent_admission_denied_reason()
         assert reason is not None
         assert "at/over the expensive ceiling" in reason
+
+    def test_claim_block_also_denies_retiring_work(self) -> None:
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value="worker quiescing"):
+            verdict = agent_admission_verdict()
+
+        assert verdict.denied_reason("shipping") == "worker quiescing"
 
 
 class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
@@ -180,7 +186,11 @@ class TestPhaseAwareVerdict(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
             patch.object(Task.objects, "expensive_lane_occupancy", return_value=coding),
-            patch.object(Task.objects, "cheap_lane_occupancy", return_value=occupancy),
+            patch.object(
+                Task.objects,
+                "cheap_class_occupancy",
+                side_effect=lambda cheap_class: occupancy if cheap_class is CheapClass.REVIEW else 0,
+            ),
         ):
             return agent_admission_verdict()
 
@@ -273,7 +283,7 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=quota),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
             patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
-            patch.object(Task.objects, "cheap_lane_occupancy", return_value=0),
+            patch.object(Task.objects, "cheap_class_occupancy", return_value=0),
         ):
             return agent_admission_verdict()
 
@@ -325,8 +335,12 @@ _CEILING_PARTS = (
     "weekly_pace",
     "expensive_lane",
     "cheap_lane",
+    "review_lane",
+    "retiring_lane",
     "expensive_occupied",
     "cheap_occupied",
+    "review_occupied",
+    "retiring_occupied",
 )
 
 
@@ -373,14 +387,21 @@ class TestHeadlessAdmissionStatus(TestCase):
             "machine_ceiling": 8,
             "weekly_pace": 0.75,
             "expensive_lane": 6,
-            "cheap_lane": 2,
+            "cheap_lane": 3,
+            "review_lane": 2,
+            "retiring_lane": 1,
             "expensive_occupied": 2,
             "cheap_occupied": 1,
+            "review_occupied": 1,
+            "retiring_occupied": 0,
         }
         assert parts["band"] == str(status.pressure.band)
         assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
-        assert "lanes 6 expensive + 2 cheap (review lane outside the ceiling)" in status.line()
-        assert "occupied 2 expensive + 1 cheap" in status.line()
+        assert "lanes 6 expensive + 2 review" in status.line()
+        assert "+ 1 retiring (requesting_review, shipping)" in status.line()
+        assert "occupied 2 expensive + 1 review + 0 retiring" in status.line()
+        assert parts["review_phases"] == sorted(REVIEW_PHASES)
+        assert parts["retiring_phases"] == sorted(RETIRING_PHASES)
 
     def test_the_status_resolves_to_exactly_the_verdict(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
@@ -405,15 +426,19 @@ class TestHeadlessAdmissionStatus(TestCase):
                     == 8
                 )
                 assert status.as_json()["expensive_denied"] == verdict.expensive_denied
-                assert status.as_json()["cheap_denied"] == verdict.cheap_denied
+                assert status.as_json()["review_denied"] == verdict.review_denied
+                assert status.as_json()["retiring_denied"] == verdict.retiring_denied
 
     def test_a_claim_admission_block_is_what_the_status_reports(self) -> None:
         quiescing = "this worker is quiescing for a rolling deploy"
         with patch.object(gate_mod, "claim_admission_block_reason", return_value=quiescing):
             status = self._status(_healthy_quota())
 
-        assert status.as_json()["expensive_denied"] == status.as_json()["cheap_denied"] == quiescing
-        assert f"expensive denied: {quiescing}; cheap denied: {quiescing}" in status.line()
+        assert status.as_json()["expensive_denied"] == status.as_json()["review_denied"] == quiescing
+        assert status.as_json()["retiring_denied"] == quiescing
+        assert (
+            f"expensive denied: {quiescing}; review denied: {quiescing}; retiring denied: {quiescing}" in status.line()
+        )
 
     def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
         unread = QuotaSignal(
@@ -550,6 +575,23 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         assert coding.status == Task.Status.PENDING
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_two_claimed_reviews_do_not_hold_an_expedited_shipping_task(self) -> None:
+        for _ in range(2):
+            review = self._pending("reviewing")
+            Task.objects.filter(pk=review.pk).update(
+                status=Task.Status.CLAIMED,
+                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+            )
+        shipping = self._pending("shipping")
+        Ticket.objects.filter(pk=shipping.ticket_id).update(expedited=True)
+
+        result, _ = self._drain_under_load(load1=1.0)
+
+        assert result["enqueued"] == [shipping.pk]
+        shipping.refresh_from_db()
+        assert shipping.admitted_at is not None
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_an_unbraked_drain_admits_both_classes(self) -> None:
         coding = self._pending("coding")
         reviewing = self._pending("reviewing")
@@ -575,7 +617,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         # The exemption is bounded, so a full cheap lane holds cheap rows too — it can
         # never become the second unbounded lane.
         reviewing = self._pending("reviewing")
-        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=2):
+        with patch.object(Task.objects, "cheap_class_occupancy", return_value=2):
             result, _ = self._drain_under_load(self._MELTED)
 
         assert result["enqueued"] == []
@@ -588,7 +630,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         # headroom it carries is what bounds the lane; without it a single braked drain
         # would admit every pending cheap row at once.
         pending = [self._pending("reviewing") for _ in range(5)]
-        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=1):
+        with patch.object(Task.objects, "cheap_class_occupancy", return_value=1):
             result, _ = self._drain_under_load(self._MELTED)
 
         # ceiling 2 minus 1 occupied seat leaves headroom for exactly one more.
@@ -602,7 +644,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         for _ in range(3):
             self._pending("reviewing")
         with (
-            patch.object(Task.objects, "cheap_lane_occupancy", return_value=1),
+            patch.object(Task.objects, "cheap_class_occupancy", return_value=1),
             self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs,
         ):
             self._drain_under_load(self._MELTED)
@@ -683,6 +725,15 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         assert racer_one.admit(first.pk, "reviewing", at="racer-one") is True
         assert racer_two.admit(second.pk, "reviewing", at="racer-two") is False
         assert Task.objects.cheap_lane_occupancy() == 2
+
+    def test_two_retiring_chokepoints_cannot_both_take_the_one_seat(self) -> None:
+        first = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
+        second = Task.objects.create(ticket=self.ticket, session=self.session, phase="requesting_review")
+        racer_one, racer_two = self._probe(), self._probe()
+
+        assert racer_one.admit(first.pk, first.phase, at="racer-one") is True
+        assert racer_two.admit(second.pk, second.phase, at="racer-two") is False
+        assert Task.objects.cheap_class_occupancy(CheapClass.RETIRING) == 1
 
     def test_a_row_already_holding_a_live_seat_is_not_admitted_twice(self) -> None:
         # Re-admitting a row already in the runner's hand is a duplicate dispatch, which
@@ -828,7 +879,11 @@ class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
             patch.object(Task.objects, "expensive_lane_occupancy", return_value=expensive),
-            patch.object(Task.objects, "cheap_lane_occupancy", return_value=cheap),
+            patch.object(
+                Task.objects,
+                "cheap_class_occupancy",
+                side_effect=lambda cheap_class: cheap if cheap_class is CheapClass.REVIEW else 0,
+            ),
         ):
             return agent_admission_verdict()
 
@@ -843,7 +898,7 @@ class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
 
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
         assert verdict.denied_for(PhaseCost.CHEAP) is None
-        assert verdict.cheap_lane.headroom == 2
+        assert verdict.review_lane.headroom == 2
 
     def test_running_reviews_leave_the_coding_lane_its_whole_ceiling(self) -> None:
         verdict = self._verdict(expensive=self._CEILING - 1, cheap=2)
@@ -868,7 +923,7 @@ class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
         )
         assert full.expensive_lane.ceiling == 16
         assert full.denied_for(PhaseCost.CHEAP) is None
-        assert full.cheap_lane.ceiling == 2
+        assert full.review_lane.ceiling == 2
         assert self._verdict(expensive=15).denied_for(PhaseCost.EXPENSIVE) is None
 
 
@@ -922,6 +977,19 @@ class TestReviewingIsNeverQueuedBehindCoding(TestCase):
 
         assert not self._admitted(third)
         assert any("review lane occupancy 2 at/over the review ceiling 2" in line for line in logs.output)
+
+    def test_full_review_lane_leaves_one_retiring_seat(self) -> None:
+        self._claimed("reviewing", 2)
+
+        assert not self._admitted(self._task("reviewing"))
+        assert self._admitted(self._task("shipping"))
+        assert not self._admitted(self._task("requesting_review"))
+
+    def test_full_retiring_lane_leaves_review_seats(self) -> None:
+        self._claimed("shipping", 1)
+
+        assert self._admitted(self._task("reviewing"))
+        assert not self._admitted(self._task("requesting_review"))
 
     def test_running_reviews_do_not_hold_back_a_coding_row(self) -> None:
         self._claimed("reviewing", 2)

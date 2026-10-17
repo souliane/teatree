@@ -226,19 +226,19 @@ def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.Mo
 
 def _widths(expensive: int, cheap: int) -> LaneWidths:
     """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
-    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), cheap=cheap)
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), review=cheap)
 
 
 @pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
 def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
-    assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * cheap
+    assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * (cheap + 1)
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
-    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",)
+    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",) * 2
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
-    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",)
+    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",) * 2
 
 
 def test_a_lane_width_read_failure_keeps_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,7 +253,7 @@ def test_the_lane_widths_never_size_the_loops_control_plane() -> None:
         script=[True], sleep=lambda _s: None, loops_executors=3, read_agent_queues=lambda: one_seat
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
 
 
 def test_a_brake_keeps_the_whole_loops_pool() -> None:
@@ -276,7 +276,7 @@ def test_a_machine_brake_keeps_one_executor_per_cheap_seat() -> None:
         read_agent_queues=lambda: lanes,
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap", "cheap"]
 
 
 def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
@@ -299,7 +299,7 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
     )
     worker.run()
 
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
     assert set(started) == {"timer/control", "coding", "reviewing"}
 
 
@@ -741,22 +741,27 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
 
     def test_every_admitted_review_seat_gets_a_cheap_executor(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
-        seated = self._admit("reviewing")
+        reviews = self._admit("reviewing")
+        retiring = self._admit("shipping")
 
-        assert self._executors()["cheap"] == len(seated) == 2
+        assert len(reviews) == 2
+        assert len(retiring) == 1
+        assert self._executors()["cheap"] == len(reviews) + len(retiring) == 3
 
     def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
         seated = self._admit("reviewing")
 
-        assert self._executors()["cheap"] == len(seated) == 3
+        assert len(seated) == 3
+        assert self._executors()["cheap"] == len(seated) + 1 == 4
 
     def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
         coding = self._admit("coding")
         reviews = self._admit("reviewing")
         executors = self._executors()
 
-        assert (executors["default"], executors["cheap"]) == (len(coding), len(reviews)) == (4, 2)
+        assert (len(coding), len(reviews)) == (4, 2)
+        assert (executors["default"], executors["cheap"]) == (4, 3)
 
     def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)

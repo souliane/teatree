@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.db.models.lookups import LessThan
 
-from teatree.core.modelkit.phases import cheap_phase_spellings
+from teatree.core.modelkit.phases import CheapClass, cheap_phase_spellings
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
 
 
-def _cheap_phase_q() -> Q:
+def _cheap_phase_q(cheap_class: CheapClass | None = None) -> Q:
     """Every row of the cheap phase class, whichever spelling it was stored with.
 
     The lane's membership test, held apart from any one question about it so the seat
     predicates below share a single hop to the phase vocabulary.
     """
-    return Q(phase__in=cheap_phase_spellings())
+    return Q(phase__in=cheap_class.spellings() if cheap_class is not None else cheap_phase_spellings())
 
 
 def _unseated_q(now: datetime) -> Q:
@@ -36,27 +36,27 @@ def _unseated_q(now: datetime) -> Q:
     return Q(admitted_at__isnull=True) | Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
 
 
-def _lane_occupancy_q(now: datetime, *, cheap: bool) -> Q:
+def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None) -> Q:
     """The rows holding a seat in one cost class's lane at *now*.
 
-    One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
+    One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. The two lanes PARTITION the queue —
-    the expensive one is the exact complement of the cheap one — so an unregistered
+    bound at all. The three lanes PARTITION the queue —
+    the expensive one is the exact complement of both cheap classes — so an unregistered
     phase lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    membership = _cheap_phase_q() if cheap else ~_cheap_phase_q()
+    membership = _cheap_phase_q(cheap_class) if cheap_class is not None else ~_cheap_phase_q()
     return membership & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
 
 
-def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan:
+def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap_class: CheapClass | None) -> LessThan:
     """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
@@ -65,7 +65,7 @@ def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
     occupied = (
-        task_model.objects.filter(_lane_occupancy_q(now, cheap=cheap))
+        task_model.objects.filter(_lane_occupancy_q(now, cheap_class=cheap_class))
         .order_by()
         .values(_lane=models.Value(1))
         .annotate(seats=models.Count("*"))
