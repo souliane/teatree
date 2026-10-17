@@ -49,7 +49,12 @@ def merge_summary_payloads(
     keeps its single model string.
     """
     scenarios: list[ScenarioRecord] = []
-    totals = dict.fromkeys(_TOTALS_KEYS, 0)
+    cached: list[dict[str, Any]] = []
+    has_cache = any(
+        "cached" in payload or (isinstance(payload.get("totals"), Mapping) and "cached" in payload["totals"])
+        for payload in payloads
+    )
+    totals = dict.fromkeys((*_TOTALS_KEYS, "cached") if has_cache else _TOTALS_KEYS, 0)
     for payload in payloads:
         if payload.get("head_sha") != head_sha:
             msg = f"summary shard SHA {payload.get('head_sha')!r} differs from expected {head_sha!r}"
@@ -57,13 +62,15 @@ def merge_summary_payloads(
         shard_scenarios = payload.get("scenarios")
         if isinstance(shard_scenarios, list):
             scenarios.extend(shard_scenarios)
+        if isinstance(payload.get("cached"), list):
+            cached.extend(payload["cached"])
         shard_totals = payload.get("totals")
         if isinstance(shard_totals, Mapping):
-            for key in _TOTALS_KEYS:
+            for key in (*_TOTALS_KEYS, "cached") if has_cache else _TOTALS_KEYS:
                 totals[key] += int(shard_totals.get(key, 0))
     models = sorted({str(payload.get("model", "")) for payload in payloads} - {"", "unknown"})
     outcomes = Counter(str(row.get("outcome", "")) for row in scenarios if isinstance(row, Mapping))
-    return {
+    merged = {
         "generated_at": generated_at,
         "model": ",".join(models) if models else "unknown",
         "head_sha": head_sha,
@@ -73,6 +80,12 @@ def merge_summary_payloads(
         },
         "scenarios": scenarios,
     }
+    if has_cache:
+        trials = {payload.get("trial_count") for payload in payloads}
+        if len(trials) == 1:
+            merged["trial_count"] = trials.pop()
+        merged["cached"] = cached
+    return merged
 
 
 def merge_summary_json(inputs: list[str], *, head_sha: str, generated_at: str) -> str:

@@ -47,6 +47,8 @@ class ScenarioRecord(TypedDict, total=False):
     triage_class: str | None
     outcome: str
     advisory: bool
+    content_key: str
+    cache_eligible: bool
 
 
 class TriageClass(StrEnum):

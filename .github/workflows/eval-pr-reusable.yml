@@ -40,9 +40,9 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED.
+#   A validated cached pass counts as coverage without a fresh execution.
 #   ZERO-IS-RED closes the last vacuous gap: when `detect` promised scenarios
-#   (`run=true`) the eval job asserts it executed >=1 — a run that was SUPPOSED
-#   to execute scenarios but executed ZERO fails, never passes green.
+#   (`run=true`) the eval job asserts it invoked >=1 scenario — an empty selection fails.
 #
 # SCENARIO-REACHABILITY (advisory, F12 / #3566)
 #   The `detect` job runs `t3 eval reachability` on every PR: it walks every
@@ -262,6 +262,43 @@ jobs:
             fi
           done
           echo "All asserted scenarios are discovered."
+      - name: Check verdict cache availability
+        id: verdict-cache-availability
+        run: |
+          if uv run t3 eval verdict-cache --help >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the teatree cache action for overlay callers
+        if: inputs.teatree-repo != '' && steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: |
+          mkdir -p .github/actions/eval-verdict-cache
+          cp teatree-upstream/.github/actions/eval-verdict-cache/action.yml .github/actions/eval-verdict-cache/action.yml
+      - name: Restore latest main eval verdicts
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-main-
+      - name: Keep main verdicts for merge
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
+            cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
+            rm "$RUNNER_TEMP/eval-verdicts.json"
+          fi
+      - name: Restore PR eval verdicts
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
+      - name: Combine PR and main verdicts
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
       # the positional NAME filter runs one scenario, so the comma-joined detect
       # list is looped one scenario per `t3 eval run <name>` — each at its OWN
@@ -311,6 +348,10 @@ jobs:
             : > "$SUMMARY"
             rc=0
             ran=0
+            CACHE_ARGS=()
+            if [ "${{ steps.verdict-cache-availability.outputs.enabled }}" = "true" ]; then
+              CACHE_ARGS=(--verdict-cache "$RUNNER_TEMP/eval-verdicts.json")
+            fi
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"
@@ -322,7 +363,9 @@ jobs:
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" \
+                --summary-json "$RUNNER_TEMP/eval-verdict-rows-$name.json" \
+                "${CACHE_ARGS[@]}" 2>&1 \
                 | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || rc=$?
               if [ -f "$RUNNER_TEMP/eval-summary-$name.md" ]; then
                 cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
@@ -346,6 +389,12 @@ jobs:
               echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
+      - name: Record and save eval verdicts
+        if: success() && steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: ./.github/actions/eval-verdict-cache
+        with:
+          cache-key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
       # publish-safe dashboard; the transcript stays private. It runs before the

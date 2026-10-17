@@ -12,9 +12,11 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.eval.app_helpers import (
+    BenchmarkSelection,
     reject_multi_trial_with_model_override,
     require_api_backend_for_fresh_run,
     require_metering_backend_for_cost_bounds,
+    resolve_benchmark_selection,
     resolve_escalation,
 )
 from teatree.cli.eval.single_trial import EscalationConfig
@@ -160,3 +162,22 @@ class TestModelOverrideCannotSilentlyDropTrials:
 
     def test_trials_without_a_model_override_is_allowed(self) -> None:
         reject_multi_trial_with_model_override(model=None, trials=5)
+
+
+def test_resolve_backend_and_metering_preserves_run_selection() -> None:
+    cases = [
+        (TRANSCRIPT_BACKEND, False, None, None, 1, (TRANSCRIPT_BACKEND, False)),
+        (TRANSCRIPT_BACKEND, True, None, "a,b", 1, (API_BACKEND, True)),
+        (ANTHROPIC_API_BACKEND, False, "one", None, 1, (ANTHROPIC_API_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, "one", None, 1, (API_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, None, None, 3, (TRANSCRIPT_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, None, "a,b", 1, (TRANSCRIPT_BACKEND, True)),
+        (PYDANTIC_AI_BACKEND, False, None, None, 1, (PYDANTIC_AI_BACKEND, False)),
+        (PYDANTIC_AI_BACKEND, False, "one", None, 1, (PYDANTIC_AI_BACKEND, True)),
+    ]
+    for backend, benchmark, model_override, models, trials, expected in cases:
+        selection = BenchmarkSelection(models=models, model_override=model_override, benchmark_html=None)
+        assert selection.resolve_backend_and_metering(backend, benchmark=benchmark, trials=trials) == expected
+
+    preset = resolve_benchmark_selection(benchmark=False, model=None, models=None, preset="baseline", html_out=None)
+    assert preset.resolve_backend_and_metering(TRANSCRIPT_BACKEND, benchmark=False, trials=1) == (API_BACKEND, True)

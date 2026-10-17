@@ -1,0 +1,56 @@
+name: Record and save eval verdicts
+description: Record clean single-trial passes and save a merged Actions cache ledger.
+inputs:
+  cache-key:
+    description: Unique key for this run's saved ledger.
+    required: true
+  run-url:
+    description: Actions run URL attached to recorded verdicts.
+    required: true
+  summary-directory:
+    description: Directory of weekly shard summaries; empty selects local verdict rows.
+    required: false
+    default: ''
+  refresh-main:
+    description: Refresh latest main ledger after a long eval before saving.
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Record clean eval verdicts
+      shell: bash
+      env:
+        RUN_URL: ${{ inputs.run-url }}
+        SUMMARY_DIRECTORY: ${{ inputs.summary-directory }}
+      run: |
+        if [ -n "$SUMMARY_DIRECTORY" ]; then
+          mkdir -p "$SUMMARY_DIRECTORY"
+          summaries=("$SUMMARY_DIRECTORY")
+        else
+          shopt -s nullglob
+          summaries=("$RUNNER_TEMP"/eval-verdict-rows-*.json)
+        fi
+        uv run t3 eval verdict-cache record "$RUNNER_TEMP/eval-verdicts.json" "${summaries[@]}" --run-url "$RUN_URL"
+    - name: Keep recorded verdicts
+      if: inputs.refresh-main == 'true'
+      shell: bash
+      run: |
+        cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-current.json"
+        rm "$RUNNER_TEMP/eval-verdicts.json"
+    - name: Refresh latest main eval verdicts
+      if: inputs.refresh-main == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.temp }}/eval-verdicts.json
+        key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: eval-verdicts-main-
+    - name: Merge latest main eval verdicts
+      if: inputs.refresh-main == 'true'
+      shell: bash
+      run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-current.json"
+    - name: Save eval verdicts
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.temp }}/eval-verdicts.json
+        key: ${{ inputs.cache-key }}

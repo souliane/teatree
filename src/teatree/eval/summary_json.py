@@ -28,9 +28,10 @@ from pathlib import Path
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.artifact_redaction import write_artifact
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.discovery import find_spec
 from teatree.eval.harness_failure import measured_nothing
-from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalSpec
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, CachedPass, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
 from teatree.eval.triage import ScenarioRecord, ScenarioTriage, classify_red
@@ -48,6 +49,13 @@ def scenario_version(spec: EvalSpec) -> str:
 
 
 AnyResult = ScenarioResult | PassAtKResult
+
+
+@dataclasses.dataclass(frozen=True)
+class SummaryCacheData:
+    keys: Mapping[str, str]
+    cached: Sequence[CachedPass]
+    backend: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -201,6 +209,7 @@ def render_summary_json(
     head_sha: str,
     generated_at: str,
     escalations: Mapping[str, str] | None = None,
+    cache: SummaryCacheData | None = None,
 ) -> str:
     """Render the publish-safe per-scenario JSON (§2.4); ``head_sha``/``generated_at`` are injected.
 
@@ -209,8 +218,20 @@ def render_summary_json(
     the single-trial ``list[ScenarioResult]`` or the multi-trial
     ``Sequence[PassAtKResult]``.
     """
+    cache = cache or SummaryCacheData({}, ())
     rows = [_row(result) for result in results]
     scenario_rows = [row.as_json(escalation=(escalations or {}).get(row.name)) for row in rows]
+    for result, row in zip(results, scenario_rows, strict=True):
+        if key := cache.keys.get(row["name"]):
+            row["content_key"] = key
+            row["cache_eligible"] = (
+                isinstance(result, ScenarioResult)
+                and not result.skipped
+                and not result.run.is_error
+                and result.run.fell_back is not True
+                and bool(result.run.tool_calls or result.run.text_blocks)
+                and (cache.backend != API_BACKEND or result.run.cost_usd > 0)
+            )
     counts = Counter(row["outcome"] for row in scenario_rows)
     totals = {
         "total": len(rows),
@@ -218,20 +239,27 @@ def render_summary_json(
         "failed": sum(1 for r in rows if r.verdict == "fail"),
         "skipped": sum(1 for r in rows if r.verdict == "skip"),
         "incomplete": sum(1 for r in rows if r.verdict == "incomplete"),
+        "cached": len(cache.cached),
     }
     payload = {
         "generated_at": generated_at,
         "model": _model_of(results),
         "head_sha": head_sha,
+        "trial_count": 1 if not results or isinstance(results[0], ScenarioResult) else results[0].trials,
         "totals": totals,
         "outcome_counts": {outcome: counts[outcome] for outcome in _OUTCOMES},
         "scenarios": scenario_rows,
+        "cached": [item.as_json() for item in cache.cached],
     }
     return json.dumps(payload, indent=2)
 
 
 def write_summary_json(
-    results: Sequence[AnyResult], path: Path, *, escalations: Mapping[str, str] | None = None
+    results: Sequence[AnyResult],
+    path: Path,
+    *,
+    escalations: Mapping[str, str] | None = None,
+    cache: SummaryCacheData | None = None,
 ) -> None:
     """Resolve ``head_sha`` (GitLab or GitHub env) and write the JSON.
 
@@ -246,5 +274,6 @@ def write_summary_json(
             head_sha=next((os.environ[name] for name in _HEAD_SHA_ENV_VARS if os.environ.get(name)), ""),
             generated_at=datetime.now(UTC).isoformat(),
             escalations=escalations,
+            cache=cache,
         ),
     )

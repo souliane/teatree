@@ -9,7 +9,9 @@ history/regression gates. The multi-trial and model-matrix shapes live in
 """
 
 import dataclasses
+import json
 import sys
+from html import escape
 from pathlib import Path
 
 import typer
@@ -39,11 +41,11 @@ from teatree.eval.backends import (
     UnknownBackendError,
     make_runner,
 )
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import CachedPass, EvalSpec
 from teatree.eval.parallel import run_specs
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_html, render_json, render_text
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
-from teatree.eval.summary_json import write_summary_json
+from teatree.eval.summary_json import SummaryCacheData, write_summary_json
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
 __all__ = ["EscalationConfig", "SingleTrialGates", "make_escalation_runner", "run_single_trial"]
@@ -87,6 +89,49 @@ def make_escalation_runner(
     )
 
 
+def _make_single_runner(backend: str, params: ApiRunnerParams, transcript_dir: Path | None) -> EvalRunner:
+    try:
+        return make_runner(backend, params, transcript_dir=transcript_dir)
+    except UnknownBackendError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+
+
+def _emit_single_results(results: list[ScenarioResult], cached: list[CachedPass], output_format: str) -> None:
+    renderers = {"json": render_json, "html": render_html}
+    rendered = renderers.get(output_format, render_text)(results)
+    if output_format == "json" and cached:
+        payload = json.loads(rendered)
+        payload["cached"] = [item.as_json() for item in cached]
+        typer.echo(json.dumps(payload))
+        return
+    if output_format == "html" and cached:
+        items = "".join(
+            f"<li>{escape(item.name)} (key {escape(item.content_key)}, from run {escape(item.run_url)})</li>"
+            for item in cached
+        )
+        rendered = rendered.replace("</body>", f"<section><h2>Cached passes</h2><ul>{items}</ul></section>\n</body>")
+    typer.echo(rendered, nl=output_format != "html")
+    if output_format == "text":
+        for item in cached:
+            typer.echo(f"CACHED PASS {item.name} (key {item.content_key}, from run {item.run_url})")
+
+
+def _persist_all_cached(cached_specs: list[EvalSpec], gates: SingleTrialGates, max_turns: int | None) -> None:
+    if gates.persist:
+        finalize_single_run(
+            [],
+            specs=[],
+            cached_specs=cached_specs,
+            max_turns=max_turns,
+            persist=True,
+            baseline=False,
+            gate_regressions=False,
+            gate_cost_regression=False,
+            cost_regression_tolerance=gates.cost_regression_tolerance,
+        )
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval run` value into the single-pass path.
     specs: list[EvalSpec],
@@ -106,6 +151,9 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     gates: SingleTrialGates,
     escalation: EscalationConfig | None = None,
     summary_json: Path | None = None,
+    cached: list[CachedPass] | None = None,
+    cached_specs: list[EvalSpec] | None = None,
+    content_keys: dict[str, str] | None = None,
 ) -> None:
     """Run every spec once, render, drop the per-run artifacts, and gate the result.
 
@@ -119,29 +167,33 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     ``escalate_trials`` more times. A recovered scenario clears the lane gate but
     is recorded as FLAKY, separate from clean PASS.
     """
-    try:
-        runner = make_runner(
-            backend,
-            ApiRunnerParams(
-                max_turns_override=max_turns,
-                require_executed=require_executed,
-                max_budget_usd=max_budget_usd,
-                effort=effort,
-            ),
-            transcript_dir=transcript_dir,
-        )
-    except UnknownBackendError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from None
+    cached = cached or []
+    cached_specs = cached_specs or []
+    content_keys = content_keys or {}
+    reports = RunReportPaths(transcript_html, summary_md, summary_json)
+    if not specs and cached:
+        _emit_single_results([], cached, output_format)
+        reports.write_single_trial([], cached=cached, content_keys=content_keys, backend=backend)
+        _persist_all_cached(cached_specs, gates, max_turns)
+        return
+    runner = _make_single_runner(
+        backend,
+        ApiRunnerParams(
+            max_turns_override=max_turns,
+            require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort,
+        ),
+        transcript_dir,
+    )
     try:
         runs = run_specs(runner, specs, parallel=parallel)
     except CreditExhaustedError as exc:
         typer.echo(f"ABORTED: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
-    renderers = {"json": render_json, "html": render_html}
-    typer.echo(renderers.get(output_format, render_text)(results))
-    RunReportPaths(transcript_html, summary_md, summary_json).write_single_trial(results)
+    _emit_single_results(results, cached, output_format)
+    reports.write_single_trial(results, cached=cached, content_keys=content_keys, backend=backend)
     if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     _exit_when_the_usage_limit_ran_nothing(results)
@@ -167,12 +219,14 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
                 results,
                 summary_json,
                 escalations={outcome.spec_name: outcome.classification for outcome in escalation_report.outcomes},
+                cache=SummaryCacheData(content_keys, cached, backend),
             )
         if escalation_report.hard_red:
             sys.exit(1)
     elif finalize_single_run(
         results,
         specs=specs,
+        cached_specs=cached_specs,
         max_turns=max_turns,
         persist=gates.persist,
         baseline=gates.baseline,

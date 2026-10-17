@@ -33,6 +33,27 @@ The harness is intentionally tiny — a YAML loader, a stream-json parser, and a
 in-process wrapper around the Claude Agent SDK. The runner returns an `EvalRun`
 dataclass and the matchers operate on plain captured tool calls.
 
+## Passing verdict reuse
+
+A fresh single-trial run can read a JSON ledger with `--verdict-cache <path>`.
+The content key covers the resolved scenario, graded skill prompt, declared fixture
+skills, CLI and harness code, backend package version, and run settings. Clean
+passes younger than 30 days are reused; failures, flaky recoveries, skipped,
+unmetered `api` runs, and multi-trial verdicts are never stored. Passes from
+`anthropic_api` and `pydantic_ai` can be stored without a cost figure. `--summary-json` lists
+newly run scenarios in `scenarios[]`, reused passes in `cached[]`, and their count
+in `totals.cached`. The Markdown dashboard labels cached passes with their key
+and source run. To update a ledger from sanitized single-trial summaries, run
+`t3 eval verdict-cache record <ledger> <summary.json> --run-url <run-url>`.
+To combine passing entries from multiple ledgers, run
+`t3 eval verdict-cache merge <ledger> <source.json> [source.json ...]`.
+
+The PR and scheduled single-trial workflows restore a branch-scoped Actions cache,
+pass the ledger into the Docker staging mount, and save newly recorded passes.
+The container cannot write back to the host ledger; only requested redacted
+reports leave staging. Manual, pass@k, matrix, benchmark, transcript and
+history-gated runs execute fresh.
+
 ## Directory layout
 
 The **eval definitions** (data) live here, in the top-level `evals/`:

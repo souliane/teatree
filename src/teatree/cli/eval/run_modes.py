@@ -222,10 +222,16 @@ def persist_single(
     specs: list[EvalSpec],
     max_turns: int | None,
     baseline: bool,
+    cached_specs: list[EvalSpec] | None = None,
 ) -> "EvalRunRecord":
     from teatree.eval.persistence import persist_run  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    record = persist_run(results, model=run_model_label(specs), max_turns_override=max_turns)
+    record = persist_run(
+        results,
+        model=run_model_label([*specs, *(cached_specs or [])]),
+        max_turns_override=max_turns,
+        cached_specs=cached_specs or (),
+    )
     if baseline:
         record.mark_baseline()
     return record
@@ -442,6 +448,7 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     gate_cost_regression: bool,
     cost_regression_tolerance: float,
     gate_cost_bounds: bool = False,
+    cached_specs: list[EvalSpec] | None = None,
 ) -> bool:
     """Persist a single-trial run and run the score + cost baseline + cost-bounds gates.
 
@@ -468,7 +475,7 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     cost_regressed = False
     cost_bounds_failed = False
     if persist:
-        record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
+        record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline, cached_specs=cached_specs)
         regressed = RegressionGates.scores(record, enabled=gate_regressions)
         cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance

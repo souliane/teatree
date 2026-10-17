@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from teatree.eval.discovery import find_spec
-from teatree.eval.models import COST_SOURCE_UNKNOWN, EvalRun
+from teatree.eval.models import COST_SOURCE_UNKNOWN, CachedPass, EvalRun
 from teatree.eval.report import ScenarioResult, cost_cell
 
 if TYPE_CHECKING:
@@ -123,7 +123,9 @@ def _model_of(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> 
     return "unknown"
 
 
-def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
+def render_summary_markdown(
+    results: Sequence[ScenarioResult] | Sequence["PassAtKResult"], *, cached: Sequence[CachedPass] = ()
+) -> str:
     """Render a SANITIZED aggregate markdown dashboard for a single- or multi-trial run.
 
     A header (overall pass/fail/skip counts, total metered cost, model) plus a
@@ -140,6 +142,7 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     rows = [
         _row_from_scenario(item) if isinstance(item, ScenarioResult) else _row_from_pass_at_k(item) for item in results
     ]
+    rows.extend(_SummaryRow(item.name, item.lane, "cached pass", "cached", "—") for item in cached)
     passed, failed, skipped, incomplete = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
     model = _model_of(results)
@@ -147,7 +150,7 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (
         f"**{passed} passed**, **{failed} failed**, **{skipped} skipped**, "
-        f"**{incomplete} incomplete** (of {len(rows)}) "
+        f"**{incomplete} incomplete**, **{len(cached)} cached** (of {len(rows)}) "
         f"· model `{model}` · cost ${total_cost_usd:.4f}{cost_note}"
     )
     table = [
@@ -155,4 +158,5 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
         "| --- | --- | --- | --- | --- |",
         *(f"| {row.scenario} | {row.lane} | {_verdict_cell(row)} | {row.trials} | {row.cost} |" for row in rows),
     ]
-    return "\n".join([header, "", *table, ""])
+    sources = [f"- {item.name}: key `{item.content_key}` from {item.run_url}" for item in cached]
+    return "\n".join([header, "", *table, "", *sources, ""])

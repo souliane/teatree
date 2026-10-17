@@ -22,6 +22,7 @@ from teatree.eval.models import (
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.eval.summary_markdown import _lane_of, _model_of, render_summary_markdown
+from teatree.eval.verdict_cache import CachedPass
 
 SENTINEL = "SECRET_BUNDLE_SENTINEL_dQw4w9"
 _SENTINEL_MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value=SENTINEL)
@@ -116,6 +117,14 @@ class TestSingleTrialSummary:
     def test_model_rendered_in_header(self) -> None:
         md = render_summary_markdown([_passing_result("alpha")])
         assert "claude-sonnet-4-6" in md
+
+
+def test_cached_row_uses_trials_and_cost_columns_for_their_meanings() -> None:
+    cached = CachedPass("one", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head")
+    markdown = render_summary_markdown([], cached=[cached])
+    assert "| one | clean_room | cached pass | cached | — |" in markdown
+    assert "key `" + "a" * 64 + "`" in markdown
+    assert "https://example.test/run" in markdown
 
 
 class TestMultiTrialSummary:
