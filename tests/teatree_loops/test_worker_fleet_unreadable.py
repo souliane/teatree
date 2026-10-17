@@ -23,11 +23,12 @@ class _FakeExecutor:
 
 
 class _FakeHandle:
-    def __init__(self) -> None:
+    def __init__(self, executor: _FakeExecutor) -> None:
         self.joined = False
+        self.executor = executor
 
     def is_alive(self) -> bool:
-        return not self.joined
+        return not self.joined and self.executor.running
 
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
@@ -43,8 +44,8 @@ def _worker(
     remaining = iter(verdicts)
     worker: LoopWorker | None = None
 
-    def spawn(_executor: object) -> _FakeHandle:
-        handle = _FakeHandle()
+    def spawn(executor: _FakeExecutor) -> _FakeHandle:
+        handle = _FakeHandle(executor)
         handles.append(handle)
         return handle
 
