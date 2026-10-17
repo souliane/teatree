@@ -5,20 +5,27 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.db import OperationalError, connection
+from django.test import TestCase, TransactionTestCase, override_settings
 
+from teatree.core.gates import pr_budget_gate
 from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.management.commands._ship import gates as ship_gates
+from teatree.core.models import PullRequest, Session, Ticket, Worktree
 
-from ._shared import _MOCK_OVERLAY, _SHIP_BACKEND, _shippable_ticket
+from ._shared import (
+    _CONFORMING_COMMIT,
+    _MOCK_OVERLAY,
+    _PR_URL,
+    _SHIP_BACKEND,
+    _code_host,
+    _gates_pass,
+    _ship_externals,
+    _shippable_ticket,
+)
 
 pytestmark = pytest.mark.usefixtures("readable_ship_tree")
-
-# A commit subject + body that satisfy the deterministic MR title/description
-# gate (#1540), so a test exercising an unrelated invariant (FSM reconcile, no
-# raw transition) is not tripped by the now-active format check.
-_CONFORMING_COMMIT = ("feat(ship): recover and ship", "## What\nx\n\n## Why\ny")
 
 
 class TestPrCreateSyncShip(TestCase):
@@ -28,47 +35,206 @@ class TestPrCreateSyncShip(TestCase):
     def _inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
-    def test_sync_runs_execute_ship_inline(self) -> None:
+    def test_sync_pushes_opens_the_pr_and_requests_review(self) -> None:
         ticket = _shippable_ticket()
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+        host = _code_host()
 
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "validate_pr_metadata", return_value=None),
-            patch("teatree.core.tasks.execute_ship", ship_mock),
-        ):
-            result = cast(
-                "dict[str, object]",
-                call_command("pr", "create", str(ticket.id), sync=True),
-            )
+        with _ship_externals(host) as push, _gates_pass():
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
 
-        ship_mock.call.assert_called_once_with(ticket.pk)
-        assert result["synced"] is True
-        assert result["ok"] is True
-        assert result["detail"] == "PR opened"
-        assert result["ticket_id"] == ticket.pk
+        push.assert_called_once()
+        assert result == {
+            "ticket_id": ticket.pk,
+            "state": Ticket.State.REVIEW_REQUESTED,
+            "synced": True,
+            "ok": True,
+            "detail": _PR_URL,
+        }
 
     def test_sync_reports_ship_failure_without_raising(self) -> None:
         ticket = _shippable_ticket()
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
+        host = _code_host()
+
+        with _ship_externals(host) as push, _gates_pass():
+            push.return_value = MagicMock(ok=False, failure="rejected", detail="push rejected")
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        host.create_pr.assert_not_called()
+        assert result["synced"] is True
+        assert result["ok"] is False
+        assert "push rejected" in str(result["detail"])
+        assert result["state"] == Ticket.State.SELF_REVIEWED
+
+    def test_unexpected_preflight_error_is_structured(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
 
         with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "validate_pr_metadata", return_value=None),
-            patch("teatree.core.tasks.execute_ship", ship_mock),
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch(
+                "teatree.core.models.ticket_scheduling.collect_dirty_worktree_paths",
+                side_effect=RuntimeError("git status failed"),
+            ),
         ):
-            result = cast(
-                "dict[str, object]",
-                call_command("pr", "create", str(ticket.id), sync=True),
-            )
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
 
         assert result["synced"] is True
         assert result["ok"] is False
-        assert result["detail"] == "push rejected"
+        assert "git status failed" in str(result["detail"])
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_sync_adopts_pr_url_recorded_during_gates(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def record_existing_pr(*_args: object, **_kwargs: object) -> None:
+            Ticket.objects.filter(pk=ticket.pk).update(
+                extra={"pr_url_by_branch": {"feature-branch": _PR_URL}, "pr_urls": [_PR_URL]}
+            )
+
+        with (
+            _ship_externals(host) as push,
+            patch.object(pr_command, "_run_visual_qa_gate", side_effect=record_existing_pr),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+        host.get_pr_open_state.assert_not_called()
+
+    def test_sync_retry_adopts_its_recorded_pr_with_budget_one(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch.object(ship_gates.git, "remote_slug", return_value="acme/backend"),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+            patch.object(pr_budget_gate, "cached_forge_open_pr_urls_for_ticket", return_value=set()),
+            patch.object(Ticket, "request_review", side_effect=OperationalError("database is locked")),
+        ):
+            first = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        with (
+            _ship_externals(host) as retry_push,
+            _gates_pass(),
+            patch.object(ship_gates.git, "remote_slug", return_value="acme/backend"),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+            patch.object(pr_budget_gate, "cached_forge_open_pr_urls_for_ticket", return_value=set()),
+        ):
+            second = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert first["ok"] is False
+        assert (
+            first["detail"]
+            == "PR https://github.com/acme/backend/pull/7 opened but the FSM advance failed: database is locked"
+        )
+        assert second["ok"] is True
+        assert second["detail"] == _PR_URL
+        push.assert_called_once()
+        retry_push.assert_not_called()
+        host.create_pr.assert_called_once()
+
+    def test_sync_refreshes_ticket_before_preflight(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def reopen_during_gates(*_args: object, **_kwargs: object) -> None:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+
+        with (
+            _ship_externals(host) as push,
+            patch.object(pr_command, "_run_visual_qa_gate", side_effect=reopen_during_gates),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["allowed"] is False
+        assert "merged" in str(result["error"])
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_commit_error_after_pr_open_reports_the_url(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with (
+            _ship_externals(host),
+            _gates_pass(),
+            patch.object(Ticket, "request_review", side_effect=OperationalError("database is locked")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is False
+        assert _PR_URL in str(result["detail"])
+        assert "database is locked" in str(result["detail"])
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
+
+    def test_concurrent_completed_ship_reports_success(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def open_after_concurrent_ship(_spec: object) -> dict[str, str]:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_REQUESTED)
+            return {"web_url": _PR_URL}
+
+        host.create_pr.side_effect = open_after_concurrent_ship
+        with _ship_externals(host), _gates_pass():
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
+
+    def test_sync_title_ships_without_staying_pinned_on_the_ticket(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with _ship_externals(host), _gates_pass():
+            call_command("pr", "create", str(ticket.id), sync=True, title="feat(ship): pinned title")
+
+        assert host.create_pr.call_args.args[0].title == "feat(ship): pinned title"
+        ticket.refresh_from_db()
+        assert "pr_title_override" not in ticket.extra
+
+    def test_sync_title_is_not_left_pinned_when_the_push_fails(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with _ship_externals(host) as push, _gates_pass():
+            push.return_value = MagicMock(ok=False, failure="rejected", detail="push rejected")
+            call_command("pr", "create", str(ticket.id), sync=True, title="feat(ship): pinned title")
+
+        ticket.refresh_from_db()
+        assert "pr_title_override" not in ticket.extra
+
+    def test_pr_opened_but_reopened_meanwhile_reports_failure_and_keeps_the_url(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def _create_while_reopened(_spec: object) -> dict[str, str]:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.WORK_STARTED)
+            return {"web_url": _PR_URL}
+
+        host.create_pr.side_effect = _create_while_reopened
+        with _ship_externals(host), _gates_pass():
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["ok"] is False
+        assert _PR_URL in str(result["detail"])
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
 
     def test_async_default_does_not_call_execute_ship_inline(self) -> None:
         ticket = _shippable_ticket()
@@ -111,12 +277,9 @@ class TestPrCreateSyncShip(TestCase):
             branch="feature-branch",
             extra={"worktree_path": "/tmp/backend"},
         )
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
         with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            _ship_externals(_code_host()),
             patch.object(_pr_preview.git, "last_commit_message", return_value=_CONFORMING_COMMIT),
-            patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
                 "dict[str, object]",
@@ -128,7 +291,7 @@ class TestPrCreateSyncShip(TestCase):
         assert result.get("allowed") is not False, result
         assert result["ok"] is True
         ticket.refresh_from_db()
-        assert ticket.state in {Ticket.State.PR_OPENED, Ticket.State.SELF_REVIEWED}
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_skip_validation_still_enforces_mr_format_check(self) -> None:
         """Skip the heavy gates, still enforce the MR format check.
@@ -146,13 +309,11 @@ class TestPrCreateSyncShip(TestCase):
             branch="feature-branch",
             extra={"worktree_path": "/tmp/backend"},
         )
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+        host = _code_host()
         fmt_error = pr_command.PrValidationError(error="PR validation failed", details=["bad title"])
         with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            _ship_externals(host) as push,
             patch.object(pr_command, "validate_pr_metadata", return_value=fmt_error) as fmt,
-            patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
                 "dict[str, object]",
@@ -160,7 +321,8 @@ class TestPrCreateSyncShip(TestCase):
             )
         fmt.assert_called_once()
         assert result == fmt_error
-        ship_mock.call.assert_not_called()
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
 
     def test_skip_mr_format_check_disables_the_format_check_too(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
@@ -171,12 +333,9 @@ class TestPrCreateSyncShip(TestCase):
             branch="feature-branch",
             extra={"worktree_path": "/tmp/backend"},
         )
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
         with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            _ship_externals(_code_host()),
             patch.object(pr_command, "validate_pr_metadata") as fmt,
-            patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
                 "dict[str, object]",
@@ -208,7 +367,7 @@ class TestPrCreateSyncShip(TestCase):
 
     def _assert_skip_validation_post_ship_no_raw_transition(
         self, post_state: Ticket.State, expected_state: Ticket.State
-    ) -> None:
+    ) -> dict[str, object]:
         """``--skip-validation`` from a post-ship state never raises raw (#694/#748).
 
         It must degrade to a structured dict result rather than raising a
@@ -218,8 +377,7 @@ class TestPrCreateSyncShip(TestCase):
         genuine terminal (no reconcile source) so it stays unchanged;
         ``REVIEW_REQUESTED`` is now a recoverable source (#798) so a gate/auth-
         passing ticket reconciles ``REVIEW_REQUESTED → SELF_REVIEWED`` and re-ships
-        (``execute_ship`` is state-guarded/idempotent). The safety
-        invariant (no raw raise) holds for both.
+        back to ``REVIEW_REQUESTED``. The safety invariant (no raw raise) holds for both.
         """
         ticket = Ticket.objects.create(overlay="test", state=post_state)
         Worktree.objects.create(
@@ -229,12 +387,9 @@ class TestPrCreateSyncShip(TestCase):
             branch="feature-branch",
             extra={"worktree_path": "/tmp/backend"},
         )
-        ship_mock = MagicMock()
-        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
         with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            _ship_externals(_code_host()),
             patch.object(_pr_preview.git, "last_commit_message", return_value=_CONFORMING_COMMIT),
-            patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             # Must NOT raise TransitionNotAllowed — structured result only.
             result = cast(
@@ -245,11 +400,16 @@ class TestPrCreateSyncShip(TestCase):
         assert isinstance(result, dict)
         ticket.refresh_from_db()
         assert ticket.state == expected_state
+        return result
 
     def test_skip_validation_from_in_review_recovers_and_ships(self) -> None:
         # #798: REVIEW_REQUESTED is now a recoverable reconcile source — a stranded
         # ticket re-ships instead of dead-ending. Still no raw transition.
-        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.REVIEW_REQUESTED, Ticket.State.PR_OPENED)
+        result = self._assert_skip_validation_post_ship_no_raw_transition(
+            Ticket.State.REVIEW_REQUESTED, Ticket.State.REVIEW_REQUESTED
+        )
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
 
     def test_skip_validation_from_merged_never_raises_raw_transition(self) -> None:
         # MERGED is a genuine terminal (not a reconcile source) — unchanged.
@@ -274,10 +434,8 @@ class TestPrCreateSyncShipAtomic(TestCase):
     structured CLI result, not masked as a bare ``rc=1`` — reverting
     the surfacing fix turns that assertion RED.
 
-    ``execute_ship`` is deliberately NOT mocked — the real task path is
-    what masks the error and commits the partial state, so a faithful
-    repro must exercise it. Only the unstoppable external (the ``git
-    push`` subprocess inside the ship runner) is stubbed to raise.
+    The sync path runs the real ``ShipExecutor``. Only the external
+    ``git push`` subprocess is stubbed to raise.
     """
 
     @override_settings(**_SHIP_BACKEND)
@@ -326,20 +484,6 @@ class TestPrCreateSyncShipAtomic(TestCase):
 
     @override_settings(**_SHIP_BACKEND)
     def test_ship_executor_structured_failure_is_atomic(self) -> None:
-        """#860: a non-raising ``RunnerResult(ok=False)`` must roll back too.
-
-        ``#838`` only treats an *exception* as the rollback trigger.
-        ``ShipExecutor.run()`` also has non-raising precondition exits
-        (``"no code host configured"``, ``"no worktree on ticket"``,
-        ``"branch ... already merged into base"``) that return
-        ``RunnerResult(ok=False)`` instead of raising. ``execute_ship``
-        then returns a normal ``{"ok": False}`` dict, its
-        ``transaction.atomic()`` commits, and pre-fix the outer
-        ``_ship_sync`` transaction committed too — leaving the FSM in a
-        partial ``PR_OPENED`` with no push and no PR. This regression drives
-        the structured-failure path through the real (un-mocked)
-        ``execute_ship`` and asserts the FSM is NOT left at ``PR_OPENED``.
-        """
         ticket = _shippable_ticket()
 
         with (
@@ -366,6 +510,37 @@ class TestPrCreateSyncShipAtomic(TestCase):
         # (b) Surfacing: the real precondition cause is visible.
         assert result.get("ok") is False, result
         assert "no code host configured" in str(result.get("detail", "")), result
+
+
+class TestSyncShipIoHoldsNoWriteLock(TransactionTestCase):
+    """At top level ``atomic()`` opens ``BEGIN IMMEDIATE``, so a push inside one stalls every control-DB writer."""
+
+    @override_settings(**_SHIP_BACKEND)
+    def test_push_and_pr_open_run_outside_any_transaction(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+        in_transaction: dict[str, bool] = {}
+
+        def _create_pr(_spec: object) -> dict[str, str]:
+            in_transaction["create_pr"] = connection.in_atomic_block
+            return {"web_url": _PR_URL}
+
+        def _push(**_kwargs: object) -> MagicMock:
+            in_transaction["push"] = connection.in_atomic_block
+            return MagicMock(ok=True)
+
+        host.create_pr.side_effect = _create_pr
+        with _ship_externals(host) as push, _gates_pass():
+            push.side_effect = _push
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert in_transaction == {"push": False, "create_pr": False}
+        assert result["ok"] is True
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert ticket.extra["pr_urls"] == [_PR_URL]
+        assert PullRequest.objects.get(url=_PR_URL).create_verification == PullRequest.CreateVerification.CONFIRMED
+        assert host.create_pr.call_count == 1
 
 
 def _dirty_git_worktree_ticket(tmp_path: Path) -> tuple[Ticket, Path]:

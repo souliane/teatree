@@ -1243,7 +1243,7 @@ class TestShouldCloseTicket:
 class TestShipExecutorHonorsAutoCloseSetting(TestCase):
     """End-to-end: the PR description the ship path sends to the code host.
 
-    Proves the setting is wired through ``_build_pr_spec`` — the exact
+    Proves the setting is wired through ``build_pr_spec`` — the exact
     regression: a True setting + standalone PR must keep ``Closes #N`` so
     the platform auto-closes on merge; an explicit ``more_prs_coming``
     opt-out (umbrella/partial) must rewrite to ``Relates to``.

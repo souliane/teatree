@@ -97,6 +97,7 @@ def check_pr_budget(
     *,
     limit: int | None = None,
     host: "CodeHostBackend | None" = None,
+    shipping_branch: str = "",
 ) -> None:
     """Refuse the impending PR when ``(ticket, repo_slug)`` is at its open-PR budget.
 
@@ -106,6 +107,9 @@ def check_pr_budget(
     raise :class:`PrBudgetExceededError` naming the offending PR URLs and the
     operator escape. *limit* defaults to the effective per-overlay setting;
     passing it explicitly is the test seam.
+
+    A recorded URL for *shipping_branch* is excluded after unioning the sources,
+    since retrying that branch adopts its existing PR. Other branches remain counted.
 
     When *host* is supplied (the repo's code host), a live forge read is unioned
     with the local set as the authoritative third source so a sibling fleet
@@ -128,6 +132,12 @@ def check_pr_budget(
             )
         else:
             urls |= forge_urls
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    by_branch = extra.get("pr_url_by_branch")
+    if shipping_branch and isinstance(by_branch, dict):
+        recorded = by_branch.get(shipping_branch)
+        if isinstance(recorded, str):
+            urls.discard(recorded)
     if len(urls) < effective_limit:
         return
     overlay = ticket.overlay or "<overlay>"

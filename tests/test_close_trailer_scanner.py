@@ -18,7 +18,7 @@ from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import PullRequestSpec
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate, namespace_is_banned, strip_close_trailers
 from teatree.core.models import ConfigSetting, Ticket, Worktree
-from teatree.core.runners.ship import ShipExecutor
+from teatree.core.runners.ship import PrSpecContext, ShipExecutor
 
 
 class TestStripCloseTrailers:
@@ -180,7 +180,7 @@ class TestConfigLoaderDbHome(TestCase):
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestShipExecutorIntegration:
-    """``ShipExecutor._build_pr_spec`` applies the scanner before opening the PR."""
+    """``ShipExecutor.build_pr_spec`` applies the scanner before opening the PR."""
 
     def test_banned_namespace_strips_trailer_from_pr_description(self) -> None:
         ticket = Ticket.objects.create(
@@ -227,12 +227,10 @@ class TestShipExecutorIntegration:
                 return_value=["eng-group/*"],
             ),
         ):
-            spec = ShipExecutor._build_pr_spec(
+            spec = ShipExecutor.build_pr_spec(
                 ticket,
                 FakeHost(),
-                "eng-group/product",
-                "feat-x",
-                {},
+                PrSpecContext("eng-group/product", "feat-x", {}),
             )
 
         assert "Closes #1234" not in spec.description
@@ -280,12 +278,10 @@ class TestShipExecutorIntegration:
                 return_value=["eng-group/*"],
             ),
         ):
-            spec = ShipExecutor._build_pr_spec(
+            spec = ShipExecutor.build_pr_spec(
                 ticket,
                 FakeHost(),
-                "souliane/teatree",
-                "feat-y",
-                {},
+                PrSpecContext("souliane/teatree", "feat-y", {}),
             )
 
         assert "Closes #1234" in spec.description
