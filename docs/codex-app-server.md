@@ -110,11 +110,12 @@ as before, and a marker in the worker's own environment never crosses into the c
 
 The approval and post-tool router subprocesses run with an explicit environment allowlist: runtime paths
 and home from the worker, plus `GH_TOKEN` and `T3_ROUTED_GH_TOKEN_KEY` from the task's dispatch environment.
-The push ownership gate's git probes ignore repository-local program settings for credential helpers,
-SSH commands and external transports. A GitHub credential refusal is a venue fault: the result carries
-`venue_fault: push ownership gate had no usable GitHub credential`, the attempt fails without an owner
-question, and the next route candidate can retry. Testing and debugging rounds on open pull requests
-may issue pushes; a local commit alone only signals landed work.
+The push ownership gate's remote ref and fetch probes run from neutral temporary directories against
+resolved URLs, so checkout-local program settings do not run during those probes. A GitHub credential
+refusal is a venue fault: in coding and debugging, the result sets the boolean
+`push_ownership_venue_fault` to `true`, the attempt fails without an owner question, and the next route
+candidate can retry. Coding and debugging rounds on open pull requests may issue pushes; a local
+commit alone only signals landed work.
 
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
 (one credential writer). When the routed token changes, an idle server is retired and one new server

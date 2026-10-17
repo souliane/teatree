@@ -28,12 +28,7 @@ _BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
 #: corrective retry on the same candidate.
 CANDIDATE_FAULT_KINDS = frozenset(
-    {
-        FailureKind.HARNESS_CRASH,
-        FailureKind.LANDING_UNVERIFIED,
-        FailureKind.RESULT_ERROR,
-        FailureKind.RESUME_REFUSED,
-    }
+    {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 
 
