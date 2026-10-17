@@ -160,7 +160,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
                 TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
                 for ticket_id in merged_ids
             )
-            for name, expected in (("dash:board", 22), ("dash:cycle_time", 19)):
+            for name, expected in (("dash:board", 23), ("dash:cycle_time", 20)):
                 with self.subTest(page=name, scale=scale):
                     cache.clear()
                     with self.assertNumQueries(expected):

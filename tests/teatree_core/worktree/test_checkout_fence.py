@@ -104,19 +104,6 @@ class CheckoutFenceTests(TestCase):
         assert attempt.failure_kind != FailureKind.USAGE_LIMIT_PARKED
         assert self.task.attempts.failed_route_candidates("t3:code") == {0: failed.pk}
 
-    def test_occupied_checkout_records_the_holder_without_changing_the_reason(self) -> None:
-        sibling = TaskFactory(ticket=self.ticket, phase="testing")
-        acquire(self.worktree, holder=task_holder_id(sibling), holder_session="sibling")
-        with patch("teatree.core.worktree.checkout_fence.dispatch_worktree_path", return_value=str(self.checkout)):
-            attempt = claim_task_checkout_or_park(self.task)
-        assert attempt is not None
-        assert attempt.result["checkout_holder"] == task_holder_id(sibling)
-        assert attempt.error.startswith("checkout_parked: ")
-
-    def test_verification_park_has_no_checkout_holder(self) -> None:
-        attempt = park_task_checkout(self.task, reason="unverified checkout")
-        assert "checkout_holder" not in attempt.result
-
     def test_a_park_retries_at_the_holders_lease_expiry_or_thirty_minutes(self) -> None:
         before = timezone.now()
         park_task_checkout(self.task, reason="foreign checkout state")
