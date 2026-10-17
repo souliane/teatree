@@ -17,6 +17,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -51,7 +52,7 @@ from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
 from teatree.loops.enable_verdict import FleetAdmission
-from teatree.loops.executor_thread import build_executor, spawn_executor_thread
+from teatree.loops.executor_thread import Executor, Handle, build_executor, spawn_executor_thread
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
     LOOPS_EXECUTOR_FLOOR,
@@ -62,8 +63,6 @@ from teatree.loops.worker import (
     agent_executor_queues,
     loops_executor_count,
 )
-from teatree.loops.worker import _Executor as Executor
-from teatree.loops.worker import _Handle as Handle
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 from teatree.utils.thread_db import close_thread_db_connections
@@ -691,6 +690,33 @@ def test_sigterm_during_checkpoint_grace_exits_early() -> None:
     assert clock[0] == pytest.approx(2.0)
 
 
+def test_checkpoint_grace_keeps_master_lease_fresh() -> None:
+    clock = [0.0]
+    claims: list[float] = []
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(
+            script=[True] * 10,
+            holder=holder,
+            spawn=lambda executor: _FakeHandle(alive=False) if executor.queue == "loops" else _StuckHandle(),
+            make_executor=_FakeExecutor,
+        ),
+        read_agent_queues=lambda: ("default",),
+        max_respawns=0,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        claim_master=lambda: claims.append(clock[0]),
+        master_refresh_seconds=60.0,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(LoopWorkerExecutorStopError):
+        holder[0].run()
+
+    assert len(claims) >= 6
+    assert max(later - earlier for earlier, later in pairwise(claims)) <= 60.0
+
+
 def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
     clock = [0.0]
     degraded_ready = threading.Event()
@@ -747,6 +773,32 @@ def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
         release.set()
 
     assert beats == [("degraded", False)]
+
+
+def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None:
+    reasons: list[str] = []
+    polls = 0
+
+    def read_admission() -> FleetAdmission:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            return FleetAdmission.ADMITS
+        message = "supervisor failed"
+        raise RuntimeError(message)
+
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(script=[], holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
+        read_admission=read_admission,
+        begin_exit=reasons.append,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(RuntimeError, match="supervisor failed"):
+        holder[0].run()
+
+    assert reasons[0] == "this worker is exiting non-zero: supervisor failed with RuntimeError"
 
 
 def test_a_stop_request_never_announces_a_checkpoint() -> None:
