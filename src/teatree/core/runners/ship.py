@@ -271,6 +271,8 @@ class ShipExecutor(RunnerBase):
     def __init__(self, ticket: "Ticket", *, title_override: str = "") -> None:
         self.ticket = ticket
         self.title_override = title_override
+        self.opened_pr_url = ""
+        self.opened_pr_branch = ""
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
@@ -485,6 +487,8 @@ class ShipExecutor(RunnerBase):
                     f"(expected slug {expected_slug!r} not found in {url!r})"
                 ),
             )
+        self.opened_pr_url = url
+        self.opened_pr_branch = spec.branch
         # #1194 verify-by-re-read: a well-formed URL for the right repo is still
         # not proof the PR is live — re-read it before advancing the FSM. A
         # re-read that 404s means the create silently no-op'd; report failure
@@ -498,6 +502,10 @@ class ShipExecutor(RunnerBase):
         self._record_pr_url(ticket, url, spec.branch)
         logger.info("Ship executor pushed %s and opened PR %s", spec.branch, url)
         return RunnerResult(ok=True, detail=url)
+
+    def record_opened_pr(self) -> None:
+        if self.opened_pr_url:
+            self._record_pr_url(self.ticket, self.opened_pr_url, self.opened_pr_branch)
 
     @staticmethod
     def _check_branch_currency(

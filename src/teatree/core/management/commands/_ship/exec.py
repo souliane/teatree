@@ -6,13 +6,16 @@ transaction open, then commits ``ship()`` + ``request_review()`` in one short bl
 SQLite write lock does not cover push or PR-open I/O, and the FSM moves only once the PR exists.
 """
 
+import logging
 from typing import TypedDict
 
-from django.db import DatabaseError, transaction
+from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import InvalidTransitionError, Ticket
 from teatree.core.runners.ship import ShipExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class ShipEnqueued(TypedDict):
@@ -121,13 +124,14 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
     refused stays recorded, so a re-run adopts it instead of opening a second one.
     """
     opened_pr_url = ""
+    executor = ShipExecutor(ticket, title_override=title)
     try:
         ticket.refresh_from_db()
         try:
             ticket.refuse_unless_shippable()
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             return _gate_failure(ticket, exc)
-        result = ShipExecutor(ticket, title_override=title).run()
+        result = executor.run()
         if not result.ok:
             return _sync_result(ticket, ok=False, detail=result.detail)
         opened_pr_url = result.detail
@@ -140,7 +144,22 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
             return _sync_result(ticket, ok=False, detail=detail)
-    except (RuntimeError, DatabaseError) as exc:
-        detail = f"PR {opened_pr_url} opened but the FSM advance failed: {exc}" if opened_pr_url else str(exc)
+    except Exception as exc:
+        logger.exception("Synchronous ship failed")
+        if executor.opened_pr_url:
+            try:
+                executor.record_opened_pr()
+            except Exception as record_exc:
+                logger.exception("Could not record opened PR")
+                detail = (
+                    f"PR {executor.opened_pr_url} opened but recording it failed: {record_exc}; original failure: {exc}"
+                )
+                return _sync_result(ticket, ok=False, detail=detail)
+        if opened_pr_url:
+            detail = f"PR {opened_pr_url} opened but the FSM advance failed: {exc}"
+        elif executor.opened_pr_url:
+            detail = f"PR {executor.opened_pr_url} opened but ship failed: {exc}"
+        else:
+            detail = str(exc)
         return _sync_result(ticket, ok=False, detail=detail)
     return _sync_result(ticket, ok=True, detail=result.detail)

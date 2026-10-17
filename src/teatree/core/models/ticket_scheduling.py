@@ -345,8 +345,7 @@ class TicketSchedulingModel(TicketFacet):
         get_gate("forced_repro")(self)
 
     def complete_ship_after_pr_open(self: "Ticket") -> None:
-        if self.state == self.State.SELF_REVIEWED:
-            self.ship()
+        self.ship()
         self.request_review()
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
