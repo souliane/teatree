@@ -271,20 +271,28 @@ def test_real_pytest_refuses_missing_shared_pool(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
-    "worker_args",
+    ("worker_args", "worker_cap"),
     [
-        ("-n", "3"),
-        ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"),
-        ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"),
+        (("-n", "3"), None),
+        (("-n", "auto"), None),
+        ((), None),
+        ((), "3"),
+        (("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"), None),
+        (("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"), None),
     ],
 )
-def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path, worker_args: tuple[str, ...]) -> None:
+def test_real_pytest_caps_every_worker_request_to_free_slots(
+    tmp_path: Path, worker_args: tuple[str, ...], worker_cap: str | None
+) -> None:
     held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY - 1) if _BOX_CAPACITY > 1 else None
     try:
+        env = _standalone_pytest_env(tmp_path)
+        if worker_cap is not None:
+            env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = worker_cap
         result = subprocess.run(
             _pytest_command(*worker_args, "-vv", _BOUNDED_NODE),
             cwd=_REPO,
-            env=_standalone_pytest_env(tmp_path),
+            env=env,
             capture_output=True,
             text=True,
             timeout=45,
