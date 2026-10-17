@@ -2,6 +2,12 @@
 {% block title %}Board{% endblock %}
 {% block heading %}Board{% endblock %}
 {% block content %}
+  <section class="band">
+    <h2>Factory speed</h2>
+    <p>Last {{ merge_summary.merged_count }} merged pull requests: {{ merge_summary.working_share }} working;
+      top wait {{ merge_summary.top_wait }}; at least {{ merge_summary.interventions_per_merge }} interventions per merge.
+      <a href="{% url 'dash:cycle_time' %}#merge-waits">See the wait breakdown</a>.</p>
+  </section>
   <form class="dash-filters" method="get" action="{% url 'dash:board' %}">
     <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">
     <input type="text" name="overlay" value="{{ filters.overlay }}" placeholder="overlay">

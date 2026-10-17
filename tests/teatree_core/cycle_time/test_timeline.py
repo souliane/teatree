@@ -244,3 +244,18 @@ class CostRidesAlongsideTimeTestCase(TestCase):
         timeline = build_ticket_timeline(self.ticket.pk)
         assert timeline.cost_usd == pytest.approx(2.0)
         assert timeline.cost_estimated_usd == pytest.approx(0.75)
+
+
+class ParkDoesNotImplyWorkTestCase(TestCase):
+    def test_park_only_task_does_not_count_as_agent_work(self) -> None:
+        ticket = Ticket.objects.create(state=State.CODED)
+        record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
+        record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
+        task = record_task(ticket, phase="coding", queued=0, admitted=10)
+        task.status = Task.Status.PENDING
+        task.save(update_fields=["status"])
+        record_attempt(task, ended=20, error="checkout_parked: refused")
+
+        segment = build_ticket_timeline(ticket.pk).segments[0]
+        assert segment.work_seconds == 0
+        assert segment.queue_seconds == 100 * MINUTE

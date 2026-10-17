@@ -22,6 +22,7 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +102,7 @@ def build_ticket_timelines(ticket_ids: Sequence[int]) -> dict[int, TicketTimelin
     """
     tickets = {ticket.pk: ticket for ticket in Ticket.objects.filter(pk__in=ticket_ids)}
     spans = spans_for_tickets(list(tickets))
-    engagements = _engagements(list(tickets))
+    engagements = engagements_for_tickets(list(tickets))
     usages = _phase_usages(list(tickets))
     return {
         ticket_id: _timeline(ticket, spans.get(ticket_id, ()), engagements, usages)
@@ -113,7 +114,7 @@ def _timeline(
     ticket: Ticket,
     spans: tuple[PhaseSpan, ...],
     engagements: dict[tuple[int, str], list[Engagement]],
-    usages: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage]]],
+    usages: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]],
 ) -> TicketTimeline:
     if not spans:
         return TicketTimeline.empty(ticket)
@@ -137,19 +138,24 @@ def _timeline(
 def _segment(
     span: PhaseSpan,
     engagements: dict[tuple[int, str], list[Engagement]],
-    usages: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage]]],
+    usages: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]],
 ) -> PhaseSegment:
     phase = Ticket.phase_producing_state(span.to_state)
     key = (span.ticket_id, phase)
     work = merged_seconds(engagements.get(key, ()), start=span.entered_at, end=span.left_at)
     priced = [
         usage
-        for ended_at, usage in usages.get(key, ())
+        for ended_at, usage, _park in usages.get(key, ())
         if ended_at is not None and span.entered_at <= ended_at <= span.left_at
     ]
     # An agent demonstrably ran here iff an attempt ENDED here. With no measured
     # engagement to set against that, the split is unknown rather than zero.
-    measured = work > 0.0 or not priced
+    ran = any(
+        not park
+        for ended_at, _usage, park in usages.get(key, ())
+        if ended_at is not None and span.entered_at <= ended_at <= span.left_at
+    )
+    measured = work > 0.0 or not ran
     breakdown = CostBreakdown.from_usages(priced)
     return PhaseSegment(
         from_state=span.from_state,
@@ -167,12 +173,12 @@ def _segment(
     )
 
 
-def _engagements(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[Engagement]]:
+def engagements_for_tickets(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[Engagement]]:
     """Per (ticket, phase), each admitted task's stretch of agent engagement.
 
     A task's stretch opens at its admission stamp and closes at its LAST attempt's
-    ``ended_at``. A task admitted but carrying no completed attempt is still engaged —
-    ``None`` leaves it open, and the segment's own end closes it.
+    ``ended_at``. An admitted task with no completed attempt stays open until the
+    segment ends, except when it is pending after a park.
     """
     last_end = _last_attempt_end(ticket_ids)
     admitted = Task.objects.filter(ticket_id__in=ticket_ids, admitted_at__isnull=False).values_list(
@@ -180,19 +186,27 @@ def _engagements(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[Engage
         "ticket_id",
         "phase",
         "admitted_at",
+        "status",
     )
     grouped: dict[tuple[int, str], list[Engagement]] = {}
-    for task_pk, ticket_id, phase, admitted_at in admitted:
+    for task_pk, ticket_id, phase, admitted_at, status in admitted:
+        if task_pk not in last_end and status == Task.Status.PENDING:
+            continue
         key = (ticket_id, normalize_phase(phase))
-        grouped.setdefault(key, []).append(Engagement(start=admitted_at, end=last_end.get(task_pk)))
+        grouped.setdefault(key, []).append(Engagement(start=admitted_at, end=last_end.get(task_pk), task_id=task_pk))
     return grouped
 
 
 def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
     ends: dict[int, datetime] = {}
-    rows = TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids, ended_at__isnull=False).values_list(
-        "task_id",
-        "ended_at",
+    rows = (
+        TaskAttempt.objects.excluding_parks()
+        .exclude(result__has_key="cancel_source")
+        .filter(task__ticket_id__in=ticket_ids, ended_at__isnull=False)
+        .values_list(
+            "task_id",
+            "ended_at",
+        )
     )
     for task_id, ended_at in rows:
         known = ends.get(task_id)
@@ -200,7 +214,7 @@ def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
     return ends
 
 
-def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage]]]:
+def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]]:
     """Each attempt's costing record, keyed by the (ticket, phase) that ran it.
 
     Priced through the shared :class:`~teatree.core.cost.AttemptUsage` seam rather than
@@ -220,9 +234,25 @@ def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple
         "output_tokens",
         "cache_read_tokens",
         "cache_write_tokens",
+        "error",
+        "result",
     )
-    grouped: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage]]] = {}
-    for ticket_id, phase, ended_at, model, cost, estimated, lane, inp, out, cache_read, cache_write in rows:
+    grouped: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]] = {}
+    for (
+        ticket_id,
+        phase,
+        ended_at,
+        model,
+        cost,
+        estimated,
+        lane,
+        inp,
+        out,
+        cache_read,
+        cache_write,
+        error,
+        result,
+    ) in rows:
         normalized = normalize_phase(phase)
         usage = AttemptUsage(
             model=model or None,
@@ -235,5 +265,11 @@ def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple
             estimated=estimated,
             phase=normalized,
         )
-        grouped.setdefault((ticket_id, normalized), []).append((ended_at, usage))
+        grouped.setdefault((ticket_id, normalized), []).append(
+            (
+                ended_at,
+                usage,
+                error.startswith(PARK_ERROR_PREFIXES) or (isinstance(result, dict) and "cancel_source" in result),
+            )
+        )
     return grouped

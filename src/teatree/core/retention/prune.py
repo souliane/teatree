@@ -32,6 +32,7 @@ from teatree.config.settings import UserSettings
 from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
 from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.usage_window_state import PARK_ATTEMPT_RETENTION_DAYS
 from teatree.core.retention.slack_rows import (
     DM_RETENTION_DAYS,
     LONG_PAYLOAD_RETENTION_DAYS,
@@ -57,7 +58,6 @@ SCHEDULED_MAX_BATCHES = 10
 #: Post-mortem material only: settled inbound events and sent notification payloads.
 POST_MORTEM_RETENTION_DAYS = LONG_PAYLOAD_RETENTION_DAYS
 #: Whether the fleet is parked NOW is what a park tells; a week covers after-the-fact forensics.
-PARK_ATTEMPT_RETENTION_DAYS = 7
 
 PARK_TABLE = "TaskAttempt (park)"
 FAILED_TASK_TABLE = "Task (failed)"

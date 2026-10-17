@@ -14,6 +14,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
@@ -217,6 +218,58 @@ class WindowClampTestCase(TestCase):
 
     def test_an_oversized_window_is_capped(self) -> None:
         assert clamp_window_days("9000") == MAX_WINDOW_DAYS
+
+
+class MergeWaitDisplayTestCase(TestCase):
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.test/issues/5313", state=State.MERGED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://example.test/pull/5313",
+            repo="example/repo",
+            iid="5313",
+            state=PullRequest.State.MERGED,
+        )
+        start = timezone.now() - timedelta(hours=2)
+        for source, target, stamp in (
+            (State.NOT_STARTED, State.WORK_STARTED, start),
+            (State.WORK_STARTED, State.PR_OPENED, start + timedelta(hours=1)),
+            (State.PR_OPENED, State.MERGED, start + timedelta(minutes=90)),
+        ):
+            row = TicketTransition.objects.create(ticket=ticket, from_state=source, to_state=target)
+            TicketTransition.objects.filter(pk=row.pk).update(created_at=stamp)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+        Task.objects.filter(pk=task.pk).update(created_at=start, admitted_at=start)
+        TaskAttempt.objects.create(task=task, ended_at=start + timedelta(hours=1))
+
+    def test_cycle_time_lists_the_last_merges_and_all_wait_causes(self) -> None:
+        response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "Last 10 merged pull requests" in content
+        assert "https://example.test/pull/5313" in content
+        assert "No free seat" in content
+        assert "Checkout fence" in content
+        assert "Sibling task holds checkout" in content
+        assert "Quota lane" in content
+        assert "Waiting for a human" in content
+        assert "No next task" in content
+        assert "Review" in content
+        assert "Hand cancels" in content
+        assert "not recorded yet" in content
+
+    def test_board_links_to_the_wait_breakdown(self) -> None:
+        response = self.client.get(reverse("dash:board"), **_LOOPBACK)
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "Factory speed" in content
+        assert reverse("dash:cycle_time") in content
+        assert "interventions per merge" in content
 
     def test_a_zero_window_is_raised_to_one_day(self) -> None:
         assert clamp_window_days("0") == 1

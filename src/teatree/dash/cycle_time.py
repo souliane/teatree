@@ -14,9 +14,13 @@ from django.urls import reverse
 from django.utils import timezone
 
 from teatree.core.cycle_time import (
+    WAIT_CAUSES,
+    WAIT_LABELS,
+    MergeBreakdown,
     TicketTimeline,
     TransitionStat,
     build_ticket_timelines,
+    recent_merge_breakdowns,
     transition_distribution,
     transition_trend,
 )
@@ -36,6 +40,27 @@ TREND_SERIES = 4
 #: The rail hue for a span whose queue/work split cannot be measured — deliberately the
 #: off-ladder grey, so an unmeasured stretch never reads as one of the four phase states.
 UNMEASURED_TONE = "ignored"
+
+
+@dataclass(frozen=True, slots=True)
+class MergeWaitRow:
+    number: str
+    pr_url: str
+    elapsed: str
+    working: str
+    waits: tuple[str, ...]
+    longest_wait: str
+    hand_cancels: int
+    measured: bool
+    parks_retained: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MergeSummary:
+    merged_count: int
+    working_share: str
+    top_wait: str
+    interventions_per_merge: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +108,9 @@ class CycleTimeView:
     trend_buckets: tuple[str, ...]
     trend_peak: str
     bar_scale: str
+    merge_rows: tuple[MergeWaitRow, ...]
+    merge_summary: MergeSummary
+    wait_headers: tuple[str, ...]
 
 
 def clamp_window_days(raw: str) -> int:
@@ -101,6 +129,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
     ordered = sorted(timelines.values(), key=lambda line: line.ended_at or since, reverse=True)
     scale = max((line.lead_time_seconds for line in ordered), default=0.0)
     trend, buckets, peak = _trend(since=since, window_days=window_days, stats=stats)
+    merges = recent_merge_breakdowns()
     return CycleTimeView(
         window_days=window_days,
         since=since,
@@ -110,6 +139,38 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
         trend_buckets=buckets,
         trend_peak=_humanize_duration(peak),
         bar_scale=_humanize_duration(scale),
+        merge_rows=tuple(
+            MergeWaitRow(
+                number=row.number,
+                pr_url=row.pr_url,
+                elapsed=_humanize_duration(row.elapsed_seconds),
+                working=_humanize_duration(row.work_seconds),
+                waits=tuple(_humanize_duration(row.wait_seconds[cause]) for cause in WAIT_CAUSES),
+                longest_wait=WAIT_LABELS.get(row.longest_wait, "No wait"),
+                hand_cancels=row.hand_cancels,
+                measured=row.measured,
+                parks_retained=row.parks_retained,
+            )
+            for row in merges
+        ),
+        merge_summary=build_merge_summary(merges),
+        wait_headers=tuple(WAIT_LABELS[cause] for cause in WAIT_CAUSES),
+    )
+
+
+def build_merge_summary(rows: tuple[MergeBreakdown, ...] | None = None) -> MergeSummary:
+    if rows is None:
+        rows = recent_merge_breakdowns()
+    reliable = [row for row in rows if row.measured and row.parks_retained]
+    elapsed = sum(row.elapsed_seconds for row in reliable)
+    working_share = f"{sum(row.work_seconds for row in reliable) / elapsed:.0%}" if elapsed else "unmeasured"
+    by_cause = {cause: sum(row.wait_seconds[cause] for row in reliable) for cause in WAIT_CAUSES}
+    top = max(WAIT_CAUSES, key=lambda cause: by_cause[cause]) if any(by_cause.values()) else ""
+    return MergeSummary(
+        merged_count=len(rows),
+        working_share=working_share,
+        top_wait=WAIT_LABELS.get(top, "unmeasured"),
+        interventions_per_merge=f"{sum(row.hand_cancels for row in rows) / len(rows):.1f}" if rows else "unmeasured",
     )
 
 

@@ -16,8 +16,12 @@ from teatree.core.cycle_time.distribution import (
 )
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets, spans_since
 from teatree.core.cycle_time.timeline import PhaseSegment, TicketTimeline, build_ticket_timeline, build_ticket_timelines
+from teatree.core.cycle_time.waits import WAIT_CAUSES, WAIT_LABELS, MergeBreakdown, recent_merge_breakdowns
 
 __all__ = [
+    "WAIT_CAUSES",
+    "WAIT_LABELS",
+    "MergeBreakdown",
     "PhaseSegment",
     "PhaseSpan",
     "TicketTimeline",
@@ -27,6 +31,7 @@ __all__ = [
     "build_ticket_timeline",
     "build_ticket_timelines",
     "percentile",
+    "recent_merge_breakdowns",
     "spans_for_tickets",
     "spans_since",
     "transition_distribution",

@@ -128,7 +128,9 @@ def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutSta
     worktree.merge_extra(set_keys={"checkout_custody": anchored.as_dict()})
 
 
-def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
+def park_task_checkout(task: Task, *, reason: str | WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
+    holder = reason.holder.holder if isinstance(reason, WorktreeOccupiedError) and reason.holder else ""
+    message = str(reason)
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
     episode = (
@@ -140,8 +142,12 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
-        error=f"{CHECKOUT_PARKED_PREFIX}{reason}",
-        result={"summary": f"{CHECKOUT_PARKED_PREFIX}{reason}", "checkout_episode": episode or f"attempt:{task.pk}"},
+        error=f"{CHECKOUT_PARKED_PREFIX}{message}",
+        result={
+            "summary": f"{CHECKOUT_PARKED_PREFIX}{message}",
+            "checkout_episode": episode or f"attempt:{task.pk}",
+            **({"checkout_holder": holder} if holder else {}),
+        },
     )
     if episode is None:
         result = dict(attempt.result)
@@ -152,7 +158,7 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
     try:
         notify_user(
-            f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
+            f"Ticket {task.ticket.pk} is parked before writing its checkout: {message}",
             kind=NotifyKind.INFO,
             idempotency_key=f"checkout-hold:{task.ticket.pk}:{attempt.result['checkout_episode']}",
             audience=NotifyAudience.OWNER_ESCALATION,
@@ -175,7 +181,7 @@ def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None)
     try:
         acquire(worktree, holder=holder, holder_session=session, lease_seconds=lease_seconds)
     except WorktreeOccupiedError as exc:
-        return park_task_checkout(task, reason=str(exc))
+        return park_task_checkout(task, reason=exc)
     try:
         verify_task_checkout(task, path)
     except CheckoutFenceError as exc:

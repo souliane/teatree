@@ -71,9 +71,9 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: and flat at both. The two land together: 21 -> 23, not 22.
 #: The board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 13,
+    "dash:board": 14,
     "dash:board_columns": 11,
-    "dash:cycle_time": 10,
+    "dash:cycle_time": 11,
     "dash:health": 23,
     "dash:health_bands": 23,
     "dash:live": 20,
@@ -147,6 +147,24 @@ class DashboardPageQueryPlansTestCase(TestCase):
         for name, expected in PAGE_QUERY_PINS.items():
             with self.subTest(page=name):
                 self._assert_pinned(reverse(name), expected)
+
+    def test_merge_wait_reads_stay_flat_with_more_merged_tickets(self) -> None:
+        for scale in (3, 15):
+            _populate(scale)
+            merged_ids = list(
+                Ticket.objects.filter(state=State.WORK_STARTED, tasks__isnull=False).values_list("pk", flat=True)
+            )
+            Ticket.objects.filter(pk__in=merged_ids).update(state=State.MERGED)
+            PullRequest.objects.filter(ticket_id__in=merged_ids).update(state=PullRequest.State.MERGED)
+            TicketTransition.objects.bulk_create(
+                TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
+                for ticket_id in merged_ids
+            )
+            for name, expected in (("dash:board", 22), ("dash:cycle_time", 19)):
+                with self.subTest(page=name, scale=scale):
+                    cache.clear()
+                    with self.assertNumQueries(expected):
+                        assert self.client.get(reverse(name), **_LOOPBACK).status_code == 200
 
     def test_the_ticket_drawer_holds_its_plan_however_much_history_the_ticket_has(self) -> None:
         ticket = _populate(3)

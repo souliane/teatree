@@ -1,11 +1,24 @@
+from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 
 
 class TicketTransitionQuerySet(models.QuerySet):
+    def recent_merges(self, limit: int) -> list[tuple[int, datetime]]:
+        rows = (
+            self.filter(to_state=Ticket.State.MERGED)
+            .exclude(from_state__in=Ticket.merged_states())
+            .filter(ticket__pull_requests__state=PullRequest.State.MERGED)
+            .values("ticket_id")
+            .annotate(merged_at=models.Min("created_at"))
+            .order_by("-merged_at", "-ticket_id")[:limit]
+        )
+        return [(row["ticket_id"], row["merged_at"]) for row in rows]
+
     def state_edges(self) -> "TicketTransitionQuerySet":
         """The rows that record an actual move — the ticket's history.
 
