@@ -596,7 +596,8 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    On success, advances ``PR_OPENED → REVIEW_REQUESTED`` via ``request_review()``.
+    On success, advances ``PR_OPENED → REVIEW_REQUESTED`` directly via
+    ``request_review()`` without repeating ``ship()`` gates.
 
     ``ShipExecutor.run()`` runs OUTSIDE the FSM-advance transaction (#1522):
     it calls ``host.create_pr()``, whose live forge PR is an external side
@@ -631,7 +632,7 @@ def execute_ship(ticket_id: int) -> TransitionResult:
                 ticket.state,
             )
             return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
-        ticket.complete_ship_after_pr_open()
+        ticket.request_review()
         ticket.save()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
