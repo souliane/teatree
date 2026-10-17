@@ -16,7 +16,7 @@ import re
 import shlex
 import subprocess  # noqa: S404 -- hook code legitimately shells out to Git.
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
@@ -28,8 +28,11 @@ _HEADS_PREFIX: Final[str] = "refs/heads/"
 _LS_REMOTE_COLUMN_COUNT: Final[int] = 2
 _LS_REMOTE_TIMEOUT_S: Final[float] = 12.0
 _GIT_TIMEOUT_S: Final[float] = 5.0
-_GH_AUTH_EXIT: Final[int] = 4
+# `git remote get-url` exits 2 for a name that is no configured remote; git then reads the name as a location.
 _REMOTE_NOT_CONFIGURED: Final[int] = 2
+_REMOTE_AUTH_REFUSED: Final[re.Pattern[str]] = re.compile(
+    r"HTTP 401|401 Unauthorized|Authentication failed for|could not read (?:Username|Password) for", re.IGNORECASE
+)
 # A refusal is read in a terminal, so git's output — stderr and stdout alike — is truncated past this, not dropped.
 _MAX_QUOTED_CHARS: Final[int] = 400
 # `git config --get` exits 1 for a key nobody set, which is an ANSWER and not a failure.
@@ -95,15 +98,6 @@ def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> Git
         out=proc.stdout.strip(),
         code=proc.returncode,
         err=_one_line(proc.stderr),
-        credential_refused=proc.returncode == _GH_AUTH_EXIT
-        or bool(
-            re.search(
-                r"\b(?:HTTP 401|401 Unauthorized|Authentication failed|"
-                r"could not read (?:Username|Password).*terminal prompts disabled)\b",
-                proc.stderr,
-                re.IGNORECASE,
-            )
-        ),
     )
 
 
@@ -192,7 +186,9 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
             )
     except OSError as exc:
         return GitProbe(ok=False, out="", err=f"could not create neutral git probe directory: {exc}")
-    if not probe.ok or not probe.out:
+    if not probe.ok:
+        return replace(probe, credential_refused=bool(_REMOTE_AUTH_REFUSED.search(probe.err)))
+    if not probe.out:
         return probe
     for line in probe.out.splitlines():
         columns = line.split()
@@ -218,15 +214,16 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
 
 
 def _remote_url(work_dir: str, remote: str) -> GitProbe:
+    """The location git contacts for *remote* — a name's first URL, a relative path anchored at the repo root."""
     url = remote
     if ":" not in remote and "/" not in remote:
         configured = git_probe(work_dir, "remote", "get-url", remote)
-        if configured.ok and configured.out:
+        if configured.ok:
             url = configured.out
         elif configured.code != _REMOTE_NOT_CONFIGURED:
             return configured
-    if url.startswith("-"):
-        return GitProbe(ok=False, out="", err="remote URL starts with a dash")
+    if not url or url.startswith("-"):
+        return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")
     if not Path(url).is_absolute() and ":" not in url:
         root = git_probe(work_dir, "rev-parse", "--show-toplevel")
         if not root.ok and root.code is None:
@@ -274,12 +271,18 @@ def _fetch_live_authors(
 ) -> LiveRange:
     base_branch, base_oid = base_ref
     branch, branch_oid = branch_ref
+    local = git_probe(work_dir, "rev-parse", "--show-object-format", "--path-format=absolute", "--git-path", "objects")
+    object_format, _, objects = local.out.partition("\n")
+    if not local.ok or not objects:
+        return LiveRange("", "", "`git rev-parse --git-path objects` (the checkout's object store)", local)
     try:
         with tempfile.TemporaryDirectory(prefix="t3-git-fetch-") as neutral_dir:
             repo = str(Path(neutral_dir) / "probe.git")
-            initialized = git_probe(neutral_dir, "init", "--bare", repo)
+            initialized = git_probe(neutral_dir, "init", "--quiet", "--bare", f"--object-format={object_format}", repo)
             if not initialized.ok:
                 return LiveRange("", "", "`git init --bare` (the neutral fetch repository)", initialized)
+            # Borrowing the checkout's objects keeps the fetch incremental, as it was inside the checkout.
+            (Path(repo) / "objects" / "info" / "alternates").write_text(f"{objects}\n", encoding="utf-8")
             for oid, label in ((base_oid, base_branch), (branch_oid, branch)):
                 fetched = git_probe(
                     repo,
