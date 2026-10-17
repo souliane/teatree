@@ -2,9 +2,12 @@
 
 from types import SimpleNamespace
 
+from django.test import TestCase
+
 from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool, check_ci_oauth_pool_membership
 from teatree.cli.doctor.run_checks import _run_loop_intent_gates
-from teatree.credential_config import TokenKind
+from teatree.core.models.config_setting import ConfigSetting
+from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.token_rows import TokenSource, TokenStatus
 
 
@@ -61,3 +64,12 @@ def test_pool_membership_checks_allowlist_instead_of_all_stored_accounts(capsys)
 def test_pool_membership_rejects_empty_allowlist(capsys) -> None:
     assert check_ci_oauth_pool_membership([_row("primary", TokenStatus.HEALTHY)], (), allowlist=()) is False
     assert "FAIL" in capsys.readouterr().out
+
+
+class LiveDoctorAllowlistTest(TestCase):
+    def test_an_install_with_no_oauth_account_stays_green_without_an_allowlist(self) -> None:
+        assert check_ci_oauth_pool() is True
+
+    def test_oauth_accounts_without_an_allowlist_fail(self) -> None:
+        ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], ["anthropic/oauth/a"])
+        assert check_ci_oauth_pool() is False

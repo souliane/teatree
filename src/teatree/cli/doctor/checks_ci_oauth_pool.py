@@ -27,6 +27,8 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
             typer.echo(f"WARN  Could not read cached CI OAuth pool health: {type(exc).__name__}: {exc}")
             return True
     oauth = [row for row in rows if row.kind is TokenKind.OAUTH and row.source is TokenSource.STORE]
+    if not oauth:
+        return True
     allowlist = None
     if check_membership:
         allowlist = get_effective_settings().eval_ci_account_allowlist
@@ -38,8 +40,6 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
             typer.echo(f"FAIL  CI eval allowlisted accounts have no stored OAuth row: {missing}.")
             return False
         oauth = [row for row in oauth if row.account in allowlist]
-    if not oauth:
-        return True
     membership_ok = True
     if check_membership:
         from teatree.ci_oauth_switch import CiAccountSwitcher  # noqa: PLC0415 — doctor-time dependency
