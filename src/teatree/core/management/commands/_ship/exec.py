@@ -133,6 +133,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
             return _gate_failure(ticket, exc)
         result = executor.run()
         if not result.ok:
+            executor.record_opened_pr()
             return _sync_result(ticket, ok=False, detail=result.detail)
         opened_pr_url = result.detail
         try:

@@ -8,12 +8,10 @@ from django.core.management import call_command
 from django.db import OperationalError
 from django.test import TestCase
 
-import teatree.core.runners.ship as ship_runner
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.runners.ship import ShipExecutor
 
-from ._shared import _shippable_ticket
-from .test_create_sync_ship import _PR_URL, _code_host, _gates_pass, _ship_externals
+from ._shared import _PR_URL, _code_host, _gates_pass, _ship_externals, _shippable_ticket
 
 pytestmark = pytest.mark.usefixtures("readable_ship_tree")
 
@@ -45,17 +43,19 @@ class TestSyncShipRecovery(TestCase):
     def test_os_error_from_forge_is_structured(self) -> None:
         self._assert_external_failure_is_structured(OSError("gh is missing"))
 
-    def test_retry_adopts_pr_when_verification_raises_after_create(self) -> None:
+    def test_retry_adopts_pr_when_verification_is_not_confirmed(self) -> None:
         ticket = _shippable_ticket()
         host = _code_host()
+        host.get_pr_open_state.side_effect = OSError("verify unavailable")
 
-        with (
-            _ship_externals(host),
-            _gates_pass(),
-            patch.object(ship_runner, "verify_pr_exists", side_effect=OSError("verify unavailable")),
-        ):
+        with _ship_externals(host), _gates_pass():
             first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"]["feature-branch"] == _PR_URL
+        assert not PullRequest.objects.filter(url=_PR_URL).exists()
+
+        host.get_pr_open_state.side_effect = None
         with _ship_externals(host) as retry_push, _gates_pass():
             second = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 

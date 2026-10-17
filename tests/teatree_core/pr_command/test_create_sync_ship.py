@@ -1,6 +1,4 @@
 import subprocess
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -16,46 +14,18 @@ from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ship import gates as ship_gates
 from teatree.core.models import PullRequest, Session, Ticket, Worktree
 
-from ._shared import _MOCK_OVERLAY, _SHIP_BACKEND, _shippable_ticket
+from ._shared import (
+    _CONFORMING_COMMIT,
+    _MOCK_OVERLAY,
+    _PR_URL,
+    _SHIP_BACKEND,
+    _code_host,
+    _gates_pass,
+    _ship_externals,
+    _shippable_ticket,
+)
 
 pytestmark = pytest.mark.usefixtures("readable_ship_tree")
-
-# A commit subject + body that satisfy the deterministic MR title/description
-# gate (#1540), so a test exercising an unrelated invariant (FSM reconcile, no
-# raw transition) is not tripped by the now-active format check.
-_CONFORMING_COMMIT = ("feat(ship): recover and ship", "## What\nx\n\n## Why\ny")
-
-_PR_URL = "https://github.com/acme/backend/pull/7"
-
-
-def _code_host() -> MagicMock:
-    host = MagicMock()
-    host.current_user.return_value = "tester"
-    host.create_pr.return_value = {"web_url": _PR_URL}
-    return host
-
-
-@contextmanager
-def _ship_externals(host: MagicMock) -> Generator[MagicMock]:
-    """Stub only what a real ship reaches outside the process: the overlay registry, the forge, git, the push."""
-    with (
-        patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-        patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-        patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
-        patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
-        patch("teatree.core.runners.ship.git.last_commit_message", return_value=_CONFORMING_COMMIT),
-        patch("teatree.core.runners.ship.push_branch") as push,
-    ):
-        yield push
-
-
-@contextmanager
-def _gates_pass() -> Generator[None]:
-    with (
-        patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-        patch.object(pr_command, "validate_pr_metadata", return_value=None),
-    ):
-        yield
 
 
 class TestPrCreateSyncShip(TestCase):

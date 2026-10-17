@@ -16,7 +16,7 @@ from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
-from teatree.core.merge.pr_url_record import record_pr_url
+from teatree.core.merge.pr_url_record import record_pr_url, record_ship_pr_retry_marker
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
@@ -273,6 +273,7 @@ class ShipExecutor(RunnerBase):
         self.title_override = title_override
         self.opened_pr_url = ""
         self.opened_pr_branch = ""
+        self.opened_pr_verified = False
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
@@ -499,13 +500,17 @@ class ShipExecutor(RunnerBase):
                 ok=False,
                 detail=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
             )
+        self.opened_pr_verified = True
         self._record_pr_url(ticket, url, spec.branch)
         logger.info("Ship executor pushed %s and opened PR %s", spec.branch, url)
         return RunnerResult(ok=True, detail=url)
 
     def record_opened_pr(self) -> None:
         if self.opened_pr_url:
-            self._record_pr_url(self.ticket, self.opened_pr_url, self.opened_pr_branch)
+            if self.opened_pr_verified:
+                self._record_pr_url(self.ticket, self.opened_pr_url, self.opened_pr_branch)
+            else:
+                record_ship_pr_retry_marker(self.ticket, self.opened_pr_url, self.opened_pr_branch)
 
     @staticmethod
     def _check_branch_currency(
