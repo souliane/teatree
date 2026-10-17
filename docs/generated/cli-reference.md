@@ -1641,6 +1641,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           a label, review the corpus.                        │
 │ quarantine                The known-red quarantine: scenarios the bounded PR │
 │                           lane does not select.                              │
+│ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2437,6 +2438,8 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     this many times          │
 │                                                     (pass@k).                │
 │                                                     [default: 1]             │
+│ --verdict-cache                            PATH     Reuse clean passes from  │
+│                                                     this ledger.             │
 │ --require                                  TEXT     With --trials > 1: 'any' │
 │                                                     (pass@k) or 'all'        │
 │                                                     (pass^k regression       │
@@ -2588,8 +2591,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     --trials/--models (a     │
 │                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
-│                                                     fails loud); the flag    │
-│                                                     only matters for the     │
+│                                                     fails loud; cached       │
+│                                                     passes count as coverage │
+│                                                     when --verdict-cache is  │
+│                                                     set); the flag only      │
+│                                                     matters for the          │
 │                                                     transcript backend,      │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
@@ -3116,6 +3122,53 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verdict-cache`
+
+```
+Usage: t3 eval verdict-cache [OPTIONS] COMMAND [ARGS]...
+
+ Manage content-keyed eval pass verdicts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ merge                                                                        │
+│ record                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache merge`
+
+```
+Usage: t3 eval verdict-cache merge [OPTIONS] LEDGER SOURCES...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger       PATH        Ledger JSON to update. [required]              │
+│ *    sources      SOURCES...  Other verdict ledgers to combine. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache record`
+
+```
+Usage: t3 eval verdict-cache record [OPTIONS] LEDGER [SUMMARIES]...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger         PATH            Ledger JSON to update. [required]        │
+│      summaries      [SUMMARIES]...  Single-trial summary JSON files or       │
+│                                     directories.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --run-url        TEXT  Source run URL shown beside reused verdicts.       │
+│                           [required]                                         │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -47,6 +47,14 @@ class ScenarioRecord(TypedDict, total=False):
     triage_class: str | None
     outcome: str
     advisory: bool
+    content_key: str
+    cache_eligible: bool
+
+
+class EvalSummaryRecord(TypedDict, total=False):
+    head_sha: str
+    trial_count: int
+    scenarios: list[ScenarioRecord]
 
 
 class TriageClass(StrEnum):

@@ -51,6 +51,12 @@ from teatree.agents import permission_modes
 from teatree.agents.claude_cli_spawn import with_account_skills_off
 from teatree.agents.compaction_guard import with_compaction_off
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.eval.agent_prompt import (
+    SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
+    resolve_agent_path,
+    scenario_skill_catalog_roots,
+    scenario_system_prompt,
+)
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -61,7 +67,6 @@ from teatree.eval.api_errors import (
     is_success_result_error,
 )
 from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
-from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.git_fixture import provision_fixture
 from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON
@@ -71,7 +76,6 @@ from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, COST_SOURCE_REPORTED, EvalRun, EvalSpec
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
-from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.system_prompt_file import spill_system_prompt
 from teatree.eval.throttle_retry import ThrottleRetryDriver, ThrottleRetryHandlers, resolve_throttle_retries
@@ -81,7 +85,7 @@ from teatree.eval.toolset import (
     compute_disallowed_tools,
     scenario_exposes_subagent_spawn,
 )
-from teatree.eval.under_load import build_system_prompt, build_user_prompt
+from teatree.eval.under_load import build_user_prompt
 from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
 from teatree.llm.credentials import AnthropicApiKeyCredential
 
@@ -118,20 +122,6 @@ MAX_BUDGET_USD = "0.10"
 #: tier, DERIVED from the tier catalog so a generation bump carries it.
 FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
-
-#: Local-plugin path (relative to the teatree repo root) for the eval-only
-#: skill-catalog fixture: synthetic ``SKILL.md`` stand-ins for names a
-#: skill-routing scenario's prompt references that core does not itself ship —
-#: a placeholder overlay's workspace/legal-entity skill, a companion language
-#: bible, the review skill named without a leading slash. Registered ONLY for a
-#: scenario that declares ``EvalSpec.available_skills`` (see
-#: :func:`_skill_catalog_fixture_plugin`); every scenario that declares none
-#: never loads it, so the isolation guarantee (no personal/project context bias)
-#: is unchanged for the existing catalog. It carries no ``hooks.json`` of its
-#: own, so loading it cannot resurrect a skill-suggestion
-#: hook the ``settings=EMPTY_SETTINGS`` isolation already suppresses — the exact
-#: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
-_SKILL_CATALOG_FIXTURE_RELATIVE_PATH = ("evals", "fixtures", "skill_catalog")
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
@@ -222,7 +212,7 @@ class CleanRoomConfig:
     #: their untouched defaults, so a scenario declaring none is byte-identical
     #: to before this field existed — this is a WIDENING lever, never a
     #: narrowing one. Non-empty registers the eval-only fixture plugin
-    #: (:data:`_SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
+    #: (:data:`SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
     #: genuinely discoverable, then filters the listing to exactly this set.
     skills: tuple[str, ...] = ()
     #: Scenario-owned plugin roots that publish one of ``skills``. The core
@@ -247,7 +237,7 @@ def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
     reaches this — none of the ``available_skills``-declaring scenarios expose
     the ``Agent`` spawn tool).
     """
-    path = teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
+    path = teatree_root().joinpath(*SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     return {"type": "local", "path": str(path)}
 
 
@@ -261,17 +251,7 @@ def _scenario_skill_catalog_plugins(spec: EvalSpec) -> tuple[SdkPluginConfig, ..
     supplement: core's deliberately tiny eval fixture remains the sole catalog
     widening for core scenarios.
     """
-    if not spec.available_skills:
-        return ()
-
-    core_root = teatree_root().resolve()
-    plugins: list[SdkPluginConfig] = []
-    for root in spec.source_path.resolve().parents:
-        if root == core_root or not (root / ".claude-plugin" / "plugin.json").is_file():
-            continue
-        if any((root / "skills" / name / "SKILL.md").is_file() for name in spec.available_skills):
-            plugins.append({"type": "local", "path": str(root)})
-    return tuple(plugins)
+    return tuple({"type": "local", "path": str(root)} for root in scenario_skill_catalog_roots(spec))
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -344,38 +324,6 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         )
     )
     return with_account_skills_off(options)
-
-
-def resolve_agent_path(agent_path: str, spec_dir: Path | None = None) -> Path:
-    """The on-disk SKILL.md *agent_path* names, resolved the way the runner resolves it."""
-    resolved = Path(agent_path).expanduser()
-    if not resolved.is_absolute():
-        # The spec's own directory wins: a relative agent path is written relative to the spec.
-        spec_roots = (spec_dir,) if spec_dir is not None else ()
-        for root in (*spec_roots, Path.cwd(), teatree_root()):
-            candidate = root / resolved
-            if candidate.is_file():
-                return candidate
-    return resolved
-
-
-def load_agent_definition(
-    agent_path: str,
-    agent_sections: tuple[str, ...] = (),
-    spec_dir: Path | None = None,
-) -> str:
-    """Read the agent definition (whole file, or only the named ``## `` sections)."""
-    resolved = resolve_agent_path(agent_path, spec_dir)
-    if not resolved.is_file():
-        msg = f"Agent definition not found: {agent_path}"
-        raise FileNotFoundError(msg)
-    text = resolved.read_text(encoding="utf-8")
-    if not text.strip():
-        msg = f"Agent definition is empty: {resolved}"
-        raise ValueError(msg)
-    if agent_sections:
-        return extract_sections(text, agent_sections)
-    return text
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -477,10 +425,7 @@ class ApiInProcessRunner:
                 raise ClaudeCliMissingError(msg)
             return EvalRun.skipped(spec.name, "claude binary not on PATH")
 
-        clean_room_prompt = (
-            load_agent_definition(spec.agent_path, spec.agent_sections, spec.source_path.parent) + LIVE_ENV_FRAMING
-        )
-        system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
+        system_prompt = scenario_system_prompt(spec)
         max_turns = self._resolve_max_turns(spec)
 
         def _drive_once() -> list[Message]:
