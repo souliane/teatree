@@ -56,7 +56,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
@@ -390,7 +390,7 @@ def _speaker_lock_path() -> Path:
 
 
 @contextmanager
-def _serial_speaker() -> Iterator[bool]:
+def _serial_speaker() -> Generator[bool]:
     """Hold the cross-process speaker lock for one ``say`` if it can — best-effort (#2152).
 
     A context manager whose body ALWAYS plays: the yielded bool never gates the

@@ -22,11 +22,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.config import worktree_root
-from teatree.core.cleanup.unshipped_work import probe_unshipped_work
-from teatree.core.models import Ticket, Worktree
+from teatree.config.checkout_roots import checkout_roots
+from teatree.config.settings import OverlayEntry
+from teatree.core.cleanup.unshipped_work import (
+    ARTIFACT_NAMESPACE,
+    COMMITS_SUFFIX,
+    FILES_SUFFIX,
+    UNCOMMITTED_SUFFIX,
+    UnshippedWork,
+    bundle_path,
+    probe_unshipped_work,
+    write_salvage_bundle,
+)
+from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.worktree.clone_paths import git_common_clone_dir
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dirs
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
+from teatree.paths import get_data_dir
 from teatree.utils import git
 from teatree.utils.git_run import git_env_without_overrides, run_with_status
 
@@ -72,25 +84,126 @@ def _apply_uncommitted_delta(patch: str, into: Path) -> str | None:
     return result.stderr.strip() or f"git apply exited {result.returncode}"
 
 
-def _relocate_checkout(clone: Path, old_path: Path, new_path: Path, branch: str) -> str | None:
-    """``git worktree remove`` + ``add`` from *old_path* to *new_path*; ``None`` on success."""
-    if not git.worktree_remove(str(clone), str(old_path)):
-        return f"git worktree remove failed for {old_path} — nothing was moved"
+def _readd_checkout(clone: Path, old_path: Path, new_path: Path, branch: str, patch: str) -> tuple[str | None, bool]:
     if git.worktree_add(str(clone), str(new_path), branch, create_branch=False):
-        return None
+        return None, False
     # The branch is now free but unchecked-out anywhere; recreate at the OLD
     # path so the checkout — and the row, still pointing at it — survive.
     recovered = git.worktree_add(str(clone), str(old_path), branch, create_branch=False)
+    if recovered and (error := _apply_uncommitted_delta(patch, old_path)):
+        return (
+            (
+                f"git worktree add failed for {new_path} "
+                f"(recreated at the original path, but delta reapply failed: {error})"
+            ),
+            True,
+        )
     reason = "recreated at the original path" if recovered else "COULD NOT be recreated — inspect the clone"
-    return f"git worktree add failed for {new_path} ({reason})"
+    return f"git worktree add failed for {new_path} ({reason})", not recovered
+
+
+def _restore_hint(prefix: str, overlay: str, target: Path | None) -> str:
+    if not prefix:
+        return ""
+    if target is None:
+        return f"; salvage bundle: {prefix}; recreate a checkout before restoring"
+    name = OverlayEntry.canonical_overlay_name(overlay)
+    return f"; t3 {name} workspace restore {prefix} --into {target}"
+
+
+def _verified_bundle(checkout: Path, branch: str, work: UnshippedWork) -> tuple[str, str]:
+    try:
+        root = Path(tempfile.mkdtemp(prefix="repair-", dir=get_data_dir(ARTIFACT_NAMESPACE)))
+    except OSError as exc:
+        return "", f"could not create a salvage directory ({exc}) — nothing moved"
+    written = write_salvage_bundle(checkout, branch=branch, root=root)
+    if written is None or written.parent != root:
+        return "", "could not capture a fresh salvage bundle — nothing moved"
+    prefix = str(written)
+    expected = (
+        (UNCOMMITTED_SUFFIX, work.uncommitted_patch),
+        (COMMITS_SUFFIX, work.commits_patch),
+        (FILES_SUFFIX, "".join(f"{path}\n" for path in work.dirty_paths)),
+    )
+    try:
+        if any(bundle_path(prefix, suffix).read_bytes() != content.encode("utf-8") for suffix, content in expected):
+            return "", "salvage bundle differs from the checkout — nothing moved"
+        if not bundle_path(prefix, ".meta").is_file():
+            return "", "salvage bundle is incomplete — nothing moved"
+    except OSError:
+        return "", "salvage bundle is unreadable or incomplete — nothing moved"
+    return prefix, ""
+
+
+def _retire_verified_bundle(prefix: str) -> str:
+    if not prefix:
+        return ""
+    root = Path(prefix).parent
+    try:
+        for suffix in (UNCOMMITTED_SUFFIX, COMMITS_SUFFIX, FILES_SUFFIX, ".meta"):
+            bundle_path(prefix, suffix).unlink(missing_ok=True)
+        root.rmdir()
+    except OSError as exc:
+        return f"retired the salvage record but could not remove {root} ({exc})"
+    return ""
+
+
+def _source_clone(worktree: Worktree, old_path: Path) -> Path | str:
+    clone = git_common_clone_dir(str(old_path))
+    if clone is None:
+        return f"{worktree.repo_path}: could not resolve the clone behind {old_path}"
+    actual = git.current_branch(str(old_path))
+    if actual != worktree.branch:
+        actual_name = "detached HEAD" if actual == "HEAD" else actual
+        return (
+            f"{worktree.repo_path}: {old_path} is on {actual_name}, "
+            f"recorded branch is {worktree.branch} — nothing moved"
+        )
+    return clone
+
+
+def _relocate_verified(
+    worktree: Worktree,
+    clone: Path,
+    paths: tuple[Path, Path],
+    work: UnshippedWork,
+    bundle: tuple[str, str],
+) -> str | None:
+    old_path, new_path = paths
+    prefix, previous = bundle
+    prior = f"; previous salvage: {previous}" if prefix and previous else ""
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"{worktree.repo_path}: could not create {new_path.parent} ({exc}) — nothing moved"
+    if not git.worktree_remove(str(clone), str(old_path)):
+        named = f"; salvage bundle: {prefix}" if prefix else ""
+        return f"{worktree.repo_path}: git worktree remove failed for {old_path} — inspect it{named}{prior}"
+    relocate_error, needs_restore = _readd_checkout(clone, old_path, new_path, worktree.branch, work.uncommitted_patch)
+    if relocate_error:
+        target = old_path if old_path.is_dir() else new_path if new_path.is_dir() else None
+        hint = _restore_hint(prefix, worktree.overlay, target) if needs_restore else ""
+        return f"{worktree.repo_path}: {relocate_error}{hint}{prior}"
+
+    worktree.merge_extra(set_keys={"worktree_path": str(new_path)})
+    if apply_error := _apply_uncommitted_delta(work.uncommitted_patch, new_path):
+        hint = _restore_hint(prefix, worktree.overlay, new_path)
+        return (
+            f"{worktree.repo_path}: moved to {new_path}, but its uncommitted delta failed to reapply: "
+            f"{apply_error}{hint}{prior}"
+        )
+
+    if cleanup_error := _retire_verified_bundle(prefix):
+        return f"{worktree.repo_path}: moved to {new_path}, but {cleanup_error}"
+    return None
 
 
 def _move_one(worktree: Worktree, canonical: Path) -> str | None:
     """Move *worktree*'s checkout into *canonical*; ``None`` on success, else the error."""
     old_path = Path((worktree.extra or {}).get("worktree_path") or "")
-    clone = git_common_clone_dir(str(old_path))
-    if clone is None:
-        return f"{worktree.repo_path}: could not resolve the clone behind {old_path}"
+    clone = _source_clone(worktree, old_path)
+    if isinstance(clone, str):
+        return clone
 
     work = probe_unshipped_work(old_path)
     if work.unreadable:
@@ -100,15 +213,25 @@ def _move_one(worktree: Worktree, canonical: Path) -> str | None:
     if new_path.exists():
         return f"{worktree.repo_path}: {new_path} already exists — refusing to overwrite it"
 
-    canonical.mkdir(parents=True, exist_ok=True)
-    if relocate_error := _relocate_checkout(clone, old_path, new_path, worktree.branch):
-        return f"{worktree.repo_path}: {relocate_error}"
+    prefix = ""
+    previous = ""
+    if work.exists:
+        previous = (
+            UnshippedWorkRecord.objects.filter(checkout_path=str(old_path))
+            .values_list("artifact_prefix", flat=True)
+            .first()
+            or ""
+        )
+        prefix, error = _verified_bundle(old_path, worktree.branch, work)
+        if error:
+            prior = f"; previous salvage: {previous}" if previous else ""
+            return f"{worktree.repo_path}: {error}{prior}"
+    else:
+        fresh = probe_unshipped_work(old_path)
+        if fresh.exists:
+            return f"{worktree.repo_path}: checkout changed after the clean read — nothing moved"
 
-    if apply_error := _apply_uncommitted_delta(work.uncommitted_patch, new_path):
-        return f"{worktree.repo_path}: moved to {new_path}, but its uncommitted delta failed to reapply: {apply_error}"
-
-    worktree.merge_extra(set_keys={"worktree_path": str(new_path)})
-    return None
+    return _relocate_verified(worktree, clone, (old_path, new_path), work, (prefix, previous))
 
 
 def repair_split_workspace(ticket: Ticket) -> RepairOutcome:
@@ -122,6 +245,8 @@ def repair_split_workspace(ticket: Ticket) -> RepairOutcome:
         return RepairOutcome()
 
     canonical = _canonical_dir(ticket)
+    if refusal := checkout_roots().refusal(canonical, durable=True):
+        return RepairOutcome(errors=[refusal])
     moved: list[str] = []
     kept: list[str] = []
     errors: list[str] = []

@@ -47,6 +47,16 @@ SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 class Task(models.Model):
     attempts: "models.Manager[TaskAttempt]"
 
+    if TYPE_CHECKING:
+        # Django synthesises these at class-prep time, so a static checker cannot see them.
+        id: int
+        ticket_id: int
+        session_id: int
+        parent_task_id: int | None
+        child_tasks: "models.Manager[Task]"
+
+        def get_status_display(self) -> str: ...
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         CLAIMED = "claimed", "Claimed"
@@ -320,6 +330,10 @@ class Task(models.Model):
         last_attempt = self.attempts.order_by("-pk").first()
         return bool(last_attempt and (last_attempt.result or {}).get("review_skipped"))
 
+    def recorded_by_hand(self) -> bool:
+        last_attempt = self.attempts.order_by("-pk").first()
+        return bool(last_attempt and (last_attempt.result or {}).get("recording_source") == "hand")
+
     def _needs_user_input_followup_pending(self) -> bool:
         """True iff this task was *held* for human input (#927).
 
@@ -417,7 +431,7 @@ class Task(models.Model):
         # Sessions). Reading the state OUTSIDE the atomic (the previous shape)
         # let both completions read the same stale state and both fire.
         with transaction.atomic():
-            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)  # ty: ignore[unresolved-attribute]
+            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER
@@ -435,7 +449,7 @@ class Task(models.Model):
                 and (ticket.state == Ticket.State.WORK_STARTED or has_plan_decision(ticket))
             ):
                 ticket.walk_to_work_started()
-                ticket.plan(parent_task=self)
+                ticket.plan(parent_task=self, schedule_followup=not self.recorded_by_hand())
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True, parent_task=self)

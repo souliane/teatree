@@ -14,7 +14,7 @@ either flag would pass on a harness that cannot write at all.
 
 import contextlib
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
@@ -45,7 +45,7 @@ _NOT_A_CHECK = frozenset({"django", "teatree.core", "ImportError", "typer", "ech
 
 
 @contextlib.contextmanager
-def _aggregate_reduced_to_its_finalisers() -> Iterator[None]:
+def _aggregate_reduced_to_its_finalisers() -> Generator[None]:
     """Stub every check ``run_doctor_checks`` calls except the advisory finalisers.
 
     The aggregate probes MCP, Slack and the forge and re-points the running install as

@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Task, Worktree
@@ -113,3 +114,10 @@ class ReleaseTaskOccupancyTests(TestCase):
     def test_a_ticket_with_no_materialised_checkout_releases_nothing(self) -> None:
         bare_task = Task.objects.create(ticket=TicketFactory(), session=SessionFactory())
         assert release_task_occupancy(bare_task) is False
+
+    def test_confirmed_dead_holder_releases_despite_stale_drive_marker(self) -> None:
+        acquire(self.worktree, holder=task_holder_id(self.task), holder_session="sess-1")
+        Task.objects.filter(pk=self.task.pk).update(owner_driving_since=timezone.now())
+        with mock.patch("teatree.core.models.task_claim.holder_confirmed_dead", return_value=True):
+            self.task.fail(reason="cancelled: owner stopped task", by_holder=False)
+        assert occupancy_holder(self.fresh()) is None

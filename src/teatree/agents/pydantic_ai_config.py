@@ -43,6 +43,7 @@ from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_op
 _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
+ANTHROPIC_CACHE_TTL = "5m"
 #: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
 SESSION_PLACEHOLDER = "{session}"
 
@@ -286,6 +287,8 @@ def build_model_settings(
     # an extra a router-only install does not carry, while the runtime shape is identical (a
     # TypedDict IS a dict).
     settings: dict[str, Any] = {}
+    if binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+        settings.update(anthropic_cache_settings())
     if max_tokens is not None and max_tokens > 0:
         settings["max_tokens"] = max_tokens
     if effort is not None:
@@ -298,6 +301,10 @@ def build_model_settings(
         else:
             settings["openai_reasoning_effort"] = effort
     return cast("ModelSettings", settings) if settings else None
+
+
+def anthropic_cache_settings() -> dict[str, Any]:
+    return {"cache": ANTHROPIC_CACHE_TTL, "anthropic_cache_diagnostics": True}
 
 
 def build_openai_compatible_provider(config: OpenAICompatibleLaneConfig, run: SessionRun) -> OpenAIProvider:

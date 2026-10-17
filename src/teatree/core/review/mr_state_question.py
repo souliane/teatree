@@ -28,7 +28,7 @@ re-offered on a later tick once a slot frees.
 import hashlib
 import json
 import logging
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -51,7 +51,7 @@ _OWNER_QUESTION_OBSERVER: ContextVar[Callable[[str], None] | None] = ContextVar(
 
 
 @contextmanager
-def observe_owner_question_creation(observer: Callable[[str], None]) -> Iterator[None]:
+def observe_owner_question_creation(observer: Callable[[str], None]) -> Generator[None]:
     token = _OWNER_QUESTION_OBSERVER.set(observer)
     try:
         yield

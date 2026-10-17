@@ -58,6 +58,7 @@ class ProcessTableView:
     answered_pids: int
     unknowable_pids: int
     unknowable_reason: str = ""
+    unknowable_details: tuple[tuple[str, str], ...] = ()
 
     @property
     def sighted(self) -> bool:
@@ -81,7 +82,9 @@ def normalized_spelling(path: str) -> str:
     return str(Path(os.path.realpath(candidate.parent)) / candidate.name)
 
 
-def held_paths(proc_root: Path, *, exclude_pid: str | None = None) -> ProcessTableView:
+def held_paths(
+    proc_root: Path, *, exclude_pid: str | None = None, exclude_pids: frozenset[str] = frozenset()
+) -> ProcessTableView:
     """Every path a live process holds open under *proc_root*, plus the read's own coverage.
 
     Four distinct liveness forms, every one of them read PER PID and folded into
@@ -131,7 +134,7 @@ def held_paths(proc_root: Path, *, exclude_pid: str | None = None) -> ProcessTab
         return _unsighted(f"process table at {proc_root} is not listable ({error.strerror or error})")
     if not numeric:
         return _unsighted(f"process table at {proc_root} carries no numeric pid — not a process table")
-    pids = [entry for entry in numeric if entry.name != exclude_pid]
+    pids = [entry for entry in numeric if entry.name != exclude_pid and entry.name not in exclude_pids]
     held: set[str] = set()
     answered = 0
     unknowable: list[tuple[str, str]] = []
@@ -153,6 +156,7 @@ def held_paths(proc_root: Path, *, exclude_pid: str | None = None) -> ProcessTab
         answered_pids=answered,
         unknowable_pids=len(unknowable),
         unknowable_reason=_coverage_reason(unknowable, pid_count=len(pids), answered=answered, proc_root=proc_root),
+        unknowable_details=tuple(unknowable),
     )
 
 

@@ -14,7 +14,7 @@ explicitly: with no independent cold-review verdict at the live head, no standin
 authorization merges a substrate PR through either path.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from unittest.mock import patch
@@ -85,7 +85,7 @@ def _repo_internal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @contextmanager
-def _teatree_owns_slug() -> Iterator[None]:
+def _teatree_owns_slug() -> Generator[None]:
     """Pin ``SLUG`` to the bundled overlay so repo-identity resolution is deterministic."""
     from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: needs the app registry
 
@@ -95,7 +95,7 @@ def _teatree_owns_slug() -> Iterator[None]:
 
 
 @contextmanager
-def _config(**settings: object) -> Iterator[None]:
+def _config(**settings: object) -> Generator[None]:
     rows = [ConfigSetting.objects.set_value(key, value, scope=OVERLAY) for key, value in settings.items()]
     try:
         yield

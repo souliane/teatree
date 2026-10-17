@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==1.11.0",
+      "description": "requirements line 7: anthropic==1.12.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@1.11.0",
+      "purl": "pkg:pypi/anthropic@1.12.1",
       "type": "library",
-      "version": "1.11.0"
+      "version": "1.12.1"
     },
     {
       "bom-ref": "requirements-L9",
@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.163",
+      "description": "requirements line 38: claude-agent-sdk==0.2.165",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.163",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.165",
       "type": "library",
-      "version": "0.2.163"
+      "version": "0.2.165"
     },
     {
       "bom-ref": "requirements-L40",
@@ -227,7 +227,7 @@
     },
     {
       "bom-ref": "requirements-L54",
-      "description": "requirements line 54: django==6.1.1",
+      "description": "requirements line 54: django==6.1.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -236,9 +236,9 @@
         }
       ],
       "name": "django",
-      "purl": "pkg:pypi/django@6.1.1",
+      "purl": "pkg:pypi/django@6.1.2",
       "type": "library",
-      "version": "6.1.1"
+      "version": "6.1.2"
     },
     {
       "bom-ref": "requirements-L63",
@@ -347,7 +347,7 @@
     },
     {
       "bom-ref": "requirements-L79",
-      "description": "requirements line 79: genai-prices==0.1.9",
+      "description": "requirements line 79: genai-prices==0.1.10",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -356,9 +356,9 @@
         }
       ],
       "name": "genai-prices",
-      "purl": "pkg:pypi/genai-prices@0.1.9",
+      "purl": "pkg:pypi/genai-prices@0.1.10",
       "type": "library",
-      "version": "0.1.9"
+      "version": "0.1.10"
     },
     {
       "bom-ref": "requirements-L81",
@@ -647,7 +647,7 @@
     },
     {
       "bom-ref": "requirements-L138",
-      "description": "requirements line 138: openai==3.24.0",
+      "description": "requirements line 138: openai==3.26.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -656,13 +656,13 @@
         }
       ],
       "name": "openai",
-      "purl": "pkg:pypi/openai@3.24.0",
+      "purl": "pkg:pypi/openai@3.26.0",
       "type": "library",
-      "version": "3.24.0"
+      "version": "3.26.0"
     },
     {
       "bom-ref": "requirements-L140",
-      "description": "requirements line 140: opentelemetry-api==1.45.0",
+      "description": "requirements line 140: opentelemetry-api==1.45.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -671,13 +671,13 @@
         }
       ],
       "name": "opentelemetry-api",
-      "purl": "pkg:pypi/opentelemetry-api@1.45.0",
+      "purl": "pkg:pypi/opentelemetry-api@1.45.1",
       "type": "library",
-      "version": "1.45.0"
+      "version": "1.45.1"
     },
     {
       "bom-ref": "requirements-L148",
-      "description": "requirements line 148: opentelemetry-exporter-http-transport==0.66b0",
+      "description": "requirements line 148: opentelemetry-exporter-http-transport==0.66b1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -686,13 +686,13 @@
         }
       ],
       "name": "opentelemetry-exporter-http-transport",
-      "purl": "pkg:pypi/opentelemetry-exporter-http-transport@0.66b0",
+      "purl": "pkg:pypi/opentelemetry-exporter-http-transport@0.66b1",
       "type": "library",
-      "version": "0.66b0"
+      "version": "0.66b1"
     },
     {
       "bom-ref": "requirements-L150",
-      "description": "requirements line 150: opentelemetry-exporter-otlp-common==0.66b0",
+      "description": "requirements line 150: opentelemetry-exporter-otlp-common==0.66b1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -701,13 +701,13 @@
         }
       ],
       "name": "opentelemetry-exporter-otlp-common",
-      "purl": "pkg:pypi/opentelemetry-exporter-otlp-common@0.66b0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-common@0.66b1",
       "type": "library",
-      "version": "0.66b0"
+      "version": "0.66b1"
     },
     {
       "bom-ref": "requirements-L152",
-      "description": "requirements line 152: opentelemetry-exporter-otlp-proto-common==1.45.0",
+      "description": "requirements line 152: opentelemetry-exporter-otlp-proto-common==1.45.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -716,13 +716,13 @@
         }
       ],
       "name": "opentelemetry-exporter-otlp-proto-common",
-      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.45.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.45.1",
       "type": "library",
-      "version": "1.45.0"
+      "version": "1.45.1"
     },
     {
       "bom-ref": "requirements-L154",
-      "description": "requirements line 154: opentelemetry-exporter-otlp-proto-http==1.45.0",
+      "description": "requirements line 154: opentelemetry-exporter-otlp-proto-http==1.45.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -731,13 +731,13 @@
         }
       ],
       "name": "opentelemetry-exporter-otlp-proto-http",
-      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.45.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.45.1",
       "type": "library",
-      "version": "1.45.0"
+      "version": "1.45.1"
     },
     {
       "bom-ref": "requirements-L156",
-      "description": "requirements line 156: opentelemetry-proto==1.45.0",
+      "description": "requirements line 156: opentelemetry-proto==1.45.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -746,13 +746,13 @@
         }
       ],
       "name": "opentelemetry-proto",
-      "purl": "pkg:pypi/opentelemetry-proto@1.45.0",
+      "purl": "pkg:pypi/opentelemetry-proto@1.45.1",
       "type": "library",
-      "version": "1.45.0"
+      "version": "1.45.1"
     },
     {
       "bom-ref": "requirements-L160",
-      "description": "requirements line 160: opentelemetry-sdk==1.45.0",
+      "description": "requirements line 160: opentelemetry-sdk==1.45.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -761,13 +761,13 @@
         }
       ],
       "name": "opentelemetry-sdk",
-      "purl": "pkg:pypi/opentelemetry-sdk@1.45.0",
+      "purl": "pkg:pypi/opentelemetry-sdk@1.45.1",
       "type": "library",
-      "version": "1.45.0"
+      "version": "1.45.1"
     },
     {
       "bom-ref": "requirements-L165",
-      "description": "requirements line 165: opentelemetry-semantic-conventions==0.66b0",
+      "description": "requirements line 165: opentelemetry-semantic-conventions==0.66b1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -776,9 +776,9 @@
         }
       ],
       "name": "opentelemetry-semantic-conventions",
-      "purl": "pkg:pypi/opentelemetry-semantic-conventions@0.66b0",
+      "purl": "pkg:pypi/opentelemetry-semantic-conventions@0.66b1",
       "type": "library",
-      "version": "0.66b0"
+      "version": "0.66b1"
     },
     {
       "bom-ref": "requirements-L167",
@@ -872,7 +872,7 @@
     },
     {
       "bom-ref": "requirements-L189",
-      "description": "requirements line 189: pydantic-ai-slim==2.54.0",
+      "description": "requirements line 189: pydantic-ai-slim==2.56.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -881,9 +881,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.54.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.56.0",
       "type": "library",
-      "version": "2.54.0"
+      "version": "2.56.0"
     },
     {
       "bom-ref": "requirements-L191",
@@ -902,7 +902,7 @@
     },
     {
       "bom-ref": "requirements-L193",
-      "description": "requirements line 193: pydantic-graph==2.54.0",
+      "description": "requirements line 193: pydantic-graph==2.56.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -911,9 +911,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.54.0",
+      "purl": "pkg:pypi/pydantic-graph@2.56.0",
       "type": "library",
-      "version": "2.54.0"
+      "version": "2.56.0"
     },
     {
       "bom-ref": "requirements-L195",
@@ -1096,8 +1096,8 @@
       "version": "2.34.2"
     },
     {
-      "bom-ref": "requirements-L221",
-      "description": "requirements line 221: rich==15.0.0",
+      "bom-ref": "requirements-L224",
+      "description": "requirements line 224: rich==15.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1111,8 +1111,8 @@
       "version": "15.0.0"
     },
     {
-      "bom-ref": "requirements-L225",
-      "description": "requirements line 225: rpds-py==2026.6.3",
+      "bom-ref": "requirements-L228",
+      "description": "requirements line 228: rpds-py==2026.6.3",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1126,8 +1126,8 @@
       "version": "2026.6.3"
     },
     {
-      "bom-ref": "requirements-L229",
-      "description": "requirements line 229: shellingham==1.5.4",
+      "bom-ref": "requirements-L232",
+      "description": "requirements line 232: shellingham==1.5.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1141,8 +1141,8 @@
       "version": "1.5.4"
     },
     {
-      "bom-ref": "requirements-L231",
-      "description": "requirements line 231: six==1.17.0",
+      "bom-ref": "requirements-L234",
+      "description": "requirements line 234: six==1.17.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1156,8 +1156,8 @@
       "version": "1.17.0"
     },
     {
-      "bom-ref": "requirements-L233",
-      "description": "requirements line 233: sniffio==1.3.1",
+      "bom-ref": "requirements-L236",
+      "description": "requirements line 236: sniffio==1.3.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1171,8 +1171,8 @@
       "version": "1.3.1"
     },
     {
-      "bom-ref": "requirements-L238",
-      "description": "requirements line 238: sqlparse==0.6.0",
+      "bom-ref": "requirements-L241",
+      "description": "requirements line 241: sqlparse==0.6.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1186,8 +1186,8 @@
       "version": "0.6.0"
     },
     {
-      "bom-ref": "requirements-L240",
-      "description": "requirements line 240: sse-starlette==3.5.0",
+      "bom-ref": "requirements-L243",
+      "description": "requirements line 243: sse-starlette==3.5.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1201,8 +1201,8 @@
       "version": "3.5.0"
     },
     {
-      "bom-ref": "requirements-L242",
-      "description": "requirements line 242: starlette==1.7.0",
+      "bom-ref": "requirements-L245",
+      "description": "requirements line 245: starlette==1.7.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1216,8 +1216,8 @@
       "version": "1.7.0"
     },
     {
-      "bom-ref": "requirements-L246",
-      "description": "requirements line 246: tiktoken==0.14.0",
+      "bom-ref": "requirements-L249",
+      "description": "requirements line 249: tiktoken==0.14.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1231,8 +1231,8 @@
       "version": "0.14.0"
     },
     {
-      "bom-ref": "requirements-L248",
-      "description": "requirements line 248: tomlkit==0.15.1",
+      "bom-ref": "requirements-L251",
+      "description": "requirements line 251: tomlkit==0.15.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1246,8 +1246,8 @@
       "version": "0.15.1"
     },
     {
-      "bom-ref": "requirements-L250",
-      "description": "requirements line 250: truststore==0.10.4 ; sys_platform != 'emscripten'",
+      "bom-ref": "requirements-L253",
+      "description": "requirements line 253: truststore==0.10.4 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1261,8 +1261,8 @@
       "version": "0.10.4"
     },
     {
-      "bom-ref": "requirements-L254",
-      "description": "requirements line 254: typer==0.25.1",
+      "bom-ref": "requirements-L257",
+      "description": "requirements line 257: typer==0.25.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1276,8 +1276,8 @@
       "version": "0.25.1"
     },
     {
-      "bom-ref": "requirements-L256",
-      "description": "requirements line 256: typing-extensions==4.16.0",
+      "bom-ref": "requirements-L259",
+      "description": "requirements line 259: typing-extensions==4.16.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1291,8 +1291,8 @@
       "version": "4.16.0"
     },
     {
-      "bom-ref": "requirements-L273",
-      "description": "requirements line 273: typing-inspection==0.4.4",
+      "bom-ref": "requirements-L276",
+      "description": "requirements line 276: typing-inspection==0.4.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1306,8 +1306,8 @@
       "version": "0.4.4"
     },
     {
-      "bom-ref": "requirements-L280",
-      "description": "requirements line 280: tzdata==2026.5 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L283",
+      "description": "requirements line 283: tzdata==2026.5 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1321,8 +1321,8 @@
       "version": "2026.5"
     },
     {
-      "bom-ref": "requirements-L282",
-      "description": "requirements line 282: urllib3==2.8.0",
+      "bom-ref": "requirements-L285",
+      "description": "requirements line 285: urllib3==2.8.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1336,8 +1336,8 @@
       "version": "2.8.0"
     },
     {
-      "bom-ref": "requirements-L286",
-      "description": "requirements line 286: uvicorn==0.54.0 ; sys_platform != 'emscripten'",
+      "bom-ref": "requirements-L287",
+      "description": "requirements line 287: uvicorn==0.54.0 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1351,8 +1351,8 @@
       "version": "0.54.0"
     },
     {
-      "bom-ref": "requirements-L288",
-      "description": "requirements line 288: whitenoise==6.12.0",
+      "bom-ref": "requirements-L289",
+      "description": "requirements line 289: whitenoise==6.12.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1494,61 +1494,61 @@
       "ref": "requirements-L219"
     },
     {
-      "ref": "requirements-L221"
+      "ref": "requirements-L224"
     },
     {
-      "ref": "requirements-L225"
+      "ref": "requirements-L228"
     },
     {
-      "ref": "requirements-L229"
+      "ref": "requirements-L232"
     },
     {
-      "ref": "requirements-L231"
+      "ref": "requirements-L234"
     },
     {
-      "ref": "requirements-L233"
+      "ref": "requirements-L236"
     },
     {
-      "ref": "requirements-L238"
+      "ref": "requirements-L241"
     },
     {
-      "ref": "requirements-L240"
+      "ref": "requirements-L243"
     },
     {
-      "ref": "requirements-L242"
+      "ref": "requirements-L245"
     },
     {
-      "ref": "requirements-L246"
-    },
-    {
-      "ref": "requirements-L248"
+      "ref": "requirements-L249"
     },
     {
       "ref": "requirements-L25"
     },
     {
-      "ref": "requirements-L250"
+      "ref": "requirements-L251"
     },
     {
-      "ref": "requirements-L254"
+      "ref": "requirements-L253"
     },
     {
-      "ref": "requirements-L256"
+      "ref": "requirements-L257"
     },
     {
-      "ref": "requirements-L273"
+      "ref": "requirements-L259"
     },
     {
-      "ref": "requirements-L280"
+      "ref": "requirements-L276"
     },
     {
-      "ref": "requirements-L282"
+      "ref": "requirements-L283"
     },
     {
-      "ref": "requirements-L286"
+      "ref": "requirements-L285"
     },
     {
-      "ref": "requirements-L288"
+      "ref": "requirements-L287"
+    },
+    {
+      "ref": "requirements-L289"
     },
     {
       "ref": "requirements-L29"

@@ -27,6 +27,7 @@ from teatree.core.cleanup.unshipped_work import (
     bundle_path,
     capture_unshipped_work,
     probe_unshipped_work,
+    write_salvage_bundle,
 )
 from teatree.core.models import UnshippedWorkRecord
 from teatree.utils.run import CommandFailedError
@@ -251,6 +252,28 @@ class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
         assert self._capture() is None
         assert not UnshippedWorkRecord.objects.exists()
         assert not self.artifacts.exists()
+
+
+class TestSalvageBundleWithoutRecord(_CheckoutFixture):
+    def test_writes_the_bundle_under_the_root_and_records_nothing(self) -> None:
+        self._stage_only()
+
+        prefix = write_salvage_bundle(self.checkout, branch="feat", root=self.artifacts)
+
+        assert prefix is not None
+        assert prefix.parent == self.artifacts
+        assert "value = 2" in bundle_path(str(prefix), UNCOMMITTED_SUFFIX).read_text(encoding="utf-8")
+        assert not UnshippedWorkRecord.objects.exists()
+
+    def test_a_clean_checkout_has_no_bundle(self) -> None:
+        assert write_salvage_bundle(self.checkout, branch="feat", root=self.artifacts) is None
+        assert not self.artifacts.exists()
+
+    def test_an_unwritable_root_has_no_bundle(self) -> None:
+        self._stage_only()
+        self.artifacts.write_text("a file, not a directory", encoding="utf-8")
+
+        assert write_salvage_bundle(self.checkout, branch="feat", root=self.artifacts) is None
 
 
 class TestBundleRoundTrips(_CheckoutFixture):

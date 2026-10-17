@@ -34,7 +34,7 @@ from pathlib import Path
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # runs no CLI at all — the image declares no ``glab``, so that side reads over the
 # token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
+_PROBE_TIMEOUT_SECONDS = 30
 
 
 def forge_cli_env(repo: str | Path = ".") -> dict[str, str] | None:
@@ -147,7 +148,7 @@ def find_open_pr_for_branch(repo_dir: str | Path, branch: str) -> PrProbe:
     therefore no PR to find and nothing to protect), NOT unknown. An empty *branch*
     is :attr:`~PrProbeOutcome.UNKNOWN` — there is nothing to probe, and a
     fail-closed caller must not read that as "no PR". Any CLI failure (missing
-    binary, non-zero exit, unparsable JSON) is :attr:`~PrProbeOutcome.UNKNOWN`.
+    binary, timeout, non-zero exit, unparsable JSON) is :attr:`~PrProbeOutcome.UNKNOWN`.
 
     The remote read itself must tell "unreadable repo" apart from "readable repo,
     unrecognised host": ``git remote get-url`` failing (not a git repo, no
@@ -235,7 +236,7 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
 
     A non-empty JSON array whose first row carries a non-empty string at *key* is an
     open PR/MR (:attr:`~PrProbeOutcome.FOUND`, carrying that url); an empty array is
-    :attr:`~PrProbeOutcome.NONE`. A missing binary (``OSError``), a non-zero exit,
+    :attr:`~PrProbeOutcome.NONE`. A missing binary (``OSError``), timeout, non-zero exit,
     unparsable / non-list JSON, or a row shaped otherwise is
     :attr:`~PrProbeOutcome.UNKNOWN` — the probe could not answer. Both CLIs are
     invoked with an explicit field selector, so a row missing *key* is a changed
@@ -255,8 +256,10 @@ def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
         logger.warning("open-PR probe has no routed GitHub token for %s — unknown", repo_dir)
         return None
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=env)
-    except OSError:
+        result = run_allowed_to_fail(
+            cmd, expected_codes=None, cwd=Path(repo_dir), env=env, timeout=_PROBE_TIMEOUT_SECONDS
+        )
+    except SUBPROCESS_UNREACHABLE:
         logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
         return None
     if result.returncode != 0:

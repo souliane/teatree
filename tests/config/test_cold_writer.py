@@ -20,6 +20,7 @@ import pytest
 from teatree.config import cold_reader, cold_writer
 from teatree.config.cold_writer import WriteResult
 from teatree.config.host_projection import GENERATION_KEY
+from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 # The exact ``teatree_config_setting`` shape Django's migration emits (see
 # ``sqlmigrate core 0001_initial``): NOT-NULL timestamp columns + the JSON_VALID
@@ -57,7 +58,7 @@ class TestWriteRoundTrip:
         _make_real_schema_db(db)
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
-        assert cold_writer.write_setting("autoload", value=False) is WriteResult.WROTE
+        assert cold_writer.write_setting("autoload", value=False).result is WriteResult.WROTE
         assert cold_reader.read_setting("autoload", scope="") is False
 
     def test_write_is_an_upsert_not_a_duplicate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,8 +66,8 @@ class TestWriteRoundTrip:
         _make_real_schema_db(db)
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
-        assert cold_writer.write_setting("plan_edit_gate_enabled", value=True) is WriteResult.WROTE
-        assert cold_writer.write_setting("plan_edit_gate_enabled", value=False) is WriteResult.WROTE
+        assert cold_writer.write_setting("plan_edit_gate_enabled", value=True).result is WriteResult.WROTE
+        assert cold_writer.write_setting("plan_edit_gate_enabled", value=False).result is WriteResult.WROTE
         conn = sqlite3.connect(db)
         try:
             count = conn.execute(
@@ -80,35 +81,63 @@ class TestWriteRoundTrip:
     def test_explicit_db_path_targets_that_file(self, tmp_path: Path) -> None:
         db = tmp_path / "explicit.sqlite3"
         _make_real_schema_db(db)
-        assert cold_writer.write_setting("completion_claim_gate_enabled", value=False, db_path=db) is WriteResult.WROTE
+        outcome = cold_writer.write_setting("completion_claim_gate_enabled", value=False, db_path=db)
+        assert outcome.result is WriteResult.WROTE
+        assert outcome.db == db
+        assert outcome.detail == ""
         assert cold_reader.read_setting("completion_claim_gate_enabled", scope="", db_path=db) is False
 
 
-class TestNoDbTierFallsBackToToml:
-    """An absent DB tier returns ``NO_DB_TIER`` so ``t3 gate`` falls back to the TOML write.
-
-    The cold READER also fails open to ``None`` for every one of these cases, so a TOML write
-    IS what gets read — falling back to it is correct (and the only never-lockout path).
-    """
+class TestNoDbTierIsClassified:
+    """An absent, unmigrated or malformed DB cannot accept a gate write."""
 
     def test_missing_db_file_is_no_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         absent = tmp_path / "nope.sqlite3"
         monkeypatch.setenv("T3_CONFIG_DB", str(absent))
-        # The pre-``t3 setup`` cold state: no canonical DB yet -> caller writes TOML instead.
-        assert cold_writer.write_setting("autoload", value=False) is WriteResult.NO_DB_TIER
+        assert cold_writer.write_setting("autoload", value=False).result is WriteResult.NO_DB_TIER
         assert not absent.exists()  # the writer must not CREATE the canonical DB
+
+    def test_missing_db_outcome_names_path_and_cause(self, tmp_path: Path) -> None:
+        db = tmp_path / "absent.sqlite3"
+        outcome = cold_writer.write_setting("autoload", value=False, db_path=db)
+        assert outcome.result is WriteResult.NO_DB_TIER
+        assert outcome.db == db
+        assert outcome.detail == "no file at this path"
+
+    def test_writer_wait_matches_orm(self) -> None:
+        assert SQLITE_WRITE_SERIALIZATION_OPTIONS["timeout"] * 1000 == cold_writer._BUSY_TIMEOUT_MS
 
     def test_missing_table_is_no_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "unmigrated.sqlite3"
         sqlite3.connect(db).close()  # a DB file with NO teatree_config_setting table
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert cold_writer.write_setting("autoload", value=False) is WriteResult.NO_DB_TIER
+        outcome = cold_writer.write_setting("autoload", value=False)
+        assert outcome.result is WriteResult.NO_DB_TIER
+        assert outcome.db == db
+        assert outcome.detail == "no teatree_config_setting table"
 
     def test_malformed_db_is_no_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         garbage = tmp_path / "corrupt.sqlite3"
         garbage.write_bytes(b"this is not a sqlite database at all")
         monkeypatch.setenv("T3_CONFIG_DB", str(garbage))
-        assert cold_writer.write_setting("autoload", value=False) is WriteResult.NO_DB_TIER
+        outcome = cold_writer.write_setting("autoload", value=False)
+        assert outcome.result is WriteResult.NO_DB_TIER
+        assert outcome.db == garbage
+        assert "not a database" in outcome.detail
+
+    def test_unopenable_db_reports_sqlite_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "unopenable.sqlite3"
+        db.touch()
+        error = sqlite3.OperationalError("unable to open database file")
+
+        def refuse_connect(*_args: object, **_kwargs: object) -> sqlite3.Connection:
+            raise error
+
+        monkeypatch.setattr(cold_writer.sqlite3, "connect", refuse_connect)
+        outcome = cold_writer.write_setting("autoload", value=False, db_path=db)
+        assert outcome.result is WriteResult.NO_DB_TIER
+        assert outcome.db == db
+        assert outcome.detail == "unable to open database file"
 
 
 class TestLockedWithRowIsWriteFailed:
@@ -116,16 +145,16 @@ class TestLockedWithRowIsWriteFailed:
 
     This is the residual HIGH (review HOLD #2): when the table exists and a writer holds the
     lock, the seeded row is still authoritative and the reader still returns it, so the write
-    failure must NOT be conflated with an absent tier (which would write a dead, shadowed TOML
-    row). The table-existence probe — not a sqlite error code — is what tells the two apart.
+    failure must NOT be conflated with an absent tier. The table-existence probe,
+    not an error-code guess, tells the two apart.
     """
 
     def test_locked_db_with_table_is_write_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _make_real_schema_db(db)
         # Seed a real row so the lock guards an EXISTING value the reader would still return.
-        assert cold_writer.write_setting("autoload", value=True, db_path=db) is WriteResult.WROTE
-        monkeypatch.setattr(cold_writer, "_BUSY_TIMEOUT_MS", 100)  # fail fast, don't wait 2s
+        assert cold_writer.write_setting("autoload", value=True, db_path=db).result is WriteResult.WROTE
+        monkeypatch.setattr(cold_writer, "_BUSY_TIMEOUT_MS", 100)  # keep the locked test fast
         blocker = sqlite3.connect(db)
         try:
             blocker.execute("PRAGMA journal_mode=WAL")
@@ -133,7 +162,9 @@ class TestLockedWithRowIsWriteFailed:
             result = cold_writer.write_setting("autoload", value=False, db_path=db)
         finally:
             blocker.close()
-        assert result is WriteResult.WRITE_FAILED
+        assert result.result is WriteResult.WRITE_FAILED
+        assert result.db == db
+        assert "database is locked" in result.detail
         # The blocked write did NOT touch the row: the seeded value survives.
         assert cold_reader.read_setting("autoload", scope="", db_path=db) is True
 
@@ -166,12 +197,13 @@ class TestValueAndGenerationCommitTogether:
         self._refuse_generation_writes(db)
 
         result = cold_writer.write_setting("autoload", value=False, db_path=db)
-        assert result is WriteResult.WRITE_FAILED
+        assert result.result is WriteResult.WRITE_FAILED
+        assert result.detail == "generation write refused"
         assert cold_reader.read_setting("autoload", scope="", db_path=db) is None
 
     def test_a_committed_write_carries_its_generation(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         _make_real_schema_db(db)
 
-        assert cold_writer.write_setting("autoload", value=False, db_path=db) is WriteResult.WROTE
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
         assert cold_reader.read_setting(GENERATION_KEY, scope="", db_path=db) == 1

@@ -278,6 +278,12 @@ class PullRequest(models.Model):
         CONFIRMED = "confirmed", "Confirmed"
 
     ticket = models.ForeignKey("core.Ticket", on_delete=models.CASCADE, related_name="pull_requests")
+    if TYPE_CHECKING:
+        # Django synthesises these at class-prep time, so a static checker cannot see them.
+        ticket_id: int
+
+        def get_state_display(self) -> str: ...
+
     overlay = models.CharField(max_length=255, blank=True)
     url = models.URLField(max_length=500)
     repo = models.CharField(max_length=255)

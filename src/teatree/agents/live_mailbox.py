@@ -9,7 +9,7 @@ import secrets
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -495,7 +495,7 @@ def bound_task_mailbox(
     task: LiveTask,
     *,
     broker: LiveMailboxBroker | None = None,
-) -> Iterator[MailboxIdentity | None]:
+) -> Generator[MailboxIdentity | None]:
     """Bind a running TeaTree task to its own stdio MCP child; revoke it on exit."""
     original = options.mcp_servers
     servers = original if isinstance(original, dict) else {}

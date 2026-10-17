@@ -99,6 +99,7 @@ Every over-deny gate ships a never-lockout path. This is the ONE catalog of them
 | `[visible-plan-ok: <reason>]` | visible per-target plan-first gate | any string argument of the call (first 512 chars) |
 | `[skip-plan-gate: <reason>]` | plan-before-code write-block gate | Edit `new_string` / Write `content` / `file_path` / Bash `command` (first 512) |
 | `[main-clone-ok: <reason>]` | main-clone working-tree mutation gate (Edit/Write, Bash write, git mutation) | Edit `new_string` / Write `content` / `file_path` / Bash `command` (first 512) |
+| `[worktree-containment-ok: <reason>]` | linked worktree placement gate | Bash `command` |
 | `[add-all-ok: <reason>]` | whole-tree `git add -A` / `git add .` gate | Bash `command` (first 512) |
 | `[cron-loop-ok: <reason>]` | cron/wakeup-drives-a-t3-loop gate | `CronCreate` / `ScheduleWakeup` `prompt` or `reason` |
 | `[grant-ask-ok: <reason>]` | standing-grant sign-off ask gate (`AskUserQuestion` for a merge the grant already authorizes) | `AskUserQuestion` `question` text (first 512 chars) |
@@ -140,6 +141,7 @@ Every over-deny gate ships a never-lockout path. This is the ONE catalog of them
 | `t3 <overlay> gate unbacked-claim disable` | evidence `Stop` gate (diagnosis / escalation citations) |
 | `t3 <overlay> gate brief-anchor disable` | brief-anchor refusal on `Agent`/`Task` dispatch |
 | `t3 <overlay> gate main-clone disable` | main-clone working-tree mutation gate |
+| `t3 <overlay> gate worktree-containment disable` | linked worktree placement gate |
 | `t3 <overlay> config_setting set headless_authoring_gate_enabled false` | headless-posture authoring gate |
 | `t3 <overlay> gate snapshot-baseline disable` | snapshot-baseline attestation gate |
 | `t3 <overlay> gate gate-relaxation disable` | anti-relaxation + tach-soundness gate |

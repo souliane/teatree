@@ -8,14 +8,20 @@ test here goes RED (both requesters win); a test asserting only "the row names
 someone" would stay green against exactly that defect.
 """
 
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Task, Worktree
+from teatree.core.models.task_claim import drive_claim
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
@@ -29,6 +35,7 @@ from teatree.core.worktree.occupancy import (
     task_holder_id,
 )
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 class _OccupancyCase(TestCase):
@@ -186,6 +193,93 @@ class TicketCheckoutTests(_OccupancyCase):
         bare = TicketFactory()
         with occupy_ticket_checkout(bare, holder="task:1", holder_session="s1") as path:
             assert path == ""
+
+
+class MidRunCheckoutTests(TestCase):
+    """A checkout that appears during the run is settled by the run's own exit (#5272)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.checkout = Path(temporary.name) / "checkout"
+        self.ticket = TicketFactory()
+        self.task = TaskFactory(ticket=self.ticket, phase="coding")
+        self.task.claim(claimed_by="task-worker")
+        self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+
+    def run_to(
+        self, finish: Callable[[Task], None], *, creates_checkout: bool = True, held_at_exit: bool = False
+    ) -> None:
+        holder, session = task_holder_id(self.task), self.task.claimed_by_session
+        table = ProcessTable(frozenset({self.checkout}) if held_at_exit else frozenset(), "/proc")
+        with (
+            patch(
+                "teatree.core.worktree.occupancy.read_process_table",
+                return_value=table,
+            ),
+            occupy_ticket_checkout(self.ticket, holder=holder, holder_session=session) as path,
+            drive_claim(self.task),
+        ):
+            assert path == ""
+            if creates_checkout:
+                _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+                renew_ticket_checkout(self.ticket, holder=holder, holder_session=session)
+                (self.checkout / "work.txt").write_text("the run's own edit\n")
+            finish(self.task)
+
+    def assert_released_and_attested(self) -> None:
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(finished) is None
+        assert finished.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        task = Task.objects.get(pk=self.task.pk)
+        assert (task.claimed_by, task.owner_pid) == ("", None)
+
+    def test_completion_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
+        self.run_to(lambda task: task.complete())
+        self.assert_released_and_attested()
+
+    def test_a_failed_run_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
+        self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))
+        self.assert_released_and_attested()
+
+    def test_a_run_that_never_gets_a_checkout_releases_its_claim_and_writes_no_row(self) -> None:
+        self.run_to(lambda task: task.complete(), creates_checkout=False)
+        assert Task.objects.get(pk=self.task.pk).claimed_by == ""
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert row.occupied_by == ""
+        assert "attested_state" not in row.get_extra()
+
+    def test_held_exit_records_the_state_it_would_have_attested(self) -> None:
+        self.run_to(lambda task: task.complete(), held_at_exit=True)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        record = row.get_extra()["deferred_exit"]
+        assert record["holder"] == task_holder_id(self.task)
+        assert record["session"] == self.task.claimed_by_session
+        assert record["digest"] == checkout_state(self.checkout, ticket=self.ticket).digest
+        assert record["cause"] == "process_table"
+        assert record["at"]
+        assert row.occupied_by == task_holder_id(self.task)
+        assert "attested_state" not in row.get_extra()
+
+    def test_own_process_survivor_records_its_deferral_cause(self) -> None:
+        with patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", return_value=[object()]):
+            self.run_to(lambda task: task.complete())
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert row.get_extra()["deferred_exit"]["cause"] == "own_processes"
+
+    def test_read_only_exit_records_no_deferred_proof(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+        self.run_to(lambda task: task.complete(), held_at_exit=True)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert "deferred_exit" not in row.get_extra()
+
+    def test_unreadable_exit_state_records_no_deferred_proof(self) -> None:
+        with patch("teatree.core.worktree.occupancy.checkout_state", side_effect=RuntimeError("unreadable")):
+            self.run_to(lambda task: task.complete(), held_at_exit=True)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert "deferred_exit" not in row.get_extra()
 
 
 class RefuseIfOccupiedTests(_OccupancyCase):

@@ -31,7 +31,7 @@ TEETH: a populated pattern strips (GREEN); the EMPTY default does NOT strip
 (RED) — this is the documented unsafe default for this mechanism.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -72,7 +72,7 @@ class _HumanClosedOverlay(FullOverlay):
 
 
 @contextmanager
-def _overlay(*, mr_close_ticket: bool = False, forbid_close_keywords: bool = False) -> Iterator[None]:
+def _overlay(*, mr_close_ticket: bool = False, forbid_close_keywords: bool = False) -> Generator[None]:
     overlay = _HumanClosedOverlay(
         mr_close_ticket=mr_close_ticket,
         forbid_close_keywords=forbid_close_keywords,
@@ -193,7 +193,7 @@ class TestForbidCloseKeywordsGate(TestCase):
         return ticket, worktree
 
     @contextmanager
-    def _git_sources(self, *, subject: str) -> Iterator[None]:
+    def _git_sources(self, *, subject: str) -> Generator[None]:
         with (
             patch(
                 "teatree.core.management.commands._close_keyword_gate.git.last_commit_message",

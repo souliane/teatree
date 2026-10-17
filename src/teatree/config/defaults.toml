@@ -234,6 +234,7 @@ unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalatio
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 verbatim_paste_gate_enabled = true # bool — refuse a publish whose body reproduces the operator's own words verbatim
 visible_plan_gate_enabled = true # bool — refuse an action until a plan for every named ticket is in visible assistant text
+worktree_containment_gate_enabled = true # bool — refuse a linked worktree checkout outside allowed roots
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 artifact_idle_days = 2.0 # float — days a checkout's rebuildable build products may sit untouched before eviction — a ceiling that decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it

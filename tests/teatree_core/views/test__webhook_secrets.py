@@ -1,7 +1,7 @@
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -33,7 +33,7 @@ class Clock:
 
 
 @contextmanager
-def fake_store(entries: dict[str, str], reads: list[str], listings: list[str]) -> Iterator[None]:
+def fake_store(entries: dict[str, str], reads: list[str], listings: list[str]) -> Generator[None]:
     def read_pass(key: str) -> str:
         reads.append(key)
         return entries.get(key, "")

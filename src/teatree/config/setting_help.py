@@ -130,6 +130,7 @@ SETTING_HELP: dict[str, str] = {
     "notion_write_denied_roots": "Notion ids never written under, even below an allowed root",
     "token_outage_preset_name": "preset engaged when the token budget parks",
     "main_clone_guard_gate_enabled": "refuse an edit to the main clone's working tree",
+    "worktree_containment_gate_enabled": "refuse a linked worktree checkout outside allowed roots",
     "max_concurrent_local_stacks": "how many tickets may hold a running local stack at once",
     "max_open_prs_per_repo_per_ticket": "open pull requests one ticket may hold in one repo",
     "mcp_slack_write_gate_enabled": "gate MCP Slack writes behind the on-behalf rules",

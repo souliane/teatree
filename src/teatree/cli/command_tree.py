@@ -20,7 +20,7 @@ import importlib
 import io
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 
 import click
 import typer
@@ -94,7 +94,7 @@ def _iter_resolved_subtree(
 
 
 @contextlib.contextmanager
-def _pinned_render_environment() -> Iterator[None]:
+def _pinned_render_environment() -> Generator[None]:
     """Force a fixed render width and strip env-derived sizing for the duration.
 
     rich resolves the console width from ``os.get_terminal_size`` (a tty),
@@ -142,7 +142,7 @@ def _tilde_display(value: object) -> str | None:
 
 
 @contextlib.contextmanager
-def _tilde_path_defaults(root: click.Command) -> Iterator[None]:
+def _tilde_path_defaults(root: click.Command) -> Generator[None]:
     """Temporarily render home-rooted dotfile param defaults as ``~/<name>``.
 
     rich wraps and truncates the ``[default: …]`` cell to the (pinned) box width,

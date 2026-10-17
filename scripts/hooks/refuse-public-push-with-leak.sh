@@ -125,6 +125,11 @@ _checkout_git() {
     git -C "${repo_root}" "$@"
 }
 
+# Prek may invoke this hook from a vendored directory; git diff.relative must not narrow the pushed history.
+if pushed_top=$(git rev-parse --show-toplevel 2>/dev/null); then
+  cd "${pushed_top}"
+fi
+
 # The hook runs the scanner, the visibility resolver, `remote_holds` and `commit_objects` from this working tree, and
 # everything they import. An uncommitted edit of any of them (a scanner that reports nothing, a check that always
 # verifies, a resolver that always answers private) would be the pusher's word that the push is clean, so the files
@@ -132,7 +137,7 @@ _checkout_git() {
 # `--skip-worktree` make git stop looking at an edited file. Prints the differing paths, and only paths, never content.
 sources_list_rel="scripts/hooks/leak-gate-sources.txt"
 _listed_sources() {
-  { _checkout_git show "HEAD:${sources_list_rel}" 2>/dev/null </dev/null || true; } | grep -v '^$' | LC_ALL=C sort -u || true
+  { _checkout_git show "HEAD:./${sources_list_rel}" 2>/dev/null </dev/null || true; } | grep -v '^$' | LC_ALL=C sort -u || true
 }
 _sources_differing_from_head() {
   local paths path want hashes have
@@ -147,7 +152,7 @@ _sources_differing_from_head() {
   done <<< "${paths}"
   want=$(_checkout_git ls-tree HEAD -- "${pathspec[@]}" 2>/dev/null </dev/null \
     | awk -F'\t' '{ split($1, mode, " "); print mode[3] "\t" $2 }' || true)
-  if ! hashes=$(printf '%s\n' "${paths}" | _checkout_git hash-object --stdin-paths 2>/dev/null); then
+  if ! hashes=$(_checkout_git hash-object -- "${pathspec[@]}" 2>/dev/null </dev/null); then
     printf '%s\n' "${paths}"
     return 0
   fi
@@ -204,7 +209,7 @@ mkdir "${gate_tree}"
 while IFS= read -r source_path; do
   mkdir -p "${gate_tree}/${source_path%/*}"
   # The raw blob, not `git archive`: archive runs the repo-local smudge filter over every file it writes.
-  if ! _checkout_git cat-file blob "HEAD:${source_path}" > "${gate_tree}/${source_path}" 2>/dev/null </dev/null; then
+  if ! _checkout_git cat-file blob "HEAD:./${source_path}" > "${gate_tree}/${source_path}" 2>/dev/null </dev/null; then
     echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: ${source_path} could not be copied out of HEAD of ${repo_root} (fail closed). Nothing was published."
     exit 1
   fi
@@ -332,7 +337,7 @@ fi
 fingerprint_rel=".github/term-source-fingerprint.json"
 _fingerprint_is_committed() {
   local at_head on_disk
-  at_head=$(_checkout_git rev-parse --verify --quiet "HEAD:${fingerprint_rel}" 2>/dev/null </dev/null) || return 1
+  at_head=$(_checkout_git rev-parse --verify --quiet "HEAD:./${fingerprint_rel}" 2>/dev/null </dev/null) || return 1
   on_disk=$(_checkout_git hash-object -- "${repo_root}/${fingerprint_rel}" 2>/dev/null </dev/null) || return 1
   [ -n "${at_head}" ] && [ "${at_head}" = "${on_disk}" ]
 }

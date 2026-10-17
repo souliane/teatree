@@ -8,17 +8,23 @@ because that answer is the whole point: a second actor must be told the holder
 rather than pointed into the tree.
 """
 
+import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.management.commands._worktree_occupancy import _worktree_for_path
 from teatree.core.models import Worktree
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import acquire, occupancy_holder
 from tests.factories import TicketFactory, WorktreeFactory
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 class _CommandCase(TestCase):
@@ -104,3 +110,70 @@ class PathResolutionTests(_CommandCase):
     def test_an_unregistered_path_refuses_rather_than_guessing(self) -> None:
         with pytest.raises(SystemExit):
             _worktree_for_path("/nowhere/at/all")
+
+
+class AttestTests(_CommandCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(lambda: shutil.rmtree(self.checkout, ignore_errors=True))
+
+    def test_explicit_attest_records_dirty_checkout_state(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        (self.checkout / "new.txt").write_text("hand edit")
+        state = checkout_state(self.checkout)
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch(
+                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+                create=True,
+            ),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert self.fresh().get_extra()["attested_state"] == state.digest
+
+    def test_agent_cannot_attest(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=False),
+            pytest.raises(SystemExit),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert "attested_state" not in self.fresh().get_extra()
+
+    def test_changed_checkout_is_not_attested(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        state = checkout_state(self.checkout)
+        changed = replace(state, digest="changed")
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch("teatree.core.management.commands._worktree_occupancy.checkout_state", side_effect=[state, changed]),
+            patch(
+                "teatree.core.management.commands._worktree_occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert "attested_state" not in self.fresh().get_extra()
+
+    def test_owner_attest_gives_one_claim_when_process_table_is_unavailable(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        state = checkout_state(self.checkout)
+        unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            patch("teatree.core.management.commands._worktree_occupancy.read_process_table", return_value=unavailable),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert self.fresh().get_extra()["attested_state"] == f"owner:{state.digest}"
+
+    def test_explicit_attest_refuses_occupied_checkout(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        acquire(self.worktree, holder="task:7", holder_session="session-A")
+        with (
+            patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=True),
+            pytest.raises(SystemExit),
+        ):
+            self.run_cmd("attest", str(self.checkout))
+        assert "attested_state" not in self.fresh().get_extra()

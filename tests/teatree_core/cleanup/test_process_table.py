@@ -91,6 +91,21 @@ class TestRefuseReason:
 
 
 class TestSourceSelection:
+    def test_own_recorder_excludes_its_checkout_shell_ancestors(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "checkout"
+        peer = tmp_path / "peer"
+        root = _proc_with(tmp_path / "host-proc", {"200": checkout, "300": peer})
+        (root / THIS_PROCESS_PID / "stat").write_text(f"{THIS_PROCESS_PID} (recorder) S 200 0 0\n")
+        (root / "200" / "stat").write_text("200 (shell) S 1 0 0\n")
+        (root / "1").mkdir()
+        (root / "1" / "stat").write_text("1 (init) S 0 0 0\n")
+        with patch.object(process_table, "_HOST_PROC_ROOT", root):
+            assert read_process_table().holds(checkout)
+            recorder = read_process_table(exclude_ancestors=True)
+        assert recorder.usable
+        assert not recorder.holds(checkout)
+        assert recorder.holds(peer)
+
     def test_the_host_mount_wins_over_this_namespace(self, tmp_path: Path) -> None:
         host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "on-the-host"})
         own = _proc_with(tmp_path / "proc", {"22": tmp_path / "in-the-container"})
@@ -186,7 +201,53 @@ class TestSourceSelection:
         assert table.gaps
 
 
+def _table_with_one_mute_pid(tmp_path: Path, status: str, *, name: str, uid_offset: int = 0) -> ProcessTable:
+    host = _proc_with(tmp_path / "host-proc", {"1": tmp_path / "elsewhere"})
+    pid = host / "2"
+    pid.mkdir()
+    (pid / "comm").write_text(f"{name}\n", encoding="utf-8")
+    (pid / "status").write_text(status, encoding="utf-8")
+    hidden = pid / "fd" / "0"
+    hidden.parent.mkdir()
+    hidden.symlink_to(tmp_path / "unknown")
+    readlink = Path.readlink
+
+    def _readlink(path: Path) -> Path:
+        if path == hidden:
+            raise PermissionError
+        return readlink(path)
+
+    with (
+        patch.object(process_table, "_HOST_PROC_ROOT", host),
+        patch.object(Path, "readlink", _readlink),
+        patch.object(process_table.os, "geteuid", return_value=pid.stat().st_uid + uid_offset),
+    ):
+        return read_process_table()
+
+
 class TestPartialVisibility:
+    @pytest.mark.parametrize(
+        ("name", "state", "threads", "expected_refusal"),
+        [
+            ("python", "S", "1", "pid 2 (python) is unreadable by this uid"),
+            ("ssh-agent", "S", "1", ""),
+            ("python", "Z", "1", ""),
+            ("python", "Z", "2", "pid 2 (python) is unreadable by this uid"),
+        ],
+    )
+    def test_eviction_only_tolerates_known_unreadable_processes(
+        self, tmp_path: Path, name: str, state: str, threads: str, expected_refusal: str
+    ) -> None:
+        table = _table_with_one_mute_pid(tmp_path, f"State:\t{state}\nThreads:\t{threads}\n", name=name)
+
+        assert table.refuse_reason() == ""
+        assert table.eviction_refuse_reason() == expected_refusal
+
+    def test_eviction_tolerates_an_unreadable_process_of_another_user(self, tmp_path: Path) -> None:
+        table = _table_with_one_mute_pid(tmp_path, "State:\tS\nThreads:\t1\n", name="python", uid_offset=1)
+
+        assert table.eviction_refuse_reason() == ""
+
     def test_a_table_no_process_answers_is_unusable(self, tmp_path: Path) -> None:
         """Listed-but-mute is the blind case, and it must not read as "nobody is inside"."""
         host = tmp_path / "host-proc"

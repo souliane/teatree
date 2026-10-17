@@ -26,8 +26,8 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 1. Pick a branch name (`ac/<short-slug>` matching the change).
 2. `git branch <branch> HEAD` (snapshots the current staged + working state to the new branch).
-3. If staged-but-not-committed: `git stash push --staged`, `git worktree add ~/workspace/<branch>/<repo> -b <branch>`, `cd` into the worktree, `git stash pop`, then commit there.
-4. If already-committed-on-main: `git branch <branch> HEAD`, `git reset --hard origin/main` (or `git reset --hard <previous-HEAD>`), then `git worktree add ~/workspace/<branch>/<repo> <branch>` and continue from the worktree.
+3. If staged-but-not-committed: `git stash push --staged`, `git worktree add ~/workspace/t3-workspaces/<branch>/<repo> -b <branch>`, `cd` into the worktree, `git stash pop`, then commit there.
+4. If already-committed-on-main: `git branch <branch> HEAD`, `git reset --hard origin/main` (or `git reset --hard <previous-HEAD>`), then `git worktree add ~/workspace/t3-workspaces/<branch>/<repo> <branch>` and continue from the worktree.
 
 **Collision detection — check on EVERY file write or git operation:**
 

@@ -4,6 +4,10 @@ from unittest.mock import patch
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV, dispatched_agent_env, is_dispatched_agent_process
 
 
+def test_spawn_marker_names_one_environment_key() -> None:
+    assert dispatched_agent_env() == {"T3_DISPATCHED_AGENT": "1"}
+
+
 def test_a_process_carrying_the_spawn_marker_is_a_dispatched_agent() -> None:
     with patch.dict(os.environ, dispatched_agent_env()):
         assert is_dispatched_agent_process()

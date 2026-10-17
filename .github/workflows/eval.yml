@@ -190,7 +190,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -320,7 +320,7 @@ jobs:
         with:
           # The agent under test runs in this job: leave no token on disk for it to read.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -349,7 +349,7 @@ jobs:
       - name: Install and assert the Claude CLI
         if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.286
+          npm install -g @anthropic-ai/claude-code@2.1.294
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -589,7 +589,7 @@ jobs:
       # The `artifact` suffix step runs earlier, just before the eval run.
       - name: Upload the per-trial transcript report
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
@@ -602,7 +602,7 @@ jobs:
       # dashboard. `if: always()` so a red shard still publishes its summary.
       - name: Upload the sanitized summary (publish-safe)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-summary-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
@@ -617,7 +617,7 @@ jobs:
       # unsanitized, so it stays out of the public dashboard alongside the private transcript.
       - name: Upload the raw eval run log
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
@@ -688,7 +688,7 @@ jobs:
           # Full history so the PR branch can be force-pushed cleanly on reruns
           # (mirrors uv-lock-upgrade.yml).
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -698,7 +698,7 @@ jobs:
       # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts
       # — the private transcripts are never downloaded here.
       - name: Download every shard's sanitized summary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: ${{ runner.temp }}/summaries
           pattern: eval-summary-*

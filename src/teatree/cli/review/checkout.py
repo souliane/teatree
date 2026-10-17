@@ -21,10 +21,12 @@ Exit codes mirror the sibling ``t3 review run``:
 """
 
 import json
+from pathlib import Path
 
 import typer
 
 from teatree.cli.review.service import review_app
+from teatree.config.checkout_roots import checkout_roots
 from teatree.url_classify import Forge, forge_of, repo_and_iid
 from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
 from teatree.utils.run import CommandFailedError
@@ -72,6 +74,9 @@ def checkout(
     ref = head_ref_for(url)
     if not ref:
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
+        raise typer.Exit(code=2)
+    if base_dir and (reason := checkout_roots().refusal(Path(base_dir))):
+        typer.echo(json.dumps({"error": "outside_allowed_roots", "url": url, "detail": reason}, sort_keys=True))
         raise typer.Exit(code=2)
     try:
         worktree = add_review_worktree_at_head(

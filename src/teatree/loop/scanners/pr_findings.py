@@ -78,7 +78,7 @@ def disposition_for_author(author: str, *, self_identities: Iterable[str]) -> Fi
 
 
 class ReviewVerdictReader(Protocol):
-    """Resolves the EFFECTIVE (newest-wins) recorded verdict state at a PR's live head."""
+    """Resolves the recorded verdict state, including standing holds, at a PR's live head."""
 
     def state_for(self, *, url: str, head_sha: str) -> HeadVerdictState | None: ...
 

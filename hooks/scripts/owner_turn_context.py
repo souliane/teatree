@@ -16,7 +16,7 @@ import json
 import logging
 import signal
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,7 +111,7 @@ def _owner_turn(data: dict, session_id: str, cursor: Path) -> OwnerTurn:
 
 
 @contextmanager
-def owner_turn(data: dict) -> Iterator[OwnerTurn]:
+def owner_turn(data: dict) -> Generator[OwnerTurn]:
     """The turn context for *data*, holding the session's cursor lock until the caller has written it."""
     session_id = str(data.get("session_id") or "")
     if not session_id or call_is_from_subagent(data):

@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -795,7 +795,7 @@ class TestE2eExternal(_ResolvedSpecsDir):
         assert 'test"' not in cmd
 
     @contextmanager
-    def _external_run(self, spec: str, *, playwright_args: str = "") -> Iterator[MagicMock]:
+    def _external_run(self, spec: str, *, playwright_args: str = "") -> Generator[MagicMock]:
         """Run ``e2e external <spec> --target local`` against a provisioned worktree.
 
         Yields the ``Popen`` mock so the caller can assert the built command.

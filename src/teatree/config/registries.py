@@ -186,6 +186,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "main_clone_guard_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "worktree_containment_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "single_branch_repo_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "skill_loading_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "plan_edit_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),

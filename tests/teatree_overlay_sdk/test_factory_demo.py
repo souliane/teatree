@@ -7,7 +7,7 @@ import-linter contract forbids that), and can register its own harness through t
 
 import ast
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -33,7 +33,7 @@ class _DemoFactoryHarness:
         self._messages = messages
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         yield FakeHarnessSession(self._messages)
 
 
@@ -44,7 +44,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
 
         # DISPATCH + ATTEMPT — the overlay registers its own harness (overlay_sdk surface),
         # selects it, and drives the dispatch through overlay_sdk.run_agent.

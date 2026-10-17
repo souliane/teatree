@@ -13,7 +13,7 @@ import datetime as dt
 import io
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -295,7 +295,7 @@ class TestLoopListIsReadOnly(django.test.TestCase):
 
 
 @contextmanager
-def _session(session_id: str) -> Iterator[None]:
+def _session(session_id: str) -> Generator[None]:
     """Pin the session id the default-view scoping reads (#1834 WI-2)."""
     with patch("teatree.core.management.commands.loop_list.current_session_id", return_value=session_id):
         yield

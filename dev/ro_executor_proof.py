@@ -23,7 +23,7 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,7 +135,7 @@ def check_tmpfs(executor: Executor) -> bool:
 
 
 @contextmanager
-def executor_lease() -> Iterator[bool]:
+def executor_lease() -> Generator[bool]:
     lease_dir = executor_lease_dir()
     lease_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(lease_dir / ".auth.lock", os.O_CREAT | os.O_RDWR, 0o600)

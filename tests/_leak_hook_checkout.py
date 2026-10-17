@@ -49,8 +49,9 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run([str(shutil.which("git")), *args], cwd=root, check=True, capture_output=True, env=env)
 
 
-def _commit_everything(root: Path) -> None:
-    _git(root, "init", "-q", "-b", "main")
+def _commit_everything(root: Path, *, initialize: bool = True) -> None:
+    if initialize:
+        _git(root, "init", "-q", "-b", "main")
     _git(root, "add", "-A")
     _git(root, "-c", "user.name=scratch", "-c", "user.email=scratch@example.invalid", "commit", "-q", "-m", "x")
 
@@ -71,37 +72,44 @@ class CommittedFingerprint:
     registry: str | Mapping[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class SourceFixture:
+    scanner: Path | str | None = REAL_SCANNER
+    with_sources: bool = True
+
+
 def place_hook(
     root: Path,
     *,
     registry: str | Mapping[str, object],
+    repository: Path | None = None,
     fingerprint: CommittedFingerprint | None = None,
-    scanner: Path | str | None = REAL_SCANNER,
-    with_sources: bool = True,
+    sources: SourceFixture | None = None,
 ) -> Path:
     """Place the real hook at ``<root>/scripts/hooks/`` in a git checkout and return its path.
 
     The checkout commits the real hook's guarded sources (copies of the working tree's, so a test sees an edit under
-    test), the list that names them and the fingerprint. *registry* is what the hook will load. *scanner* is the real
-    scanner, the text of a stand-in the test authors, or ``None`` for none. *with_sources* is ``False`` for a test
-    that plants its own ``teatree`` package.
+    test), the list that names them and the fingerprint. *repository* holds an existing checkout that contains
+    *root*; without it, *root* becomes a new checkout. *registry* is what the hook will load. *sources* supplies
+    the scanner and imported files; a stand-in scanner or a planted package can replace the default sources.
     """
     fingerprint = fingerprint or CommittedFingerprint()
+    sources = sources if sources is not None else SourceFixture()
     hooks_dir = root / "scripts" / "hooks"
     hooks_dir.mkdir(parents=True)
     placed = hooks_dir / HOOK.name
     placed.symlink_to(HOOK)
     guarded: list[str] = []
-    if with_sources:
+    if sources.with_sources:
         guarded.extend(path for path in _listed_sources() if path != "scripts/privacy_scan.py")
     scanner_target = root / "scripts" / "privacy_scan.py"
-    if isinstance(scanner, Path):
+    if isinstance(sources.scanner, Path):
         guarded.append("scripts/privacy_scan.py")
         scanner_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(scanner, scanner_target)
-    elif scanner is not None:
+        shutil.copy2(sources.scanner, scanner_target)
+    elif sources.scanner is not None:
         guarded.append("scripts/privacy_scan.py")
-        scanner_target.write_text(scanner, encoding="utf-8")
+        scanner_target.write_text(sources.scanner, encoding="utf-8")
     for relative in guarded:
         if (REPO_ROOT / relative).is_file() and not (root / relative).exists():
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +125,7 @@ def place_hook(
         target.write_text(committed_text, encoding="utf-8")
     if fingerprint.state == "garbled":
         target.write_text("{not json\n", encoding="utf-8")
-    _commit_everything(root)
+    _commit_everything(repository or root, initialize=repository is None)
     if fingerprint.state == "untracked":
         target.write_text(fingerprint_text(registry), encoding="utf-8")
     if fingerprint.state == "edited":

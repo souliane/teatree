@@ -6,6 +6,7 @@ against the same registry the reaper reads.
 """
 
 import io
+import os
 import tempfile
 from collections.abc import Callable
 from contextlib import redirect_stdout
@@ -15,14 +16,17 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_worktree_health import (
+    _check_linked_worktree_placement,
     _check_occupied_checkouts,
     _check_one_worktree_root,
     _check_registered_worktrees_are_checkouts,
     _check_registered_worktrees_have_a_checkout,
     check_worktree_health,
 )
+from teatree.config.checkout_roots import CheckoutRoots
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.occupancy import acquire
+from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -281,6 +285,111 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
 
         assert ok is True
         assert "UNVERIFIED" in out
+
+    def test_a_crashing_placement_scan_keeps_an_earlier_failure(self) -> None:
+        self._register(_never_a_checkout(self.tmp / "roots" / "dead-wt"), branch="dead-wt")
+        with mock.patch(
+            "teatree.core.cleanup.checkout_registry.candidate_clones", side_effect=RuntimeError("scan crashed")
+        ):
+            ok, out = _echoes(check_worktree_health)
+
+        assert ok is False
+        assert "FAIL" in out
+        assert "placement UNVERIFIED" in out
+
+
+class LinkedCheckoutPlacementTest(_TmpTestCase):
+    def test_reads_roots_once_for_multiple_clones(self) -> None:
+        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(), harness=())
+        clones = {str(self.tmp / "a"), str(self.tmp / "b")}
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value=clones),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.core.cleanup.checkout_registry.raw_worktree_paths", return_value=[]),
+            mock.patch("teatree.config.checkout_roots.checkout_roots", return_value=roots) as read_roots,
+        ):
+            assert _check_linked_worktree_placement() is True
+        read_roots.assert_called_once_with()
+
+    def _clone(self) -> tuple[Path, Path, Path]:
+        clone = make_git_repo(self.tmp / "clone")
+        (clone / "tracked.txt").write_text("stable\n", encoding="utf-8")
+        run_git(clone, "add", "tracked.txt")
+        run_git(clone, "commit", "--amend", "-q", "--no-edit")
+        initial = run_git(clone, "rev-parse", "HEAD")
+        run_git(clone, "update-ref", "refs/remotes/origin/main", initial)
+        outside = self.tmp / "stray"
+        inside = self.tmp / "allowed" / "inside"
+        inside.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "add", "-b", "stray", str(outside))
+        run_git(clone, "worktree", "add", "-b", "inside", str(inside))
+        return clone, outside, inside
+
+    def _report(self, clone: Path) -> tuple[bool, str]:
+        roots = CheckoutRoots(durable=(self.tmp / "allowed",), disposable=(self.tmp / "disposable",), harness=())
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.config.checkout_roots.checkout_roots", return_value=roots),
+        ):
+            return _echoes(check_worktree_health)
+
+    def test_reports_each_stray_with_work_counts_without_changing_it(self) -> None:
+        clone, outside, inside = self._clone()
+        (outside / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+        run_git(outside, "commit", "--allow-empty", "-m", "local")
+        before = run_git(outside, "status", "--porcelain")
+        head = run_git(outside, "rev-parse", "HEAD")
+        index_lock = Path(run_git(outside, "rev-parse", "--git-path", "index.lock"))
+        index = Path(run_git(outside, "rev-parse", "--git-path", "index"))
+        tracked = outside / "tracked.txt"
+        refreshed_time = tracked.stat().st_mtime_ns + 120_000_000_000
+        os.utime(tracked, ns=(refreshed_time, refreshed_time))
+        before_index_mtime = index.stat().st_mtime_ns
+
+        ok, out = self._report(clone)
+        after_index_mtime = index.stat().st_mtime_ns
+
+        assert ok is True
+        assert f"{outside}" in out
+        assert "1 uncommitted path" in out
+        assert "1 commit" in out
+        assert "no remote" in out
+        assert str(inside) not in out
+        assert run_git(outside, "status", "--porcelain") == before
+        assert run_git(outside, "rev-parse", "HEAD") == head
+        assert not index_lock.exists()
+        assert after_index_mtime == before_index_mtime
+
+    def test_disposable_and_harness_checkouts_are_not_reported(self) -> None:
+        clone, outside, _ = self._clone()
+        disposable = self.tmp / "disposable" / "review"
+        harness = clone / ".claude" / "worktrees" / "agent"
+        disposable.parent.mkdir(parents=True)
+        harness.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "add", "-b", "review", str(disposable))
+        run_git(clone, "worktree", "add", "-b", "agent", str(harness))
+
+        ok, out = self._report(clone)
+
+        assert ok is True
+        assert str(outside) in out
+        assert str(disposable) not in out
+        assert str(harness) not in out
+
+    def test_unreadable_clone_is_unverified(self) -> None:
+        clone = make_git_repo(self.tmp / "clone")
+        failure = CommandFailedError(["git", "worktree", "list"], 128, "", "cannot read registry")
+        with (
+            mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}),
+            mock.patch("teatree.config.loader.clone_root", return_value=self.tmp),
+            mock.patch("teatree.core.cleanup.checkout_registry.raw_worktree_paths", side_effect=failure),
+        ):
+            ok, out = _echoes(check_worktree_health)
+
+        assert ok is True
+        assert "UNVERIFIED" in out
+        assert str(clone) in out
 
 
 class VanishedCheckoutCheckTest(_TmpTestCase):

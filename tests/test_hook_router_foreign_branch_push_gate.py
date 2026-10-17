@@ -24,7 +24,7 @@ import re
 import shlex
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -301,7 +301,7 @@ def _glab_answer(payload: object) -> CompletedProcess[str]:
 @contextmanager
 def _asking_through_the_real_probe(
     glab: Mock, declared: frozenset[str] = frozenset(), kind: str = "gitlab"
-) -> Iterator[SimpleNamespace]:
+) -> Generator[SimpleNamespace]:
     """The routing fake, with every forge question asked through the real :func:`run_forge_tool` of *glab*."""
     forge = _forge(mr_rows=None, declared=declared, kind=kind)
     forge.run_forge_tool = _repo_visibility.run_forge_tool
@@ -330,7 +330,7 @@ def _spending(clock: HookClock, *outcomes: object) -> Callable[..., object]:
 @contextmanager
 def _git_answering_at_its_timeout(
     clock: HookClock, verbs: frozenset[str] = frozenset({"ls-remote", "fetch"})
-) -> Iterator[list[float]]:
+) -> Generator[list[float]]:
     """Every git probe running one of *verbs* still answers, but only once its whole timeout has passed."""
     real_run = subprocess.run
     granted: list[float] = []

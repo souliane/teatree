@@ -717,6 +717,7 @@ Per-worktree FSM operations.
 | Subcommand | Description |
 | --- | --- |
 | `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `attest` | Record the present checkout state after the owner has inspected it |
 | `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |

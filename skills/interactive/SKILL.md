@@ -137,6 +137,8 @@ Every state either advances or leaves a durable record that something else drain
 
 A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger. `workspace emit` now names it (#4579: it unions the ledger with the unregistered checkouts holding work), so it is visible — but visibility is not delivery, and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
 
+**Hand work owns its checkout state (#5238).** A manual hand-recorded plan, review or held decision mints no writing factory task and does not attest checkout changes. Claim occupancy while editing, release it after the work stops, then explicitly attest the reviewed checkout state before allowing a factory writer to resume. A `/loop` claim-next → spawn → record-attempt chain holds its checkout as `task:<pk>` in every phase, attests it at record-attempt, then schedules its next phase; any other record counts as hand work. Cancelling a factory task does not release a checkout with live processes; an agent-issued cancel leaves any stop decision to the owner.
+
 ### The mechanisms
 
 The invariant is not kept by remembering it. Four mechanisms enforce it, each verifiable on its own:

@@ -197,6 +197,7 @@ def _stale_tick_signals() -> SignalCollection:
             for row in rows
             if row.name != T3_MASTER_SLOT
             and not is_per_loop_tick_mutex(row.name)
+            and row.acquired_at is not None
             and row.acquired_at < now - timedelta(seconds=_TICK_OVERRUN_MULTIPLE * _lease_reference_seconds(row.name))
         ]
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
