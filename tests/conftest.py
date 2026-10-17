@@ -156,7 +156,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Refuse a non-sharded whole-tree local run before test collection starts."""
+    """Refuse a non-sharded whole-tree local run, then lease its xdist workers from the host-wide pool."""
     config = session.config
     if hasattr(config, "workerinput"):
         return
