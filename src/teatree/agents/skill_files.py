@@ -3,8 +3,9 @@
 A skill cites its references by repo-relative path (``skills/<skill>/references/<f>.md``),
 and a dispatch whose worktree is not a teatree checkout — or that has no worktree —
 cannot resolve that path under its own jail. This index registers every
-``<root>/<skill>/SKILL.md`` and ``<root>/<skill>/references/*.md`` that is a regular,
-non-symlinked file, and :meth:`SkillFileIndex.lookup` answers only an exact match
+``<root>/<skill>/SKILL.md`` and ``<root>/<skill>/references/*.md``, plus
+``<root>/rules/RULES.md``, when each is a regular, non-symlinked file.
+:meth:`SkillFileIndex.lookup` answers only an exact match
 against those registered paths. There is no path arithmetic, so ``..``, a prefix
 look-alike, a symlink out of a skill folder, and any other file under a skills root
 resolve to nothing by construction. Django-free, like :mod:`skill_injection`.
@@ -41,6 +42,10 @@ class SkillFileIndex:
 NO_SKILL_FILES = SkillFileIndex()
 
 
+def rules_document_path(skill_md: Path) -> Path:
+    return skill_md.with_name("RULES.md")
+
+
 def _skill_files(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
@@ -50,6 +55,9 @@ def _skill_files(root: Path) -> list[Path]:
         if not _is_plain_file(skill_md):
             continue
         found.append(skill_md)
+        rules_md = rules_document_path(skill_md)
+        if skill_dir.name == "rules" and _is_plain_file(rules_md):
+            found.append(rules_md)
         references = skill_dir / "references"
         if references.is_dir() and not references.is_symlink():
             found.extend(path for path in sorted(references.glob("*.md")) if _is_plain_file(path))
