@@ -16,6 +16,7 @@ from typing import Any
 
 #: Names the pass key a dispatched agent's ``GH_TOKEN`` was read from, for a child the secret store is withheld from.
 ROUTED_GH_KEY_ENV = "T3_ROUTED_GH_TOKEN_KEY"
+#: Set only by the dispatched Codex router launcher; never copied from the worker or the task environment.
 CODEX_ROUTER_ENV = "T3_DISPATCHED_CODEX_ROUTER"
 FORGE_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
 _MIN_ACTIVE_TOKEN_LENGTH = 8
@@ -135,6 +136,7 @@ def resolve_slug_token(slug: str, *, forge: str, credential: str) -> ForgeTokenR
 
 
 __all__ = [
+    "CODEX_ROUTER_ENV",
     "FORGE_TOKEN_ENV_KEYS",
     "ROUTED_GH_KEY_ENV",
     "ForgeCredentialRequest",

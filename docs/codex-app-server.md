@@ -110,12 +110,15 @@ as before, and a marker in the worker's own environment never crosses into the c
 
 The approval and post-tool router subprocesses run with an explicit environment allowlist: runtime paths
 and home from the worker, plus `GH_TOKEN` and `T3_ROUTED_GH_TOKEN_KEY` from the task's dispatch environment.
-The push ownership gate's remote ref and fetch probes run from neutral temporary directories against
-resolved URLs, so checkout-local program settings do not run during those probes. A GitHub credential
-refusal is a venue fault: in coding and debugging, the result sets the boolean
-`push_ownership_venue_fault` to `true`, the attempt fails without an owner question, and the next route
-candidate can retry. Coding and debugging rounds on open pull requests may issue pushes; a local
-commit alone only signals landed work.
+The launcher adds `T3_DISPATCHED_CODEX_ROUTER`, a fixed non-secret marker it never copies from the worker
+or the task. The push ownership gate reads the remote's first configured URL, refuses one that is empty or
+starts with a dash, and passes `--` before it. Its `ls-remote` and `fetch` probes run from a neutral
+temporary directory (the fetch into a throwaway repository that borrows the checkout's objects), so
+checkout-local program settings do not run during those probes. Under the marker, a GitHub credential
+refusal from the `ls-remote` probe or the `gh` ownership probe is a venue fault: the refusal tells the task
+to keep its commit local and set the boolean `push_ownership_venue_fault` to `true` in its result. Only
+coding and debugging attempts act on that field: the attempt fails as a venue fault without an owner
+question, and the next route candidate can retry. Landing is verified from the local commit.
 
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
 (one credential writer). When the routed token changes, an idle server is retired and one new server
