@@ -48,7 +48,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from teatree.agents.harness import resolve_effort
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.model_tiering import model_supports_thinking, resolve_pydantic_ai_model, resolve_tier
+from teatree.agents.model_tiering import model_supports_thinking
 from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     OpenAICompatibleLaneConfig,
@@ -73,7 +73,7 @@ from teatree.eval.eval_sandbox import (
 )
 from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON
 from teatree.eval.message_mapping import eval_run_from_messages
-from teatree.eval.model_resolution import resolve_spec_model
+from teatree.eval.model_resolution import resolve_pydantic_ai_spec_model, resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec, canonicalize_tool
 from teatree.eval.production_hook_bridge import ProductionHookBridge, ProductionHookToolset
@@ -344,10 +344,8 @@ class PydanticAiRunner:
     def _resolve_model(self, spec: EvalSpec, session_run: SessionRun) -> Model:
         if self._model is not None:
             return self._model
-        pinned = parse_model_variant(spec.model).model
-        tier = spec.tier if spec.tier and resolve_tier(spec.tier) == pinned else None
-        resolved = resolve_pydantic_ai_model(pinned, configured_model=self._backend.model, tier=tier)
-        assert_model_allowed_on_regulated_path(pinned or resolved)
+        resolved = resolve_pydantic_ai_spec_model(spec, configured_model=self._backend.model)
+        assert_model_allowed_on_regulated_path(parse_model_variant(spec.model).model or resolved)
         return OpenAIChatModel(resolved, provider=build_openai_compatible_provider(self._backend, session_run))
 
     def _resolve_request_limit(self, spec: EvalSpec) -> int | None:

@@ -26,6 +26,7 @@ from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import TRANSCRIPT_BACKEND
 from teatree.eval.models import DEFAULT_JUDGE_BUDGET
 from teatree.eval.parallel import DEFAULT_PARALLEL
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 
 
 @dataclasses.dataclass(frozen=True)
@@ -182,7 +183,7 @@ class RunDockerArgs:
                     self.verdict_cache.read_text(encoding="utf-8", errors="replace"),
                 )
             code = self._run_in_image(Path(staging))
-            if code in {0, 1, 75}:
+            if code in {0, 1, MEASURED_NOTHING_EXIT_CODE}:
                 self._copy_reports_out(Path(staging))
         raise typer.Exit(code=code)
 

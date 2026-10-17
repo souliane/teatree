@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
+from teatree.config import get_effective_settings
 from teatree.eval.agent_prompt import (
     SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
     resolve_agent_path,
@@ -18,15 +20,17 @@ from teatree.eval.agent_prompt import (
     scenario_system_prompt,
 )
 from teatree.eval.artifact_redaction import write_artifact
-from teatree.eval.cli_stub_fixture import _stub_body
+from teatree.eval.cli_stub_fixture import stub_body
 from teatree.eval.ephemeral_checkout import resolve_teatree_repo_root
 from teatree.eval.judge import resolve_judge_budget_usd
+from teatree.eval.model_resolution import resolve_pydantic_ai_spec_model, resolve_spec_model
 from teatree.eval.models import DEFAULT_JUDGE_BUDGET, CachedPass, EvalSpec
 from teatree.eval.production_hooks import teatree_root
 from teatree.eval.resource_caps import resolve_max_turns_override, resolve_watchdog_seconds
 from teatree.eval.toolset import scenario_exposes_subagent_spawn
 from teatree.eval.triage import EvalSummaryRecord
 from teatree.utils.git_run import git_env_without_overrides, run_with_status
+from teatree.utils.run import TimeoutExpired
 
 VERDICT_TTL = timedelta(days=30)
 _LOG = logging.getLogger(__name__)
@@ -36,6 +40,35 @@ _BACKEND_PACKAGES = {
     "anthropic_api": ("anthropic", "pydantic-ai-slim"),
     "pydantic_ai": ("pydantic-ai-slim",),
 }
+_BACKEND_SETTING_NAMES = (
+    "openai_compatible_model",
+    "openai_compatible_base_url",
+    "pydantic_ai_request_limit",
+    "pydantic_ai_max_tokens",
+)
+_PLUGIN_PATHS = (
+    ".claude-plugin",
+    ".mcp.json",
+    ".lsp.json",
+    "settings.json",
+    "agents",
+    "commands",
+    "hooks",
+    "output-styles",
+    "scripts",
+    "skills",
+    "src",
+)
+_PLUGIN_MANIFESTS = (".claude-plugin/plugin.json", "hooks/hooks.json", ".mcp.json", ".lsp.json")
+_PLUGIN_REFERENCE = re.compile(r"(?:\$\{?CLAUDE_PLUGIN_ROOT\}?|\"\.)/([^/\\\"'\s]+)")
+_KEY_ERRORS = (
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+    importlib.metadata.PackageNotFoundError,
+    UnconfiguredOpenAICompatibleModelError,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,14 +87,27 @@ class SharedVerdictInputs:
     hooks: str
     plugin: list[str]
     packages: dict[str, str]
-    checkout_tree: str = ""
+    backend_settings: dict[str, str | int] = dataclasses.field(default_factory=dict)
+    checkout_tree: str | None = None
     overlay_plugins: dict[Path, str] = dataclasses.field(default_factory=dict)
+
+
+def _tree_children(path: Path) -> list[Path]:
+    return [
+        child
+        for child in sorted(path.iterdir())
+        if child.name not in {".git", ".venv", "__pycache__"} and child.suffix != ".pyc"
+    ]
 
 
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     if not root.is_dir():
         raise FileNotFoundError(root)
+
+    def add(payload: bytes) -> None:
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
 
     def visit(path: Path, ancestors: frozenset[tuple[int, int]]) -> None:
         metadata = path.stat()
@@ -70,21 +116,42 @@ def _tree_digest(root: Path) -> str:
             if identity in ancestors:
                 message = f"symlink cycle in {root}"
                 raise ValueError(message)
-            digest.update(f"d:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}\0".encode())
-            for child in sorted(path.iterdir()):
-                if child.name in {".git", ".venv", "__pycache__"} or child.suffix == ".pyc":
-                    continue
+            add(f"d:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}".encode())
+            for child in _tree_children(path):
                 visit(child, ancestors | {identity})
         elif path.is_file():
-            digest.update(f"f:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}\0".encode())
-            digest.update(path.read_bytes())
-            digest.update(b"\0")
+            add(f"f:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}".encode())
+            add(path.read_bytes())
 
-    for child in sorted(root.iterdir()):
-        if child.name in {".git", ".venv", "__pycache__"} or child.suffix == ".pyc":
-            continue
+    for child in _tree_children(root):
         visit(child, frozenset({(root.stat().st_dev, root.stat().st_ino)}))
     return digest.hexdigest()
+
+
+def _plugin_paths(root: Path) -> list[str]:
+    declared = {
+        name
+        for manifest in _PLUGIN_MANIFESTS
+        if (root / manifest).is_file()
+        for name in _PLUGIN_REFERENCE.findall((root / manifest).read_text(encoding="utf-8", errors="replace"))
+    }
+    return sorted({*_PLUGIN_PATHS, *declared} - {".", ".."})
+
+
+def _plugin_digest(root: Path) -> str:
+    if not root.is_dir():
+        raise FileNotFoundError(root)
+    paths = []
+    for name in _plugin_paths(root):
+        path = root / name
+        if path.is_dir():
+            content = _tree_digest(path)
+        elif path.is_file():
+            content = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            content = "missing"
+        paths.append((name, stat.S_IMODE(path.stat().st_mode) if path.exists() else 0, content))
+    return hashlib.sha256(json.dumps(paths, separators=(",", ":")).encode()).hexdigest()
 
 
 def _optional_tree_digest(root: Path) -> str:
@@ -98,7 +165,7 @@ def _fixture_digest(spec: EvalSpec, overlay_plugins: Mapping[Path, str]) -> list
     catalog = core_root.joinpath(*SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     digests = [_optional_tree_digest(catalog / "skills" / name) for name in spec.available_skills]
     digests.append(_optional_tree_digest(catalog / ".claude-plugin"))
-    digests.extend(overlay_plugins.get(root) or _tree_digest(root) for root in scenario_skill_catalog_roots(spec))
+    digests.extend(overlay_plugins.get(root) or _plugin_digest(root) for root in scenario_skill_catalog_roots(spec))
     return digests
 
 
@@ -115,27 +182,38 @@ def _shared_inputs(specs: list[EvalSpec], config: VerdictRunConfig) -> SharedVer
     root = teatree_root()
     needs_plugin = any(spec.production_hooks or scenario_exposes_subagent_spawn(spec) for spec in specs)
     overlay_roots = {plugin for spec in specs for plugin in scenario_skill_catalog_roots(spec)}
-    checkout_tree = ""
-    if any(scenario_exposes_subagent_spawn(spec) for spec in specs):
-        repo_root = resolve_teatree_repo_root()
-        if repo_root is None:
-            message = "sub-agent checkout root unavailable"
-            raise FileNotFoundError(message)
-        revision = run_with_status(
-            repo=str(repo_root), args=["rev-parse", "HEAD^{tree}"], env=git_env_without_overrides(), timeout=30
-        )
-        if revision.returncode != 0 or not revision.stdout.strip():
-            message = "cannot read sub-agent checkout tree"
-            raise OSError(message)
-        checkout_tree = revision.stdout.strip()
+    settings = get_effective_settings() if config.backend in {"pydantic_ai", "anthropic_api"} else None
     return SharedVerdictInputs(
         harness=_tree_digest(root / "src" / "teatree"),
         hooks=_tree_digest(root / "hooks") if any(spec.production_hooks for spec in specs) else "",
         plugin=([_tree_digest(root / part) for part in ("skills", "agents", ".claude-plugin")] if needs_plugin else []),
         packages={package: importlib.metadata.version(package) for package in _BACKEND_PACKAGES[config.backend]},
-        checkout_tree=checkout_tree,
-        overlay_plugins={plugin: _tree_digest(plugin) for plugin in sorted(overlay_roots)},
+        backend_settings={name: getattr(settings, name) for name in _BACKEND_SETTING_NAMES} if settings else {},
+        checkout_tree=_checkout_tree() if any(scenario_exposes_subagent_spawn(spec) for spec in specs) else None,
+        overlay_plugins={plugin: _plugin_digest(plugin) for plugin in sorted(overlay_roots)},
     )
+
+
+def _checkout_tree() -> str | None:
+    repo_root = resolve_teatree_repo_root()
+    if repo_root is None:
+        return None
+    try:
+        revision = run_with_status(
+            repo=str(repo_root), args=["rev-parse", "HEAD^{tree}"], env=git_env_without_overrides(), timeout=30
+        )
+    except (OSError, TimeoutExpired) as exc:
+        _LOG.warning("verdict cache: cannot read the sub-agent checkout tree: %s", exc)
+        return None
+    tree = revision.stdout.strip()
+    return tree if revision.returncode == 0 and tree else None
+
+
+def _run_model(spec: EvalSpec, backend: str, settings: Mapping[str, str | int]) -> str:
+    resolved = resolve_spec_model(spec)
+    if backend != "pydantic_ai":
+        return resolved.model
+    return resolve_pydantic_ai_spec_model(resolved, configured_model=str(settings["openai_compatible_model"]) or None)
 
 
 def verdict_key(spec: EvalSpec, config: VerdictRunConfig, *, shared_inputs: SharedVerdictInputs | None = None) -> str:
@@ -143,13 +221,17 @@ def verdict_key(spec: EvalSpec, config: VerdictRunConfig, *, shared_inputs: Shar
     spec_data.pop("source_path")
     spec_data["matchers"] = [_typed_data(matcher) for matcher in spec.matchers]
     shared = shared_inputs if shared_inputs is not None else _shared_inputs([spec], config)
+    spawns = scenario_exposes_subagent_spawn(spec)
+    if spawns and shared.checkout_tree is None:
+        message = "sub-agent checkout tree unavailable"
+        raise FileNotFoundError(message)
     inputs = {
         "schema": _SCHEMA,
         "spec": spec_data,
         "system_prompt": scenario_system_prompt(spec),
         "fixtures": _fixture_digest(spec, shared.overlay_plugins),
         "cli_stubs": {
-            name: hashlib.sha256(_stub_body(name, spec.source_path).encode()).hexdigest() for name in spec.cli_stubs
+            name: hashlib.sha256(stub_body(name, spec.source_path).encode()).hexdigest() for name in spec.cli_stubs
         },
         "agent_skill_dir": (
             _tree_digest(resolve_agent_path(spec.agent_path, spec.source_path.parent).parent)
@@ -158,9 +240,11 @@ def verdict_key(spec: EvalSpec, config: VerdictRunConfig, *, shared_inputs: Shar
         ),
         "harness": shared.harness,
         "hooks": shared.hooks if spec.production_hooks else "",
-        "plugin": shared.plugin if spec.production_hooks or scenario_exposes_subagent_spawn(spec) else [],
-        "checkout_tree": shared.checkout_tree if scenario_exposes_subagent_spawn(spec) else "",
+        "plugin": shared.plugin if spec.production_hooks or spawns else [],
+        "checkout_tree": shared.checkout_tree if spawns else "",
         "packages": shared.packages,
+        "backend_settings": shared.backend_settings,
+        "model": _run_model(spec, config.backend, shared.backend_settings),
         "run": {
             **dataclasses.asdict(config),
             "effective_max_turns": resolve_max_turns_override(config.max_turns),
@@ -216,7 +300,12 @@ class VerdictLedger:
         for summary in summaries:
             if summary.get("trial_count") != 1:
                 continue
-            for row in summary.get("scenarios", []):
+            scenarios = summary.get("scenarios")
+            if not isinstance(scenarios, list):
+                continue
+            for row in scenarios:
+                if not isinstance(row, dict):
+                    continue
                 key = row.get("content_key")
                 name = row.get("name")
                 lane = row.get("lane")
@@ -261,19 +350,13 @@ def partition(
     keys: dict[str, str] = {}
     try:
         shared = _shared_inputs(specs, config)
-    except (
-        OSError,
-        ValueError,
-        TypeError,
-        KeyError,
-        importlib.metadata.PackageNotFoundError,
-    ) as exc:
+    except _KEY_ERRORS as exc:
         _LOG.warning("verdict cache: cannot key partition: %s; running fresh", exc)
         return list(specs), [], {}
     for spec in specs:
         try:
             key = verdict_key(spec, config, shared_inputs=shared)
-        except (OSError, ValueError, TypeError, KeyError, importlib.metadata.PackageNotFoundError) as exc:
+        except _KEY_ERRORS as exc:
             _LOG.warning("verdict cache: cannot key %s: %s; running fresh", spec.name, exc)
             fresh.append(spec)
             continue

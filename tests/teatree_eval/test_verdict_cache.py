@@ -1,11 +1,16 @@
 import dataclasses
 import json
+import sqlite3
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import get_args
 
 import pytest
+from django.test import TestCase
 
+from teatree.core.models import ConfigSetting
 from teatree.eval import verdict_cache
 from teatree.eval.models import (
     AnyOf,
@@ -280,6 +285,36 @@ def test_ledger_ignores_incomplete_identity_even_when_marked_eligible(tmp_path: 
     assert ledger.entries == {}
 
 
+@pytest.mark.parametrize("scenarios", [None, "invalid", [None, 42, "invalid"]])
+def test_ledger_ignores_malformed_scenarios(tmp_path: Path, scenarios: object) -> None:
+    ledger = VerdictLedger.load(tmp_path / "ledger.json")
+    ledger.record([{"trial_count": 1, "scenarios": scenarios}], run_url="local")
+    assert ledger.entries == {}
+
+
+def test_ledger_records_valid_row_after_malformed_row(tmp_path: Path) -> None:
+    ledger = VerdictLedger.load(tmp_path / "ledger.json")
+    ledger.record(
+        [
+            {
+                "trial_count": 1,
+                "scenarios": [
+                    None,
+                    {
+                        "name": "pass",
+                        "lane": "clean_room",
+                        "content_key": "a" * 64,
+                        "outcome": "PASS",
+                        "cache_eligible": True,
+                    },
+                ],
+            }
+        ],
+        run_url="local",
+    )
+    assert ledger.lookup("a" * 64) is not None
+
+
 def test_ledger_write_redacts_metadata_before_it_reaches_disk(tmp_path: Path) -> None:
     token = "github_pat_" + "a" * 20
     ledger = VerdictLedger(tmp_path / "ledger.json", {"key": {"run_url": token}})
@@ -362,7 +397,9 @@ def test_key_tracks_runner_discovered_overlay_skill(tmp_path: Path) -> None:
     assert verdict_key(spec, config) != before
 
 
-@pytest.mark.parametrize("relative", ["agents/helper.md", "hooks/on-start.sh", ".mcp.json"])
+@pytest.mark.parametrize(
+    "relative", ["agents/helper.md", "hooks/on-start.sh", ".mcp.json", "settings.json", "src/overlay/hook_logic.py"]
+)
 def test_key_tracks_whole_overlay_plugin(tmp_path: Path, relative: str) -> None:
     plugin = tmp_path / "overlay"
     manifest = plugin / ".claude-plugin" / "plugin.json"
@@ -381,6 +418,48 @@ def test_key_tracks_whole_overlay_plugin(tmp_path: Path, relative: str) -> None:
     assert verdict_key(spec, config) != before
 
 
+@pytest.mark.parametrize(
+    "relative",
+    ["node_modules/cache", "teatree-upstream/README.md", "verdicts.json", ".claude/worktrees/x/SKILL.md", "CLAUDE.md"],
+)
+def test_key_ignores_overlay_build_and_ledger_files(tmp_path: Path, relative: str) -> None:
+    plugin = tmp_path / "overlay"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text('{"name":"overlay"}')
+    (plugin / "skills" / "review").mkdir(parents=True)
+    (plugin / "skills" / "review" / "SKILL.md").write_text("review")
+    spec = dataclasses.replace(_spec(plugin), available_skills=("review",))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    before = verdict_key(spec, config)
+    noise = plugin / relative
+    noise.parent.mkdir(parents=True, exist_ok=True)
+    noise.write_text("generated")
+    assert verdict_key(spec, config) == before
+
+
+@pytest.mark.parametrize(
+    ("manifest", "relative"),
+    [
+        ('{"name":"overlay","commands":["./custom/review.md"]}', "custom/review.md"),
+        ('{"name":"overlay","hooks":{"Stop":[{"command":"${CLAUDE_PLUGIN_ROOT}/bin/stop.sh"}]}}', "bin/stop.sh"),
+    ],
+)
+def test_key_tracks_paths_the_plugin_manifest_declares(tmp_path: Path, manifest: str, relative: str) -> None:
+    plugin = tmp_path / "overlay"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text(manifest)
+    (plugin / "skills" / "review").mkdir(parents=True)
+    (plugin / "skills" / "review" / "SKILL.md").write_text("review")
+    declared = plugin / relative
+    declared.parent.mkdir(parents=True)
+    declared.write_text("first")
+    spec = dataclasses.replace(_spec(plugin), available_skills=("review",))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    before = verdict_key(spec, config)
+    declared.write_text("second")
+    assert verdict_key(spec, config) != before
+
+
 def test_tree_key_tracks_symlink_target_and_executable_mode(tmp_path: Path) -> None:
     root = tmp_path / "plugin"
     root.mkdir()
@@ -393,6 +472,18 @@ def test_tree_key_tracks_symlink_target_and_executable_mode(tmp_path: Path) -> N
     assert changed != before
     target.chmod(0o755)
     assert verdict_cache._tree_digest(root) != changed
+
+
+def test_tree_digest_frames_file_content(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    for root in (first, second):
+        (root / "a").write_bytes(b"hello")
+    (first / "a").write_bytes(b"hello\0f:b:420\0world")
+    (second / "b").write_bytes(b"world")
+    assert verdict_cache._tree_digest(first) != verdict_cache._tree_digest(second)
 
 
 @pytest.mark.parametrize(
@@ -433,6 +524,119 @@ def test_subagent_key_tracks_the_entire_cloned_head(tmp_path: Path, monkeypatch:
     run_git(repo, "add", ".")
     run_git(repo, "commit", "-qm", "second")
     assert verdict_key(spec, config) != before
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "refusal"])
+def test_unavailable_checkout_only_reruns_spawning_specs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    plain = _spec(tmp_path)
+    spawning = dataclasses.replace(plain, name="spawning", tools=("Agent",))
+    other_spawning = dataclasses.replace(spawning, name="other-spawning")
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    monkeypatch.setattr(verdict_cache, "resolve_teatree_repo_root", lambda: None if failure == "missing" else tmp_path)
+    if failure == "timeout":
+
+        def timed_out(**_kwargs: object) -> None:
+            raise subprocess.TimeoutExpired(["git", "rev-parse"], 30)
+
+        monkeypatch.setattr(verdict_cache, "run_with_status", timed_out)
+    elif failure == "refusal":
+        monkeypatch.setattr(
+            verdict_cache, "run_with_status", lambda **_kwargs: SimpleNamespace(returncode=1, stdout="")
+        )
+    fresh, cached, keys = partition(
+        [plain, spawning, other_spawning], VerdictLedger.load(tmp_path / "ledger.json"), config
+    )
+    assert fresh == [plain, spawning, other_spawning]
+    assert cached == []
+    assert set(keys) == {plain.name}
+
+
+def _seed_cold_setting(db: Path, key: str, value: object) -> None:
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute("DELETE FROM teatree_config_setting WHERE key = ?", (key,))
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value))
+        )
+    conn.close()
+
+
+class TestKeyTracksTheModelAndCapsTheBackendRuns(TestCase):
+    @pytest.fixture(autouse=True)
+    def _isolated_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        self.cold_db = tmp_path / "config.sqlite3"
+        monkeypatch.setenv("T3_CONFIG_DB", str(self.cold_db))
+        monkeypatch.delenv("T3_OPENAI_COMPATIBLE_MODEL", raising=False)
+
+    def _key(self, backend: str, spec: EvalSpec | None = None) -> str:
+        config = VerdictRunConfig(backend=backend, effort="high", max_turns=None, max_budget_usd=2, judge=False)
+        return verdict_key(spec or _spec(self.tmp_path), config)
+
+    def _tier_spec(self) -> EvalSpec:
+        return dataclasses.replace(_spec(self.tmp_path), model="", tier="frontier")
+
+    def test_each_setting_the_backend_reads_rekeys(self) -> None:
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/model-a")
+        changes = {
+            "openai_compatible_model": ("vendor/model-b", ("pydantic_ai",)),
+            "openai_compatible_base_url": ("https://models.example.test/v2", ("pydantic_ai",)),
+            "pydantic_ai_request_limit": (41, ("pydantic_ai", "anthropic_api")),
+            "pydantic_ai_max_tokens": (1234, ("pydantic_ai", "anthropic_api")),
+        }
+        for setting, (value, backends) in changes.items():
+            with self.subTest(setting=setting):
+                before = {backend: self._key(backend) for backend in backends}
+                ConfigSetting.objects.set_value(setting, value)
+                assert all(self._key(backend) != before[backend] for backend in backends)
+
+    def test_key_tracks_installed_backend_packages(self) -> None:
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/model-a")
+        expected = {"pydantic_ai": {"pydantic-ai-slim"}, "anthropic_api": {"anthropic", "pydantic-ai-slim"}}
+        for backend, packages in expected.items():
+            with self.subTest(backend=backend):
+                seen: set[str] = set()
+
+                def version(package: str, seen: set[str] = seen) -> str:
+                    seen.add(package)
+                    if package == "pydantic-ai":
+                        raise LookupError(package)
+                    return "1"
+
+                self.monkeypatch.setattr("teatree.eval.verdict_cache.importlib.metadata.version", version)
+                assert len(self._key(backend)) == 64
+                assert seen == packages
+
+    def test_openai_model_environment_override_rekeys(self) -> None:
+        self.monkeypatch.setenv("T3_OPENAI_COMPATIBLE_MODEL", "vendor/model-a")
+        before = self._key("pydantic_ai")
+        self.monkeypatch.setenv("T3_OPENAI_COMPATIBLE_MODEL", "vendor/model-b")
+        assert self._key("pydantic_ai") != before
+
+    def test_tier_model_override_rekeys(self) -> None:
+        for backend in ("api", "anthropic_api"):
+            with self.subTest(backend=backend):
+                _seed_cold_setting(self.cold_db, "agent_tier_models", {"frontier": "claude-model-a"})
+                before = self._key(backend, self._tier_spec())
+                _seed_cold_setting(self.cold_db, "agent_tier_models", {"frontier": "claude-model-b"})
+                assert self._key(backend, self._tier_spec()) != before
+
+    def test_pydantic_ai_tier_model_override_rekeys(self) -> None:
+        _seed_cold_setting(self.cold_db, "agent_pydantic_ai_tier_models", {"frontier": "vendor/model-a"})
+        before = self._key("pydantic_ai", self._tier_spec())
+        _seed_cold_setting(self.cold_db, "agent_pydantic_ai_tier_models", {"frontier": "vendor/model-b"})
+        assert self._key("pydantic_ai", self._tier_spec()) != before
+
+    def test_unconfigured_pydantic_ai_model_runs_fresh(self) -> None:
+        spec = self._tier_spec()
+        config = VerdictRunConfig(backend="pydantic_ai", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+        assert partition([spec], VerdictLedger.load(self.tmp_path / "ledger.json"), config) == ([spec], [], {})
 
 
 def test_key_tracks_cli_and_harness_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -478,31 +682,6 @@ def test_hooked_key_tracks_shipped_plugin(tmp_path: Path, monkeypatch: pytest.Mo
     before = verdict_key(spec, config)
     source.write_text("second")
     assert verdict_key(spec, config) != before
-
-
-@pytest.mark.parametrize(
-    ("backend", "packages"),
-    [
-        ("pydantic_ai", {"pydantic-ai-slim"}),
-        ("anthropic_api", {"anthropic", "pydantic-ai-slim"}),
-    ],
-)
-def test_key_tracks_installed_backend_packages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, packages: set[str]
-) -> None:
-    seen: set[str] = set()
-
-    def version(package: str) -> str:
-        seen.add(package)
-        if package == "pydantic-ai":
-            raise LookupError(package)
-        return "1"
-
-    monkeypatch.setattr("teatree.eval.verdict_cache.importlib.metadata.version", version)
-    spec = _spec(tmp_path)
-    config = VerdictRunConfig(backend=backend, effort="high", max_turns=None, max_budget_usd=2, judge=False)
-    assert len(verdict_key(spec, config)) == 64
-    assert seen == packages
 
 
 def test_graded_section_change_invalidates_only_its_scenario(tmp_path: Path) -> None:
@@ -572,7 +751,7 @@ def test_partition_hashes_shared_overlay_plugin_once(tmp_path: Path, monkeypatch
     (plugin / "skills" / "review" / "SKILL.md").write_text("review")
     spec = dataclasses.replace(_spec(plugin), available_skills=("review",))
     config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
-    original = verdict_cache._tree_digest
+    original = verdict_cache._plugin_digest
     calls = 0
 
     def counted(root: Path) -> str:
@@ -581,6 +760,6 @@ def test_partition_hashes_shared_overlay_plugin_once(tmp_path: Path, monkeypatch
             calls += 1
         return original(root)
 
-    monkeypatch.setattr(verdict_cache, "_tree_digest", counted)
+    monkeypatch.setattr(verdict_cache, "_plugin_digest", counted)
     partition([spec, dataclasses.replace(spec, name="two")], VerdictLedger.load(tmp_path / "ledger.json"), config)
     assert calls == 1

@@ -9,11 +9,14 @@ typer CLI, so the parity with the host's ``scripts/eval/merge_summaries.py`` shi
 is exercised end to end.
 """
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.eval.models import CachedPass
+from teatree.eval.summary_markdown import render_summary_markdown
 
 _META = ["--run-url", "https://x/run/1", "--sha", "deadbeef", "--generated-at", "2026-06-24T06:00:00Z"]
 
@@ -47,15 +50,16 @@ class TestMergeSummaries:
         shard = tmp_path / "cached.md"
         key = "a" * 64
         shard.write_text(
-            "| scenario | lane | verdict | trials | cost |\n"
-            "| --- | --- | --- | --- | --- |\n"
-            "| alpha | clean_room | cached pass | cached | — |\n\n"
-            f"- alpha: key `{key}` from https://example.test/run/1\n",
+            render_summary_markdown(
+                [],
+                cached=[CachedPass("alpha", "clean_room", key, "https://example.test/run/1", "2026-10-16", "head")],
+            ),
             encoding="utf-8",
         )
         result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard), *_META])
         assert result.exit_code == 0, result.output
-        assert f"- alpha: key `{key}` from https://example.test/run/1" in result.output
+        assert f"- alpha: key `{key}` from [run](https://example.test/run/1)" in result.output
+        assert re.search(r"(?<!\]\()https://", result.output) is None
 
     def test_merges_to_one_table_with_summed_totals_and_cost(self, tmp_path: Path) -> None:
         shard_dir = _write_shards(tmp_path)

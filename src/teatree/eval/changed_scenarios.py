@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.eval.agent_prompt import resolve_agent_path
-from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, _local_stub_path
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, local_stub_path
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD
 from teatree.eval.models import EvalSpec
@@ -159,7 +159,7 @@ def _source_or_fixture_changed(spec: EvalSpec, wanted: set[str], repo_root: Path
         _relative_to_root(local, repo_root) in wanted
         for name in spec.cli_stubs
         if name not in KNOWN_CLI_STUBS
-        if (local := _local_stub_path(name, spec.source_path, include_missing=True)) is not None
+        if (local := local_stub_path(name, spec.source_path, include_missing=True)) is not None
     ):
         return True
     if spec.fixture == "agent_skill_dir" and spec.agent_path:

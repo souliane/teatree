@@ -37,12 +37,17 @@ dataclass and the matchers operate on plain captured tool calls.
 
 A fresh single-trial run can read a JSON ledger with `--verdict-cache <path>`.
 The content key covers the resolved scenario, graded skill prompt, declared fixture
-skills, CLI and harness code, backend package version, and effective run settings.
+skills, CLI and harness code, backend package version, the model the backend will
+actually run (after tier overrides and the configured OpenAI-compatible model), and
+effective run settings, including the endpoint and request/token caps for the API backends.
 The harness hash covers all of `src/teatree`, so an unrelated source change can
 invalidate every verdict. A scenario that can spawn a sub-agent also keys the
-committed tree of the full checkout it clones. Overlay scenarios key the whole
-local SDK plugin root, including hooks, agents and MCP configuration. File modes
-and symlink targets are included. Clean
+committed tree of the full checkout it clones. An unavailable checkout makes
+only spawning scenarios run fresh. Overlay scenarios key the SDK plugin assets
+(`.claude-plugin`, skills, agents, hooks, commands, scripts and configuration),
+the overlay's `src/`, and any path its plugin manifests reference, while ignoring
+unrelated build output and ledger files at the repository root. File
+modes and symlink targets are included. Clean
 passes younger than 30 days are reused; failures, flaky recoveries, skipped,
 unmetered `api` runs, and multi-trial verdicts are never stored. Passes from
 `anthropic_api` and `pydantic_ai` can be stored without a cost figure. `--summary-json` lists

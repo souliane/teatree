@@ -123,19 +123,6 @@ MAX_BUDGET_USD = "0.10"
 FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
 
-#: Local-plugin path (relative to the teatree repo root) for the eval-only
-#: skill-catalog fixture: synthetic ``SKILL.md`` stand-ins for names a
-#: skill-routing scenario's prompt references that core does not itself ship —
-#: a placeholder overlay's workspace/legal-entity skill, a companion language
-#: bible, the review skill named without a leading slash. Registered ONLY for a
-#: scenario that declares ``EvalSpec.available_skills`` (see
-#: :func:`_skill_catalog_fixture_plugin`); every scenario that declares none
-#: never loads it, so the isolation guarantee (no personal/project context bias)
-#: is unchanged for the existing catalog. It carries no ``hooks.json`` of its
-#: own, so loading it cannot resurrect a skill-suggestion
-#: hook the ``settings=EMPTY_SETTINGS`` isolation already suppresses — the exact
-#: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
-
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
 #: substring — this alias only types the direct-raise path, never narrows it.

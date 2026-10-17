@@ -293,7 +293,8 @@ class TestTheAgentSeesOnlyAFreshStagingDir:
     """The container — and the agent under test inside it — never sees the reports' own directory.
 
     On CI that directory is ``$RUNNER_TEMP``: it also holds the uploaded run log and the
-    checkout's credentials file. The agent gets a fresh, empty staging directory, and only
+    checkout's credentials file. The agent gets a fresh staging directory with at most
+    a copy of the requested verdict ledger, and only
     the reports this run asked for leave it, each redacted on the way out.
     """
 

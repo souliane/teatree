@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import COST_SOURCE_UNKNOWN, CachedPass, EvalRun
 from teatree.eval.report import ScenarioResult, cost_cell
+from teatree.eval.summary_model import summary_model
 
 if TYPE_CHECKING:
     from teatree.eval.pass_at_k import PassAtKResult
@@ -113,16 +114,6 @@ def _unknown_cost_runs(results: Sequence[ScenarioResult] | Sequence["PassAtKResu
     return sum(1 for run in _executed_runs(results) if run.cost_source == COST_SOURCE_UNKNOWN)
 
 
-def _model_of(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
-    for item in results:
-        if isinstance(item, ScenarioResult):
-            return item.spec.model
-        spec = find_spec(item.spec_name)
-        if spec is not None:
-            return spec.model
-    return "unknown"
-
-
 def render_summary_markdown(
     results: Sequence[ScenarioResult] | Sequence["PassAtKResult"], *, cached: Sequence[CachedPass] = ()
 ) -> str:
@@ -145,7 +136,7 @@ def render_summary_markdown(
     rows.extend(_SummaryRow(item.name, item.lane, "cached pass", "cached", "—") for item in cached)
     passed, failed, skipped, incomplete = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
-    model = _model_of(results) if results else (cached[0].model if cached else "unknown")
+    model = summary_model(results, cached)
     unknown = _unknown_cost_runs(results)
     cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (
@@ -158,5 +149,5 @@ def render_summary_markdown(
         "| --- | --- | --- | --- | --- |",
         *(f"| {row.scenario} | {row.lane} | {_verdict_cell(row)} | {row.trials} | {row.cost} |" for row in rows),
     ]
-    sources = [f"- {item.name}: key `{item.content_key}` from {item.run_url}" for item in cached]
+    sources = [f"- {item.name}: key `{item.content_key}` from [run]({item.run_url})" for item in cached]
     return "\n".join([header, "", *table, "", *sources, ""])

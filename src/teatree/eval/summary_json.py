@@ -34,6 +34,7 @@ from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, CachedPass, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
+from teatree.eval.summary_model import summary_model
 from teatree.eval.triage import ScenarioRecord, ScenarioTriage, classify_red
 
 _HEAD_SHA_ENV_VARS = ("CI_COMMIT_SHA", "GITHUB_SHA")
@@ -198,16 +199,6 @@ def _row(result: AnyResult) -> _ScenarioRow:
     return _row_from_scenario(result) if isinstance(result, ScenarioResult) else _row_from_pass_at_k(result)
 
 
-def _model_of(results: Sequence[AnyResult]) -> str:
-    for result in results:
-        if isinstance(result, ScenarioResult):
-            return result.spec.model
-        spec = find_spec(result.spec_name)
-        if spec is not None:
-            return spec.model
-    return "unknown"
-
-
 def render_summary_json(
     results: Sequence[AnyResult],
     *,
@@ -249,7 +240,7 @@ def render_summary_json(
     }
     payload = {
         "generated_at": generated_at,
-        "model": _model_of(results) if results else (cache.cached[0].model if cache.cached else "unknown"),
+        "model": summary_model(results, cache.cached),
         "head_sha": head_sha,
         "trial_count": 1 if not results or isinstance(results[0], ScenarioResult) else results[0].trials,
         "totals": totals,
