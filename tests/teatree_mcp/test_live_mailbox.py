@@ -45,6 +45,7 @@ from teatree.core.models import Session, Task, TaskAttempt
 from teatree.mcp.agent_mailbox import INSTRUCTIONS, InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
 from teatree.skill_support import index as skill_index
+from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 from teatree.utils.thread_db import close_thread_db_connections
 from tests.factories import planned_ticket
 from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
@@ -996,6 +997,7 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
         assert env["T3_AGENT_MAILBOX_TOKEN"] == identity.token
+        assert env["T3_DISPATCHED_AGENT"] == "1"
         with patch.dict("os.environ", env):
             server = build_server()
             names = {tool.name for tool in asyncio.run(server.list_tools())}
@@ -1053,7 +1055,13 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
     options = ClaudeAgentOptions(mcp_servers=servers)
     with bound_task_mailbox(options, _TASK, broker=_BrokenBroker()) as identity:
         assert identity is None
-        assert options.mcp_servers == servers
+        assert isinstance(options.mcp_servers, dict)
+        teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+        assert teatree["env"]["T3_DISPATCHED_AGENT"] == "1"
+        assert "T3_AGENT_MAILBOX_TOKEN" not in teatree["env"]
+        with patch.dict("os.environ", teatree["env"], clear=True):
+            assert is_dispatched_agent_process()
+    assert options.mcp_servers == servers
     assert "mailbox" in caplog.text
 
 
