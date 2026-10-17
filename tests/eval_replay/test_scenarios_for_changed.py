@@ -87,7 +87,7 @@ class TestSelectivePrCap:
     backfill, a mass rename) would select the whole catalog and exceed the 80-min
     step cap — the cancellation that reddened PR #2726's eval job. The selector
     caps the selection at :data:`MAX_SELECTIVE_PR_SCENARIOS`; full coverage of a
-    corpus-wide change is the weekly sharded lane's job, not the PR lane's.
+    corpus-wide change is the scheduled lanes' job, not the PR lane's.
     """
 
     def _many_specs(self, count: int) -> list[EvalSpec]:
@@ -183,7 +183,7 @@ class TestTruncationSurfaced:
         assert note is not None
         assert f"selected {total} changed scenarios" in note
         assert f"capped to {MAX_SELECTIVE_PR_SCENARIOS}" in note
-        assert "deferred 50 to the weekly sharded lane" in note
+        assert "deferred 50 to the scheduled lanes" in note
 
 
 class TestMain:
@@ -201,7 +201,7 @@ class TestMain:
         captured = capsys.readouterr()
         assert code == 0
         assert "capped to" in captured.err
-        assert "weekly sharded lane" in captured.err
+        assert "scheduled lanes" in captured.err
         assert len([line for line in captured.out.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
         deferred = len(discover_specs()) - MAX_SELECTIVE_PR_SCENARIOS
         assert metadata.read_text(encoding="utf-8") == f"EVAL_DEFERRED={deferred}\n"

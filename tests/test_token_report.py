@@ -21,6 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.account_headroom import WindowReserve
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
@@ -31,6 +32,8 @@ from teatree.token_report import (
     TokenReport,
     TokenSource,
     TokenStatus,
+    cached_ci_eval_reserve_met,
+    cached_local_eval_reserve_met,
     render_table,
 )
 
@@ -248,6 +251,55 @@ def _stored(
         ),
         now=now or timezone.now(),
     )
+
+
+class EvalReserveTest(TestCase):
+    def test_fresh_allowlisted_oauth_account_serves_eval(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-healthy")
+        report = TokenReport(from_cache=True)
+        assert report.eval_reserve_met(WindowReserve(), accounts=("anthropic/oauth/healthy",)) is True
+
+    def test_stale_or_below_reserve_account_cannot_serve_eval(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/stale", "anthropic/oauth/spent"])
+        _stored("anthropic/oauth/stale", org="org-stale", now=timezone.now() - dt.timedelta(minutes=10))
+        _stored("anthropic/oauth/spent", org="org-spent", u7d=0.85)
+        accounts = ("anthropic/oauth/stale", "anthropic/oauth/spent")
+        assert TokenReport(from_cache=True).eval_reserve_met(WindowReserve(), accounts=accounts) is False
+
+    def test_missing_window_or_allowlist_fails_closed(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/unknown"])
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/unknown",
+            TokenHealthReading(
+                organization_id="org-unknown",
+                utilization_5h=None,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        report = TokenReport(from_cache=True)
+        assert report.eval_reserve_met(WindowReserve(), accounts=("anthropic/oauth/unknown",)) is False
+        assert report.eval_reserve_met(WindowReserve(), accounts=()) is False
+
+
+class CachedEvalReserveGateTest(TestCase):
+    def setUp(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-healthy")
+
+    def test_the_local_gate_reads_the_factory_accounts_without_a_ci_allowlist(self) -> None:
+        assert cached_local_eval_reserve_met() is True
+
+    def test_the_ci_gate_refuses_without_an_allowlist(self) -> None:
+        assert cached_ci_eval_reserve_met() is False
+
+    def test_the_ci_gate_reads_only_the_allowlisted_pool(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        assert cached_ci_eval_reserve_met() is True
 
 
 class DefaultPathNeverRendersTheCacheTest(TestCase):

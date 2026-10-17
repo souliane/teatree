@@ -86,6 +86,16 @@ class TestMergePayloads:
         assert merged["scenarios"] == []
         assert merged["model"] == "unknown"
 
+    def test_a_run_is_parked_when_any_shard_parked(self) -> None:
+        parked_leg = {"head_sha": _SHA, "parked": True}
+        merged = merge_summary_payloads([_SHARD_A, parked_leg], head_sha=_SHA, generated_at=_AT)
+        assert merged["parked"] is True
+        assert merged["totals"]["total"] == 2
+
+    def test_a_run_with_no_parked_shard_is_not_parked(self) -> None:
+        merged = merge_summary_payloads([_SHARD_A, _SHARD_B], head_sha=_SHA, generated_at=_AT)
+        assert merged["parked"] is False
+
     def test_no_transcript_key_can_enter_the_merge(self) -> None:
         # The merge only forwards the already-sanitized per-shard rows; it never
         # invents a transcript key, so the combined artifact stays publish-safe.

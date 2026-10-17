@@ -286,7 +286,10 @@ def test_credential_jobs_bind_the_production_environment(name: str, key: str) ->
 
 def test_the_dashboard_publish_job_runs_on_main_only() -> None:
     condition = " ".join(str(_workflow("eval.yml")["jobs"]["publish"]["if"]).split())
-    assert condition == "always() && needs.prepare.outputs.run_eval == 'true' && github.ref == 'refs/heads/main'"
+    assert condition == (
+        "always() && needs.prepare.outputs.run_eval == 'true' && needs.prepare.outputs.parked != 'true' "
+        "&& github.ref == 'refs/heads/main'"
+    )
 
 
 _PR_WRITE = re.compile(r"\bgh pr (?:create|review)\b|pulls\.(?:create|createReview)\b")

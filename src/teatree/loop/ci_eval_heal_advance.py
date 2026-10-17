@@ -15,6 +15,7 @@ from teatree.backends.github.ci_eval_client import (
     build_ci_eval_client,
 )
 from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, default_fixer, fix_turn_admitted
+from teatree.token_report import cached_ci_eval_reserve_met
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -48,6 +49,14 @@ class AdvanceOutcome:
     from_state: str
     to_state: str
     note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _RunPayload:
+    """What a finished run's ``eval-heal-<sha>`` artifact reports: its gating reds, and whether a leg parked."""
+
+    reds: tuple[str, ...]
+    parked: bool
 
 
 def red_scenario_names(payload: RawAPIDict) -> list[str]:
@@ -101,11 +110,11 @@ def _load_json(path: Path) -> RawAPIDict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _download_reds(client: GhCiEvalClient, *, run_id: int | None, head_sha: str) -> list[str] | None:
-    """Download the ``eval-heal-<sha>`` artifact and parse its reds, or ``None`` on any failure.
+def _download_payload(client: GhCiEvalClient, *, run_id: int | None, head_sha: str) -> _RunPayload | None:
+    """Download the ``eval-heal-<sha>`` artifact and read its reds + parked flag, or ``None`` on any failure.
 
-    ``None`` means "the reds could not be confirmed" (no run id / SHA, a download
-    error, or an artifact carrying no JSON) — the caller treats that as an infra
+    ``None`` means "the run's verdict could not be confirmed" (no run id / SHA, a
+    download error, or an artifact carrying no JSON) — the caller treats that as a
     HALT, never as an empty (green) red set. A full-suite run drops one JSON; a
     targeted subset drops one per scenario, so every JSON is read.
     """
@@ -125,7 +134,11 @@ def _download_reds(client: GhCiEvalClient, *, run_id: int | None, head_sha: str)
         artifacts = sorted(dest.rglob("*.json"))
         if not artifacts:
             return None
-        return [name for artifact in artifacts for name in red_scenario_names(_load_json(artifact))]
+        payloads = [_load_json(artifact) for artifact in artifacts]
+        return _RunPayload(
+            reds=tuple(name for payload in payloads for name in red_scenario_names(payload)),
+            parked=any(payload.get("parked") is True for payload in payloads),
+        )
 
 
 def _advance_owned(
@@ -158,7 +171,11 @@ def _fire_workflow(session: "CiEvalHealSession", *, client: GhCiEvalClient) -> b
         client.trigger_workflow(
             EVAL_CI_HEAL_WORKFLOW,
             ref=session.pr_ref,
-            inputs={"scenarios": "", "credential": _DISPATCH_CREDENTIAL, "pr_ref": session.pr_ref},
+            inputs={
+                "scenarios": ",".join(session.red_scenarios),
+                "credential": _DISPATCH_CREDENTIAL,
+                "pr_ref": session.pr_ref,
+            },
         )
     except Exception:
         logger.exception("ci_eval_heal: dispatching the eval failed for %s", session.pr_ref)
@@ -171,13 +188,17 @@ def _halt_dispatch(session: "CiEvalHealSession", *, escalate: EscalateFn) -> str
     return _halt(session, escalate=escalate, reason="dispatching the eval failed; there is no CI run to await")
 
 
-def _dispatch_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn) -> AdvanceOutcome:
+def _dispatch_ci(
+    session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, reserve_met: Callable[[], bool]
+) -> AdvanceOutcome:
     """PENDING → AWAITING_CI: claim the step, THEN dispatch the eval run it now owns.
 
     Claiming first is what makes the dispatch exactly-once, and is safe only because
     ``halt`` accepts ``AWAITING_CI`` as a source — unlike ``record_fix``'s ``PUSHED``
     target, which is why that one still records only after its push.
     """
+    if not reserve_met():
+        return AdvanceOutcome(session.pr_ref, "pending", session.state, note="held: no eval account meets the reserve")
     head_sha = client.resolve_head_sha(session.pr_ref)
     claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))
     if claimed is None:
@@ -313,21 +334,51 @@ def _triage_result(
     return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note=note)
 
 
+def _park(session: "CiEvalHealSession") -> AdvanceOutcome:
+    """AWAITING_CI → PENDING under the ownership CAS: the reserve parked a leg, so the run measured nothing."""
+    parked = _advance_owned(session, lambda owned: owned.park())
+    if parked is None:
+        return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note=_SUPERSEDED_NOTE)
+    return AdvanceOutcome(session.pr_ref, "awaiting_ci", parked.state, note="parked on the subscription reserve")
+
+
+def _resolve_success(
+    session: "CiEvalHealSession",
+    *,
+    payload: _RunPayload | None,
+    client: GhCiEvalClient,
+    escalate: EscalateFn,
+    fixer: CiEvalHealFixer,
+) -> AdvanceOutcome:
+    """A ``success`` conclusion greens only on a readable payload no leg parked — a parked leg ran nothing."""
+    if payload is None:
+        reason = "CI run concluded 'success' but its eval-heal artifact is unreadable; a green needs the payload"
+        to_state = _halt(session, escalate=escalate, reason=reason)
+        return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="unreadable-payload halt")
+    if payload.parked:
+        return _park(session)
+    return _triage_result(session, reds=[], client=client, escalate=escalate, fixer=fixer)
+
+
 def _observe_ci(
     session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, fixer: CiEvalHealFixer
 ) -> AdvanceOutcome:
-    """AWAITING_CI: poll once; a finished run resolves to GREEN (success), a fix, or HALT (infra)."""
+    """AWAITING_CI: poll once; a finished run resolves to GREEN, a fix, a park (requeue), or HALT."""
     runs = client.list_runs(EVAL_CI_HEAL_WORKFLOW, branch=session.pr_ref)
     run = _match_run(runs, head_sha=session.head_sha)
     if run is None or str(run.get("status") or "") != "completed":
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note="run in flight")
     conclusion = str(run.get("conclusion") or "")
     run_id = run.get("databaseId")
+    payload = _download_payload(
+        client, run_id=int(run_id) if isinstance(run_id, int) else None, head_sha=session.head_sha
+    )
     if conclusion == "success":
-        return _triage_result(session, reds=[], client=client, escalate=escalate, fixer=fixer)
-    reds = _download_reds(client, run_id=int(run_id) if isinstance(run_id, int) else None, head_sha=session.head_sha)
-    if reds:
-        return _triage_result(session, reds=reds, client=client, escalate=escalate, fixer=fixer)
+        return _resolve_success(session, payload=payload, client=client, escalate=escalate, fixer=fixer)
+    if payload is not None and payload.reds:
+        return _triage_result(session, reds=list(payload.reds), client=client, escalate=escalate, fixer=fixer)
+    if payload is not None and payload.parked:
+        return _park(session)
     # Non-success with NO confirmable behavioral red — an infra failure (transport,
     # throttle, cap, cancelled, or an unfetchable artifact). Never greened.
     reason = f"CI run concluded {conclusion or 'unknown'!r} with no confirmable behavioral red (infra)"
@@ -341,6 +392,7 @@ def advance_session(
     client: GhCiEvalClient,
     escalate: EscalateFn,
     fixer: CiEvalHealFixer | None = None,
+    reserve_met: Callable[[], bool] = cached_ci_eval_reserve_met,
 ) -> AdvanceOutcome:
     """Advance one open session ONE FSM step. ``FIXING`` and terminal states are no-ops.
 
@@ -355,7 +407,7 @@ def advance_session(
     resolved_fixer = fixer if fixer is not None else default_fixer()
     state = session.state
     if state == CiEvalHealSession.State.PENDING:
-        return _dispatch_ci(session, client=client, escalate=escalate)
+        return _dispatch_ci(session, client=client, escalate=escalate, reserve_met=reserve_met)
     if state == CiEvalHealSession.State.AWAITING_CI:
         return _observe_ci(session, client=client, escalate=escalate, fixer=resolved_fixer)
     if state == CiEvalHealSession.State.TRIAGING:
@@ -395,6 +447,7 @@ def advance_open_sessions(
     client: GhCiEvalClient | None = None,
     escalate: EscalateFn | None = None,
     fixer: CiEvalHealFixer | None = None,
+    reserve_met: Callable[[], bool] = cached_ci_eval_reserve_met,
 ) -> OpenSessionsRun:
     """Advance every non-terminal session one step, best-effort (a bad session never aborts the pass).
 
@@ -403,7 +456,8 @@ def advance_open_sessions(
     recorded, never raised — the next tick retries the un-advanced session. Returns
     the outcomes + swallowed errors for the caller (loop log / operator CLI). The
     ``fixer`` is the injected autonomous-fix seam (default: the production headless
-    fixer); every confirmed behavioral red within budget reaches it.
+    fixer); every confirmed behavioral red within budget reaches it. ``reserve_met``
+    (default: the cached, fail-closed CI-pool reserve probe) holds every PENDING dispatch.
     """
     from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM needs the app registry
 
@@ -415,7 +469,13 @@ def advance_open_sessions(
     for session in CiEvalHealSession.objects.exclude(state__in=terminal).order_by("pk"):
         try:
             run.outcomes.append(
-                advance_session(session, client=resolved_client, escalate=resolved_escalate, fixer=resolved_fixer)
+                advance_session(
+                    session,
+                    client=resolved_client,
+                    escalate=resolved_escalate,
+                    fixer=resolved_fixer,
+                    reserve_met=reserve_met,
+                )
             )
         except Exception as exc:
             logger.exception("ci_eval_heal: advancing session %s (%s) failed", session.pk, session.pr_ref)

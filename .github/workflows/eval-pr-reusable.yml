@@ -187,6 +187,9 @@ jobs:
     needs: detect
     if: needs.detect.outputs.run == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      parked: ${{ steps.owed.outputs.parked }}
+      owed: ${{ steps.owed.outputs.owed }}
     # A single-trial bounded subset finishes well inside this cap; the cap exists
     # so a hang (a wedged scenario, a stuck docker daemon) fails loud as a red,
     # diagnosable run instead of stalling to the 6h default.
@@ -308,24 +311,40 @@ jobs:
             SUMMARY="$RUNNER_TEMP/eval-summary.md"
             echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" \
               | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            if [ -f "$LIMIT_MARKER" ]; then
+              read -r rc < "$LIMIT_MARKER"
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              exit "$rc"
+            fi
             : > "$SUMMARY"
             rc=0
             ran=0
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
-            for name in "${NAMES[@]}"; do
-              name="$(echo "$name" | xargs)"
+            for index in "${!NAMES[@]}"; do
+              name="$(echo "${NAMES[$index]}" | xargs)"
               if [ -z "$name" ]; then
                 continue
               fi
               ran=$((ran + 1))
+              scenario_rc=0
               uv run t3 eval run "$name" --backend api \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
                 --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
-                | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || rc=$?
+                | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || scenario_rc=$?
               if [ -f "$RUNNER_TEMP/eval-summary-$name.md" ]; then
                 cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
+              fi
+              if [ "$scenario_rc" -eq 75 ]; then
+                printf '%s\n' "${NAMES[@]:index}" | xargs -n1 > "$RUNNER_TEMP/eval-owed-limit.txt"
+                echo "$rc" > "$LIMIT_MARKER"
+                echo "::warning title=eval PARKED::usage limit reached at $name"
+                break
+              fi
+              if [ "$scenario_rc" -ne 0 ]; then
+                rc="$scenario_rc"
               fi
             done
             # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
@@ -346,6 +365,19 @@ jobs:
               echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
+      # A usage limit parks the remaining scenarios instead of reddening the PR; the
+      # gate below reports them as owed.
+      - name: Report the owed scenarios
+        id: owed
+        if: always()
+        run: |
+          LIMIT_NAMES="$RUNNER_TEMP/eval-owed-limit.txt"
+          if [ -s "$LIMIT_NAMES" ]; then
+            echo "parked=true" >> "$GITHUB_OUTPUT"
+            echo "owed=$(paste -sd, "$LIMIT_NAMES")" >> "$GITHUB_OUTPUT"
+          else
+            echo "parked=false" >> "$GITHUB_OUTPUT"
+          fi
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
       # publish-safe dashboard; the transcript stays private. It runs before the
@@ -411,7 +443,8 @@ jobs:
   # passed or was legitimately skipped (no scenario changed); it FAILs when
   # detection failed, when the eval failed (a real regression OR the vacuous
   # zero-executed case that `exit 1`s inside the eval job), or when either job was
-  # cancelled.
+  # cancelled. A usage limit that cut the eval short with nothing failed is PARKED:
+  # green, with the owed scenarios named; a confirmed red still fails.
   eval-gate:
     needs: [detect, eval]
     if: always()
@@ -422,6 +455,8 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           EVAL_RESULT: ${{ needs.eval.result }}
           CHANGED: ${{ needs.detect.outputs.run }}
+          PARKED: ${{ needs.eval.outputs.parked }}
+          OWED: ${{ needs.eval.outputs.owed }}
         run: |
           echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
           if [ "$DETECT_RESULT" != "success" ]; then
@@ -430,7 +465,15 @@ jobs:
           fi
           case "$EVAL_RESULT" in
             success)
-              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              if [ "$PARKED" = "true" ]; then
+                echo "eval-gate PARKED — owed: $OWED"
+                echo "::warning title=eval-gate PARKED::Owed scenarios: $OWED"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "eval-gate PARKED — owed: $OWED" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              fi
               ;;
             skipped)
               echo "eval-gate PASS — no scenario changed; nothing to eval."

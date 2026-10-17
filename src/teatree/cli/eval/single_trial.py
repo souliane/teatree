@@ -27,7 +27,6 @@ from teatree.cli.eval.escalate import (
     render_escalation_markdown,
 )
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
 from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import (
     API_BACKEND,
@@ -40,7 +39,7 @@ from teatree.eval.backends import (
     make_runner,
 )
 from teatree.eval.models import EvalSpec
-from teatree.eval.parallel import run_specs
+from teatree.eval.parallel import UsageLimitLatch, is_usage_limit_skip, run_specs
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_html, render_json, render_text
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.summary_json import write_summary_json
@@ -156,8 +155,10 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
             backend=backend, max_budget_usd=max_budget_usd, effort=effort, require_executed=require_executed
         )
 
+        latch = UsageLimitLatch(escalation_runner, limited=bool(_refused_by_the_usage_limit(results)))
+
         def _escalation_trial(spec: EvalSpec) -> ScenarioResult:
-            return evaluate(spec, escalation_runner.run(spec), judge=grader)
+            return evaluate(spec, latch.run(spec), judge=grader)
 
         escalation_report = _escalate_and_gate(
             results, escalation=escalation, trial=_escalation_trial, summary_md=summary_md
@@ -199,7 +200,7 @@ def _exit_suite_budget_exhausted(results: list[ScenarioResult]) -> None:
 
 
 def _refused_by_the_usage_limit(results: list[ScenarioResult]) -> list[ScenarioResult]:
-    return [r for r in results if r.run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")]
+    return [r for r in results if is_usage_limit_skip(r.run)]
 
 
 def _exit_when_the_usage_limit_ran_nothing(results: list[ScenarioResult]) -> None:

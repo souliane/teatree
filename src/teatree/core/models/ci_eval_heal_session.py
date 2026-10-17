@@ -106,6 +106,10 @@ class CiEvalHealSession(models.Model):
         self.ci_run_id = ci_run_id
         self.head_sha = head_sha
 
+    @transition(field="state", source=State.AWAITING_CI, target=State.PENDING)
+    def park(self) -> None:
+        """Requeue a run the subscription reserve parked — it measured nothing, so no attempt is spent."""
+
     @transition(field="state", source=State.AWAITING_CI, target=State.TRIAGING)
     def receive_result(self, *, red_scenarios: list[str]) -> None:
         """Record the red-scenario subset the CI ``--summary-json`` artifact reported."""

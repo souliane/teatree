@@ -86,7 +86,7 @@ class TestDispatchStep(TestCase):
     def test_pending_dispatches_full_suite_on_subscription_and_awaits(self) -> None:
         session = _session()
         client = _FakeClient(head_sha="b" * 40)
-        outcome = advance_session(session, client=client, escalate=_never)
+        outcome = advance_session(session, client=client, escalate=_never, reserve_met=_reserve_met)
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.AWAITING_CI
         assert session.head_sha == "b" * 40
@@ -101,7 +101,7 @@ class TestDispatchStep(TestCase):
 class TestObserveGreenPath(TestCase):
     def test_ci_success_marks_green(self) -> None:
         session = _awaiting(head_sha="a" * 40)
-        client = _FakeClient(runs=[_completed("success")])
+        client = _FakeClient(runs=[_completed("success")], artifact=_artifact(reds=[]))
         advance_session(session, client=client, escalate=_never)
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.GREEN
@@ -199,7 +199,7 @@ class TestAdvanceOpenSessions(TestCase):
         pending = _session(pr_ref="to-dispatch")
 
         client = _FakeClient(head_sha="c" * 40)
-        run = advance_open_sessions(client=client, escalate=_never)
+        run = advance_open_sessions(client=client, escalate=_never, reserve_met=_reserve_met)
         pending.refresh_from_db()
         green.refresh_from_db()
         # The GREEN (terminal) session is untouched; the pending one is dispatched.
@@ -332,10 +332,10 @@ class TestArmedFixerDispatch(TestCase):
         assert session.fix_attempts == 1
         assert session.last_fix_paths == ["src/teatree/skills/t3-rules/SKILL.md"]
         assert session.head_sha == "f" * 40
-        # The re-trigger dispatched a fresh eval on the fixed branch.
+        # The re-trigger re-runs only the reds on the fixed branch.
         assert client.triggered
         assert client.triggered[-1]["inputs"] == {
-            "scenarios": "",
+            "scenarios": "rules_under_load",
             "credential": "subscription_oauth",
             "pr_ref": "3201-feat-x",
         }
@@ -481,8 +481,8 @@ class TestAdvancementOwnership(TestCase):
         rival = CiEvalHealSession.objects.get(pk=session.pk)
         client = _FakeClient(head_sha="b" * 40)
 
-        advance_session(session, client=client, escalate=_never)
-        outcome = advance_session(rival, client=client, escalate=_never)
+        advance_session(session, client=client, escalate=_never, reserve_met=_reserve_met)
+        outcome = advance_session(rival, client=client, escalate=_never, reserve_met=_reserve_met)
 
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.AWAITING_CI
@@ -550,7 +550,7 @@ class TestDispatchFailureIsNeverASilentWait(TestCase):
         client = _FakeClient(trigger_error=RuntimeError("workflow dispatch rejected"))
         escalated: list[int] = []
 
-        advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
+        advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk), reserve_met=_reserve_met)
 
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.HALTED
@@ -570,6 +570,139 @@ class TestDispatchFailureIsNeverASilentWait(TestCase):
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.HALTED
         assert "dispatching the eval failed" in session.halt_reason
+
+
+def _dispatch_inputs(*, scenarios: str) -> dict[str, str]:
+    return {"scenarios": scenarios, "credential": "subscription_oauth", "pr_ref": "3201-feat-x"}
+
+
+class TestTargetedRetrigger(TestCase):
+    def test_a_pushed_fix_reruns_only_its_reds(self) -> None:
+        session = _triaging(reds=["rules_under_load", "budget_turns"])
+        session.begin_fix()
+        session.save()
+        session.record_fix(changed_paths=["src/teatree/skills/foo.md"])
+        session.save()
+        client = _FakeClient(head_sha="n" * 40)
+
+        advance_session(session, client=client, escalate=_never)
+
+        assert client.triggered[-1]["inputs"] == _dispatch_inputs(scenarios="rules_under_load,budget_turns")
+
+    def test_a_requeued_session_redispatches_the_reds_it_still_owes(self) -> None:
+        session = _session(red_scenarios=["rules_under_load"])
+        client = _FakeClient()
+
+        advance_session(session, client=client, escalate=_never, reserve_met=_reserve_met)
+
+        assert client.triggered[-1]["inputs"] == _dispatch_inputs(scenarios="rules_under_load")
+
+
+def _parked(*, reds: Sequence[str] = ()) -> dict[str, object]:
+    return {**_artifact(reds=reds), "parked": True}
+
+
+class TestParkOnTheSubscriptionReserve(TestCase):
+    """A run the reserve parked measured nothing: it requeues, never greens, never spends an attempt."""
+
+    def test_a_parked_success_requeues_without_spending_an_attempt(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        session.fix_attempts = 1
+        session.save(update_fields=["fix_attempts"])
+        client = _FakeClient(runs=[_completed("success")], artifact=_parked())
+
+        outcome = advance_session(session, client=client, escalate=_never)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.PENDING
+        assert session.fix_attempts == 1
+        assert outcome.to_state == CiEvalHealSession.State.PENDING
+        assert "parked" in outcome.note
+
+    def test_a_parked_failure_with_no_red_requeues_instead_of_halting(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        client = _FakeClient(runs=[_completed("failure")], artifact=_parked())
+
+        advance_session(session, client=client, escalate=_never)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.PENDING
+
+    def test_a_measured_red_outranks_a_parked_leg(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        session.fix_attempts = session.max_fix_attempts
+        session.save(update_fields=["fix_attempts"])
+        client = _FakeClient(runs=[_completed("failure")], artifact=_parked(reds=["rules_under_load"]))
+
+        advance_session(session, client=client, escalate=_noop)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.red_scenarios == ["rules_under_load"]
+
+    def test_a_success_without_a_readable_payload_halts_never_green(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        client = _FakeClient(runs=[_completed("success")])
+        escalated: list[int] = []
+
+        advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert "unreadable" in session.halt_reason
+        assert escalated == [session.pk]
+
+    def test_a_success_whose_artifact_cannot_be_downloaded_halts_never_green(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        client = _FakeClient(runs=[_completed("success")], download_error=FileNotFoundError("no artifact"))
+
+        advance_session(session, client=client, escalate=_noop)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+
+
+class TestReserveGatesThePendingDispatch(TestCase):
+    def test_a_short_reserve_holds_the_dispatch_without_spending_anything(self) -> None:
+        session = _session()
+        client = _FakeClient()
+
+        outcome = advance_session(session, client=client, escalate=_never, reserve_met=_reserve_short)
+
+        session.refresh_from_db()
+        assert client.triggered == []
+        assert session.state == CiEvalHealSession.State.PENDING
+        assert session.fix_attempts == 0
+        assert "reserve" in outcome.note
+
+    def test_the_pass_forwards_the_reserve_probe(self) -> None:
+        session = _session()
+        client = _FakeClient()
+
+        advance_open_sessions(client=client, escalate=_never, reserve_met=_reserve_short)
+
+        session.refresh_from_db()
+        assert client.triggered == []
+        assert session.state == CiEvalHealSession.State.PENDING
+
+    def test_the_default_probe_fails_closed_on_an_empty_token_cache(self) -> None:
+        session = _session()
+        client = _FakeClient()
+
+        advance_open_sessions(client=client, escalate=_never)
+
+        session.refresh_from_db()
+        assert client.triggered == []
+        assert session.state == CiEvalHealSession.State.PENDING
+
+    def test_an_awaited_run_is_polled_whatever_the_reserve(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        client = _FakeClient(runs=[_completed("success")], artifact=_artifact(reds=[]))
+
+        advance_session(session, client=client, escalate=_never, reserve_met=_reserve_unconsulted)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.GREEN
 
 
 class TestRedNeverSelfCertifiesGreen(TestCase):
@@ -611,6 +744,18 @@ def _never(_session: CiEvalHealSession) -> None:
 
 def _noop(_session: CiEvalHealSession) -> None:
     """A silent escalation stub for halting paths that don't assert the escalation itself."""
+
+
+def _reserve_met() -> bool:
+    return True
+
+
+def _reserve_short() -> bool:
+    return False
+
+
+def _reserve_unconsulted() -> bool:
+    pytest.fail("the reserve gates only a PENDING dispatch")
 
 
 def test_advance_outcome_is_frozen() -> None:

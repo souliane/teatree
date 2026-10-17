@@ -55,6 +55,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: eval-benchmark
+  cancel-in-progress: false
+
 jobs:
   benchmark:
     permissions:

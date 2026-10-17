@@ -147,11 +147,20 @@ class TestBackwardSafePassthrough:
         assert "parked=true" in _env_lines(output_file)
         assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
 
-    def test_empty_tokens_and_no_fallback_parks(self, tmp_path: Path) -> None:
+    def test_empty_tokens_and_no_fallback_is_a_clean_noop(self, tmp_path: Path) -> None:
         env_file = tmp_path / "gh_env"
-        code = main({"EVAL_CREDENTIAL": "subscription_oauth", "EVAL_OAUTH_TOKENS": "", "GITHUB_ENV": str(env_file)})
-        assert code == 75
+        output_file = tmp_path / "gh_output"
+        code = main(
+            {
+                "EVAL_CREDENTIAL": "subscription_oauth",
+                "EVAL_OAUTH_TOKENS": "",
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
+            }
+        )
+        assert code == 0
         assert _env_lines(env_file) == []
+        assert not output_file.exists()
 
     def test_missing_eval_credential_defaults_to_subscription_oauth(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

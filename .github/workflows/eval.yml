@@ -10,7 +10,12 @@
 # never runs the rest of the pipeline, and a PR run never triggers this workflow.
 #
 # Cadence:
-#   * schedule  — once a week (Monday 06:00 UTC), run as the BASELINE: each
+#   * schedule  — checked DAILY (06:00 UTC) but run at most once per weekly window,
+#     as the BASELINE: only when an OAuth account keeps the eval reserve free AND its
+#     7-day window resets within 24h (the selector's EVAL_SWEEP_WITHIN_HOURS), so the
+#     sweep spends quota that would expire unused, never the quota the factory needs.
+#     One leg runs at a time; a leg that cannot keep the reserve, or hits the usage
+#     limit, parks green instead of reddening. Each
 #     scenario ONCE at its baseline-pinned cheapest-passing tier
 #     (`--preset baseline`, evals/presets/baseline.yaml), single trial, NO
 #     effort fan. This is the cheap, window-safe weekly — the 3-tier
@@ -131,8 +136,8 @@ name: Scheduled · Weekly behavioral eval
 
 on:
   schedule:
-    # Weekly metered behavioral-eval run, Monday 06:00 UTC.
-    - cron: "0 6 * * 1"
+    # Daily check; the sweep window in `prepare` lets it run once per weekly reset.
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       lane:
@@ -169,6 +174,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: eval-weekly-sweep
+  cancel-in-progress: false
+
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
   # no-PR guard / manual force) and (b) computes the per-leg {lane, shard} matrix.
@@ -185,6 +194,7 @@ jobs:
       pull-requests: read
     outputs:
       run_eval: ${{ steps.gate.outputs.run_eval }}
+      parked: ${{ steps.sweep.outputs.parked }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -251,6 +261,19 @@ jobs:
       # scheduled leg needs. An unknown lane or effort fails loud in lane_matrix.py
       # rather than producing an empty/invalid matrix. Inputs are routed through
       # `env:` vars (never inlined).
+      # SWEEP WINDOW (scheduled runs only): the selector probes every OAuth account and
+      # parks (exit 75, parked=true) unless one keeps the eval reserve free AND resets its
+      # 7-day window within 24h. No EVAL_API_KEY_FALLBACK: a parked sweep skips every leg
+      # cleanly instead of spending the metered key. A manual run is never gated here.
+      - name: Check the sweep window (scheduled runs only)
+        id: sweep
+        if: github.event_name == 'schedule' && steps.gate.outputs.run_eval == 'true'
+        env:
+          EVAL_CREDENTIAL: subscription_oauth
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_SWEEP_WITHIN_HOURS: "24"
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Compute the lane+shard+effort matrix
         id: matrix
         env:
@@ -273,7 +296,7 @@ jobs:
   # all-skipped run fails RED instead of passing green.
   eval:
     needs: prepare
-    if: needs.prepare.outputs.run_eval == 'true'
+    if: needs.prepare.outputs.run_eval == 'true' && needs.prepare.outputs.parked != 'true'
     runs-on: ubuntu-latest
     strategy:
       # `fail-fast: false` so a red shard does not cancel the other shards
@@ -289,16 +312,12 @@ jobs:
       # `(0/3)` in ~1s each with "metered $0.00 (no metered calls)" — the
       # account's shared window was drained by its ~56 concurrent siblings mid-run,
       # not a dead token (the "auth failure" wording in that message is stale/
-      # misleading — see `resolve_eval_credential`). `max-parallel: 2` makes the
-      # fan-out QUEUE against the account's rate limit instead of slamming it all
-      # at once. The exact per-account concurrent-request ceiling for Claude
-      # subscription OAuth is not published anywhere citable, so 2 is a
-      # deliberately conservative starting point (raise it later with empirical
-      # evidence from a green run, e.g. a live probe of how many concurrent legs
-      # stay green) rather than a measured optimum. `--parallel` (in-job scenario
-      # concurrency) is unrelated and stays unset (sequential within a leg); this
-      # caps how many LEGS run at once across the whole matrix.
-      max-parallel: 2
+      # misleading — see `resolve_eval_credential`). `max-parallel: 1` runs ONE leg
+      # at a time, so each leg's selector re-probes the window the previous leg left:
+      # once the reserve is gone (or a leg hit the usage limit) the remaining legs park
+      # instead of draining the account the factory needs. `--parallel` (in-job
+      # scenario concurrency) is unrelated and stays unset (sequential within a leg).
+      max-parallel: 1
       # `include` with the prepare job's `{lane, shard}` objects: each leg meters
       # exactly its lane's `index/total` shard, bounded by the LANE's per-shard
       # ceiling (clean_room ≤14, under_load ≤4 — #2683), so EVERY leg fits the
@@ -411,18 +430,19 @@ jobs:
       # freshest is exported — masked — into $GITHUB_ENV, which the eval step below reads.
       # BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing single
       # CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the credential
-      # decision, so it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted set
-      # flips it to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
-      # set (default off), otherwise the step fails loud rather than spend a throttled
-      # account. Skipped implicitly for an api_key run (it just re-exports the provider).
+      # decision, so it also exports T3_AGENT_HARNESS_PROVIDER. Each leg re-probes: with no
+      # account keeping the eval reserve free it exits 75 and parked=true, and the leg's
+      # eval step is skipped. There is no metered fallback on this lane. Skipped
+      # implicitly for an api_key run (it just re-exports the provider).
       - name: Select the freshest eval OAuth account
+        id: select
         env:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
-        run: uv run python scripts/eval/select_oauth.py
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Behavioral eval suite (in Docker; pass@k; --require-executed always armed)
+        if: steps.select.outputs.parked != 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` are exported by the
@@ -551,6 +571,10 @@ jobs:
               $MODEL_FLAG 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
+            if [ "$rc" -eq 75 ]; then
+              echo "::warning title=eval PARKED::leg $EVAL_SUFFIX hit the usage limit; its remaining scenarios did not run"
+              exit 0
+            fi
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
             tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
@@ -643,7 +667,7 @@ jobs:
   # email to the maintainer (no extra secret, no bot) — see the top-of-file note.
   publish:
     needs: [prepare, eval]
-    if: always() && needs.prepare.outputs.run_eval == 'true' && github.ref == 'refs/heads/main'
+    if: always() && needs.prepare.outputs.run_eval == 'true' && needs.prepare.outputs.parked != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -716,6 +740,10 @@ jobs:
           TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
         run: |
           set -o pipefail
+          if ! compgen -G "$RUNNER_TEMP/summaries/*.md" > /dev/null; then
+            echo "No leg produced a summary (every leg parked) — the dashboard is left as it is."
+            exit 0
+          fi
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
             --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \

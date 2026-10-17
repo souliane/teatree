@@ -44,12 +44,16 @@ health + tokens with no network or ``pass``.
 """
 
 import datetime as dt
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from django.utils import timezone
 
+from teatree.account_headroom import WindowReserve
+from teatree.config import get_effective_settings
 from teatree.core.models.anthropic_token_usage import (
     DEFAULT_WARNING_THRESHOLDS,
+    HEALTH_TTL,
     AnthropicTokenUsage,
     WarningThresholds,
     fingerprint_token,
@@ -131,6 +135,28 @@ class TokenReport:
         now = timezone.now()
         ad_hoc = [self._ad_hoc_row(index, token, now) for index, token in enumerate(self._ad_hoc_tokens, start=1)]
         return sorted(self._pass_rows(now), key=_routing_preference) + ad_hoc
+
+    def eval_reserve_met(self, reserve: WindowReserve, *, accounts: tuple[str, ...] | None = None) -> bool:
+        now = timezone.now()
+        allowed = set(accounts) if accounts is not None else None
+        if allowed is not None and not allowed:
+            return False
+        return any(
+            row.kind is TokenKind.OAUTH
+            and row.source is TokenSource.STORE
+            and (allowed is None or row.account in allowed)
+            and row.status.is_measured
+            and row.checked_at is not None
+            and dt.timedelta() <= now - row.checked_at <= HEALTH_TTL
+            and reserve.allows(
+                row.utilization_5h,
+                row.next_window_reset,
+                row.utilization_7d,
+                row.weekly_reset,
+                now,
+            )
+            for row in self.rows()
+        )
 
     def render(self) -> str:
         return render_table(self.rows(), from_cache=self._from_cache)
@@ -285,6 +311,15 @@ def _live_facts(snapshot: RateLimitSnapshot) -> LiveProbeFacts:
 def _band(reported: float | None, shipped: float) -> float:
     """The API's own warning band where it reports one, else teatree's shipped guess."""
     return shipped if reported is None else reported
+
+
+def cached_local_eval_reserve_met() -> bool:
+    return TokenReport(from_cache=True).eval_reserve_met(WindowReserve.from_environment(os.environ))
+
+
+def cached_ci_eval_reserve_met() -> bool:
+    accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
+    return TokenReport(from_cache=True).eval_reserve_met(WindowReserve.from_environment(os.environ), accounts=accounts)
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

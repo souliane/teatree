@@ -87,9 +87,10 @@ class TestNightlySmokeLane:
 
 
 class TestWeeklyCatalogUntouched:
-    def test_weekly_still_runs_the_full_catalog_on_its_own_cron(self) -> None:
-        # The full-catalog weekly stays on its existing Monday 06:00 cadence — the
-        # additive PER-PR + NIGHTLY tiers do not replace it.
+    def test_weekly_sweep_is_checked_daily_but_runs_once_per_reset_window(self) -> None:
+        # The full-catalog sweep keeps its own 06:00 cron beside the PER-PR + NIGHTLY
+        # tiers; the daily tick runs only inside the 24h before a 7-day reset.
         text = _WEEKLY.read_text(encoding="utf-8")
-        assert 'cron: "0 6 * * 1"' in text
+        assert 'cron: "0 6 * * *"' in text
+        assert 'EVAL_SWEEP_WITHIN_HOURS: "24"' in text
         assert "--days 7" in text

@@ -134,9 +134,12 @@ installed editable from a clone; the eval harness ships inside it.
   (the no-PR guard is bypassed).
 - **CI weekly.** The metered Agent-SDK scenario run lives in a STANDALONE
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
-  run neither runs nor displays a metered-eval check. It fires on a weekly cron;
-  the scheduled run skips cleanly when nothing new merged in the lookback window
-  (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI
+  run neither runs nor displays a metered-eval check. Its cron is checked daily,
+  but the sweep runs only when an OAuth account keeps the eval reserve free AND
+  resets its 7-day window within 24h (`EVAL_SWEEP_WITHIN_HOURS=24`), one leg at a
+  time, so it runs about once per weekly window on quota that would otherwise
+  expire. The scheduled run also skips cleanly when nothing new merged in the
+  lookback window (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI
   and passes `--require-executed` UNCONDITIONALLY, so a missing binary/key fails
   the job loud instead of an all-skipped green. The deterministic lanes are gated
   by prek per push + pytest per PR, not re-run here. See "Triggering" below.
@@ -211,13 +214,18 @@ t3 eval changed-scenarios --diff-file changed.diff < changed-files.txt  # …plu
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly dashboard publish when any collected eval-benchmark-*.html shard records graded verdicts at $0.0000 (an exhausted OAuth window); exit 1 naming the shard + zero-cost models
-t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated)
+t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated, `parked` if any leg parked)
+t3 eval owed record --out eval-owed.json --reason limit --source pr#N@<sha> --names-file f  # CI primitive: record scenarios a lane could not run (parked | limit | deferred)
+t3 eval owed outputs eval-owed.json           # CI primitive: print parked=/owed= lines for $GITHUB_OUTPUT
+t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since (fails loud on a GitHub API error)
+t3 eval owed next eval-owed-ledger.json --cap 14  # nightly: the oldest owed scenarios the catalog still defines
+t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # nightly: clear the owed scenarios that passed
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
 t3 eval ci-heal open --ref <pr-branch>        # CI heal loop (observe-only, default-OFF): open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
 t3 eval ci-heal list                          # CI heal loop: list recent heal sessions and their FSM state (--json)
-t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN or HALT+escalate, never a fix
+t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN, park on the eval reserve, or HALT+escalate; never a fix
 ```
 
 `changed-scenarios`, `merged-prs-since`, `merge-summaries`, and
@@ -606,6 +614,21 @@ per token with no usage window — is selectable per run via `t3 eval run
 --credential api_key` (or durably via `config_setting set agent_harness_provider
 api_key`) for a lane that needs per-token cost accounting (e.g. a local
 cost-bounds audit).
+
+**The eval reserve — evals never drain the factory's window ([#5014](https://github.com/souliane/teatree/issues/5014)).**
+An eval runs on a subscription account only while that account keeps a reserve
+free for the factory: 40% of the 5h window and 30% of the 7d window by default
+(`EVAL_RESERVE_5H_FREE` / `EVAL_RESERVE_7D_FREE`). A missing reading counts as
+unknown and is never eligible. With no eligible account the CI selector exits 75
+and the lane PARKS: the run is green, the `eval-gate` says `PARKED` and names the
+owed scenarios, and the nightly runs them later (`t3 eval owed`). Only the PR
+lane may fall back to the metered key (`EVAL_API_KEY_FALLBACK`). A subscription
+5h/7d limit hit mid-run is never retried or waited out: the rest of the suite is
+skipped without calling the model, no escalation trial runs, and `t3 eval run`
+exits 75 unless something it measured failed — a confirmed red still reds. On the
+box, the `eval_local` loop and the dream pass's eval promotion read the cached
+token rows and do nothing until one of the factory's configured accounts meets the
+reserve; the heal loop dispatches only while an allowlisted CI-pool account does.
 
 The eval lane and the dispatch lane now share ONE knob, so a deployment that
 pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend

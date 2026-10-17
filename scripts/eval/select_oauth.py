@@ -97,9 +97,8 @@ def main(env: Mapping[str, str] | None = None) -> int:
         if fallback:
             tokens = [fallback]
         else:
-            _export(github_output, {"parked": "true"})
-            print("PARKED: no eval OAuth credential is configured.")
-            return MEASURED_NOTHING_EXIT_CODE
+            print("EVAL_OAUTH_TOKENS unset/empty and no CLAUDE_CODE_OAUTH_TOKEN secret set — nothing to select.")
+            return 0
 
     reserve = WindowReserve.from_environment(environ)
     raw_sweep = environ.get("EVAL_SWEEP_WITHIN_HOURS", "").strip()

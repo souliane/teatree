@@ -161,9 +161,9 @@ class TestGitHubScheduledGuardManualUnguarded:
         # always carries --require-executed).
         jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
         eval_job = cast("dict[str, Any]", jobs["eval"])
-        assert eval_job.get("if", "") == "needs.prepare.outputs.run_eval == 'true'", (
-            "The metered eval job must be gated on the prepare gate decision at the job level."
-        )
+        assert eval_job.get("if", "") == (
+            "needs.prepare.outputs.run_eval == 'true' && needs.prepare.outputs.parked != 'true'"
+        ), "The metered eval job must be gated on the prepare gate decision at the job level."
         assert "prepare" in eval_job.get("needs", ""), "The eval job must depend on the prepare gate job."
         assert _FLAG in _gh_eval_run_command(), (
             "The gated eval invocation must still carry --require-executed (the guard "

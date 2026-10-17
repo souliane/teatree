@@ -26,7 +26,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from teatree.cli.eval.app_helpers import RunReportPaths
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
 from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.backends import (
     ANTHROPIC_API_BACKEND,
@@ -493,4 +493,44 @@ class TestTheUsageLimitIsADidNotRunNotAVerdict:
         _escalate_with(monkeypatch, _refused_run)
         with pytest.raises(SystemExit) as exc:
             _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+
+
+class _CountingEscalation:
+    def __init__(self, run_for) -> None:
+        self._run_for = run_for
+        self.calls = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        return self._run_for(spec.name)
+
+
+def _raise_usage_limit(_name: str) -> EvalRun:
+    raise UsageLimitReachedError(_USAGE_LIMIT_MESSAGE)
+
+
+class TestEscalationNeverSpendsIntoTheLimit:
+    @pytest.mark.parametrize("refusal", [_refused_run, _raise_usage_limit], ids=["skipped", "raised"])
+    def test_the_first_refused_escalation_trial_stops_the_rest(self, monkeypatch: pytest.MonkeyPatch, refusal) -> None:
+        _run_with(monkeypatch, _failing_run)
+        escalation = _CountingEscalation(refusal)
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_escalation_runner", lambda **_k: escalation)
+        with pytest.raises(SystemExit) as exc:
+            _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+        assert escalation.calls == 1
+
+    def test_a_limit_in_trial_one_runs_zero_escalation_trials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outcome = {"alpha": _failing_run, "beta": _refused_run}
+        _run_with(monkeypatch, lambda name: outcome[name](name))
+        _escalate_with(monkeypatch, lambda name: pytest.fail(f"{name} escalated into a known usage limit"))
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [_spec("alpha"), _spec("beta")],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=_METERED_LANE,
+            )
         assert exc.value.code == 1

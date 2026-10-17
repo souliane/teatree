@@ -23,6 +23,7 @@ the dead key), so it is NOT swallowed into per-scenario reds — it propagates p
 """
 
 import concurrent.futures
+import dataclasses
 import threading
 import time
 import traceback
@@ -194,15 +195,15 @@ def _guarded_run(
     try:
         _refuse_if_aborted(aborted)
         if limited.is_set():
-            return _usage_limit_skip(spec.name)
+            return usage_limit_skip(spec.name)
         with governor.slot():
             # Re-checked UNDER the permit: a worker parked here while the ceiling was
             # shrunken can wait out the sibling scenario that kills the key.
             _refuse_if_aborted(aborted)
             if limited.is_set():
-                return _usage_limit_skip(spec.name)
+                return usage_limit_skip(spec.name)
             run = _safe_run(runner, spec)
-            if _is_usage_limit_skip(run):
+            if is_usage_limit_skip(run):
                 limited.set()
     except CreditExhaustedError:
         aborted.set()
@@ -221,27 +222,43 @@ def _run_serial(runner: EvalRunner, specs: list[EvalSpec]) -> list[EvalRun]:
     limited = False
     for spec in specs:
         if limited:
-            runs.append(_usage_limit_skip(spec.name))
+            runs.append(usage_limit_skip(spec.name))
             continue
         run = _safe_run(runner, spec)
         runs.append(run)
-        limited = _is_usage_limit_skip(run)
+        limited = is_usage_limit_skip(run)
     return runs
 
 
-def _usage_limit_skip(name: str) -> EvalRun:
+def usage_limit_skip(name: str) -> EvalRun:
     return EvalRun.skipped(name, f"{USAGE_LIMIT_REACHED_REASON}: subscription window reached")
 
 
-def _is_usage_limit_skip(run: EvalRun) -> bool:
+def is_usage_limit_skip(run: EvalRun) -> bool:
     return run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")
+
+
+@dataclasses.dataclass
+class UsageLimitLatch:
+    runner: EvalRunner
+    limited: bool = False
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        if self.limited:
+            return usage_limit_skip(spec.name)
+        try:
+            run = self.runner.run(spec)
+        except UsageLimitReachedError:
+            run = usage_limit_skip(spec.name)
+        self.limited = is_usage_limit_skip(run)
+        return run
 
 
 def _safe_run(runner: EvalRunner, spec: EvalSpec) -> EvalRun:
     try:
         return runner.run(spec)
     except UsageLimitReachedError:
-        return _usage_limit_skip(spec.name)
+        return usage_limit_skip(spec.name)
     except CreditExhaustedError:
         # A $0 metered key is terminal for the WHOLE suite, not one scenario:
         # propagate so run_specs aborts the run instead of redding every

@@ -99,6 +99,7 @@ jobs:
     outputs:
       names: ${{ steps.select.outputs.names }}
       run: ${{ steps.select.outputs.run }}
+      deferred: ${{ steps.select.outputs.deferred }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -136,13 +137,14 @@ jobs:
           git diff --unified=0 "origin/$BASE_REF...HEAD" > changed.diff
           rc=0
           uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 --diff-file changed.diff \
-            < changed-files.txt > names.txt || rc=$?
+            --deferred-out deferred.txt < changed-files.txt > names.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "scenarios_for_changed.py failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
             exit "$rc"
           fi
           NAMES="$(paste -sd, names.txt)"
           echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"
           if [ -n "$NAMES" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Changed scenarios → running: $NAMES"
@@ -167,6 +169,9 @@ jobs:
     needs: detect
     if: needs.detect.outputs.run == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      parked: ${{ steps.owed.outputs.parked }}
+      owed: ${{ steps.owed.outputs.owed }}
     # The PR lane runs a bounded subset at a SINGLE trial, so it finishes far
     # inside this cap; the cap exists so a hang (a wedged scenario, a stuck docker
     # daemon) fails loud as a red, diagnosable run instead of stalling to the 6h
@@ -217,18 +222,20 @@ jobs:
       # freshest is exported — masked — into $GITHUB_ENV, which the eval step below
       # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
       # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
-      # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted
-      # set flips to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
-      # set, else it fails loud). This PR lane is tiny (only changed scenarios, single
-      # trial), so it barely touches a window — but a freshest pick still avoids a
-      # depleted account.
+      # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER). An account is
+      # eligible only while both usage windows keep the eval reserve free
+      # (EVAL_RESERVE_5H_FREE / EVAL_RESERVE_7D_FREE, default 40% / 30%); an unreadable
+      # window is never eligible. With none eligible the set flips to api_key ONLY when the
+      # opt-in EVAL_API_KEY_FALLBACK repo variable is set, else the selector exits 75 and
+      # writes parked=true: the eval step is skipped and the scenarios become owed.
       - name: Select the freshest eval OAuth account
+        id: select
         env:
           EVAL_CREDENTIAL: subscription_oauth
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
-        run: uv run python scripts/eval/select_oauth.py
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
       # same cheapest-passing per-scenario tier the weekly run pins
       # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
@@ -246,8 +253,11 @@ jobs:
       # report files under $RUNNER_TEMP (copied out of the docker staging mount). Each
       # run streams through `python -m teatree.eval.artifact_redaction tee`, so the job
       # log carries no credential value (`pipefail` keeps the exit code and reds a filter
-      # crash).
+      # crash). A scenario exiting 75 hit the subscription usage limit: the loop stops
+      # there, records that scenario and every one after it as owed, and leaves a marker
+      # so a retry attempt invokes nothing.
       - name: Metered behavioral eval — the changed scenarios (in Docker)
+        if: steps.select.outputs.parked != 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
@@ -264,6 +274,12 @@ jobs:
           retry_wait_seconds: 60
           command: |
             set -euo pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            if [ -f "$LIMIT_MARKER" ]; then
+              read -r rc < "$LIMIT_MARKER"
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              exit "$rc"
+            fi
             : > "$RUNNER_TEMP/eval-summary.md"
             rc=0
             ran=0
@@ -274,8 +290,8 @@ jobs:
             # for in the raw log. This prints the culprits directly.
             failed=()
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
-            for name in "${NAMES[@]}"; do
-              name="$(echo "$name" | xargs)"  # trim whitespace
+            for index in "${!NAMES[@]}"; do
+              name="$(echo "${NAMES[$index]}" | xargs)"  # trim whitespace
               [ -z "$name" ] && continue
               ran=$((ran + 1))
               scenario_rc=0
@@ -286,6 +302,12 @@ jobs:
                 --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
                 | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+              if [ "$scenario_rc" -eq 75 ]; then
+                printf '%s\n' "${NAMES[@]:index}" | xargs -n1 > "$RUNNER_TEMP/eval-owed-limit.txt"
+                echo "$rc" > "$LIMIT_MARKER"
+                echo "::warning title=eval PARKED::usage limit reached at $name; owed: $(paste -sd, "$RUNNER_TEMP/eval-owed-limit.txt")"
+                break
+              fi
               if [ "$scenario_rc" -ne 0 ]; then
                 rc="$scenario_rc"
                 failed+=("$name")
@@ -312,6 +334,31 @@ jobs:
               } >> "$RUNNER_TEMP/eval-summary.md"
             fi
             exit "$rc"
+      # Record what this run still owes: every changed scenario when the selector parked,
+      # the ones a usage limit cut off, and the tail the 14-scenario cap deferred. The
+      # nightly lane harvests this file from the merged PR's final head and runs them.
+      - name: Record the owed scenarios
+        id: owed
+        if: always()
+        env:
+          SELECTOR_PARKED: ${{ steps.select.outputs.parked }}
+          EVAL_NAMES: ${{ needs.detect.outputs.names }}
+          DEFERRED: ${{ needs.detect.outputs.deferred }}
+          SOURCE: pr#${{ github.event.pull_request.number }}@${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          LEDGER="$RUNNER_TEMP/eval-owed.json"
+          : > "$RUNNER_TEMP/eval-owed-parked.txt"
+          if [ "$SELECTOR_PARKED" = "true" ]; then
+            tr ',' '\n' <<< "$EVAL_NAMES" > "$RUNNER_TEMP/eval-owed-parked.txt"
+          fi
+          touch "$RUNNER_TEMP/eval-owed-limit.txt"
+          tr ',' '\n' <<< "$DEFERRED" > "$RUNNER_TEMP/eval-owed-deferred.txt"
+          for reason in parked limit deferred; do
+            uv run t3 eval owed record --out "$LEDGER" --reason "$reason" --source "$SOURCE" \
+              --names-file "$RUNNER_TEMP/eval-owed-$reason.txt"
+          done
+          uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
       # summary is the publish-safe dashboard; the transcript stays private. It runs
@@ -343,6 +390,7 @@ jobs:
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/eval-transcripts-*.html"
+          "$RUNNER_TEMP/eval-owed.json"
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
       # red run still publishes it. The path is a GLOB: the loop renders one report
@@ -355,6 +403,16 @@ jobs:
           path: ${{ runner.temp }}/eval-transcripts-*.html
           if-no-files-found: warn
           retention-days: 7
+      # The owed names (no transcript content), kept long enough for the nightly harvest.
+      # No file means nothing is owed, which is the common case, so it uploads nothing.
+      - name: Upload the owed scenarios
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed
+          path: ${{ runner.temp }}/eval-owed.json
+          if-no-files-found: ignore
+          retention-days: 90
 
   # EVAL-GATE: the single always-reporting merge gate. A conditionally-skipped job
   # (the `eval` job skips when no scenario changed) is a fragile required check —
@@ -368,7 +426,9 @@ jobs:
   # the vacuous zero-executed case, which `exit 1`s inside the eval job and surfaces
   # here as eval=failure), or when either job was cancelled. It reads only THIS
   # workflow's two jobs, never the weekly/nightly metered runs, so a required
-  # eval-gate can never wedge merges on the depleting subscription window.
+  # eval-gate can never wedge merges on the depleting subscription window. A run the
+  # selector parked, or a usage limit cut short with nothing failed, is PARKED: green,
+  # with the owed scenarios named; a confirmed red still fails.
   eval-gate:
     needs: [detect, eval]
     if: always()
@@ -379,6 +439,8 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           EVAL_RESULT: ${{ needs.eval.result }}
           CHANGED: ${{ needs.detect.outputs.run }}
+          PARKED: ${{ needs.eval.outputs.parked }}
+          OWED: ${{ needs.eval.outputs.owed }}
         run: |
           echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
           if [ "$DETECT_RESULT" != "success" ]; then
@@ -387,7 +449,15 @@ jobs:
           fi
           case "$EVAL_RESULT" in
             success)
-              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              if [ "$PARKED" = "true" ]; then
+                echo "eval-gate PARKED — owed: $OWED"
+                echo "::warning title=eval-gate PARKED::Owed scenarios: $OWED"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "eval-gate PARKED — owed: $OWED" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              fi
               ;;
             skipped)
               echo "eval-gate PASS — no scenario changed; nothing to eval."

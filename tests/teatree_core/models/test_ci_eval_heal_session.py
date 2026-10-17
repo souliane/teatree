@@ -113,6 +113,30 @@ class TestFixLoop(TestCase):
         assert session.ci_run_id == "run-2"
 
 
+class TestParkOnTheSubscriptionReserve(TestCase):
+    def test_park_requeues_an_awaited_run_without_spending_an_attempt(self) -> None:
+        session = _session(fix_attempts=1)
+        session.trigger(ci_run_id="run-1", head_sha="a" * 40)
+        session.save()
+
+        session.park()
+        session.save()
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.PENDING
+        assert session.fix_attempts == 1
+
+    def test_park_is_refused_outside_awaiting_ci(self) -> None:
+        session = _session()
+        session.trigger(ci_run_id="run-1", head_sha="a" * 40)
+        session.save()
+        session.receive_result(red_scenarios=[])
+        session.save()
+
+        with pytest.raises(TransitionNotAllowed):
+            session.park()
+
+
 class TestHaltAndEscalate(TestCase):
     def test_halt_from_triaging_records_reason(self) -> None:
         session = _session()

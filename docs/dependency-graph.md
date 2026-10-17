@@ -313,6 +313,7 @@ graph TD
     teatree.loop --> teatree.loop.rendering
     teatree.loop --> teatree.loop.slack_answer
     teatree.loop --> teatree.loop.question_binding
+    teatree.loop --> teatree.token_report
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.session_identity --> teatree.core.session_identity
     teatree.db --> teatree.docker
