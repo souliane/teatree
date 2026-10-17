@@ -113,6 +113,12 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
+      # The runner is not the container that mounts the control-DB volume: `t3` below
+      # needs its own sandboxed, migrated DB (the same seam the eval job uses).
+      - name: Sandbox the control DB (the runner is not the container)
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
+      - name: Migrate the self-DB
+        run: uv run python -m teatree migrate --no-input
       # Harvest the owed-scenario ledger: the previous ledger plus the `eval-owed`
       # artifact of each PR merged since it. A GitHub API error fails the job loud
       # rather than reading as "nothing owed".

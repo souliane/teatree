@@ -293,3 +293,13 @@ class TestThePrLaneRecordsWhatItOwes:
         run, ledger = record_owed
         assert run() == {"parked": "false", "owed": ""}
         assert not ledger.exists()
+
+
+@pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml"])
+def test_every_owed_ledger_step_runs_after_the_control_db_sandbox(workflow: str) -> None:
+    for job in _workflow(workflow)["jobs"].values():
+        runs = [str(step.get("run", "")) for step in job.get("steps", [])]
+        owed = [index for index, run in enumerate(runs) if "t3 eval owed" in run]
+        if owed:
+            sandbox = next((index for index, run in enumerate(runs) if "XDG_DATA_HOME=" in run), len(runs))
+            assert sandbox < owed[0]
