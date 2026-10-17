@@ -16,7 +16,7 @@ from django.utils import timezone
 from teatree.core.cycle_time import (
     WAIT_CAUSES,
     WAIT_LABELS,
-    MergeBreakdown,
+    MergeWaitBreakdown,
     TicketTimeline,
     TransitionStat,
     build_ticket_timelines,
@@ -53,6 +53,7 @@ class MergeWaitRow:
     longest_wait_duration: str
     longest_wait_start: datetime | None
     hand_cancels: int
+    inferred_hand_tasks: int
     measured: bool
     parks_retained: bool
 
@@ -152,6 +153,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
                 longest_wait_duration=_humanize_duration(row.longest_wait.seconds) if row.longest_wait else "",
                 longest_wait_start=row.longest_wait.start if row.longest_wait else None,
                 hand_cancels=row.hand_cancels,
+                inferred_hand_tasks=row.inferred_hand_tasks,
                 measured=row.measured,
                 parks_retained=row.parks_retained,
             )
@@ -162,7 +164,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
     )
 
 
-def build_merge_summary(rows: tuple[MergeBreakdown, ...] | None = None) -> MergeSummary:
+def build_merge_summary(rows: tuple[MergeWaitBreakdown, ...] | None = None) -> MergeSummary:
     if rows is None:
         rows = recent_merge_breakdowns()
     reliable = [row for row in rows if row.measured and row.parks_retained]
@@ -174,7 +176,11 @@ def build_merge_summary(rows: tuple[MergeBreakdown, ...] | None = None) -> Merge
         merged_count=len(rows),
         working_share=working_share,
         top_wait=WAIT_LABELS.get(top, "unmeasured"),
-        interventions_per_merge=f"{sum(row.hand_cancels for row in rows) / len(rows):.1f}" if rows else "unmeasured",
+        interventions_per_merge=(
+            f"{sum(row.hand_cancels + row.inferred_hand_tasks for row in rows) / len(rows):.1f}"
+            if rows
+            else "unmeasured"
+        ),
     )
 
 

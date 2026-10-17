@@ -176,9 +176,9 @@ def _segment(
 def engagements_for_tickets(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[Engagement]]:
     """Per (ticket, phase), each admitted task's stretch of agent engagement.
 
-    A task's stretch opens at its admission stamp and closes at its LAST attempt's
-    ``ended_at``. An admitted task with no completed attempt stays open until the
-    segment ends, except when it is pending after a park.
+    A task's stretch opens at admission and ends at its last real attempt, including
+    a billed park. With no real attempt, its first park or cancel closes the stretch.
+    A running task with no completed row stays open until the segment ends.
     """
     last_end = _last_attempt_end(ticket_ids)
     admitted = Task.objects.filter(ticket_id__in=ticket_ids, admitted_at__isnull=False).values_list(
@@ -198,20 +198,33 @@ def engagements_for_tickets(ticket_ids: Sequence[int]) -> dict[tuple[int, str], 
 
 
 def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
-    ends: dict[int, datetime] = {}
-    rows = (
-        TaskAttempt.objects.excluding_parks()
-        .exclude(result__has_key="cancel_source")
-        .filter(task__ticket_id__in=ticket_ids, ended_at__isnull=False)
-        .values_list(
-            "task_id",
-            "ended_at",
-        )
+    real_ends: dict[int, datetime] = {}
+    first_stops: dict[int, datetime] = {}
+    rows = TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids).values_list(
+        "task_id",
+        "started_at",
+        "ended_at",
+        "error",
+        "result",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cost_usd",
     )
-    for task_id, ended_at in rows:
-        known = ends.get(task_id)
-        ends[task_id] = ended_at if known is None or ended_at > known else known
-    return ends
+    for task_id, started_at, ended_at, error, result, *billing in rows:
+        park = error.startswith(PARK_ERROR_PREFIXES)
+        cancel = isinstance(result, dict) and "cancel_source" in result
+        if ended_at is not None and not cancel and (not park or any(value is not None for value in billing)):
+            known = real_ends.get(task_id)
+            real_ends[task_id] = ended_at if known is None or ended_at > known else known
+        elif park or cancel:
+            stopped = started_at if park else ended_at or started_at
+            if stopped is None:
+                continue
+            known = first_stops.get(task_id)
+            first_stops[task_id] = stopped if known is None or stopped < known else known
+    return {task_id: real_ends.get(task_id, stopped) for task_id, stopped in first_stops.items()} | real_ends
 
 
 def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]]:

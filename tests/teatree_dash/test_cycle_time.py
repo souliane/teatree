@@ -253,7 +253,7 @@ class MergeWaitDisplayTestCase(TestCase):
         content = response.content.decode()
         assert "Last 10 merged pull requests" in content
         assert "https://example.test/pull/5313" in content
-        assert "No free seat" in content
+        assert "Not admitted, cause not recorded" in content
         assert "Checkout fence" in content
         assert "Sibling task holds checkout" in content
         assert "Quota lane" in content
@@ -262,6 +262,8 @@ class MergeWaitDisplayTestCase(TestCase):
         assert "Review" in content
         assert "Review (30m from" in content
         assert "Hand cancels" in content
+        assert "Tasks created by hand (inferred)" in content
+        assert "may include false positives" in content
         assert "not recorded yet" in content
 
     def test_board_links_to_the_wait_breakdown(self) -> None:

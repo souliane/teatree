@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.cycle_time import recent_merge_breakdowns
+from teatree.core.cycle_time import MergeWaitBreakdown, recent_merge_breakdowns
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
@@ -53,14 +53,16 @@ class RecentMergeBreakdownTestCase(TestCase):
             TaskAttempt.objects.create(task=task, ended_at=self.at(ended), exit_code=0)
         return task
 
-    def park(self, task: Task, minutes: int, prefix: str, holder: str = "") -> None:
+    def park(self, task: Task, minutes: int, prefix: str, holder: str = "", **fields: object) -> TaskAttempt:
         row = TaskAttempt.objects.create(
             task=task,
             ended_at=self.at(minutes),
-            error=f"{prefix}refused",
-            result={"checkout_holder": holder} if holder else {},
+            error=f"{prefix}refused at {minutes}",
+            result={"occupied_by": {"holder": holder}} if holder else {},
+            **fields,
         )
         TaskAttempt.objects.filter(pk=row.pk).update(started_at=self.at(minutes))
+        return row
 
     def test_exact_wait_split_and_longest_cause(self) -> None:
         self.task("planning", 0, 0, 30)
@@ -80,10 +82,13 @@ class RecentMergeBreakdownTestCase(TestCase):
         )
 
         row = recent_merge_breakdowns()[0]
+        assert isinstance(row, MergeWaitBreakdown)
+        assert row.started_at == self.at(0)
+        assert row.merged_at == self.at(230)
         assert row.elapsed_seconds == 230 * 60
         assert row.work_seconds == 80 * 60
         assert row.wait_seconds == {
-            "free_seat": 20 * 60,
+            "not_admitted": 20 * 60,
             "checkout_fence": 60 * 60,
             "sibling_task": 0,
             "quota": 0,
@@ -109,6 +114,53 @@ class RecentMergeBreakdownTestCase(TestCase):
         assert row.wait_seconds["sibling_task"] == 10 * 60
         assert row.wait_seconds["quota"] == 30 * 60
         assert row.work_seconds == 90 * 60
+
+    def test_sibling_and_fence_parks_do_not_swap_causes(self) -> None:
+        sibling = self.task("planning", 0, 0, 40)
+        coding = self.task("coding", 10, 100, 130)
+        self.park(coding, 20, CHECKOUT_PARKED_PREFIX, holder=f"task:{sibling.pk}")
+        self.park(coding, 60, CHECKOUT_PARKED_PREFIX, holder="task:999999")
+
+        row = recent_merge_breakdowns()[0]
+        assert row.wait_seconds["sibling_task"] == 20 * 60
+        assert row.wait_seconds["checkout_fence"] == 40 * 60
+
+    def test_park_wait_continues_after_its_last_poll_until_next_park(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        first = self.park(task, 20, CHECKOUT_PARKED_PREFIX)
+        TaskAttempt.objects.filter(pk=first.pk).update(ended_at=self.at(80))
+        self.park(task, 100, LIMIT_PARKED_PREFIX)
+
+        row = recent_merge_breakdowns()[0]
+        assert row.wait_seconds["checkout_fence"] == 80 * 60
+        assert row.wait_seconds["quota"] == 130 * 60
+
+    def test_checkout_attestation_question_is_fence_wait(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        self.park(task, 20, CHECKOUT_PARKED_PREFIX)
+        DeferredQuestion.objects.create(
+            question="accept checkout?",
+            dedupe_marker="owner-action:attest:example",
+            parked_task=task,
+            created_at=self.at(30),
+            answered_at=self.at(60),
+        )
+        row = recent_merge_breakdowns()[0]
+        assert row.wait_seconds["human"] == 0
+        assert row.wait_seconds["checkout_fence"] == 210 * 60
+
+    def test_checkout_attestation_question_without_park_history_is_fence_wait(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        DeferredQuestion.objects.create(
+            question="accept checkout?",
+            dedupe_marker="owner-action:attest:example",
+            parked_task=task,
+            created_at=self.at(30),
+            answered_at=self.at(60),
+        )
+        row = recent_merge_breakdowns()[0]
+        assert row.wait_seconds["checkout_fence"] == 30 * 60
+        assert row.wait_seconds["human"] == 0
 
     def test_longest_wait_is_one_block_not_a_causes_total(self) -> None:
         self.task("planning", 0, 0, 40)
@@ -193,6 +245,53 @@ class RecentMergeBreakdownTestCase(TestCase):
         row = recent_merge_breakdowns()[0]
         assert row.measured
         assert row.wait_seconds["checkout_fence"] == 210 * 60
+
+    def test_terminal_coalesced_park_does_not_extend_work(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        park = self.park(task, 20, CHECKOUT_PARKED_PREFIX)
+        TaskAttempt.objects.filter(pk=park.pk).update(ended_at=self.at(80))
+        row = recent_merge_breakdowns()[0]
+        assert row.work_seconds == 10 * 60
+        assert row.wait_seconds["checkout_fence"] == 210 * 60
+
+    def test_billed_park_ends_real_work(self) -> None:
+        task = self.task("planning", 0, 0, None)
+        billed = self.park(task, 30, LIMIT_PARKED_PREFIX, input_tokens=100)
+        TaskAttempt.objects.filter(pk=billed.pk).update(ended_at=self.at(60))
+        row = recent_merge_breakdowns()[0]
+        assert row.work_seconds == 60 * 60
+        assert row.wait_seconds["quota"] == 170 * 60
+
+    def test_cancel_only_task_ends_work_at_cancel_not_merge(self) -> None:
+        task = self.task("planning", 0, 0, None)
+        TaskAttempt.objects.create(task=task, ended_at=self.at(20), result={"cancel_source": "agent"})
+        row = recent_merge_breakdowns()[0]
+        assert row.work_seconds == 20 * 60
+        assert row.hand_cancels == 1
+
+    def test_hand_created_tasks_are_inferred_from_first_session_roots(self) -> None:
+        planning = self.task("planning", 0, 0, 10)
+        first_session = planning.session
+        root = Task.objects.create(ticket=self.ticket, session=first_session, phase="coding")
+        Task.objects.create(ticket=self.ticket, session=first_session, phase="testing", parent_task=planning)
+        Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket, overlay="t3-teatree"),
+            phase="shipping",
+        )
+        row = recent_merge_breakdowns()[0]
+        assert row.inferred_hand_tasks == 1
+        assert root.parent_task_id is None
+
+    def test_cancel_key_not_error_prefix_counts_hand_action(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        TaskAttempt.objects.create(task=task, ended_at=self.at(20), error="failed", result={"cancel_source": "agent"})
+        assert recent_merge_breakdowns()[0].hand_cancels == 1
+
+    def test_cancelled_prefix_without_key_is_not_hand_action(self) -> None:
+        task = self.task("planning", 0, 0, 10)
+        TaskAttempt.objects.create(task=task, ended_at=self.at(20), error="cancelled: system")
+        assert recent_merge_breakdowns()[0].hand_cancels == 0
 
     def test_legacy_nonobject_attempt_result_does_not_break_breakdown(self) -> None:
         task = self.task("planning", 0, 0, 30)

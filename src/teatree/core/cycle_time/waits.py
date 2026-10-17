@@ -1,4 +1,8 @@
-"""Attributed time from a ticket's first task admission to its first merge."""
+"""First admission to first merge is the one start-to-merged measure for #5309.
+
+``no_next_task`` is the remainder after work and named waits; it makes the parts
+sum to elapsed time rather than claiming that every idle minute has a known cause.
+"""
 
 from collections import defaultdict
 from collections.abc import Sequence
@@ -16,6 +20,7 @@ from teatree.core.cycle_time.timeline import engagements_for_tickets
 from teatree.core.cycle_time.work_intervals import Engagement, merged_intervals, subtract_intervals
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.task_cancel_source import count_recorded_cancels
@@ -28,9 +33,9 @@ from teatree.core.models.usage_window_state import (
 )
 from teatree.core.models.worktree_occupancy import task_holder_id
 
-WAIT_CAUSES = ("free_seat", "checkout_fence", "sibling_task", "quota", "human", "no_next_task", "review")
+WAIT_CAUSES = ("not_admitted", "checkout_fence", "sibling_task", "quota", "human", "no_next_task", "review")
 WAIT_LABELS = {
-    "free_seat": "No free seat",
+    "not_admitted": "Not admitted, cause not recorded",
     "checkout_fence": "Checkout fence",
     "sibling_task": "Sibling task holds checkout",
     "quota": "Quota lane",
@@ -38,7 +43,7 @@ WAIT_LABELS = {
     "no_next_task": "No next task",
     "review": "Review",
 }
-_WAIT_PRECEDENCE = ("human", "sibling_task", "checkout_fence", "quota", "free_seat", "review")
+_WAIT_PRECEDENCE = ("human", "sibling_task", "checkout_fence", "quota", "not_admitted", "review")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +58,7 @@ class WaitBlock:
 
 
 @dataclass(frozen=True, slots=True)
-class MergeBreakdown:
+class MergeWaitBreakdown:
     ticket_id: int
     number: str
     pr_url: str
@@ -64,26 +69,29 @@ class MergeBreakdown:
     wait_seconds: dict[str, float]
     longest_wait: WaitBlock | None
     hand_cancels: int
+    inferred_hand_tasks: int
     measured: bool
     parks_retained: bool
 
 
 class _WaitAttemptResult(TypedDict, total=False):
-    checkout_holder: str
+    occupied_by: dict[str, str]
     cancel_source: str
+    billed: bool
 
 
 @dataclass(frozen=True, slots=True)
 class _MergeInputs:
     pr_url: str
     tasks: Sequence[Task]
+    first_session_id: int | None
     attempts: dict[int, list[tuple[datetime, datetime | None, str, _WaitAttemptResult]]]
-    questions: Sequence[tuple[datetime, datetime | None]]
+    questions: Sequence[tuple[datetime, datetime | None, str]]
     review_spans: Sequence[PhaseSpan]
     engagements: Sequence[Engagement]
 
 
-def recent_merge_breakdowns(limit: int = 10) -> tuple[MergeBreakdown, ...]:
+def recent_merge_breakdowns(limit: int = 10) -> tuple[MergeWaitBreakdown, ...]:
     merges = TicketTransition.objects.recent_merges(limit)
     if not merges:
         return ()
@@ -91,19 +99,43 @@ def recent_merge_breakdowns(limit: int = 10) -> tuple[MergeBreakdown, ...]:
     tickets = Ticket.objects.in_bulk(ticket_ids)
     tasks: dict[int, list[Task]] = defaultdict(list)
     for task in Task.objects.filter(ticket_id__in=ticket_ids).only(
-        "id", "ticket_id", "created_at", "admitted_at", "status"
+        "id", "ticket_id", "session_id", "parent_task_id", "phase", "created_at", "admitted_at", "status"
     ):
         tasks[task.ticket_id].append(task)
     attempts: dict[int, list[tuple[datetime, datetime | None, str, _WaitAttemptResult]]] = defaultdict(list)
-    for task_id, started_at, ended_at, error, result in TaskAttempt.objects.filter(
+    for task_id, started_at, ended_at, error, result, *billing in TaskAttempt.objects.filter(
         task__ticket_id__in=ticket_ids
-    ).values_list("task_id", "started_at", "ended_at", "error", "result"):
-        attempts[task_id].append((started_at, ended_at, error, _wait_attempt_result(result)))
-    questions: dict[int, list[tuple[datetime, datetime | None]]] = defaultdict(list)
-    for parked_ticket_id, session_ticket_id, created, answered, dismissed in DeferredQuestion.objects.filter(
+    ).values_list(
+        "task_id",
+        "started_at",
+        "ended_at",
+        "error",
+        "result",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cost_usd",
+    ):
+        attempts[task_id].append((started_at, ended_at, error, _wait_attempt_result(result, billing)))
+    first_sessions: dict[int, int] = {}
+    for ticket_id, session_id in (
+        Session.objects.filter(ticket_id__in=ticket_ids).order_by("pk").values_list("ticket_id", "pk")
+    ):
+        first_sessions.setdefault(ticket_id, session_id)
+    questions: dict[int, list[tuple[datetime, datetime | None, str]]] = defaultdict(list)
+    for parked_ticket_id, session_ticket_id, created, answered, dismissed, marker in DeferredQuestion.objects.filter(
         Q(parked_task__ticket_id__in=ticket_ids) | Q(task_session__ticket_id__in=ticket_ids)
-    ).values_list("parked_task__ticket_id", "task_session__ticket_id", "created_at", "answered_at", "dismissed_at"):
-        questions[parked_ticket_id or session_ticket_id].append((created, answered or dismissed))
+    ).values_list(
+        "parked_task__ticket_id",
+        "task_session__ticket_id",
+        "created_at",
+        "answered_at",
+        "dismissed_at",
+        "dedupe_marker",
+    ):
+        cause = "checkout_fence" if marker.startswith("owner-action:attest:") and parked_ticket_id else "human"
+        questions[parked_ticket_id or session_ticket_id].append((created, answered or dismissed, cause))
     spans = spans_for_tickets(ticket_ids)
     engagements = engagements_for_tickets(ticket_ids)
     urls = dict(
@@ -119,6 +151,7 @@ def recent_merge_breakdowns(limit: int = 10) -> tuple[MergeBreakdown, ...]:
             _MergeInputs(
                 pr_url=urls.get(ticket_id, ""),
                 tasks=tasks.get(ticket_id, ()),
+                first_session_id=first_sessions.get(ticket_id),
                 attempts=attempts,
                 questions=questions.get(ticket_id, ()),
                 review_spans=[
@@ -145,7 +178,7 @@ def _breakdown(
     merged_at: datetime,
     inputs: _MergeInputs,
     cutoff: datetime,
-) -> MergeBreakdown:
+) -> MergeWaitBreakdown:
     start = min((task.admitted_at for task in inputs.tasks if task.admitted_at is not None), default=None)
     cancels = count_recorded_cancels(
         (
@@ -157,8 +190,9 @@ def _breakdown(
         merged_at=merged_at,
     )
     waits = dict.fromkeys(WAIT_CAUSES, 0.0)
+    inferred = _inferred_hand_tasks(inputs.tasks, inputs.first_session_id)
     if start is None or start >= merged_at or _readmission_obscures_work(inputs, merged_at):
-        return MergeBreakdown(
+        return MergeWaitBreakdown(
             ticket_id=ticket.pk,
             number=ticket.ticket_number,
             pr_url=inputs.pr_url,
@@ -169,6 +203,7 @@ def _breakdown(
             wait_seconds=waits,
             longest_wait=None,
             hand_cancels=cancels,
+            inferred_hand_tasks=inferred,
             measured=False,
             parks_retained=False,
         )
@@ -179,7 +214,7 @@ def _breakdown(
         task_tags, task_windows = _task_wait_tags(task, inputs, merged_at)
         tagged.extend(task_tags)
         park_windows[task.pk].extend(task_windows)
-    tagged.extend((created, ended or merged_at, "human") for created, ended in inputs.questions)
+    tagged.extend((created, ended or merged_at, cause) for created, ended, cause in inputs.questions)
     tagged.extend((span.entered_at, span.left_at, "review") for span in inputs.review_spans)
     tagged = [(max(start, lower), min(merged_at, upper), cause) for lower, upper, cause in tagged if lower < upper]
     tagged = [(lower, upper, cause) for lower, upper, cause in tagged if lower < upper]
@@ -195,7 +230,7 @@ def _breakdown(
         end=merged_at,
     )
     work_seconds, waits, longest = _split_work_and_waits(start, merged_at, tagged, work)
-    return MergeBreakdown(
+    return MergeWaitBreakdown(
         ticket_id=ticket.pk,
         number=ticket.ticket_number,
         pr_url=inputs.pr_url,
@@ -206,6 +241,7 @@ def _breakdown(
         wait_seconds=waits,
         longest_wait=longest,
         hand_cancels=cancels,
+        inferred_hand_tasks=inferred,
         measured=True,
         parks_retained=start >= cutoff,
     )
@@ -249,26 +285,26 @@ def _split_work_and_waits(
 def _task_wait_tags(
     task: Task, inputs: _MergeInputs, merged_at: datetime
 ) -> tuple[list[tuple[datetime, datetime, str]], list[tuple[datetime, datetime]]]:
-    tags = [(task.created_at, task.admitted_at or merged_at, "free_seat")] if task.created_at else []
+    tags = [(task.created_at, task.admitted_at or merged_at, "not_admitted")] if task.created_at else []
     parks = sorted(
         (
-            (created, error, result)
-            for created, _ended, error, result in inputs.attempts.get(task.pk, ())
+            (created, ended, error, result)
+            for created, ended, error, result in inputs.attempts.get(task.pk, ())
             if error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX))
         ),
         key=itemgetter(0),
     )
     sibling_holders = {task_holder_id(other) for other in inputs.tasks if other.pk != task.pk}
     windows: list[tuple[datetime, datetime]] = []
-    for index, (created, error, result) in enumerate(parks):
+    for index, (created, ended, error, result) in enumerate(parks):
         next_park = parks[index + 1][0] if index + 1 < len(parks) else merged_at
         next_admission = task.admitted_at if task.admitted_at and task.admitted_at > created else merged_at
         end = min(next_park, next_admission, merged_at)
         cause = "quota" if error.startswith(LIMIT_PARKED_PREFIX) else "checkout_fence"
-        if cause == "checkout_fence" and result.get("checkout_holder") in sibling_holders:
+        if cause == "checkout_fence" and result.get("occupied_by", {}).get("holder") in sibling_holders:
             cause = "sibling_task"
         tags.append((created, end, cause))
-        windows.append((created, end))
+        windows.append((max(created, ended) if result.get("billed") and ended else created, end))
     return tags, windows
 
 
@@ -280,7 +316,7 @@ def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime) -> boo
             for _created, ended, error, result in attempts
             if ended is not None
             and ended <= merged_at
-            and not error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX))
+            and (not error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX)) or result.get("billed"))
             and "cancel_source" not in result
         ]
         if not real_ends:
@@ -290,22 +326,30 @@ def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime) -> boo
             return True
         if any(
             parked < ended and admitted <= parked
-            for parked, _ended, error, _result in attempts
-            if error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX))
+            for parked, _ended, error, result in attempts
+            if error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX)) and not result.get("billed")
             for ended in real_ends
         ):
             return True
     return False
 
 
-def _wait_attempt_result(raw: object) -> _WaitAttemptResult:
+def _wait_attempt_result(raw: object, billing: Sequence[object]) -> _WaitAttemptResult:
     result: _WaitAttemptResult = {}
+    if any(value is not None for value in billing):
+        result["billed"] = True
     if not isinstance(raw, dict):
         return result
-    holder = raw.get("checkout_holder")
-    if isinstance(holder, str):
-        result["checkout_holder"] = holder
+    occupied = raw.get("occupied_by")
+    if isinstance(occupied, dict) and isinstance(occupied.get("holder"), str):
+        result["occupied_by"] = {"holder": occupied["holder"]}
     cancel = raw.get("cancel_source")
     if isinstance(cancel, str):
         result["cancel_source"] = cancel
     return result
+
+
+def _inferred_hand_tasks(tasks: Sequence[Task], first_session_id: int | None) -> int:
+    roots = [task for task in tasks if task.session_id == first_session_id and task.parent_task_id is None]
+    first_planning_id = min((task.pk for task in roots if task.phase == "planning"), default=None)
+    return sum(task.pk != first_planning_id for task in roots)

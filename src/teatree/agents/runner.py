@@ -327,7 +327,7 @@ def run_agent(
                         settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
-        return park_task_checkout(task, reason=exc)
+        return park_task_checkout(task, reason=str(exc))
 
 
 def _run_agent(

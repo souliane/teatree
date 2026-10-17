@@ -17,7 +17,7 @@
       <table class="dash">
         <thead><tr><th>ticket</th><th class="num">elapsed</th><th class="num">working</th>
           {% for label in view.wait_headers %}<th class="num">{{ label }}</th>{% endfor %}
-          <th>longest wait</th><th class="num">Hand cancels</th></tr></thead>
+          <th>longest wait</th><th class="num">Hand cancels</th><th class="num">Tasks created by hand (inferred)</th></tr></thead>
         <tbody>
           {% for row in view.merge_rows %}
             <tr>
@@ -29,16 +29,16 @@
               {% else %}
                 <td class="num muted" colspan="10">unmeasured — task admission history is missing or overwritten</td>
               {% endif %}
-              <td class="num">{{ row.hand_cancels }}</td>
+              <td class="num">{{ row.hand_cancels }}</td><td class="num">{{ row.inferred_hand_tasks }}</td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
-      <p>Manual interventions per merged pull request: at least {{ view.merge_summary.interventions_per_merge }}.</p>
+      <p>Manual interventions per merged pull request: at least {{ view.merge_summary.interventions_per_merge }} (hand cancels and inferred hand-created tasks).</p>
     {% else %}
       <p class="muted">No merged pull requests to measure yet.</p>
     {% endif %}
-    <p class="muted">Only hand-run task cancels are counted. Worktree attest, release-occupancy, rubric-set, hand-created tasks and config clears are not recorded yet.</p>
+    <p class="muted">Tasks created by hand are inferred from root tasks on the ticket's first session and may include false positives. Worktree attest, release-occupancy, rubric-set and config clears are not recorded yet.</p>
   </section>
 
   <section class="band">
