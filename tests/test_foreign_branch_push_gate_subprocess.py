@@ -31,7 +31,7 @@ import pytest
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_approval_gate import approval_decision
 from teatree.agents.harness_options import HarnessOptions
-from teatree.forge_credentials import ROUTED_GH_KEY_ENV
+from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 _REPO_ROOT = HOOK_ROUTER.parent.parent.parent
@@ -184,8 +184,8 @@ def _run_if_allowed(result: subprocess.CompletedProcess[str], command: str, scen
 
 @pytest.mark.parametrize(
     "scenario",
-    ["task-token", "missing-token", "forge-unavailable", "rejected-token"],
-    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token"],
+    ["task-token", "missing-token", "forge-unavailable", "rejected-token", "interactive-login"],
+    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token", "interactive-login"],
 )
 def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
@@ -193,7 +193,7 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     sentinel = "gh" + "p_" + "s" * 36
     home = tmp_path / "router-home"
     home.mkdir()
-    routed = scenario != "missing-token"
+    routed = scenario != "interactive-login"
     forge_failure = {
         "forge-unavailable": "HTTP 502: Bad Gateway",
         "rejected-token": "HTTP 401: Bad credentials",
@@ -214,14 +214,16 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
         "esac\n"
     )
     gh.chmod(0o755)
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+    for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-    dispatch_env = {"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: "github/example/pat"} if routed else {}
+    dispatch_env = {ROUTED_GH_KEY_ENV: "github/example/pat"} if routed else {}
+    if scenario != "missing-token" and routed:
+        dispatch_env["GH_TOKEN"] = sentinel
     options = CodexAppServerOptions(
         core=HarnessOptions(cwd=str(scene.work), env=dispatch_env),
         runtime_workspace_roots=(str(scene.work),),
@@ -238,9 +240,9 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
         )
     )
 
-    if routed and not forge_failure:
+    if scenario == "task-token":
         assert (decision, reason) == ("accept", None)
-    elif forge_failure.startswith("HTTP 502"):
+    elif forge_failure.startswith("HTTP 502") or not routed:
         assert decision == "decline"
         assert reason is not None
         assert "Ownership could not be established" in reason
@@ -249,7 +251,7 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
         assert decision == "decline"
         assert reason is not None
         assert "Venue fault" in reason
-        assert "needs_user_input` false" in reason
+        assert "push_ownership_venue_fault` true" in reason
         assert "cut our OWN branch" not in reason
     assert sentinel not in (reason or "")
     assert sentinel not in caplog.text

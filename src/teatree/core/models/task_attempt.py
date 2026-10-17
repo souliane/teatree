@@ -33,7 +33,6 @@ CANDIDATE_FAULT_KINDS = frozenset(
         FailureKind.LANDING_UNVERIFIED,
         FailureKind.RESULT_ERROR,
         FailureKind.RESUME_REFUSED,
-        FailureKind.VENUE_FAULT,
     }
 )
 

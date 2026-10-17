@@ -233,7 +233,7 @@ def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_Forg
     if verdict == "foreign":
         return _refuse(spec, branch, detail)
     if verdict == "unknown":
-        if failed is not None and failed.credential_refused:
+        if failed is not None and failed.credential_refused and os.environ.get("T3_ROUTED_GH_TOKEN_KEY"):
             return credential_fault_refusal(
                 spec.remote,
                 branch,

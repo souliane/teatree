@@ -164,7 +164,8 @@ def record_result_envelope(
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
     Validation order: the measured key-drift aliases are normalized
-    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → OUTAGE check (#1764) → ACTION check
+    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → routed push-credential fault
+    (coding/debugging only) → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
     LANDING check (coding/debugging must have committed) → the PLAN record (a planning
     envelope whose plan is refused fails the attempt, never the recorder) —
@@ -355,7 +356,10 @@ def _check_before_recording(
     if schema_error:
         return _PreRecordCheck(schema_error, result)
 
-    if PUSH_OWNERSHIP_VENUE_FAULT in str(result.get("summary", "")):
+    if (
+        normalize_phase(phase or task.phase) in {"coding", "debugging"}
+        and result.get("push_ownership_venue_fault") is True
+    ):
         return _PreRecordCheck(PUSH_OWNERSHIP_VENUE_FAULT, result)
 
     signature = outage_signature(result)

@@ -70,9 +70,9 @@ def credential_fault_refusal(remote: str, branch: str, probe: GitProbe, *, token
     forced = " --force" if force else ""
     return redact_credentials(
         f"REFUSED: `git push{forced} {bounded(remote)} {bounded(branch)}`. Venue fault: the gate could not "
-        f"check branch ownership because {credential}. The probe said {bounded(probe_cause(probe))}. "
-        "Keep the commit local and report `venue_fault: push ownership gate had no usable GitHub credential` "
-        "in the result summary with `needs_user_input` false. Do not ask the owner to restore authentication, "
+        f"check branch ownership because {credential}. The probe said {clip(probe_cause(probe), _MAX_QUOTED_CHARS)}. "
+        "Keep the commit local and set `push_ownership_venue_fault` true in the result envelope "
+        "with `needs_user_input` false. Do not ask the owner to restore authentication, "
         "turn off this gate, or cut a new branch. The factory will try the next route candidate."
     )
 
