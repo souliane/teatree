@@ -12,7 +12,6 @@ from unittest.mock import patch
 import pytest
 
 from hooks.scripts.foreign_branch_push_git import remote_branch_oid
-from teatree.forge_credentials import scrub_active_tokens
 
 
 def _git(work: Path, *args: str) -> str:
@@ -139,12 +138,3 @@ def test_probe_argv_uses_remote_url_and_neutral_directory(tmp_path: Path) -> Non
     assert ls_argv[-4:] == ["ls-remote", "--heads", "file:///remote.git", "refs/heads/main"]
     assert ls_argv[2] != str(tmp_path)
     assert "-c" not in ls_argv
-
-
-@pytest.mark.parametrize("value", ["", "x", "short"])
-def test_short_environment_values_do_not_scrub_unrelated_text(value: str) -> None:
-    assert scrub_active_tokens("example", {"GH_TOKEN": value}) == "example"
-
-
-def test_long_environment_sentinel_is_scrubbed() -> None:
-    assert scrub_active_tokens("sentinel-long", {"GH_TOKEN": "sentinel-long"}) == "<redacted>"

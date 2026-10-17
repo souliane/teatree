@@ -3,9 +3,26 @@
 from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core.overlays.forge_credential_provider import build_and_register
-from teatree.forge_credentials import ForgeTokenState, resolve_overlay_token, resolve_repo_token, resolve_slug_token
+from teatree.forge_credentials import (
+    ForgeTokenState,
+    resolve_overlay_token,
+    resolve_repo_token,
+    resolve_slug_token,
+    scrub_active_tokens,
+)
+
+
+@pytest.mark.parametrize("value", ["", "x", "short"])
+def test_short_active_token_values_do_not_scrub_unrelated_text(value: str) -> None:
+    assert scrub_active_tokens("short example", {"GH_TOKEN": value}) == "short example"
+
+
+def test_long_active_token_sentinel_is_scrubbed() -> None:
+    assert scrub_active_tokens("sentinel-long", {"GH_TOKEN": "sentinel-long"}) == "<redacted>"
 
 
 def _overlay(*, route: str, source: PassKeySource = PassKeySource.OVERLAY_DB) -> MagicMock:
