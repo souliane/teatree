@@ -83,6 +83,7 @@ def render_dashboard(rows: list[SummaryRow], *, run_url: str, sha: str, generate
     failed = sum(1 for row in rows if row.verdict == "fail")
     skipped = sum(1 for row in rows if row.verdict == "skip")
     incomplete = sum(1 for row in rows if row.verdict == "incomplete")
+    cached = sum(1 for row in rows if row.verdict == "cached pass")
     total_cost = sum(_parse_cost(row.cost) for row in rows)
     table = [
         _TABLE_HEADER,
@@ -97,7 +98,7 @@ def render_dashboard(rows: list[SummaryRow], *, run_url: str, sha: str, generate
             "",
             (
                 f"**{passed} passed**, **{failed} failed**, **{skipped} skipped**, "
-                f"**{incomplete} incomplete** (of {len(rows)}) "
+                f"**{incomplete} incomplete**, **{cached} cached** (of {len(rows)}) "
                 f"· total cost ${total_cost:.4f}"
             ),
             "",

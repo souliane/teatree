@@ -144,6 +144,26 @@ class TestSummaryJsonPassthrough:
 
 
 class TestDispatchMountsAStagingDirBesideTheReports:
+    def test_ledger_only_run_creates_missing_staging_parent(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "new" / "verdicts.json"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(trials=1, verdict_cache=ledger).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == ledger.parent
+
+    def test_directory_ledger_is_refused_before_docker(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "verdicts.json"
+        ledger.mkdir()
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_in_docker,
+            pytest.raises(typer.Exit) as exc,
+        ):
+            _args(trials=1, verdict_cache=ledger).dispatch()
+        assert exc.value.exit_code == 2
+        run_in_docker.assert_not_called()
+
     def test_dispatch_mounts_a_staging_dir_inside_the_reports_dir(self, tmp_path: Path) -> None:
         host = tmp_path / "eval-transcripts.html"
         with (
@@ -334,3 +354,78 @@ class TestTheAgentSeesOnlyAFreshStagingDir:
         self._dispatch(runner_temp, run)
 
         assert not (runner_temp / "eval-summary.md").exists()
+
+
+class TestVerdictCacheStaging:
+    def test_aborted_harness_does_not_copy_agent_planted_summary(self, tmp_path: Path) -> None:
+        summary = tmp_path / "summary.json"
+
+        def abort(_argv: list[str], *, artifacts_dir: Path) -> int:
+            (artifacts_dir / summary.name).write_text('{"scenarios":[{"outcome":"PASS"}]}')
+            return 2
+
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=abort), pytest.raises(typer.Exit):
+            _args(trials=1, summary_json=summary).dispatch()
+        assert not summary.exists()
+
+    def test_copy_in_and_no_copy_back(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "verdicts.json"
+        ledger.write_text('{"source":"host"}')
+        summary = tmp_path / "summary.json"
+        args = _args(verdict_cache=ledger, summary_json=summary)
+        forwarded = args.passthrough()
+        assert forwarded[forwarded.index("--verdict-cache") + 1] == f"{ARTIFACTS_MOUNT}/verdicts.json"
+
+        def run(_argv: list[str], *, artifacts_dir: Path) -> int:
+            assert (artifacts_dir / "verdicts.json").read_text() == '{"source":"host"}'
+            (artifacts_dir / "verdicts.json").write_text('{"source":"container"}')
+            (artifacts_dir / "summary.json").write_text('{"passed":true}')
+            return 0
+
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=run), pytest.raises(typer.Exit):
+            args.dispatch()
+        assert ledger.read_text() == '{"source":"host"}'
+        assert summary.read_text() == '{"passed":true}'
+
+    def test_copy_in_redacts_host_credential_before_agent_can_read_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", _TOKEN)
+        ledger = tmp_path / "verdicts.json"
+        ledger.write_text(f'{{"run_url":"{_TOKEN}"}}', encoding="utf-8")
+
+        def run(_argv: list[str], *, artifacts_dir: Path) -> int:
+            assert (artifacts_dir / ledger.name).read_text(encoding="utf-8") == f'{{"run_url":"{REDACTED}"}}'
+            return 0
+
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=run), pytest.raises(typer.Exit):
+            _args(trials=1, verdict_cache=ledger).dispatch()
+        assert ledger.read_text(encoding="utf-8") == f'{{"run_url":"{_TOKEN}"}}'
+
+    def test_ledger_only_run_gets_staging_mount(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "verdicts.json"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run,
+            pytest.raises(typer.Exit),
+        ):
+            _args(verdict_cache=ledger).dispatch()
+        assert run.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+    def test_ledger_cannot_be_a_report_destination(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "summary.json"
+        ledger.write_text('{"schema":1,"entries":{}}')
+        with pytest.raises(typer.Exit) as exc:
+            _args(verdict_cache=ledger, summary_json=ledger).dispatch()
+        assert exc.value.exit_code == 2
+        assert ledger.read_text() == '{"schema":1,"entries":{}}'
+
+    def test_ledger_cannot_share_container_basename_with_report(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "cache" / "summary.json"
+        report = tmp_path / "reports" / "summary.json"
+        ledger.parent.mkdir()
+        report.parent.mkdir()
+        ledger.write_text('{"schema":1,"entries":{}}')
+        with pytest.raises(typer.Exit) as exc:
+            _args(verdict_cache=ledger, summary_json=report).dispatch()
+        assert exc.value.exit_code == 2
+        assert ledger.read_text() == '{"schema":1,"entries":{}}'

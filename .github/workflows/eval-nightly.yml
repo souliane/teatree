@@ -48,6 +48,7 @@
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED
 #   rather than passing green with zero coverage (mirrors eval.yml / eval-pr.yml).
+#   A validated cached pass counts as coverage without a fresh execution.
 # ============================================================
 
 name: Scheduled · Nightly smoke eval
@@ -191,6 +192,12 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py
+      - name: Restore passing eval verdicts
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-main-
       # Run the smoke slice at the DEFAULT per-tier lane, single trial, with
       # `--escalate-on-fail --escalate-trials 3` so a one-off flake re-runs before
       # reddening (only the failed scenario re-runs; a recovered trial is
@@ -221,7 +228,15 @@ jobs:
               --escalate-on-fail --escalate-trials 3 \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary.md" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee
+              --summary-md "$RUNNER_TEMP/eval-summary.md" \
+              --summary-json "$RUNNER_TEMP/eval-verdict-rows-nightly.json" \
+              --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee
+      - name: Record and save eval verdicts
+        if: success() && github.ref == 'refs/heads/main'
+        uses: ./.github/actions/eval-verdict-cache
+        with:
+          cache-key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Append the sanitized summary to the run's step summary (the in-container
       # run could not write $GITHUB_STEP_SUMMARY directly — the container's only
       # writable mount is a fresh staging dir the reports are copied out of, redacted,

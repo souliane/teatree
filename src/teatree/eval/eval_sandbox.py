@@ -19,7 +19,7 @@ from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from teatree.eval.api_runner import resolve_agent_path
+from teatree.eval.agent_prompt import resolve_agent_path
 from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
 from teatree.eval.git_fixture import provision_fixture
 from teatree.eval.isolation import isolated_claude_env

@@ -23,11 +23,8 @@ from teatree.cli.eval.docker import ARTIFACTS_MOUNT, DockerUnavailableError, run
 from teatree.cli.eval.metered_routing import should_route_to_docker
 from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import TRANSCRIPT_BACKEND
+from teatree.eval.models import DEFAULT_JUDGE_BUDGET
 from teatree.eval.parallel import DEFAULT_PARALLEL
-
-#: ``--judge-budget``'s default, shared with the ``t3 eval run`` option so the
-#: forwarded flag pair and the host default cannot drift.
-DEFAULT_JUDGE_BUDGET = 20
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,6 +48,7 @@ class RunDockerArgs:
     transcript_html: Path | None = None
     summary_md: Path | None = None
     summary_json: Path | None = None
+    verdict_cache: Path | None = None
     benchmark: bool = False
     model: str | None = None
     preset: str | None = None
@@ -148,6 +146,7 @@ class RunDockerArgs:
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
             ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
             ["--summary-json", self._container_summary_json_path()] if self.summary_json is not None else [],
+            ["--verdict-cache", f"{ARTIFACTS_MOUNT}/{self.verdict_cache.name}"] if self.verdict_cache else [],
             ["--escalate-on-fail", "--escalate-trials", str(self.escalate_trials)] if self.escalate_on_fail else [],
             # Dropping these ran the container with matcher-only grading while the
             # host reported the requested LLM-judge run (#judge-passthrough).
@@ -163,12 +162,27 @@ class RunDockerArgs:
         return ["run", *(arg for group in groups for arg in group), "--no-persist"]
 
     def dispatch(self) -> None:
-        reports_dir = self._artifacts_dir()
+        if self.verdict_cache is not None and any(
+            report.name == self.verdict_cache.name for report in self._requested_reports()
+        ):
+            typer.echo("--verdict-cache must differ from every report basename in Docker", err=True)
+            raise typer.Exit(code=2)
+        reports_dir = self._artifacts_dir() or (self.verdict_cache.parent if self.verdict_cache else None)
         if reports_dir is None:
             raise typer.Exit(code=self._run_in_image(None))
+        reports_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".eval-staging-", dir=reports_dir) as staging:
+            if self.verdict_cache and self.verdict_cache.exists():
+                if self.verdict_cache.is_symlink() or not self.verdict_cache.is_file():
+                    typer.echo("--verdict-cache ledger must be a regular file", err=True)
+                    raise typer.Exit(code=2)
+                write_artifact(
+                    Path(staging) / self.verdict_cache.name,
+                    self.verdict_cache.read_text(encoding="utf-8", errors="replace"),
+                )
             code = self._run_in_image(Path(staging))
-            self._copy_reports_out(Path(staging))
+            if code in {0, 1}:
+                self._copy_reports_out(Path(staging))
         raise typer.Exit(code=code)
 
     def _run_in_image(self, artifacts_dir: Path | None) -> int:
