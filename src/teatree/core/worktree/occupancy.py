@@ -179,7 +179,8 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
         release(row, holder=holder, holder_session=holder_session)
         return
     cancelled = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
-    attests = parked or (task.status == Task.Status.COMPLETED and scope.verified_run)
+    reaped = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.LEASE_EXPIRED
+    attests = parked or (scope.verified_run and not (cancelled or reaped))
     settled = scope.settled or _settle_checkout_exit(task, row, attest=attests, wait=not cancelled)
     if not settled.release:
         logger.warning(

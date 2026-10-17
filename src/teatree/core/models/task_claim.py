@@ -23,7 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
-from teatree.core.modelkit.task_failure_taxonomy import classify_failure
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.generation import current_generation
@@ -329,15 +329,21 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
     release can still session-match. Without this a live third-party holder's checkout is
     silently handed to a rival the instant the operator cancels.
     """
-    if not reason.strip():
+    failure_reason = reason.strip()
+    if not failure_reason:
         msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
         raise ValueError(msg)
+    failure_kind = classify_failure(failure_reason)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,
     )
 
-    exit_state = prepared_checkout_exit(task, attest=False) if by_holder else None
+    exit_state = (
+        prepared_checkout_exit(task, attest=failure_kind not in {FailureKind.CANCELLED, FailureKind.LEASE_EXPIRED})
+        if by_holder
+        else None
+    )
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
@@ -352,8 +358,8 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
                 setattr(task, field, released_value)
             update_fields.extend(RELEASED_CLAIM)
         task.status = task.Status.FAILED
-        task.failure_reason = reason.strip()
-        task.failure_kind = classify_failure(task.failure_reason)
+        task.failure_reason = failure_reason
+        task.failure_kind = failure_kind
         task.save(update_fields=update_fields)
     task.observe_transition("task.failed", cause=task.failure_kind)
 

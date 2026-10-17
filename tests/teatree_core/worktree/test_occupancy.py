@@ -244,11 +244,9 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: task.complete())
         self.assert_released_and_attested()
 
-    def test_a_failed_run_releases_without_attesting_a_checkout_taken_mid_run(self) -> None:
+    def test_a_failed_run_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
         self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))
-        finished = Worktree.objects.get(pk=self.worktree.pk)
-        assert occupancy_holder(finished) is None
-        assert "attested_state" not in finished.get_extra()
+        self.assert_released_and_attested()
 
     def test_unverifiable_processes_prevent_exit_attestation(self) -> None:
         table = ProcessTable(frozenset(), "/proc", (), ("pid 7 is unreadable",))
