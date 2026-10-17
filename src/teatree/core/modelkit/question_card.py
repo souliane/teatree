@@ -8,12 +8,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
+from teatree.core.modelkit.owner_action import ActionRequest, read_action
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
 
 logger = logging.getLogger(__name__)
 
 MAX_WORDS = 120
 MAX_QUESTION_CHARS = 160
+MAX_CARD_TITLE_CHARS = 80
 MAX_SENTENCE_CHARS = 200
 MAX_LABEL_CHARS = 40
 MAX_CONSEQUENCE_CHARS = 160
@@ -21,6 +23,7 @@ MAX_CHECKED_FACTS = 4
 
 REPLY_LINE = "Or reply in this thread."
 REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
+TAP_LINE = "Tap an option above."
 
 _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)
 _WORD = re.compile(r"[^\W_]+")
@@ -81,6 +84,25 @@ def internal_shorthand(text: str) -> list[str]:
     return [token for _start, token in sorted(found)]
 
 
+def safe_card_title(title: str, fallback: str) -> str:
+    candidate = " ".join(title.split())
+    if len(candidate) > MAX_CARD_TITLE_CHARS:
+        candidate = f"{candidate[: MAX_CARD_TITLE_CHARS - 3].rsplit(' ', 1)[0].rstrip(' ,:;.-')}..."
+    if not candidate or internal_shorthand(candidate) or _SENTENCE_BREAK.search(_ABBREVIATION.sub("x", candidate)):
+        return fallback
+    return fallback if any(character in candidate for character in "<>|") else candidate
+
+
+def safe_ticket_card_title(short_description: object, extra: object, fallback: str) -> str:
+    legacy = extra.get("issue_title", "") if isinstance(extra, dict) else ""
+    title = short_description if isinstance(short_description, str) and short_description.strip() else legacy
+    return safe_card_title(title if isinstance(title, str) else "", fallback)
+
+
+def counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 class OptionDict(TypedDict):
     """An option as stored in ``options_json``: the ``AskUserQuestion`` shape plus the recommended marker."""
 
@@ -97,6 +119,7 @@ class CardEvidence(TypedDict):
     blocker: str
     why: str
     quoted: NotRequired[str]
+    action: NotRequired[ActionRequest]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +155,21 @@ class CardOption:
         return tuple(option for item in raw if (option := cls.from_raw(item))) if isinstance(raw, list) else ()
 
 
+def match_action_option(options_json: str, answer: str) -> CardOption | None:
+    options = CardOption.parse_all(options_json)
+    if not options or sum(option.recommended for option in options) != 1:
+        return None
+    normalized = " ".join(answer.casefold().strip(" \t\n.!?").split())
+    for option in options:
+        if normalized == " ".join(option.label.casefold().split()):
+            return option
+    if normalized in {"yes", "yes please", "approve", "go ahead"}:
+        return next(option for option in options if option.recommended)
+    if normalized in {"no", "no thanks", "reject"}:
+        return next((option for option in options if not option.recommended), None)
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class CardView:
     """What the owner is shown; ``ref`` is the row id the reply and the footer name."""
@@ -141,6 +179,7 @@ class CardView:
     options: tuple[CardOption, ...]
     quoted: str
     ref: int
+    action: bool = False
 
 
 def option_row(option: CardOption) -> str:
@@ -161,7 +200,8 @@ def layout(view: CardView, *, closing: str = "") -> list[list[str]]:
         return [*blocks, [closing, ref]]
     if view.options:
         blocks.append([option_row(option) for option in view.options])
-    return [*blocks, [REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS, ref]]
+    reply_line = TAP_LINE if view.action else REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS
+    return [*blocks, [reply_line, ref]]
 
 
 def plain_text(view: CardView, *, closing: str = "") -> str:
@@ -234,13 +274,16 @@ class QuestionCard:
     why: str
     options: tuple[CardOption, ...] = ()
     quoted: str = ""
+    action: ActionRequest | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "checked", tuple(self.checked))
         object.__setattr__(self, "options", tuple(self.options))
 
     def view(self, question: str, *, ref: int = 0) -> CardView:
-        return CardView(question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref)
+        return CardView(
+            question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref, self.action is not None
+        )
 
     def problems(self, question: str) -> list[str]:
         """Every reason this card may not be sent as an owner question, all at once."""
@@ -280,6 +323,8 @@ class QuestionCard:
         )
         if self.quoted:
             evidence["quoted"] = self.quoted
+        if self.action is not None:
+            evidence["action"] = self.action
         return evidence
 
     def option_dicts(self) -> list[OptionDict]:
@@ -302,6 +347,7 @@ class QuestionCard:
             why=str(evidence["why"]),
             options=CardOption.parse_all(options_json),
             quoted=str(evidence.get("quoted", "")),
+            action=read_action(evidence),
         )
 
     @classmethod

@@ -18,9 +18,11 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
+from teatree.core.worktree.checkout_attest import CheckoutAttestation
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
     claim_task_checkout_or_park,
+    park_refused_checkout,
     park_task_checkout,
     verify_task_checkout,
     writes_checkout,
@@ -35,10 +37,13 @@ from teatree.core.worktree.occupancy import (
     release,
     task_holder_id,
 )
+from teatree.loop.question_binding import answer_from_click
 from teatree.utils.git import run_strict
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core._self_review_helpers import completed_self_review
 from tests.teatree_core.models._shared import _init_repo_with_branch
+
+_CLEAR = ProcessTable(frozenset(), "/proc")
 
 
 class CheckoutFenceTests(TestCase):
@@ -74,6 +79,55 @@ class CheckoutFenceTests(TestCase):
             pytest.raises(CheckoutFenceError, match=r"no attested state.*worktree attest"),
         ):
             verify_task_checkout(self.task, str(self.checkout))
+
+    def _park_on_a_foreign_edit(self) -> None:
+        verify_task_checkout(self.task, str(self.checkout))
+        (self.checkout / "new.txt").write_text("foreign edit")
+        attempt = claim_task_checkout_or_park(self.task)
+        assert attempt is not None
+        assert "differs from its attested state" in attempt.error
+
+    def test_a_foreign_edit_parks_with_one_owner_card_instead_of_a_notice(self) -> None:
+        self.ticket.issue_url = "https://github.com/example/repo/issues/17"
+        self.ticket.save(update_fields=["issue_url"])
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
+            patch("teatree.core.worktree.checkout_fence.notify_user") as notice,
+        ):
+            self._park_on_a_foreign_edit()
+            assert claim_task_checkout_or_park(self.task) is not None
+
+        notice.assert_not_called()
+        row = self.task.deferred_questions.get()
+        assert row.is_pending
+        assert row.question.startswith("Should I accept the checkout of <https://github.com/example/repo/issues/17|")
+        assert row.evidence["checked"] == [
+            "The checkout differs from its last recorded state.",
+            "Nothing is running in the checkout.",
+            "It holds 0 commits not on the target branch.",
+            "It has 1 uncommitted file.",
+        ]
+        assert row.evidence["action"]["kind"] == "attest"
+
+    def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            self._park_on_a_foreign_edit()
+            row = self.task.deferred_questions.get()
+            assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+            assert answer_from_click(
+                {
+                    "user": {"id": "U0DEMOOWNER"},
+                    "channel": {"id": row.slack_channel},
+                    "message": {"ts": row.slack_ts},
+                    "actions": [{"action_id": "owner-question-option-2", "value": "2", "text": {"text": "Decline"}}],
+                },
+                backend=Mock(user_id="U0DEMOOWNER"),
+            )
+            with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
+                assert claim_task_checkout_or_park(self.task) is not None
+
+        notice.assert_called_once()
+        assert self.task.deferred_questions.count() == 1
 
     def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
@@ -216,6 +270,25 @@ class CheckoutFenceTests(TestCase):
         ):
             park_task_checkout(self.task, reason="unattested checkout")
             walk.assert_not_called()
+        walk.assert_called_once()
+
+    def test_refusal_passes_attestation_to_card_after_scheduling_admission(self) -> None:
+        refusal = CheckoutFenceError(
+            "foreign checkout",
+            attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
+        )
+        with (
+            patch(
+                "teatree.core.worktree.checkout_fence.ask_owner_to_attest", return_value=Mock(is_pending=True)
+            ) as ask,
+            patch("teatree.core.worktree.checkout_fence.notify_user") as notice,
+            patch.object(task_dispatch, "admit_waiting_tasks") as walk,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            park_refused_checkout(self.task, refusal)
+            walk.assert_not_called()
+        ask.assert_called_once()
+        notice.assert_not_called()
         walk.assert_called_once()
 
     def test_one_page_per_episode_until_a_run_succeeds(self) -> None:

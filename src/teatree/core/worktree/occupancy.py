@@ -105,7 +105,7 @@ def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait:
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(path):
         return _defer_checkout_exit(task, worktree, attest=attest, cause="process_table")
-    if not (attest and table.usable and writes_checkout(task)):
+    if not (attest and table.usable and not table.eviction_refuse_reason() and writes_checkout(task)):
         return CheckoutExit(release=True)
     return CheckoutExit(release=True, attested_state=_exit_digest(task, path))
 
@@ -171,11 +171,15 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
     pk = holder.removeprefix("task:")
     task = Task.objects.filter(pk=int(pk)).first() if pk.isdigit() else None
     parked = task is not None and task.status == Task.Status.PENDING
-    if task is None or task.status == Task.Status.CLAIMED or (parked and not scope.park_attests):
+    if (
+        task is None
+        or (task.status == Task.Status.CLAIMED and not scope.verified_run)
+        or (parked and not (scope.park_attests or scope.verified_run))
+    ):
         release(row, holder=holder, holder_session=holder_session)
         return
     cancelled = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
-    settled = scope.settled or _settle_checkout_exit(task, row, attest=parked, wait=not cancelled)
+    settled = scope.settled or _settle_checkout_exit(task, row, attest=scope.verified_run or parked, wait=not cancelled)
     if not settled.release:
         logger.warning(
             "Keeping checkout %s occupied after task %s: its processes are still live", row.worktree_path, task.pk

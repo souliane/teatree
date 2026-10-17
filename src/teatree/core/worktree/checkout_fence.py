@@ -11,6 +11,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
+from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
@@ -25,6 +26,7 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -34,7 +36,9 @@ _PARK_RETRY = timedelta(minutes=30)
 
 
 class CheckoutFenceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, attestable: CheckoutAttestation | None = None) -> None:
+        super().__init__(message)
+        self.attestable = attestable
 
 
 def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> None:
@@ -64,15 +68,7 @@ def verify_task_checkout(task: Task, path: str) -> None:
         if held is not None:
             drop_refused_tenure(held, holder=task_holder_id(task), holder_session=task.claimed_by_session)
         raise
-
-
-def checkout_rows(path: str) -> list[Worktree]:
-    """Every ``Worktree`` row of ANY ticket recording *path*."""
-    return [
-        row
-        for row in Worktree.objects.exclude(extra__worktree_path__isnull=True).only("extra")
-        if row.worktree_path and paths_match(row.worktree_path, path)
-    ]
+    mark_verified_checkout_run()
 
 
 def _verify_one_checkout(task: Task, path: str) -> None:
@@ -94,7 +90,7 @@ def _verify_one_checkout(task: Task, path: str) -> None:
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:
         message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
-        raise CheckoutFenceError(message)
+        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=False))
     if attested == owner_attested:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
@@ -119,7 +115,7 @@ def _accept_changed_checkout(
             )
         else:
             message = f"checkout {worktree.worktree_path} differs from its attested state"
-        raise CheckoutFenceError(message)
+        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=True))
 
 
 def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> None:
@@ -136,7 +132,13 @@ def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutSta
     worktree.merge_extra(set_keys={"checkout_custody": anchored.as_dict()})
 
 
-def park_task_checkout(task: Task, *, reason: str, blocked_by: OccupancyHolder | None = None) -> TaskAttempt:
+def park_task_checkout(
+    task: Task,
+    *,
+    reason: str,
+    blocked_by: OccupancyHolder | None = None,
+    attestable: CheckoutAttestation | None = None,
+) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
     episode = (
@@ -179,6 +181,10 @@ def park_task_checkout(task: Task, *, reason: str, blocked_by: OccupancyHolder |
         )
     if seat_freed or rearmed:
         checkout_capacity_opened.send(sender=Task)
+    if attestable is not None:
+        question = ask_owner_to_attest(task, attestable)
+        if question is not None and question.is_pending:
+            return attempt
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
@@ -202,7 +208,8 @@ def _still_held_by(task: Task, blocked_by: OccupancyHolder) -> bool:
 
 def park_refused_checkout(task: Task, exc: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
     blocked_by = exc.holder if isinstance(exc, WorktreeOccupiedError) else None
-    return park_task_checkout(task, reason=str(exc), blocked_by=blocked_by)
+    attestable = exc.attestable if isinstance(exc, CheckoutFenceError) else None
+    return park_task_checkout(task, reason=str(exc), blocked_by=blocked_by, attestable=attestable)
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:

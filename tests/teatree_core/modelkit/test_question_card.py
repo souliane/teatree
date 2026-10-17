@@ -12,6 +12,7 @@ from teatree.core.modelkit.question_card import (
     MAX_WORDS,
     CardOption,
     QuestionCard,
+    counted,
     internal_shorthand,
     plain_text,
     word_count,
@@ -358,3 +359,8 @@ class TestFromEnvelope:
 
         assert card is not None
         assert any("required" in problem or "checked facts" in problem for problem in card.problems("Is it fine?"))
+
+
+@pytest.mark.parametrize(("count", "expected"), [(0, "0 commits"), (1, "1 commit"), (2, "2 commits")])
+def test_a_count_agrees_with_its_noun(count: int, expected: str) -> None:
+    assert counted(count, "commit") == expected
