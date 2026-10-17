@@ -388,7 +388,7 @@ class PrSweepFlagStatuslineTests(TestCase):
 
     def test_held_flag_surfaces_in_action_needed(self) -> None:
         # #4380: a contested head — a HOLD standing at the live head that a later
-        # merge_safe superseded under newest-wins — is refused by the autonomous
+        # merge_safe coexists with a standing HOLD — is refused by the autonomous
         # merge and needs a human to reconcile. Without the PR_SWEEP_FLAG_KINDS
         # entry the "pr_sweep." drop prefix swallows it and the refusal is silent.
         action = self._action("pr_sweep.flag_held", "contested_hold_at_head")
