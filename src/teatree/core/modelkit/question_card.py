@@ -23,7 +23,7 @@ MAX_CHECKED_FACTS = 4
 
 REPLY_LINE = "Or reply in this thread."
 REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
-TAP_LINE = "Tap an option above, or reply in this thread."
+TAP_LINE = "Tap an option above."
 
 _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)
 _WORD = re.compile(r"[^\W_]+")

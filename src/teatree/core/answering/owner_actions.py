@@ -83,7 +83,14 @@ def _prepare_void(_row: DeferredQuestion, action: ActionRequest, actor: str) -> 
         if exc.code == VoidRefusal.FORGE_UNREADABLE:
             raise OwnerActionDeferredError(exc.message) from exc
         raise OwnerActionRefusedError(exc.message) from exc
-    return lambda: f"Voided merge record {approved.write().pk}."
+
+    def write() -> str:
+        try:
+            return f"Voided merge record {approved.write().pk}."
+        except VoidRefusedError as exc:
+            raise OwnerActionRefusedError(exc.message) from exc
+
+    return write
 
 
 _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
@@ -100,12 +107,8 @@ def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Dec
     action = read_action(row.evidence)
     if action is None or row.dedupe_marker != action_marker(action):
         return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
-    if (
-        row.resolved_via != DeferredQuestion.ResolvedVia.SLACK
-        or answer is None
-        or (answer.note != "button" and not answer.note.startswith("verified-typed:"))
-    ):
-        return _Decision("refused", "Only the owner's verified Slack answer may approve this action.", notify=True)
+    if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or answer is None or answer.note != "button":
+        return _Decision("refused", "Only the owner's Slack button tap may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
     if option is None:
@@ -166,7 +169,7 @@ def _carry_out(row: DeferredQuestion, first_wait: datetime | None) -> _Decision 
 def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -> None:
     try:
         notify_user(
-            f"Owner action for question {row.pk} did not change anything: {reason}",
+            f"{row.question} Nothing changed: {reason}",
             kind=NotifyKind.INFO,
             idempotency_key=f"owner-action-result:{row.pk}:{event}",
             audience=NotifyAudience.OWNER_ESCALATION,

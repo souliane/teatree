@@ -192,18 +192,10 @@ def check_operator(*, reason: str, actor: str) -> None:
         raise VoidRefusedError(VoidRefusal.AGENT_PROCESS, "a process a dispatched agent spawned may not void a merge")
 
 
-def plan_void(pr_url: str) -> VoidPlan:
-    ref = pr_ref(pr_url.strip())
-    if ref is None:
-        raise VoidRefusedError(VoidRefusal.NOT_A_PR_URL, f"{pr_url!r} names no pull or merge request")
+def _ledger_plan(pr_url: str, ref: PrRef, snapshot: PrContentSnapshot, verdict: ContentVerdict) -> VoidPlan:
     voided = MergeVoid.objects.voided_refs()
     if ref in voided:
         raise VoidRefusedError(VoidRefusal.ALREADY_VOIDED, f"the merge of {pr_url} is already voided")
-    try:
-        snapshot = CodeHostQuery.for_ref(ref).pr_content_snapshot()
-    except _FORGE_READ_FAILURES as exc:
-        snapshot = PrContentSnapshot(unreadable=f"forge unreachable: {exc}")
-    verdict = classify_content(snapshot)
     restores: list[TicketRestore] = []
     kept: list[TicketKept] = []
     edgeless: list[int] = []
@@ -233,6 +225,19 @@ def plan_void(pr_url: str) -> VoidPlan:
         ),
     )
     return replace(plan, refusal=_refusal(plan, edgeless))
+
+
+def plan_void(pr_url: str) -> VoidPlan:
+    ref = pr_ref(pr_url.strip())
+    if ref is None:
+        raise VoidRefusedError(VoidRefusal.NOT_A_PR_URL, f"{pr_url!r} names no pull or merge request")
+    if ref in MergeVoid.objects.voided_refs():
+        raise VoidRefusedError(VoidRefusal.ALREADY_VOIDED, f"the merge of {pr_url} is already voided")
+    try:
+        snapshot = CodeHostQuery.for_ref(ref).pr_content_snapshot()
+    except _FORGE_READ_FAILURES as exc:
+        snapshot = PrContentSnapshot(unreadable=f"forge unreachable: {exc}")
+    return _ledger_plan(pr_url, ref, snapshot, classify_content(snapshot))
 
 
 def apply_void(plan: VoidPlan, *, reason: str, actor: str, stdin: TextIO, stdout: TextIO) -> MergeVoid:
@@ -275,6 +280,9 @@ def approve_owner_void(pr_url: str, *, binding: str, reason: str, actor: str) ->
 
 @transaction.atomic
 def _write(plan: VoidPlan, *, reason: str, actor: str) -> MergeVoid:
+    fresh = _ledger_plan(plan.pr_url, plan.ref, plan.snapshot, plan.verdict)
+    if fresh.refusal is not None or fresh.evidence() != plan.evidence():
+        raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the ledger changed since approval; plan again")
     tickets = list(Ticket.objects.filter(pk__in=[restore["ticket_id"] for restore in plan.restores]).order_by("pk"))
     void = MergeVoid.objects.record(plan.fields(reason=reason, actor=actor), tickets=tickets)
     for row in PullRequest.objects.filter(pk__in=[close["pull_request_id"] for close in plan.closes]):

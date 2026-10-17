@@ -1,12 +1,13 @@
 """Owner card flow for a recorded merge whose content is absent."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.db import connection
 from django.test import TestCase
 
 from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.evidence.forge_content import PrContentSnapshot
+from teatree.core.merge.void_merge import ApprovedVoid, approve_owner_void
 from teatree.core.merge.void_request import request_void
 from teatree.core.models import DeferredQuestion, DmContext, MergeVoid, PendingChatInjection, PullRequest, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
@@ -101,7 +102,20 @@ class TestVoidRequest(TestCase):
         assert self.ticket.state == Ticket.State.CODED
         assert PullRequest.objects.get(ticket=self.ticket).state == PullRequest.State.CLOSED
 
-    def test_verified_typed_reply_voids_once(self) -> None:
+    def test_ledger_change_after_approval_refuses_stale_void_plan(self) -> None:
+        def move_ledger(pr_url: str, *, binding: str, reason: str, actor: str) -> ApprovedVoid:
+            approved = approve_owner_void(pr_url, binding=binding, reason=reason, actor=actor)
+            Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.CODED)
+            return approved
+
+        with stub_forge(), patch("teatree.core.answering.owner_actions.approve_owner_void", side_effect=move_ledger):
+            row = self._ask()
+            assert answer_from_click(_tap("Void", 1), backend=self.backend)
+            assert carry_out_owner_actions() == [f"refused {row.pk}"]
+
+        assert not MergeVoid.objects.exists()
+
+    def test_verified_typed_reply_cannot_void(self) -> None:
         with stub_forge():
             row = self._ask()
             reply = PendingChatInjection.record(
@@ -123,11 +137,10 @@ class TestVoidRequest(TestCase):
 
             AskUserQuestionReplyScanner(backend=self.backend, reader=reader).scan()
             row.refresh_from_db()
-            assert row.answer_text == "Void"
-            assert carry_out_owner_actions() == [f"carried out {row.pk}"]
+            assert row.is_pending
             assert carry_out_owner_actions() == []
 
-        assert MergeVoid.objects.count() == 1
+        assert not MergeVoid.objects.exists()
 
     def test_keep_records_a_decline_and_changes_nothing(self) -> None:
         with stub_forge():

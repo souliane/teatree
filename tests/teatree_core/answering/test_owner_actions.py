@@ -48,11 +48,11 @@ _CLEAR = ProcessTable(frozenset(), "/proc")
 _OPTION_INDEX = {"Accept": 1, "Decline": 2, "Proceed": 1, "Void": 1}
 
 
-def _tap(row: DeferredQuestion, label: str) -> dict[str, object]:
+def _tap(row: DeferredQuestion, label: str, *, user: str = _OWNER) -> dict[str, object]:
     index = _OPTION_INDEX[label]
     return {
         "type": "block_actions",
-        "user": {"id": _OWNER},
+        "user": {"id": user},
         "channel": {"id": row.slack_channel},
         "message": {"ts": row.slack_ts},
         "actions": [{"action_id": f"owner-question-option-{index}", "value": str(index), "text": {"text": label}}],
@@ -135,7 +135,7 @@ class TestCheckoutAttestation(TestCase):
         assert row.is_pending
         assert self._carry_out() == []
 
-    def test_verified_typed_yes_attests_from_the_real_reply_scanner(self) -> None:
+    def test_verified_typed_yes_leaves_the_checkout_card_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
         reply = PendingChatInjection.record(
             channel=row.slack_channel,
@@ -152,14 +152,11 @@ class TestCheckoutAttestation(TestCase):
         AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
 
         row.refresh_from_db()
-        assert row.answer_text == "Accept"
-        assert self._carry_out() == [f"carried out {row.pk}"]
-        assert (
-            DeferredQuestionAudit.objects.get(question=row, action="answered").note
-            == f"verified-typed:{reply.slack_ts}"
-        )
+        assert row.is_pending
+        assert self._carry_out() == []
+        backend.fetch_thread_replies.assert_not_called()
 
-    def test_verified_typed_no_declines_without_attesting(self) -> None:
+    def test_verified_typed_no_leaves_the_checkout_card_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
         reply = PendingChatInjection.record(
             channel=row.slack_channel,
@@ -176,10 +173,10 @@ class TestCheckoutAttestation(TestCase):
         AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
 
         row.refresh_from_db()
-        assert row.answer_text == "Decline"
-        assert self._carry_out() == [f"declined {row.pk}"]
+        assert row.is_pending
+        assert self._carry_out() == []
 
-    def test_numbered_typed_reply_in_the_card_thread_can_attest(self) -> None:
+    def test_numbered_typed_reply_in_the_card_thread_cannot_attest(self) -> None:
         row = self._park_on_a_foreign_edit()
         reply = PendingChatInjection.record(
             channel=row.slack_channel,
@@ -196,10 +193,10 @@ class TestCheckoutAttestation(TestCase):
         AskUserQuestionReplyScanner(backend=backend, reader=_statement).scan()
 
         row.refresh_from_db()
-        assert row.answer_text == "Accept"
-        assert self._carry_out() == [f"carried out {row.pk}"]
+        assert row.is_pending
+        assert self._carry_out() == []
 
-    def test_queued_typed_reply_without_live_slack_match_cannot_attest(self) -> None:
+    def test_queued_typed_reply_cannot_bind_to_action_card(self) -> None:
         row = self._park_on_a_foreign_edit()
         reply = PendingChatInjection.record(
             channel=row.slack_channel,
@@ -209,11 +206,7 @@ class TestCheckoutAttestation(TestCase):
         )
         assert reply is not None
         bound = bind_reply(reply, reader=_statement, owner_user_id=_OWNER)
-        assert bound is not None
-        backend = _owner_backend()
-        backend.fetch_thread_replies.return_value = []
-
-        assert not apply_bound_answer(bound, backend=backend)
+        assert bound is None
         row.refresh_from_db()
         assert row.is_pending
         assert self._carry_out() == []
@@ -222,7 +215,11 @@ class TestCheckoutAttestation(TestCase):
         row = self._park_on_a_foreign_edit()
         assert row.apply_answer("Accept", resolved_via=DeferredQuestion.ResolvedVia.SLACK) is not None
         DeferredQuestionAudit.objects.create(
-            question=row, action="answered", answer_text="Accept", resolver_id=f"slack:{_OWNER}"
+            question=row,
+            action="answered",
+            answer_text="Accept",
+            resolver_id=f"slack:{_OWNER}",
+            note="verified-typed:1800000001.000100",
         )
 
         assert self._carry_out() == [f"refused {row.pk}"]
@@ -310,12 +307,21 @@ class TestCheckoutAttestation(TestCase):
         row.refresh_from_db()
         assert row.is_pending
 
-    def test_action_card_and_reminder_offer_tap_or_reply(self) -> None:
+    def test_action_card_and_reminder_require_a_tap(self) -> None:
         row = self._park_on_a_foreign_edit()
         assert "Tap an option above" in render_text(row)
-        assert "reply" in render_text(row).lower()
+        assert "reply" not in render_text(row).lower()
         assert "Tap an option above" in bump_text(row, now=timezone.now())
-        assert "reply" in bump_text(row, now=timezone.now()).lower()
+        assert "reply" not in bump_text(row, now=timezone.now()).lower()
+
+    def test_non_owner_tap_cannot_attest_a_checkout(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        with self.assertLogs("teatree.loop.question_binding", level="WARNING") as captured:
+            assert not answer_from_click(_tap(row, "Accept", user="U0SOMEONEELSE"), backend=_owner_backend())
+        row.refresh_from_db()
+        assert row.is_pending
+        assert self._carry_out() == []
+        assert "not the owner" in captured.output[0]
 
     def test_typed_punctuation_matches_the_recorded_option(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -418,6 +424,8 @@ class TestCheckoutAttestation(TestCase):
             assert self._carry_out() == [f"refused {row.pk}"]
 
         notice.assert_called_once()
+        assert row.question in notice.call_args.args[0]
+        assert self.task.ticket.issue_url in notice.call_args.args[0]
         self.task.refresh_from_db()
         assert self.task.not_before is not None
         assert self._outcomes(row) == ["refused"]
