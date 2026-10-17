@@ -9,6 +9,7 @@ from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.merge.void_merge import ApprovedVoid, approve_owner_void
 from teatree.core.merge.void_request import request_void
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, DmContext, MergeVoid, PendingChatInjection, PullRequest, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import answer_from_click
@@ -152,6 +153,27 @@ class TestVoidRequest(TestCase):
         assert not MergeVoid.objects.exists()
         self.ticket.refresh_from_db()
         assert self.ticket.state == Ticket.State.MERGED
+
+    def test_keep_can_be_asked_again_before_the_outcome_worker_runs(self) -> None:
+        with stub_forge():
+            row = self._ask()
+            assert answer_from_click(_tap("Keep", 2), backend=self.backend)
+            renewed = request_void(PR_URL, "The merge content disappeared.")
+
+        assert renewed.pk != row.pk
+        assert renewed.is_pending
+        assert not MergeVoid.objects.exists()
+
+    def test_typed_void_cannot_settle_the_card(self) -> None:
+        with stub_forge():
+            row = self._ask()
+            assert row.apply_answer("Void", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+            card = QuestionCard.from_row(row.evidence, row.options_json)
+            assert card is not None
+            held = DeferredQuestion.record(row.question, dedupe_marker=row.dedupe_marker, card=card)
+
+        assert held.pk == row.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker=row.dedupe_marker).count() == 1
 
     def test_local_answer_cannot_authorize_the_action(self) -> None:
         with stub_forge():

@@ -9,15 +9,10 @@ from django.db import DatabaseError, transaction
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import (
-    CardOption,
-    QuestionCard,
-    counted,
-    match_action_option,
-    safe_ticket_card_title,
-)
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_ticket_card_title
 from teatree.core.models import Task, Worktree
-from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
+from teatree.core.models.question_actions import owner_declined
 from teatree.core.models.worktree_occupancy import occupancy_holder
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -145,10 +140,8 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
             .order_by("-answered_at", "-pk")
             .first()
         )
-        if latest is not None and latest.parked_task_id == task.pk:
-            option = match_action_option(latest.options_json, latest.answer_text)
-            if option is not None and not option.recommended and DeferredQuestionAudit.objects.owner_answer(latest):
-                return None
+        if latest is not None and latest.parked_task_id == task.pk and owner_declined(latest):
+            return None
         with transaction.atomic():
             obsolete = (
                 DeferredQuestion.owner_pending()

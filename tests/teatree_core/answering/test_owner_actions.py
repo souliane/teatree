@@ -429,6 +429,34 @@ class TestCheckoutAttestation(TestCase):
         assert renewed.parked_task_id == later.pk
         assert renewed.is_pending
 
+    def test_new_task_can_ask_immediately_after_a_declined_tap(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Decline")
+        later = TaskFactory(ticket=self.task.ticket, phase="coding")
+
+        renewed = ask_owner_to_attest(
+            later, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+
+        assert renewed is not None
+        assert renewed.pk != row.pk
+        assert renewed.parked_task_id == later.pk
+        assert renewed.is_pending
+
+    def test_typed_accept_holds_the_card_for_a_new_task_and_never_attests(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        assert row.apply_answer("Accept", resolved_via=DeferredQuestion.ResolvedVia.SLACK) is not None
+        later = TaskFactory(ticket=self.task.ticket, phase="coding")
+
+        held = ask_owner_to_attest(
+            later, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+
+        assert held is not None
+        assert held.pk == row.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker=row.dedupe_marker).count() == 1
+        assert self._carry_out() == [f"refused {row.pk}"]
+
     def test_card_without_host_evidence_keeps_its_one_run_binding(self) -> None:
         unavailable = ProcessTable(frozenset(), "")
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):

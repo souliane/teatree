@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Self
 from django.db import models
 
 from teatree.core.modelkit.owner_action import read_action
+from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models.question_text import question_fingerprint
 
 if TYPE_CHECKING:
@@ -19,6 +20,11 @@ def is_action_question(row: "DeferredQuestion") -> bool:
     return read_action(row.evidence) is not None
 
 
+def owner_declined(row: "DeferredQuestion") -> bool:
+    option = match_action_option(row.options_json, row.answer_text)
+    return row.resolved_via == row.ResolvedVia.SLACK and option is not None and not option.recommended
+
+
 def held_question(
     marked: "QuerySet[DeferredQuestion]", question: str, *, owner: bool, action: bool
 ) -> "DeferredQuestion | None":
@@ -28,13 +34,11 @@ def held_question(
     if action:
         if held := pending.filter(audience=marked.model.Audience.OWNER_QUESTION).first():
             return held
-        waiting = (
-            marked.filter(audience=marked.model.Audience.OWNER_QUESTION, answered_at__isnull=False)
-            .exclude(audits__action__in=ACTION_OUTCOMES)
-            .first()
+        waiting = marked.filter(audience=marked.model.Audience.OWNER_QUESTION, answered_at__isnull=False).exclude(
+            audits__action__in=ACTION_OUTCOMES
         )
-        if waiting is not None:
-            return waiting
+        if held := next((row for row in waiting if not owner_declined(row)), None):
+            return held
         for internal in pending:
             internal.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
         return None
