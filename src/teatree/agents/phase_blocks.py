@@ -381,12 +381,12 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
                 else "1. Review the DIFF UNDER REVIEW from the mounted branch; hold if it is absent or incomplete."
             )
             if read_only_venue
-            else "1. Do a code review of this ticket's branch."
+            else "1. Do a thorough code review of all changes on this ticket's branch."
         ),
         ("Return required `review_context`: work item URL, documents, analysis."),
         (
-            'Return `anti_vacuity`: {"ac_coverage":"AC covered",'
-            '"proven_tests":["tests/test_example.py::test_case"],"no_new_tests":false}'
+            'Return `anti_vacuity`: {"ac_coverage":"<AC coverage for this diff>",'
+            '"proven_tests":["<test ID observed RED before the fix>"],"no_new_tests":false}'
         ),
         (
             "`proven_tests`: test IDs seen RED before the fix. Set `no_new_tests`: true "

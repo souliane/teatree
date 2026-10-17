@@ -503,8 +503,8 @@ Any DB-home key can be scoped to a client overlay with `--overlay`.
 
 The `agent_*` DB settings hold the model/effort settings for spawned sub-agents
 and the interactive main agent. `config.agent_spawn.resolve_agent_config` reads
-them through the Django-free cold DB reader, so they are available before normal
-settings bootstrap and can be global or overlay-scoped. The table syntax below
+them through the Django-free cold DB reader at global scope, so they are available before normal
+settings bootstrap. Overlay-scoped `agent_*` rows do not affect this resolution. The table syntax below
 is an illustrative shape; write the real values with `config_setting set`.
 
 ```toml

@@ -119,6 +119,8 @@ class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
         properties = cast("JSONSchema", block_schema["properties"])
 
         assert set(block) == set(properties)
+        assert block["ac_coverage"] == "<AC coverage for this diff>"
+        assert block["proven_tests"] == ["<test ID observed RED before the fix>"]
         assert "proven_tests" in brief
         assert "no_new_tests" in brief
         assert "other keys are dropped" in brief
@@ -136,6 +138,11 @@ class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
 
         assert "Shippable maker `merge_safe` requires this" in brief
         assert "a `hold` owes none" in brief
+
+    def test_maker_review_includes_every_branch_change(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+
+        assert "Do a thorough code review of all changes on this ticket's branch" in brief
 
 
 class TestThePlannerIsToldEveryCriterionGatesTheMerge(TestCase):
