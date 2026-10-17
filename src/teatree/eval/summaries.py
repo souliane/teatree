@@ -36,6 +36,7 @@ class SummaryRow:
     verdict: str
     trials: str
     cost: str
+    source: str = ""
 
 
 def _parse_cost(cell: str) -> float:
@@ -47,8 +48,12 @@ def _parse_cost(cell: str) -> float:
 
 def _parse_rows(markdown: str) -> list[SummaryRow]:
     rows: list[SummaryRow] = []
+    sources: dict[str, str] = {}
     for line in markdown.splitlines():
         stripped = line.strip()
+        if stripped.startswith("- ") and ": key `" in stripped:
+            name, _, _ = stripped[2:].partition(": key `")
+            sources[name] = stripped
         if not stripped.startswith("|"):
             continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
@@ -57,7 +62,7 @@ def _parse_rows(markdown: str) -> list[SummaryRow]:
         if tuple(cells) == _TABLE_COLUMNS or set(cells[0]) <= {"-"}:
             continue
         rows.append(SummaryRow(scenario=cells[0], lane=cells[1], verdict=cells[2], trials=cells[3], cost=cells[4]))
-    return rows
+    return [dataclasses.replace(row, source=sources.get(row.scenario, "")) for row in rows]
 
 
 def shard_files(inputs: list[str]) -> list[Path]:
@@ -83,12 +88,14 @@ def render_dashboard(rows: list[SummaryRow], *, run_url: str, sha: str, generate
     failed = sum(1 for row in rows if row.verdict == "fail")
     skipped = sum(1 for row in rows if row.verdict == "skip")
     incomplete = sum(1 for row in rows if row.verdict == "incomplete")
+    cached = sum(1 for row in rows if row.verdict == "cached pass")
     total_cost = sum(_parse_cost(row.cost) for row in rows)
     table = [
         _TABLE_HEADER,
         "| --- | --- | --- | --- | --- |",
         *(f"| {row.scenario} | {row.lane} | {row.verdict} | {row.trials} | {row.cost} |" for row in rows),
     ]
+    sources = [row.source for row in rows if row.source]
     return "\n".join(
         [
             "# Weekly behavioral-eval dashboard",
@@ -97,12 +104,14 @@ def render_dashboard(rows: list[SummaryRow], *, run_url: str, sha: str, generate
             "",
             (
                 f"**{passed} passed**, **{failed} failed**, **{skipped} skipped**, "
-                f"**{incomplete} incomplete** (of {len(rows)}) "
+                f"**{incomplete} incomplete**, **{cached} cached** (of {len(rows)}) "
                 f"· total cost ${total_cost:.4f}"
             ),
             "",
             *table,
             "",
+            *sources,
+            *([""] if sources else []),
             f"The private per-trial transcripts are the `eval-report-*` artifacts on [the run]({run_url}).",
             "",
         ]

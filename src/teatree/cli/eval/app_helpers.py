@@ -8,6 +8,7 @@ domain value, or exits 2 (usage error) naming the valid choices.
 import dataclasses
 import os
 from collections.abc import Callable, Sequence
+from html import escape
 from pathlib import Path
 
 import typer
@@ -16,15 +17,15 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.agents.model_tiering import resolve_tier
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.eval.artifact_redaction import write_artifact
-from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, UNMETERED_FRESH_BACKENDS
+from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, FRESH_RUN_BACKENDS, UNMETERED_FRESH_BACKENDS
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import CachedPass, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.presets import Preset, PresetError, resolve_preset
 from teatree.eval.report import ScenarioResult, render_html
-from teatree.eval.summary_json import write_summary_json
+from teatree.eval.summary_json import SummaryCacheData, write_summary_json
 from teatree.eval.summary_markdown import render_summary_markdown
 
 #: The tiers the ``--benchmark`` matrix compares, strongest → cheapest, so the
@@ -70,6 +71,18 @@ class BenchmarkSelection:
     model_override: str | None
     benchmark_html: Path | None
     preset: Preset | None = None
+
+    def resolve_backend_and_metering(self, backend: str, *, benchmark: bool, trials: int) -> tuple[str, bool]:
+        if benchmark or self.model_override is not None or self.preset is not None:
+            backend = backend if backend in FRESH_RUN_BACKENDS else API_BACKEND
+        metered = (
+            backend in FRESH_CLAUDE_BACKENDS
+            or trials > 1
+            or self.models is not None
+            or self.model_override is not None
+            or self.preset is not None
+        )
+        return backend, metered
 
 
 def resolve_benchmark_selection(
@@ -257,14 +270,27 @@ class RunReportPaths:
             (self.summary_json, "--summary-json", "the single-trial / --trials per-scenario artifact"),
         )
 
-    def write_single_trial(self, results: list[ScenarioResult]) -> None:
+    def write_single_trial(
+        self,
+        results: list[ScenarioResult],
+        *,
+        cached: list[CachedPass] | None = None,
+        content_keys: dict[str, str] | None = None,
+        backend: str = "",
+    ) -> None:
         """Write the single-trial transcript HTML, sanitized summary markdown, and/or JSON.
 
         All are written from THIS run's results (no re-run) and BEFORE any guard/gate
         can exit, so a red run still drops each artifact. Each path being ``None`` is
         a no-op.
         """
-        self._write(results, lambda: render_html(results))
+        self._write(
+            results,
+            lambda: self.render_cached_html(results, cached or []),
+            cached=cached or [],
+            content_keys=content_keys or {},
+            backend=backend,
+        )
 
     def write_pass_at_k(self, results: list[PassAtKResult]) -> None:
         """Drop the per-trial transcript + sanitized dashboards BEFORE any guard/gate exits.
@@ -275,14 +301,33 @@ class RunReportPaths:
         self._write(results, lambda: render_pass_at_k_html(results))
 
     def _write(
-        self, results: Sequence[ScenarioResult] | Sequence[PassAtKResult], render_transcript: Callable[[], str]
+        self,
+        results: Sequence[ScenarioResult] | Sequence[PassAtKResult],
+        render_transcript: Callable[[], str],
+        *,
+        cached: list[CachedPass] | None = None,
+        content_keys: dict[str, str] | None = None,
+        backend: str = "",
     ) -> None:
         if self.transcript_html is not None:
             write_artifact(self.transcript_html, render_transcript())
         if self.summary_md is not None:
-            write_artifact(self.summary_md, render_summary_markdown(results))
+            write_artifact(self.summary_md, render_summary_markdown(results, cached=cached or []))
         if self.summary_json is not None:
-            write_summary_json(results, self.summary_json)
+            write_summary_json(
+                results, self.summary_json, cache=SummaryCacheData(content_keys or {}, cached or [], backend)
+            )
+
+    @staticmethod
+    def render_cached_html(results: list[ScenarioResult], cached: Sequence[CachedPass]) -> str:
+        rendered = render_html(results)
+        if not cached:
+            return rendered
+        items = "".join(
+            f"<li>{escape(item.name)} (key {escape(item.content_key)}, from run {escape(item.run_url)})</li>"
+            for item in cached
+        )
+        return rendered.replace("</body>", f"<section><h2>Cached passes</h2><ul>{items}</ul></section>\n</body>")
 
 
 def reject_unsupported_run_output(
@@ -308,3 +353,23 @@ def reject_unsupported_run_output(
                 err=True,
             )
             raise typer.Exit(code=2)
+
+
+def reject_verdict_cache_options(
+    path: Path | None,
+    *,
+    incompatible_lane: Sequence[bool] = (),
+    history_gates: Sequence[bool] = (),
+    reports: Sequence[Path | None] = (),
+) -> None:
+    if path is not None and (any(incompatible_lane) or any(history_gates)):
+        typer.echo(
+            "--verdict-cache requires a fresh single-trial run without --models/--model/--benchmark "
+            "or history gates; transcript replay cannot reuse a passing verdict.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if path is not None and any(report is not None and report.resolve() == path.resolve() for report in reports):
+        typer.echo("--verdict-cache must differ from every report path", err=True)
+        raise typer.Exit(code=2)
