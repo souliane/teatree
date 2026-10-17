@@ -31,7 +31,7 @@ cannot attribute one another's verdicts. The live tick's pool carries no caller 
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
@@ -296,7 +296,7 @@ def _database_sources() -> dict[str, Path]:
 
 
 @contextmanager
-def _disposable_database_copies() -> Iterator[_CopyLease]:
+def _disposable_database_copies() -> Generator[_CopyLease]:
     sources = _database_sources()
     connections.close_all()
     with TemporaryDirectory(prefix="teatree-followup-preview-") as directory:

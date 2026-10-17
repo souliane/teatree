@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -296,7 +296,7 @@ def test_child_and_unknown_approvals_preserve_other_shared_session(
 
 class _FakeCache:
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self) -> AsyncGenerator[Path]:
         yield Path("/unused/auth.json")
 
     def persist(self) -> None:

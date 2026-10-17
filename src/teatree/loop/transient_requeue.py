@@ -193,7 +193,7 @@ def requeue_transient_failed() -> int:
             logger.exception(
                 "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
                 task.pk,
-                task.ticket_id,  # ty: ignore[unresolved-attribute]
+                task.ticket_id,
             )
     return reopened
 

@@ -9,7 +9,7 @@ idempotent and dry-run-safe, and that one failed move never aborts the rest.
 
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -218,7 +218,7 @@ class TestMountBoundaryRefusal(_RelocateCase):
     """
 
     @contextmanager
-    def _pinned_table(self, *mount_points: Path) -> Iterator[None]:
+    def _pinned_table(self, *mount_points: Path) -> Generator[None]:
         rows = [f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/vg-root rw" for point in mount_points]
         mountinfo = self._tmp() / "mountinfo"
         mountinfo.write_text("\n".join(rows) + "\n", encoding="utf-8")

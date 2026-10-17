@@ -88,7 +88,7 @@ def _shipping_artifact_evidence(task: "Task") -> str:
     if normalize_phase(task.phase) != "shipping":
         return ""
     url = (
-        PullRequest.objects.filter(ticket_id=task.ticket_id, state__in=_LANDED_PR_STATES)  # ty: ignore[unresolved-attribute]
+        PullRequest.objects.filter(ticket_id=task.ticket_id, state__in=_LANDED_PR_STATES)
         .values_list("url", flat=True)
         .first()
     )

@@ -38,7 +38,7 @@ no retry envelope waits it out.
 """
 
 import dataclasses
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from http import HTTPStatus
 from typing import Any
@@ -184,7 +184,7 @@ def usage_limit_stop(exc: ModelHTTPError) -> UsageLimitReachedError | None:
 
 
 @contextmanager
-def _raise_usage_limit_stop() -> Iterator[None]:
+def _raise_usage_limit_stop() -> Generator[None]:
     try:
         yield
     except ModelHTTPError as exc:
@@ -213,7 +213,7 @@ class UsageLimitStopModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[Any] | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse]:
         with _raise_usage_limit_stop():
             async with super().request_stream(
                 messages, model_settings, model_request_parameters, run_context
@@ -272,7 +272,7 @@ class BudgetedModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[Any] | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse]:
         reservation = self._reserve(messages, model_request_parameters)
         async with super().request_stream(
             messages, model_settings, model_request_parameters, run_context=run_context

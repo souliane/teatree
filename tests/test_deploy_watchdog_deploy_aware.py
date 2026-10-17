@@ -18,7 +18,7 @@ import shutil
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -127,7 +127,7 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
 
 
 @contextlib.contextmanager
-def _deploy_lock_held(lock: Path) -> Iterator[Path]:
+def _deploy_lock_held(lock: Path) -> Generator[Path]:
     """Hold a REAL exclusive flock on *lock* for the body — what deploy.sh does."""
     lock.touch()
     holder = subprocess.Popen([_FLOCK or "flock", str(lock), "sleep", "60"])

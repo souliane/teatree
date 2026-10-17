@@ -12,7 +12,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -32,7 +32,7 @@ _TESTING_SESSION = "33333333-3333-4333-8333-333333333333"
 
 
 @contextmanager
-def _phase_models(models: dict[str, str]) -> Iterator[None]:
+def _phase_models(models: dict[str, str]) -> Generator[None]:
     db = Path(tempfile.mkdtemp()) / "db.sqlite3"
     conn = sqlite3.connect(str(db))
     conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")

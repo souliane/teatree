@@ -1,5 +1,5 @@
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -25,7 +25,7 @@ class _Host:
 
 
 @contextlib.contextmanager
-def _forge_after_the_void(probed: list[str]) -> Iterator[None]:
+def _forge_after_the_void(probed: list[str]) -> Generator[None]:
     """The forge still reports the voided PR merged at the voided sha, and every issue closed."""
 
     def pr_state(url: str) -> PrOpenState:

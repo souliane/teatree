@@ -238,7 +238,7 @@ class TestDriveThroughInjectedHarness(TestCase):
         # A threaded ORM read under TestCase's wrapping SQLite transaction is a
         # harness artifact (the pre-run usage sample runs in a worker thread) —
         # stub it, as the ``fake_sdk`` scaffold does, so it is not production behaviour.
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def test_driver_opens_the_injected_harness_and_collects(self) -> None:
         options = _build_options(self.task, "ctx", phase="coding", skills=[])
@@ -259,7 +259,7 @@ class TestDriveThroughInjectedHarness(TestCase):
             bound_env: dict[str, str]
 
             @asynccontextmanager
-            async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+            async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
                 assert isinstance(options.mcp_servers, dict)
                 teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
                 self.bound_env = dict(teatree["env"])

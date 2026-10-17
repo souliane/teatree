@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 import traceback
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -2590,7 +2590,7 @@ def _registry_lock_path() -> Path:
 
 
 @contextlib.contextmanager
-def _registry_write_lock() -> Iterator[None]:
+def _registry_write_lock() -> Generator[None]:
     """Hold an exclusive ``flock`` for the duration of a registry write.
 
     Stdlib-only (``fcntl``) so the Django-free hook router keeps no extra
@@ -2644,7 +2644,7 @@ def _write_loop_registry(registry: dict[str, dict]) -> None:
 
 
 @contextlib.contextmanager
-def _loop_registry_txn() -> Iterator[list[dict[str, dict]]]:
+def _loop_registry_txn() -> Generator[list[dict[str, dict]]]:
     """Atomic read-modify-write transaction over the loop registry.
 
     Holds the registry flock across the WHOLE critical section so a

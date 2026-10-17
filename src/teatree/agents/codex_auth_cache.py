@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -110,7 +110,7 @@ def _prepare_private_home(code_home: Path) -> None:
 
 
 @contextmanager
-def _exclusive_lock(code_home: Path) -> Iterator[None]:
+def _exclusive_lock(code_home: Path) -> Generator[None]:
     _prepare_private_home(code_home)
     fd = os.open(code_home / ".auth.lock", os.O_CREAT | os.O_RDWR, 0o600)
     os.fchmod(fd, 0o600)
@@ -230,7 +230,7 @@ class CodexAuthCache:
         return self.code_home / "auth.json"
 
     @asynccontextmanager
-    async def session(self, *, lock_timeout: float | None = None) -> AsyncIterator[Path]:
+    async def session(self, *, lock_timeout: float | None = None) -> AsyncGenerator[Path]:
         await asyncio.to_thread(self._prepare_home)
         fd = os.open(self.code_home / ".auth.lock", os.O_CREAT | os.O_RDWR, 0o600)
         os.fchmod(fd, 0o600)

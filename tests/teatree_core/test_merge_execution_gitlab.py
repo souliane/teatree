@@ -13,7 +13,7 @@ model / FSM / DB write is real. Since #4007 the GitLab side is the httpx
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,7 +48,7 @@ _DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_sta
 
 
 @contextmanager
-def _http_draft_state(state: DraftState) -> Iterator[None]:
+def _http_draft_state(state: DraftState) -> Generator[None]:
     """Script the HTTP-transport draft probe (the one read that is not ``glab``)."""
     with patch(_DRAFT_PROBE, return_value=state):
         yield

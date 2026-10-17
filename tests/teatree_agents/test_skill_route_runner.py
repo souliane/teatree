@@ -1,7 +1,7 @@
 """End-to-end dispatch proofs for ordered per-skill harness routes."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -66,7 +66,7 @@ class _Harness:
         self.capabilities = capabilities
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield self._session(success_stream({"summary": "fallback done"}))
 

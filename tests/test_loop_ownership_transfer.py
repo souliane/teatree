@@ -18,7 +18,7 @@ import multiprocessing.synchronize
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -310,7 +310,7 @@ class TestConcurrentFreshClaimIsAtomic:
 
 
 @contextlib.contextmanager
-def _teatree_unimportable() -> Iterator[None]:
+def _teatree_unimportable() -> Generator[None]:
     """Make ``import teatree*`` raise, as in a hook interpreter with no teatree on ``sys.path``."""
 
     class _BlockTeatree:

@@ -46,7 +46,7 @@ def phase_attempts(task: Task) -> list[TaskAttempt]:
     """
     attempts = (
         TaskAttempt.objects.filter(
-            task__ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+            task__ticket_id=task.ticket_id,
             task__phase__in=phase_spellings(normalize_phase(task.phase)),
         )
         .excluding_parks()
@@ -88,7 +88,7 @@ def check_requeue_allowed(task: Task) -> None:
     phase = normalize_phase(task.phase)
     try:
         reoffer_verdict(
-            ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+            ticket_id=task.ticket_id,
             phase=phase,
             reclaim_count=task.reclaim_count,
         )
@@ -99,7 +99,7 @@ def check_requeue_allowed(task: Task) -> None:
     last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
     try:
         requeue_verdict(
-            ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+            ticket_id=task.ticket_id,
             phase=phase,
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,

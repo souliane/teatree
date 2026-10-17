@@ -12,7 +12,7 @@ Build the table here instead of hand-rolling one per test file — the invariant
 probe's fail-closed contract, and two private copies of it drift.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 
 @contextmanager
-def pinned_venue_proc(*, holding: Path | None = None) -> Iterator[Path]:
+def pinned_venue_proc(*, holding: Path | None = None) -> Generator[Path]:
     """Point the sweep's VENUE process table at a synthetic one carrying an answering pid.
 
     ``resolve_scratch_sweep`` reads ``scratch._VENUE_PROC`` as a module global at

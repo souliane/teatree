@@ -18,7 +18,7 @@ import os
 import sys
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -45,7 +45,7 @@ _FUTURE = "9999_a_column_this_process_never_loaded"
 
 
 @contextmanager
-def _sandbox_app_declaring_head(root: Path, head: str) -> Iterator[tuple[str, Path]]:
+def _sandbox_app_declaring_head(root: Path, head: str) -> Generator[tuple[str, Path]]:
     """Install a throwaway app whose ``max_migration.txt`` this test owns and may rewrite.
 
     The live ``teatree.core`` file is shared mutable state other suites read

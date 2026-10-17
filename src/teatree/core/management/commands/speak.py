@@ -17,7 +17,7 @@ this command. ``--overlay`` sets ``T3_OVERLAY_NAME`` so the per-overlay
 
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
 
@@ -26,7 +26,7 @@ from django_typer.management import TyperCommand
 
 
 @contextmanager
-def _overlay_env(overlay: str) -> Iterator[None]:
+def _overlay_env(overlay: str) -> Generator[None]:
     """Set ``T3_OVERLAY_NAME`` for the call, restoring the prior value after."""
     if not overlay:
         yield

@@ -9,7 +9,7 @@ the assertion about the plan — flat in the number of SETTINGS — rather than 
 which packages the runner installed.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -17,7 +17,7 @@ CORE_OVERLAY = "t3-teatree"
 
 
 @contextmanager
-def core_overlay_only() -> Iterator[None]:
+def core_overlay_only() -> Generator[None]:
     """Resolve settings columns as a core-only install does: global plus one overlay."""
     with patch("teatree.dash.settings_editor.get_all_overlays", return_value=[CORE_OVERLAY]):
         yield

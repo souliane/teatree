@@ -8,7 +8,7 @@ escapes, and the chain position that keeps a loop-driven ask out of the
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from unittest.mock import patch
 
@@ -44,7 +44,7 @@ def _gate_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @contextmanager
-def _config(**settings: object) -> Iterator[None]:
+def _config(**settings: object) -> Generator[None]:
     rows = [ConfigSetting.objects.set_value(key, value, scope=OVERLAY) for key, value in settings.items()]
     try:
         yield
@@ -185,7 +185,7 @@ class TestChainPosition:
 
     def _loop_driven(self) -> AbstractContextManager[None]:
         @contextmanager
-        def _patched() -> Iterator[None]:
+        def _patched() -> Generator[None]:
             with (
                 patch.object(router, "_is_live_user_turn", return_value=False),
                 patch.object(router, "_session_drives_loop", return_value=True),

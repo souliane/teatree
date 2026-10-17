@@ -15,7 +15,7 @@ stay inert because the eval grades the CALL. The shell gets no model credential.
 """
 
 import dataclasses
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -155,7 +155,7 @@ def _render(result: CompletedProcess[str]) -> str:
 
 
 @contextmanager
-def provision_eval_sandbox(spec: EvalSpec) -> Iterator[EvalSandbox | None]:
+def provision_eval_sandbox(spec: EvalSpec) -> Generator[EvalSandbox | None]:
     """Yield the sandbox *spec* declared, or ``None`` when it declared none.
 
     ``None`` is the untouched shape: a scenario declaring neither field keeps the fully

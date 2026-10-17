@@ -188,6 +188,11 @@ def test_every_reference_file_is_named_by_path_in_the_core() -> None:
     assert not unnamed, f"reference files the core never names: {unnamed}"
 
 
+def test_rules_preamble_names_the_reference_file_pattern() -> None:
+    preamble = _CORE.read_text(encoding="utf-8").split("## Index", 1)[0]
+    assert "skills/rules/references/<file>.md" in preamble
+
+
 def test_the_core_fits_its_byte_ceiling() -> None:
     size = len(_CORE.read_text(encoding="utf-8").encode())
     assert size <= _CORE_MAX_BYTES, f"skills/rules/SKILL.md is {size} B, over the {_CORE_MAX_BYTES} B core ceiling"

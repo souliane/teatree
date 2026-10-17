@@ -35,7 +35,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -373,7 +373,7 @@ class TestInteractiveSessionsArePinned(TestCase):
         return value
 
     @contextlib.contextmanager
-    def _world(self, extra_env: Mapping[str, str] | None = None) -> Iterator[None]:
+    def _world(self, extra_env: Mapping[str, str] | None = None) -> Generator[None]:
         installed = [OverlayEntry(name=_PIN_OVERLAY, overlay_class=f"{__name__}:_PinOverlay")]
         with (
             patch.dict(os.environ, {**self._env, **(extra_env or {})}, clear=True),

@@ -11,7 +11,7 @@ forwarding, the per-service registration, and the banned-term refusal.
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -79,7 +79,7 @@ class _FakeForge:
 
 
 @contextmanager
-def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: bool = False) -> Iterator[None]:
+def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: bool = False) -> Generator[None]:
     allow_forge_repos("acme/widgets", "souliane/teatree")
     with (
         patch.dict("os.environ", {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}),

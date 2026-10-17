@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Session, Task, Ticket
@@ -85,7 +87,7 @@ def _ctx(dispatcher: _FakeDispatcher | None, *, enabled: bool = True) -> ReviewA
 
 
 def _record(*, verdict: str, reviewer: str, sha: str = HEAD, at: dt.datetime | None = None) -> ReviewVerdict:
-    """Record one verdict, optionally pinning ``recorded_at`` so newest-wins is deterministic."""
+    """Record one verdict, optionally pinning ``recorded_at`` for ordering cases."""
     row = ReviewVerdict.record(
         pr_id=PR_ID,
         slug=SLUG,
@@ -206,19 +208,31 @@ class TestArmColdReview:
 
 
 class TestHeadReviewState:
-    """A hold nobody took back, independent of newest-wins supersession (#4380)."""
+    """A hold remains active at its reviewed head (#4380)."""
 
-    def test_hold_superseded_by_another_reviewers_pass_is_contested(self) -> None:
-        # The #4332 shape: newest-wins says MERGE_SAFE, the hold still stands. TWO
+    def test_one_head_read_supplies_holds_and_authorization(self) -> None:
+        _record(verdict="hold", reviewer="cold-reviewer-a")
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b")
+
+        with CaptureQueriesContext(connection) as queries:
+            review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+
+        assert len(queries) == 1
+        assert len(review.held_verdicts) == 1
+        assert review.standing_merge_safe is not None
+        assert review.authorizing_verdict is None
+
+    def test_hold_beside_another_reviewers_pass_is_contested(self) -> None:
+        # The #4332 shape: a pass sits beside a standing hold. TWO
         # reviewers really do disagree here, so the contested wording is earned.
         hold = _record(verdict="hold", reviewer="cold-reviewer-a", at=_EARLIER)
-        allow = _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
 
         review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
         assert review.hold_reason == CONTESTED_HOLD_REASON
         assert review.held_verdicts == ((hold.pk, "cold-reviewer-a"),)
-        assert review.authorizing_verdict == (allow.pk, "cold-reviewer-b")
+        assert review.authorizing_verdict is None
 
     def test_lone_hold_is_not_reported_as_a_disagreement(self) -> None:
         # The ORDINARY outcome of a cold review that holds — one verdict, nobody
@@ -257,11 +271,11 @@ class TestHeadReviewState:
         assert review.held_verdicts
         assert review.hold_reason == HOLD_AT_HEAD_REASON
 
-    def test_reviewer_lifting_their_own_hold_clears_it(self) -> None:
+    def test_reviewer_pass_leaves_their_own_hold(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a")
         _record(verdict="merge_safe", reviewer="cold-reviewer-a")
 
-        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts == ()
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts
 
     def test_hold_at_a_superseded_head_does_not_block(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a", sha=STALE)
@@ -285,8 +299,7 @@ class TestAuthorizingVerdict:
         )
 
     def test_a_standing_hold_authorises_nothing(self) -> None:
-        # Reads the SHARED newest-wins ``effective_state_at`` rather than a second
-        # copy of it, so a head the merge gate refuses can never be named here.
+        # The sweep and merge gate both refuse a head carrying any active HOLD.
         _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_EARLIER)
         _record(verdict="hold", reviewer="cold-reviewer-a", at=_LATER)
 
@@ -309,7 +322,7 @@ class TestTheHeldReportReachesAHuman:
 
     @pytest.mark.parametrize(
         ("reason", "wording"),
-        [(CONTESTED_HOLD_REASON, "two cold reviews disagree"), (HOLD_AT_HEAD_REASON, "nobody took it back")],
+        [(CONTESTED_HOLD_REASON, "two cold reviews disagree"), (HOLD_AT_HEAD_REASON, "remains active at this head")],
     )
     def test_each_held_reason_dms_the_owner_in_its_own_words(self, reason: str, wording: str) -> None:
         detail = "holding: #7 cold-reviewer-a; merge_safe: #8 cold-reviewer-b"

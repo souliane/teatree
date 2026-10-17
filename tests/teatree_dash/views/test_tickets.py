@@ -1,6 +1,6 @@
 """Ticket drawer, the legal-only FSM-transition POST, and the phase-enqueue POST (#3162, #4085)."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -71,7 +71,7 @@ def _transaction_committing(write: Callable[[], None]) -> SimpleNamespace:
     """
 
     @contextmanager
-    def atomic() -> Iterator[None]:
+    def atomic() -> Generator[None]:
         write()
         with transaction.atomic():
             yield

@@ -12,6 +12,7 @@ from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incom
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -20,6 +21,7 @@ from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
+from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
@@ -323,24 +325,37 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> RunnerResult:
-        """Every refusal first, then the two fenced outward writes (push, PR-open).
+        """Scan the completed PR, then fence both outward writes.
 
         Split out of ``run`` so each half stays within the return-count gate. The
-        fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
-        before EACH outward write — the push and the create are distinct writes and
-        the claim can be lost in between.
+        fleet-claim fence (:meth:`_fleet_claim_lost`) is checked before spec
+        construction and immediately before each outward write.
         """
         # #940 defense-in-depth: re-check branch currency before pushing. The
         # `pr create` gate already auto-merged the target, but ``execute_ship``
         # may run in an async worker after a window where ``origin/<target>``
         # advanced again. Abort only when the branch now *conflicts* with target.
         currency_error = self._check_branch_currency(ticket, repo_path, branch)
-        if currency_error is not None:
-            return RunnerResult(ok=False, detail=currency_error)
-
-        refusal = self._refusal_before_outward_write(ticket, host, repo_path)
+        refusal = (
+            RunnerResult(ok=False, detail=currency_error)
+            if currency_error is not None
+            else self._refusal_before_outward_write(ticket, host, repo_path)
+        )
+        if refusal is None:
+            refusal = self._fleet_claim_lost(repo_path)
         if refusal is not None:
             return refusal
+
+        spec = self.build_pr_spec(host, repo_path, branch, extra)
+        subject, _ = git.last_commit_message(repo=repo_path, skip_merges=True)
+        remote_url = git.remote_url(repo=repo_path)
+        if refusal := refusal_for_pr_generic_findings(
+            title=f"{subject}\n{spec.title}",
+            description=spec.description,
+            target_repo=remote_url,
+            forge=forge_from_url(remote_url),
+        ):
+            return RunnerResult(ok=False, detail=refusal)
 
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
@@ -354,7 +369,6 @@ class ShipExecutor(RunnerBase):
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
-        spec = self.build_pr_spec(host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, host, spec)
 
     @staticmethod
@@ -430,9 +444,8 @@ class ShipExecutor(RunnerBase):
     ) -> RunnerResult:
         """Open the PR, verify the URL is present, and record it on the ticket.
 
-        Reached only once every refusal has concluded
-        (:meth:`_refusal_before_outward_write`), so nothing here can turn into a
-        "refused" verdict for a PR that exists.
+        The completed PR text was checked before the branch push, so no privacy
+        refusal can strand a pushed branch without a PR.
 
         #1222 / #1226 verify-by-re-read: a backend that returns a payload
         without a URL (or with the wrong field name) MUST surface as

@@ -7,7 +7,7 @@ pin both the facts it reads and the bounded effects it owns.
 """
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from unittest.mock import patch
@@ -49,14 +49,14 @@ def _no_pipeline(iid: int, *, days_ago: float = 2.0, **payload: object) -> dict[
 
 
 @contextmanager
-def _channel() -> Iterator[None]:
+def _channel() -> Generator[None]:
     target = GuardTarget(channel_id="C1", channel_name="reviews", token="xoxb-bot")
     with patch("teatree.loop.scanners.mr_triage_scan.resolve_guard_target", return_value=target):
         yield
 
 
 @contextmanager
-def _reads(*, ok: bool = True, asked: tuple[str, ...] = ()) -> Iterator[None]:
+def _reads(*, ok: bool = True, asked: tuple[str, ...] = ()) -> Generator[None]:
     """Stage the review channel's history. ``ok=False`` is a FAILED read, never an empty one."""
     now = timezone.now().timestamp()
     matches = [type("M", (), {"pr_url": url, "ts": f"{now:.6f}"})() for url in asked]
@@ -67,7 +67,7 @@ def _reads(*, ok: bool = True, asked: tuple[str, ...] = ()) -> Iterator[None]:
 
 
 @contextmanager
-def _exempt(*patterns: str) -> Iterator[None]:
+def _exempt(*patterns: str) -> Generator[None]:
     with patch("teatree.loop.scanners.mr_triage_scan.review_exempt_patterns", return_value=patterns):
         yield
 

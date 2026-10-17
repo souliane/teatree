@@ -1,6 +1,6 @@
 """`pr_review_backend` resolution — auto degrades, an explicit pin never does."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -12,7 +12,7 @@ from teatree.core.review.pr_review_backend import codex_is_available, resolve_pr
 
 
 @contextmanager
-def _configured(backend: PrReviewBackend, *, codex_installed: bool = True) -> Iterator[None]:
+def _configured(backend: PrReviewBackend, *, codex_installed: bool = True) -> Generator[None]:
     with (
         patch(
             "teatree.core.review.pr_review_backend.get_effective_settings",

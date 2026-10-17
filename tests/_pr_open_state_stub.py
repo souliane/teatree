@@ -5,7 +5,7 @@ test that mints one names the state it expects. There is deliberately no autouse
 default: a suite-wide OPEN would neutralise the gate it exists to pin.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -42,7 +42,7 @@ class _Provider:
 @contextmanager
 def pr_open_state(
     state: PrOpenState = PrOpenState.OPEN, *, raises: bool = False, no_host: bool = False
-) -> Iterator[FakePrHost]:
+) -> Generator[FakePrHost]:
     host = FakePrHost(state, raises=raises)
     with (
         patch(f"{_GATE}.get_backend_provider", return_value=_Provider(None if no_host else host)),

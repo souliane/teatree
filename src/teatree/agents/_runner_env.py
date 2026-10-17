@@ -7,7 +7,7 @@ so ``from teatree.agents.runner import _provider_child_env`` stays valid.
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -28,7 +28,7 @@ _SPAWN_SCRUBBED_VARS = ("VIRTUAL_ENV",)
 
 
 @contextmanager
-def agent_spawn_env() -> Iterator[None]:
+def agent_spawn_env() -> Generator[None]:
     """The dispatch's spawn window: no ``GIT_*`` override and no dispatcher ``VIRTUAL_ENV``."""
     with git_env_hermetic(), patched_environ({}, remove=_SPAWN_SCRUBBED_VARS):
         yield

@@ -46,12 +46,10 @@ MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 # ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
 CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
 
-# The reason a PR carries when a HOLD stands at its live head that nobody took back
-# AND a non-stale ``merge_safe`` from a DIFFERENT reviewer stands beside it — in either
-# recording order, since which row is newer decides what a merge may rest on, not whether
-# two reviewers disagree. Two reviewers disagreeing at one unchanged tree is not a verdict
-# the loop may resolve by timestamp, so the autonomous no-CLEAR merge refuses and reports
-# instead (#4380). Owner-audience — see ``OWNER_ESCALATION_FLAG_REASONS`` in
+# The reason a PR carries when a HOLD remains active at its live head
+# AND a non-stale ``merge_safe`` stands beside it, even under the same identity.
+# Recording order cannot lift the hold, so the autonomous no-CLEAR merge refuses
+# and reports the disagreement (#4380). Owner-audience — see ``OWNER_ESCALATION_FLAG_REASONS`` in
 # ``pr_sweep_adapters``.
 CONTESTED_HOLD_REASON = "contested_hold_at_head"
 
@@ -59,7 +57,7 @@ CONTESTED_HOLD_REASON = "contested_hold_at_head"
 # of every cold review that holds, and the far more common shape (68 hold-only vs 15
 # contested head-groups over the last 400 recorded verdicts). Nothing is in dispute:
 # the auto-merge simply has no authorisation. Reported under its own reason so the
-# owner DM cannot claim two reviewers disagreed where there is one verdict. Escalates
+# owner DM cannot claim two verdicts disagreed where there is one. Escalates
 # to the owner exactly like the contested case — only the wording differs.
 HOLD_AT_HEAD_REASON = "hold_at_head"
 
@@ -111,13 +109,12 @@ class PrSummary:
 class HeadReview:
     """What the recorded cold-review verdicts say about one PR head (#4380).
 
-    ``held_verdicts`` are the non-stale HOLDs nobody took back, as
+    ``held_verdicts`` are the non-stale standing HOLDs, as
     ``(row id, normalised reviewer identity)`` pairs — a non-empty tuple is what
     refuses the autonomous no-CLEAR merge. ``authorizing_verdict`` is what a merge
-    records as its authorisation, so it is gated on newest-wins. ``standing_merge_safe``
-    is the PASS standing beside a hold: the same row when the PASS is newer, and the row
-    newest-wins discards when the HOLD is. They are separate fields because naming a
-    two-reviewer disagreement must not depend on which reviewer recorded last.
+    records as its authorisation, so a standing hold leaves it empty.
+    ``standing_merge_safe`` is the PASS standing beside a hold, which names a
+    disagreement without authorizing a merge.
     """
 
     held_verdicts: tuple[tuple[int, str], ...] = ()

@@ -49,7 +49,7 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from itertools import product
 from pathlib import Path
@@ -470,7 +470,7 @@ _RETIRED_PREMISE_PHRASES: Final[tuple[str, ...]] = (
 
 
 @contextlib.contextmanager
-def _gate_live(driver: DenyDriver, tmp_path: Path) -> Iterator[None]:
+def _gate_live(driver: DenyDriver, tmp_path: Path) -> Generator[None]:
     """Use a hermetic config store, with the ledger pinned under *tmp_path*."""
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))

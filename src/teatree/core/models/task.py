@@ -47,6 +47,16 @@ SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 class Task(models.Model):
     attempts: "models.Manager[TaskAttempt]"
 
+    if TYPE_CHECKING:
+        # Django synthesises these at class-prep time, so a static checker cannot see them.
+        id: int
+        ticket_id: int
+        session_id: int
+        parent_task_id: int | None
+        child_tasks: "models.Manager[Task]"
+
+        def get_status_display(self) -> str: ...
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         CLAIMED = "claimed", "Claimed"
@@ -421,7 +431,7 @@ class Task(models.Model):
         # Sessions). Reading the state OUTSIDE the atomic (the previous shape)
         # let both completions read the same stale state and both fire.
         with transaction.atomic():
-            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)  # ty: ignore[unresolved-attribute]
+            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER

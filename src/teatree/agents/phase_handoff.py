@@ -5,7 +5,7 @@ import json
 import logging
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TypedDict
 
@@ -34,7 +34,7 @@ class _HandoffPayload(TypedDict):
 
 
 @contextlib.contextmanager
-def delivered_phase_handoff(task: Task) -> Iterator[Path | None]:
+def delivered_phase_handoff(task: Task) -> Generator[Path | None]:
     """The handoff file for this dispatch of *task* — ``None`` unless it begins a new phase after a recorded attempt."""
     payload = _handoff_payload(task)
     if payload is None:
