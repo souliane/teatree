@@ -611,27 +611,39 @@ class TestVerdictKeySettings(TestCase):
 
     def test_key_tracks_harness_and_package_versions(self) -> None:
         cases = [
-            ("harness", "api", None),
-            ("package", "api", "claude-agent-sdk"),
-            ("package", "anthropic_api", "anthropic"),
-            ("package", "anthropic_api", "pydantic-ai-slim"),
-            ("package", "pydantic_ai", "pydantic-ai-slim"),
+            *[
+                ("harness", "api", None, relative)
+                for relative in (
+                    "cli/app.py",
+                    "agents/permission_modes.py",
+                    "llm/anthropic_limits.py",
+                    "config/settings.py",
+                    "core/modelkit/phases.py",
+                )
+            ],
+            ("package", "api", "claude-agent-sdk", None),
+            ("package", "anthropic_api", "anthropic", None),
+            ("package", "anthropic_api", "pydantic-ai-slim", None),
+            ("package", "pydantic_ai", "pydantic-ai-slim", None),
         ]
-        for kind, backend, package in cases:
-            with self.subTest(kind=kind, backend=backend, package=package), self.monkeypatch.context() as patcher:
+        for kind, backend, package, relative in cases:
+            with (
+                self.subTest(kind=kind, backend=backend, package=package, relative=relative),
+                self.monkeypatch.context() as patcher,
+            ):
                 patcher.setenv("T3_CONFIG_DB", str(self.tmp_path / "versions.sqlite3"))
                 ConfigSetting.objects.set_value("openai_compatible_model", "vendor/model-a")
                 spec = _spec(self.tmp_path)
                 config = VerdictRunConfig(backend=backend, effort="high", max_turns=None, max_budget_usd=2, judge=False)
-                source_file = self.tmp_path / "src" / "teatree" / "cli" / "app.py"
-                if kind == "harness":
+                source_file = self.tmp_path / "src" / "teatree" / relative if relative else None
+                if source_file is not None:
                     patcher.setattr(verdict_cache, "teatree_root", lambda: self.tmp_path)
                     source_file.parent.mkdir(parents=True, exist_ok=True)
                     source_file.write_text("version 1")
                 else:
                     patcher.setattr(verdict_cache.importlib.metadata, "version", lambda _: "1")
                 before = verdict_key(spec, config)
-                if kind == "harness":
+                if source_file is not None:
                     source_file.write_text("version 2")
                 else:
                     patcher.setattr(
@@ -655,9 +667,15 @@ def test_real_scenario_catalog_keys_are_stable(tmp_path: Path) -> None:
     assert first == second
 
 
-def test_partition_reruns_only_the_changed_graded_section(tmp_path: Path) -> None:
+@pytest.mark.parametrize("other_source", ["other-section", "sibling-file"])
+def test_partition_reruns_only_the_changed_graded_section(tmp_path: Path, other_source: str) -> None:
     spec_a = _spec(tmp_path)
-    spec_b = dataclasses.replace(spec_a, name="two", agent_sections=("Other",))
+    if other_source == "sibling-file":
+        other_file = tmp_path / "OTHER.md"
+        other_file.write_text("## Graded\noriginal\n", encoding="utf-8")
+        spec_b = dataclasses.replace(spec_a, name="two", agent_path=str(other_file))
+    else:
+        spec_b = dataclasses.replace(spec_a, name="two", agent_sections=("Other",))
     config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
     ledger = VerdictLedger.load(tmp_path / "verdicts.json")
     ledger.record(
