@@ -45,6 +45,7 @@ from teatree.quality.pytest_resource_contract import (
     WorkerSlotPool,
     bounded_auto_workers,
     whole_tree_refusal,
+    worker_specs,
 )
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -172,7 +173,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     )
     if refusal:
         raise pytest.UsageError(refusal)
-    tx = list(getattr(config.option, "tx", []))
+    tx = worker_specs(list(getattr(config.option, "tx", [])))
     pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
         lease = pool.session_lease(max(1, len(tx)))

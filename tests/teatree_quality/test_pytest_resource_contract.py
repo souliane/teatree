@@ -16,6 +16,7 @@ from teatree.quality.pytest_resource_contract import (
     WorkerSlotPool,
     bounded_auto_workers,
     whole_tree_refusal,
+    worker_specs,
 )
 from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_probe import available_cpu_count
@@ -178,6 +179,51 @@ def test_four_overlapping_runs_never_hold_more_than_the_capacity(tmp_path: Path)
     assert peak[0] <= 3
 
 
+@pytest.mark.parametrize(
+    ("tx", "expected"),
+    [
+        (["popen", "popen"], ["popen", "popen"]),
+        (["3*popen", "popen//python=python3"], ["popen", "popen", "popen", "popen//python=python3"]),
+    ],
+)
+def test_multiplied_tx_specs_count_every_worker(tx: list[str], expected: list[str]) -> None:
+    assert worker_specs(tx) == expected
+
+
+_HOLD_ALL_SLOTS = """
+import sys, time
+from pathlib import Path
+from teatree.quality.pytest_resource_contract import WorkerSlotPool
+lease = WorkerSlotPool(Path(sys.argv[1]), capacity=2).acquire(2)
+print(lease.workers, flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.timeout(30)
+def test_a_killed_holder_returns_its_slots(tmp_path: Path) -> None:
+    granted: list[int] = []
+
+    def contender() -> None:
+        with WorkerSlotPool(tmp_path, capacity=2).acquire(2, poll_interval=0.01) as lease:
+            granted.append(lease.workers)
+
+    with subprocess.Popen(
+        [sys.executable, "-c", _HOLD_ALL_SLOTS, str(tmp_path)], stdout=subprocess.PIPE, text=True
+    ) as holder:
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "2"
+            thread = threading.Thread(target=contender, daemon=True)
+            thread.start()
+            thread.join(timeout=0.3)
+            assert granted == []
+        finally:
+            holder.kill()
+    thread.join(timeout=5)
+    assert granted == [2]
+
+
 def test_missing_shared_root_refuses_pool(tmp_path: Path) -> None:
     pool = WorkerSlotPool(tmp_path / "missing", capacity=1)
     with pytest.raises(PoolUnavailableError):
@@ -231,11 +277,14 @@ def test_real_pytest_refuses_missing_shared_pool(tmp_path: Path) -> None:
 
 
 @pytest.mark.timeout(60)
-def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "worker_args", [("-n", "3"), ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen")]
+)
+def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path, worker_args: tuple[str, ...]) -> None:
     held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY - 1) if _BOX_CAPACITY > 1 else None
     try:
         result = subprocess.run(
-            _pytest_command("-n", "3", "-vv", _BOUNDED_NODE),
+            _pytest_command(*worker_args, "-vv", _BOUNDED_NODE),
             cwd=_REPO,
             env=_standalone_pytest_env(tmp_path),
             capture_output=True,
