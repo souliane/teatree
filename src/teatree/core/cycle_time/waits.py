@@ -42,6 +42,17 @@ _WAIT_PRECEDENCE = ("human", "sibling_task", "checkout_fence", "quota", "free_se
 
 
 @dataclass(frozen=True, slots=True)
+class WaitBlock:
+    cause: str
+    start: datetime
+    end: datetime
+
+    @property
+    def seconds(self) -> float:
+        return (self.end - self.start).total_seconds()
+
+
+@dataclass(frozen=True, slots=True)
 class MergeBreakdown:
     ticket_id: int
     number: str
@@ -51,7 +62,7 @@ class MergeBreakdown:
     elapsed_seconds: float
     work_seconds: float
     wait_seconds: dict[str, float]
-    longest_wait: str
+    longest_wait: WaitBlock | None
     hand_cancels: int
     measured: bool
     parks_retained: bool
@@ -156,7 +167,7 @@ def _breakdown(
             elapsed_seconds=0.0,
             work_seconds=0.0,
             wait_seconds=waits,
-            longest_wait="",
+            longest_wait=None,
             hand_cancels=cancels,
             measured=False,
             parks_retained=False,
@@ -183,26 +194,7 @@ def _breakdown(
         start=start,
         end=merged_at,
     )
-    boundaries = sorted(
-        {
-            start,
-            merged_at,
-            *(point for lower, upper, _cause in tagged for point in (lower, upper)),
-            *(point for lower, upper in work for point in (lower, upper)),
-        }
-    )
-    work_seconds = 0.0
-    for lower, upper in pairwise(boundaries):
-        seconds = (upper - lower).total_seconds()
-        if any(work_start <= lower < work_end for work_start, work_end in work):
-            work_seconds += seconds
-            continue
-        cause = next(
-            (name for name in _WAIT_PRECEDENCE if any(a <= lower < b and tag == name for a, b, tag in tagged)),
-            "no_next_task",
-        )
-        waits[cause] += seconds
-    longest = max(WAIT_CAUSES, key=lambda cause: waits[cause]) if any(waits.values()) else ""
+    work_seconds, waits, longest = _split_work_and_waits(start, merged_at, tagged, work)
     return MergeBreakdown(
         ticket_id=ticket.pk,
         number=ticket.ticket_number,
@@ -217,6 +209,41 @@ def _breakdown(
         measured=True,
         parks_retained=start >= cutoff,
     )
+
+
+def _split_work_and_waits(
+    start: datetime,
+    merged_at: datetime,
+    tagged: Sequence[tuple[datetime, datetime, str]],
+    work: Sequence[tuple[datetime, datetime]],
+) -> tuple[float, dict[str, float], WaitBlock | None]:
+    boundaries = sorted(
+        {
+            start,
+            merged_at,
+            *(point for lower, upper, _cause in tagged for point in (lower, upper)),
+            *(point for lower, upper in work for point in (lower, upper)),
+        }
+    )
+    waits = dict.fromkeys(WAIT_CAUSES, 0.0)
+    blocks: list[WaitBlock] = []
+    work_seconds = 0.0
+    for lower, upper in pairwise(boundaries):
+        seconds = (upper - lower).total_seconds()
+        if any(work_start <= lower < work_end for work_start, work_end in work):
+            work_seconds += seconds
+            continue
+        cause = next(
+            (name for name in _WAIT_PRECEDENCE if any(a <= lower < b and tag == name for a, b, tag in tagged)),
+            "no_next_task",
+        )
+        waits[cause] += seconds
+        if blocks and blocks[-1].cause == cause and blocks[-1].end == lower:
+            blocks[-1] = WaitBlock(cause=cause, start=blocks[-1].start, end=upper)
+        else:
+            blocks.append(WaitBlock(cause=cause, start=lower, end=upper))
+    longest = max(blocks, key=lambda block: block.seconds) if blocks else None
+    return work_seconds, waits, longest
 
 
 def _task_wait_tags(

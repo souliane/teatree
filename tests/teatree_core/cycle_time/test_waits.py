@@ -91,7 +91,10 @@ class RecentMergeBreakdownTestCase(TestCase):
             "no_next_task": 30 * 60,
             "review": 10 * 60,
         }
-        assert row.longest_wait == "checkout_fence"
+        assert row.longest_wait is not None
+        assert row.longest_wait.cause == "checkout_fence"
+        assert row.longest_wait.start == self.at(40)
+        assert row.longest_wait.seconds == 60 * 60
         assert row.hand_cancels == 1
         assert row.measured
         assert row.parks_retained
@@ -106,6 +109,27 @@ class RecentMergeBreakdownTestCase(TestCase):
         assert row.wait_seconds["sibling_task"] == 10 * 60
         assert row.wait_seconds["quota"] == 30 * 60
         assert row.work_seconds == 90 * 60
+
+    def test_longest_wait_is_one_block_not_a_causes_total(self) -> None:
+        self.task("planning", 0, 0, 40)
+        first = self.task("coding", 40, 70, 100)
+        self.park(first, 50, CHECKOUT_PARKED_PREFIX)
+        second = self.task("coding", 100, 130, 160)
+        self.park(second, 110, CHECKOUT_PARKED_PREFIX)
+        self.task("shipping", 190, 190, 220)
+
+        row = recent_merge_breakdowns()[0]
+        assert row.wait_seconds["checkout_fence"] == 40 * 60
+        assert row.longest_wait is not None
+        assert row.longest_wait.cause == "no_next_task"
+        assert row.longest_wait.start == self.at(160)
+        assert row.longest_wait.seconds == 30 * 60
+
+    def test_fully_worked_merge_has_no_wait_block(self) -> None:
+        self.task("planning", 0, 0, 230)
+        row = recent_merge_breakdowns()[0]
+        assert row.work_seconds == row.elapsed_seconds
+        assert row.longest_wait is None
 
     def test_no_admission_is_unmeasured_instead_of_all_zero(self) -> None:
         row = recent_merge_breakdowns()[0]

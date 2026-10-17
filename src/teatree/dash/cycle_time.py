@@ -50,6 +50,8 @@ class MergeWaitRow:
     working: str
     waits: tuple[str, ...]
     longest_wait: str
+    longest_wait_duration: str
+    longest_wait_start: datetime | None
     hand_cancels: int
     measured: bool
     parks_retained: bool
@@ -146,7 +148,9 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
                 elapsed=_humanize_duration(row.elapsed_seconds),
                 working=_humanize_duration(row.work_seconds),
                 waits=tuple(_humanize_duration(row.wait_seconds[cause]) for cause in WAIT_CAUSES),
-                longest_wait=WAIT_LABELS.get(row.longest_wait, "No wait"),
+                longest_wait=WAIT_LABELS[row.longest_wait.cause] if row.longest_wait else "No wait",
+                longest_wait_duration=_humanize_duration(row.longest_wait.seconds) if row.longest_wait else "",
+                longest_wait_start=row.longest_wait.start if row.longest_wait else None,
                 hand_cancels=row.hand_cancels,
                 measured=row.measured,
                 parks_retained=row.parks_retained,

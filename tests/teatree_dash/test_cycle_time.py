@@ -260,6 +260,7 @@ class MergeWaitDisplayTestCase(TestCase):
         assert "Waiting for a human" in content
         assert "No next task" in content
         assert "Review" in content
+        assert "Review (30m from" in content
         assert "Hand cancels" in content
         assert "not recorded yet" in content
 
