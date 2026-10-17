@@ -49,6 +49,7 @@ from teatree.loops.enable_verdict import FleetAdmission, read_fleet_admission
 from teatree.loops.executor_thread import (
     EXECUTOR_HEALTH_WINDOW_SECONDS,
     EXECUTOR_INTERVAL_SECONDS,
+    CheckpointControl,
     checkpoint_executor_threads,
 )
 from teatree.loops.executor_thread import Executor as _Executor
@@ -558,11 +559,20 @@ class LoopWorker:
                     break
                 self._per_poll_maintenance()
                 if not self._stop.is_set() and admission is not FleetAdmission.UNREADABLE:
-                    seams.publish_health(admission.value, active=bool(self._slots))
+                    degraded = any(getattr(slot.handle, "degraded", False) for slot in self._slots)
+                    seams.publish_health(
+                        "degraded" if degraded else admission.value, active=bool(self._slots) and not degraded
+                    )
         finally:
             exit_reason = self._exit_reason_for_exception(exit_reason)
             if exit_reason:
-                checkpoint_executor_threads(self._slots + self._retiring, exit_reason, CHECKPOINT_GRACE_SECONDS, seams)
+                checkpoint_executor_threads(
+                    self._slots + self._retiring,
+                    exit_reason,
+                    CHECKPOINT_GRACE_SECONDS,
+                    seams,
+                    CheckpointControl(self._stop.is_set, self._claim_t3_master, seams.master_refresh_seconds),
+                )
             self.request_stop()
             survivors = self._stop_pool()
             # The daemon-join above never reaches a tick SUBPROCESS: a SIGTERM mid-tick

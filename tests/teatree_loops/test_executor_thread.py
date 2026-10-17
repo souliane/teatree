@@ -77,16 +77,62 @@ def test_quiet_run_resets_the_delay() -> None:
     assert delays == [0.5, 0.5]
 
 
-def test_long_lock_streak_emits_one_error_alert(caplog: pytest.LogCaptureFixture) -> None:
+def test_long_lock_streak_repeats_one_line_error_every_ten_minutes(caplog: pytest.LogCaptureFixture) -> None:
     clock = [0.0]
-    executor = ScriptedExecutor(3)
+    executor = ScriptedExecutor(4)
+    last_waited_call = [0]
 
     def wait(_seconds: float) -> None:
-        clock[0] += 601.0
+        if executor.calls != last_waited_call[0]:
+            clock[0] += 601.0
+            last_waited_call[0] = executor.calls
 
     LockTolerantRun(executor, sleep=wait, monotonic=lambda: clock[0]).run()
 
-    assert caplog.text.count("Executor database lock has persisted") == 1
+    alerts = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert [record.getMessage() for record in alerts] == [
+        f"Executor database lock has persisted for {age}s; still retrying" for age in (601, 1202, 1803)
+    ]
+    assert all(record.exc_info is None for record in alerts)
+
+
+def test_lock_streak_degraded_state_clears_after_success() -> None:
+    clock = [0.0]
+    observed: list[bool] = []
+    executor = ScriptedExecutor(2)
+
+    def wait(_seconds: float) -> None:
+        observed.append(run.degraded)
+        clock[0] += 601.0
+
+    run = LockTolerantRun(executor, sleep=wait, monotonic=lambda: clock[0])
+    run.run()
+
+    assert observed == [False, True]
+    assert not run.degraded
+
+
+def test_degraded_state_clears_after_quiet_run_without_waiting_for_exit() -> None:
+    clock = [0.0]
+    observed: list[bool] = []
+
+    class QuietExecutor(ScriptedExecutor):
+        def run(self) -> None:
+            if self.calls == 2:
+                clock[0] += 61.0
+                observed.append(run.degraded)
+            super().run()
+
+    executor = QuietExecutor(2)
+
+    def wait(_seconds: float) -> None:
+        if executor.calls == 1:
+            clock[0] += 601.0
+
+    run = LockTolerantRun(executor, sleep=wait, monotonic=lambda: clock[0])
+    run.run()
+
+    assert observed == [False]
 
 
 class TestExecutorThreadConnectionHygiene(TestCase):

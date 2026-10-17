@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from django.db import OperationalError
@@ -52,19 +52,37 @@ class CheckpointClock(Protocol):
     def sleep(self) -> Callable[[float], None]: ...
 
 
+@dataclass(frozen=True)
+class CheckpointControl:
+    stop_requested: Callable[[], bool]
+    refresh_master: Callable[[], None]
+    master_refresh_seconds: float
+
+
 def checkpoint_executor_threads(
-    slots: Sequence[CheckpointSlot], reason: str, grace_seconds: float, clock: CheckpointClock
+    slots: Sequence[CheckpointSlot],
+    reason: str,
+    grace_seconds: float,
+    clock: CheckpointClock,
+    control: CheckpointControl,
 ) -> None:
     clock.begin_exit(reason)
     for slot in slots:
         slot.executor.running = False
     deadline = clock.monotonic() + grace_seconds
-    while any(slot.handle.is_alive() for slot in slots):
-        remaining = deadline - clock.monotonic()
+    control.refresh_master()
+    refresh_interval = max(control.master_refresh_seconds, EXECUTOR_INTERVAL_SECONDS)
+    next_refresh = clock.monotonic() + refresh_interval
+    while not control.stop_requested() and any(slot.handle.is_alive() for slot in slots):
+        now = clock.monotonic()
+        remaining = deadline - now
         if remaining <= 0:
             logger.error("Executor pool still active after checkpoint grace: %s", reason)
             break
-        clock.sleep(min(remaining, EXECUTOR_INTERVAL_SECONDS))
+        if now >= next_refresh:
+            control.refresh_master()
+            next_refresh = now + refresh_interval
+        clock.sleep(min(remaining, EXECUTOR_INTERVAL_SECONDS, next_refresh - now))
 
 
 def build_executor(queue_name: str, worker_id: str) -> Worker:
@@ -85,39 +103,55 @@ class LockTolerantRun:
     executor: Executor
     sleep: Callable[[float], None] = time.sleep
     monotonic: Callable[[], float] = time.monotonic
+    _degraded: bool = field(default=False, init=False)
+    _last_lock_at: float | None = field(default=None, init=False)
+
+    @property
+    def degraded(self) -> bool:
+        return (
+            self._degraded
+            and self._last_lock_at is not None
+            and self.monotonic() - self._last_lock_at < LOCK_QUIET_SECONDS
+        )
 
     def run(self) -> None:
         delay = LOCK_BACKOFF_FIRST_SECONDS
         streak_started: float | None = None
-        alerted = False
+        next_alert = 0.0
         attempts = 0
-        while self.executor.running:
-            started = self.monotonic()
-            try:
-                self.executor.run()
-            except OperationalError as exc:
-                if not is_locked_error(exc):
-                    raise
-                now = self.monotonic()
-                if streak_started is None or now - started >= LOCK_QUIET_SECONDS:
-                    streak_started = now
-                    delay = LOCK_BACKOFF_FIRST_SECONDS
-                    attempts = 0
-                    alerted = False
-                attempts += 1
-                age = now - streak_started
-                logger.warning(
-                    "Executor database lock attempt %d (%.0fs streak); retrying in %.1fs", attempts, age, delay
-                )
-                if age >= LOCK_ALERT_SECONDS and not alerted:
-                    logger.exception("Executor database lock has persisted for %.0fs; still retrying", age)
-                    alerted = True
-            else:
-                return
-            finally:
-                close_thread_db_connections()
-            self._wait(delay)
-            delay = min(delay * 2, LOCK_BACKOFF_CAP_SECONDS)
+        try:
+            while self.executor.running:
+                started = self.monotonic()
+                try:
+                    self.executor.run()
+                except OperationalError as exc:
+                    if not is_locked_error(exc):
+                        raise
+                    now = self.monotonic()
+                    if streak_started is None or now - started >= LOCK_QUIET_SECONDS:
+                        streak_started = now
+                        delay = LOCK_BACKOFF_FIRST_SECONDS
+                        attempts = 0
+                        next_alert = now + LOCK_ALERT_SECONDS
+                        self._degraded = False
+                    attempts += 1
+                    self._last_lock_at = now
+                    age = now - streak_started
+                    logger.warning(
+                        "Executor database lock attempt %d (%.0fs streak); retrying in %.1fs", attempts, age, delay
+                    )
+                    if now >= next_alert:
+                        logger.log(logging.ERROR, "Executor database lock has persisted for %.0fs; still retrying", age)
+                        self._degraded = True
+                        next_alert = now + LOCK_ALERT_SECONDS
+                else:
+                    return
+                finally:
+                    close_thread_db_connections()
+                self._wait(delay)
+                delay = min(delay * 2, LOCK_BACKOFF_CAP_SECONDS)
+        finally:
+            self._degraded = False
 
     def _wait(self, seconds: float) -> None:
         remaining = seconds
@@ -127,12 +161,22 @@ class LockTolerantRun:
             remaining -= duration
 
 
+class LockTolerantThread(threading.Thread):
+    def __init__(self, runner: LockTolerantRun) -> None:
+        super().__init__(target=runner.run, daemon=True)
+        self._runner = runner
+
+    @property
+    def degraded(self) -> bool:
+        return self._runner.degraded
+
+
 def spawn_executor_thread(
     executor: Executor,
     *,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Handle:
-    thread = threading.Thread(target=LockTolerantRun(executor, sleep=sleep, monotonic=monotonic).run, daemon=True)
+    thread = LockTolerantThread(LockTolerantRun(executor, sleep=sleep, monotonic=monotonic))
     thread.start()
     return thread
