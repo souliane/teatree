@@ -7,6 +7,21 @@ from typing import Any, Literal
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
+
+@dataclasses.dataclass(frozen=True)
+class CachedPass:
+    name: str
+    lane: str
+    content_key: str
+    run_url: str
+    recorded_at: str
+    head_sha: str
+    model: str = ""
+
+    def as_json(self) -> dict[str, str]:
+        return dataclasses.asdict(self)
+
+
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
 #: cost does NOT match the clean billed identity (it paid a partial-or-cap cost).
 #: A clean completion (``success``/``end_turn``/empty) is NOT in this set. The
@@ -24,6 +39,7 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: override (:func:`teatree.eval.api_runner.resolve_max_turns_override`,
 #: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
+DEFAULT_JUDGE_BUDGET = 20
 
 #: Minimum turn budget the clean-room lane grants a scenario regardless of a
 #: lower per-scenario ``max_turns`` declaration. Many catalog scenarios declare a

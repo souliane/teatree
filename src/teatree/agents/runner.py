@@ -47,6 +47,7 @@ from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_heartbeat import HEARTBEAT_INTERVAL_SECONDS as _HEARTBEAT_INTERVAL
 from teatree.agents.runner_heartbeat import (
     HeartbeatRuntime,
     drain_reason_closing_connection,
@@ -64,6 +65,7 @@ from teatree.agents.runner_outcomes import resolve_dispatch_lane as _resolve_dis
 from teatree.agents.runner_preparation import Preflight as _Preflight
 from teatree.agents.runner_preparation import PreparedRun as _PreparedRun
 from teatree.agents.runner_preparation import prepare_run as _prepare_run_impl
+from teatree.agents.runner_preparation import restore_unconsumed_resume_thread as _restore_unconsumed_resume_thread
 from teatree.agents.runner_route_recording import NO_ROUTE_FALLBACK as _NO_ROUTE_FALLBACK
 from teatree.agents.runner_route_recording import RouteFailureRecord as _RouteFailureRecord
 from teatree.agents.runner_route_recording import RouteFallback as _RouteFallback
@@ -108,8 +110,6 @@ logger = logging.getLogger(__name__)
 # this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
 # ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
 __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
-
-_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Lease duration the heartbeat renews to. The renewal runs as an asyncio task on
 # the SAME event loop the headless agent drives, so under CPU/event-loop
@@ -329,7 +329,8 @@ def run_agent(
                         settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
-        return park_task_checkout(task, reason=str(exc))
+        attestable = exc.attestable if isinstance(exc, CheckoutFenceError) else None
+        return park_task_checkout(task, reason=str(exc), attestable=attestable)
 
 
 def _run_agent(
@@ -482,13 +483,6 @@ def _preflight(
         return dispatch
 
     return _Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
-
-
-def _restore_unconsumed_resume_thread(harness: Harness) -> None:
-    """Re-persist a resume thread popped but never actually driven (souliane/teatree#2916)."""
-    restore = getattr(harness, "restore_unconsumed_resume_thread", None)
-    if callable(restore):
-        restore()
 
 
 def _resolve_backend_or_failure(

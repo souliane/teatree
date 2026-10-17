@@ -21,7 +21,7 @@ deterministic mirror of the metered behaviour: the prose must name what the
 matcher demands.
 
 The prose is resolved through the SAME loader the metered lane uses
-(:func:`~teatree.eval.api_runner.load_agent_definition`), honouring the
+(:func:`~teatree.eval.agent_prompt.load_agent_definition`), honouring the
 scenario's ``agent_sections``. A scenario that loads only one ``##`` section
 shows the model only that section, so a whole-file check would go green on a
 token sitting in some *other* section the model never sees — the false-green
@@ -30,7 +30,7 @@ mirror of the very impossible-matcher class this guard exists to catch.
 
 import pytest
 
-from teatree.eval.api_runner import load_agent_definition
+from teatree.eval.agent_prompt import load_agent_definition
 from teatree.eval.discovery import find_spec
 
 

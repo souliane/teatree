@@ -18,6 +18,7 @@ import pytest
 from teatree.eval.models import (
     HEADLESS_SURFACE,
     INTERACTIVE_SURFACE,
+    CachedPass,
     EvalRun,
     EvalSpec,
     EvalToolCall,
@@ -27,9 +28,39 @@ from teatree.eval.models import (
 )
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
-from teatree.eval.summary_json import render_summary_json, write_summary_json
+from teatree.eval.summary_json import SummaryCacheData, render_summary_json, write_summary_json
 
 SENTINEL = "SECRET_TRANSCRIPT_SENTINEL_dQw4w9"
+
+
+def test_all_cached_summary_names_model() -> None:
+    cached = CachedPass(
+        "alpha", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head", "claude-sonnet-4-6"
+    )
+    payload = json.loads(
+        render_summary_json([], head_sha="head", generated_at="now", cache=SummaryCacheData({}, [cached], "api"))
+    )
+    assert payload["model"] == "claude-sonnet-4-6"
+
+
+def test_cache_data_with_keys_requires_backend() -> None:
+    with pytest.raises(ValueError, match="backend"):
+        SummaryCacheData({"alpha": "a" * 64}, [], "")
+
+
+def test_failing_result_is_never_cache_eligible() -> None:
+    result = _behavioral_red()
+    payload = json.loads(
+        render_summary_json(
+            [result],
+            head_sha="head",
+            generated_at="now",
+            cache=SummaryCacheData({result.spec.name: "a" * 64}, [], "anthropic_api"),
+        )
+    )
+    assert payload["scenarios"][0]["cache_eligible"] is False
+
+
 _MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git worktree")
 _HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -166,14 +197,23 @@ class TestShape:
 
     def test_top_level_shape_matches_the_spec(self) -> None:
         payload = _render([_passing()])
-        assert set(payload) == {"generated_at", "model", "head_sha", "totals", "outcome_counts", "scenarios"}
+        assert set(payload) == {
+            "generated_at",
+            "model",
+            "head_sha",
+            "totals",
+            "outcome_counts",
+            "scenarios",
+            "cached",
+            "trial_count",
+        }
         assert payload["head_sha"] == _HEAD_SHA
         assert payload["generated_at"] == "2026-07-13T00:00:00Z"
         assert payload["model"] == "claude-sonnet-4-6"
 
     def test_totals_count_each_verdict(self) -> None:
         totals = _render([_behavioral_red(), _errored_red(), _passing(), _skipped()])["totals"]
-        assert totals == {"total": 4, "passed": 1, "failed": 2, "skipped": 1, "incomplete": 0}
+        assert totals == {"total": 4, "passed": 1, "failed": 2, "skipped": 1, "incomplete": 0, "cached": 0}
 
     def test_each_scenario_carries_identity_and_discriminators(self) -> None:
         scenario = _render([_behavioral_red("alpha", lane="under_load")])["scenarios"][0]
@@ -298,3 +338,33 @@ class TestWriteSummaryJson:
         out = tmp_path / "eval-heal.json"
         write_summary_json([_passing()], out)
         assert json.loads(out.read_text(encoding="utf-8"))["head_sha"] == ""
+
+
+def test_empty_fresh_trajectory_cannot_enter_verdict_cache() -> None:
+    result = _passing()
+    empty_run = dataclasses.replace(result.run, tool_calls=(), text_blocks=())
+    result = dataclasses.replace(result, run=empty_run)
+    payload = json.loads(
+        render_summary_json(
+            [result],
+            head_sha=_HEAD_SHA,
+            generated_at="t",
+            cache=SummaryCacheData({result.spec.name: "a" * 64}, (), "anthropic_api"),
+        )
+    )
+    assert payload["scenarios"][0]["outcome"] == "PASS"
+    assert payload["scenarios"][0]["cache_eligible"] is False
+
+
+def test_fallback_model_pass_cannot_enter_verdict_cache() -> None:
+    result = _passing()
+    result = dataclasses.replace(result, run=dataclasses.replace(result.run, fell_back=True))
+    payload = json.loads(
+        render_summary_json(
+            [result],
+            head_sha=_HEAD_SHA,
+            generated_at="t",
+            cache=SummaryCacheData({result.spec.name: "a" * 64}, (), "anthropic_api"),
+        )
+    )
+    assert payload["scenarios"][0]["cache_eligible"] is False

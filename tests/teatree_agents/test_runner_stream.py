@@ -212,7 +212,7 @@ def _outcome(*, result: ResultMessage | None = None, stuck_reason: str | None = 
         pytest.param(_outcome(result=result_message(subtype="error_max_turns", is_error=True)), id="turn-ceiling"),
         pytest.param(_outcome(result=result_message(is_error=True, result="Prompt is too long")), id="context-full"),
         pytest.param(_outcome(compaction_stopped=True), id="compaction-blocked"),
-        pytest.param(_outcome(stuck_reason="deploy checkpoint: quiescing", checkpointed=True), id="deploy-checkpoint"),
+        pytest.param(_outcome(stuck_reason="checkpoint: quiescing", checkpointed=True), id="deploy-checkpoint"),
     ],
 )
 def test_a_ceiling_a_full_window_or_a_blocked_compaction_cuts_a_run_short(outcome: HarnessOutcome) -> None:

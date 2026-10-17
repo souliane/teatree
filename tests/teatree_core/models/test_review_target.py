@@ -121,6 +121,23 @@ class TestVerdictReadBack(TestCase):
 
         assert verdict_at(target) is not None
 
+    def test_a_later_pass_cannot_change_phase_evidence_for_a_held_head(self) -> None:
+        task = self._target_with_verdict(recorded_slug=_SLUG)
+        ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer-other",
+        )
+        target = review_target_for_task(task)
+        assert target is not None
+
+        recorded = verdict_at(target)
+
+        assert recorded is not None
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+
     def test_an_unknown_head_can_never_read_back_a_verdict(self) -> None:
         task = _reviewer_task(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}")
         ReviewVerdict.record(

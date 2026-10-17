@@ -157,7 +157,7 @@ class CheckoutRecoveryTests(_RecoveryCase):
         self.assert_parked()
 
     def test_state_changed_during_recovery_refuses(self) -> None:
-        stale = CheckoutState(digest="different", commits_ahead=1, dirty=False, branch="feature")
+        stale = CheckoutState(digest="different", commits_ahead=1, uncommitted=0, branch="feature")
         with patch("teatree.core.worktree.checkout_recovery.checkout_state", return_value=stale):
             self.assert_parked()
 

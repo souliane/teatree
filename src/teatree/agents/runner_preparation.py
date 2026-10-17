@@ -8,6 +8,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents._runner_env import DispatchCredential
 from teatree.agents._runner_options import SpawnOverrides, _build_options, _turn_ceiling
 from teatree.agents.compaction_guard import CompactionGuard
+from teatree.agents.harness import Harness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.prompt import (
     build_read_only_system_context,
@@ -39,6 +40,12 @@ class Preflight:
     stage_skills: list[str]
     dispatch: DispatchHarness
     skills: list[str]
+
+
+def restore_unconsumed_resume_thread(harness: Harness) -> None:
+    restore = getattr(harness, "restore_unconsumed_resume_thread", None)
+    if callable(restore):
+        restore()
 
 
 def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str]:

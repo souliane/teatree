@@ -330,6 +330,35 @@ def _expedited_pending_clear_with_verdict(feature_tip: str) -> MergeClear:
 
 
 class TestRebindClearance(TestCase):
+    def test_hold_beside_later_pass_refuses_rebind(self) -> None:
+        repo = Path(self._repo())
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        clear = _clear_with_verdict(repo, feature_tip)
+        hold = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=feature_tip,
+            verdict=ReviewVerdict.Verdict.HOLD,
+            reviewer_identity="reviewer-a",
+        )
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=feature_tip,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="reviewer-b",
+        )
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        assert (
+            rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo)) is False
+        )
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == feature_tip
+        assert ReviewVerdict.objects.filter(pk=hold.pk).exists()
+        assert not ReviewVerdict.objects.filter(pr_id=42, reviewed_sha=merge_sha.lower()).exists()
+
     def test_conflict_only_merge_rebinds_clearance_and_verdict(self) -> None:
         repo = Path(self._repo())
         _diverge(repo, "feature")

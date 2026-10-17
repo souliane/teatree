@@ -106,7 +106,7 @@ COLLEAGUE_LOGIN = "a-teammate"
 _T0 = "2026-06-19T10:00:00Z"
 _T1 = "2026-06-19T10:05:00Z"
 # The #4380 shape: a hold, then a STRICTLY later merge_safe from another identity.
-# Pinned so newest-wins resolves the same way on every run.
+# Pinned so recording-order assertions stay deterministic.
 _HOLD_AT = dt.datetime(2026, 6, 19, 1, 34, 32, tzinfo=dt.UTC)
 _LATER_MERGE_SAFE_AT = dt.datetime(2026, 6, 19, 2, 5, 36, tzinfo=dt.UTC)
 
@@ -233,7 +233,7 @@ def _record_hold(
 
 
 def _record_verdict(*, pr_id: int, sha: str, verdict: str, reviewer: str, at: dt.datetime | None) -> ReviewVerdict:
-    """Record one verdict, optionally pinning ``recorded_at`` so newest-wins is deterministic."""
+    """Record one verdict, optionally pinning ``recorded_at`` for ordering cases."""
     row = ReviewVerdict.record(
         pr_id=pr_id,
         slug=SLUG,
@@ -1294,10 +1294,8 @@ class TestSoloOverlayRequiresIndependentColdReview:
 
     def test_contested_hold_at_head_is_not_auto_merged(self) -> None:
         # souliane/teatree#4380: two reviewers ran concurrently on ONE unchanged tree
-        # and disagreed. The later ``merge_safe`` won under newest-wins and the
-        # autonomous no-CLEAR bypass merged over a hold nobody ever reconciled.
-        # An unreconciled hold at the live head blocks the robot, whatever its
-        # timestamp says.
+        # and disagreed. The later ``merge_safe`` once let the no-CLEAR bypass merge
+        # over an active HOLD. Every hold at the head now blocks the merge.
         hold = _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
         allow = _record_cold_review(reviewer="cold-reviewer-b", at=_LATER_MERGE_SAFE_AT)
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
@@ -1347,11 +1345,7 @@ class TestSoloOverlayRequiresIndependentColdReview:
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
         assert signals[0].payload["authorizing_verdict"] == [allow.pk, "cold-reviewer-b"]
 
-    def test_same_reviewer_lifting_own_hold_merges(self) -> None:
-        # Anti-vacuity + the escape hatch: the F8 idempotency key is
-        # (slug, pr_id, reviewed_sha, normalized identity), so one reviewer
-        # re-recording at the same head UPDATES their own row and leaves no hold.
-        # Self-correction is not a contested head, and needs no new machinery.
+    def test_same_reviewer_pass_leaves_own_hold_active(self) -> None:
         _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
         _record_cold_review(reviewer="cold-reviewer-a", at=_LATER_MERGE_SAFE_AT)
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
@@ -1360,8 +1354,8 @@ class TestSoloOverlayRequiresIndependentColdReview:
 
         signals = scanner.scan()
 
-        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
-        assert signals[0].kind == "pr_sweep.merged"
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_held"
 
     def test_collaborative_overlay_unaffected_by_cold_review_gate(self) -> None:
         # Anti-vacuous: the cold-review gate is solo-overlay-only. A non-solo

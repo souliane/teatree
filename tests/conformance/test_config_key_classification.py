@@ -54,7 +54,6 @@ _ACCESSORS = frozenset(
         "str_setting",
         "list_setting",
         "mapping_setting",
-        "overlay_then_global",
         # cold_writer — the cold path's write twin.
         "write_setting",
     }

@@ -503,8 +503,8 @@ Any DB-home key can be scoped to a client overlay with `--overlay`.
 
 The `agent_*` DB settings hold the model/effort settings for spawned sub-agents
 and the interactive main agent. `config.agent_spawn.resolve_agent_config` reads
-them through the Django-free cold DB reader, so they are available before normal
-settings bootstrap and can be global or overlay-scoped. The table syntax below
+them through the Django-free cold DB reader at global scope, so they are available before normal
+settings bootstrap. Overlay-scoped `agent_*` rows do not affect this resolution. The table syntax below
 is an illustrative shape; write the real values with `config_setting set`.
 
 ```toml
@@ -713,7 +713,7 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 
 * `teatree.hooks.terminology_gate` — the conflated-terminology vocabulary (generic wording checks).
 * `teatree.hooks.opaque_id` — the real-shaped Slack/forge ID detector and its synthetic-placeholder allowlist.
-* `scripts/privacy_scan.py` — the credential/email/host regexes (`glpat-`, `sk-`, home-directory paths, …).
+* `teatree.hooks.privacy_generic_detectors` — the credential/email/host regexes (`glpat-`, `sk-`, home-directory paths, …), shared by `scripts/privacy_scan.py` and both forge-write gates. Forge gates detect on raw text, exempt only findings wholly covered by an exact registry allow entry, and skip the Linux and macOS hosted CI runner workspace prefixes; the push scanner retains its existing coverage.
 * the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
 
 **Secret / defaults boundary.** `banned_term_registry` carries operator-private codenames and is in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. It must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
