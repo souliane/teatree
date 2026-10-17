@@ -119,7 +119,7 @@ class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
         properties = cast("JSONSchema", block_schema["properties"])
 
         assert set(block) == set(properties)
-        assert block["ac_coverage"] == "<AC coverage for this diff>"
+        assert block["ac_coverage"] == "<AC coverage>"
         assert block["proven_tests"] == ["<test ID observed RED before the fix>"]
         assert "proven_tests" in brief
         assert "no_new_tests" in brief

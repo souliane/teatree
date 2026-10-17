@@ -385,7 +385,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         ),
         ("Return required `review_context`: work item URL, documents, analysis."),
         (
-            'Return `anti_vacuity`: {"ac_coverage":"<AC coverage for this diff>",'
+            'Return `anti_vacuity`: {"ac_coverage":"<AC coverage>",'
             '"proven_tests":["<test ID observed RED before the fix>"],"no_new_tests":false}'
         ),
         (
