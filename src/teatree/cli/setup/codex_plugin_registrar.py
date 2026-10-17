@@ -6,8 +6,10 @@ is reported with the Codex CLI's own exit code and stderr, so ``t3 setup`` never
 fails on a bare "could not install".
 """
 
+import filecmp
 import json
 import shutil
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -137,12 +139,13 @@ class CodexPluginRegistrar:
                 return False
             for relative, original in expected.items():
                 copy = actual[relative]
-                same_shape = (original.is_dir() or original.is_file()) and (
-                    original.is_dir() == copy.is_dir() and original.is_file() == copy.is_file()
-                )
-                if original.is_symlink() or copy.is_symlink() or not same_shape:
+                original_mode = original.lstat().st_mode
+                copy_mode = copy.lstat().st_mode
+                if stat.S_IFMT(original_mode) != stat.S_IFMT(copy_mode) or not (
+                    stat.S_ISDIR(original_mode) or stat.S_ISREG(original_mode)
+                ):
                     return False
-                if original.is_file() and original.read_bytes() != copy.read_bytes():
+                if stat.S_ISREG(original_mode) and not filecmp.cmp(original, copy, shallow=False):
                     return False
         except OSError:
             return False

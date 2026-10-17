@@ -367,15 +367,15 @@ def test_an_unreadable_served_copy_is_not_ready(env: Path) -> None:
     served = _served_copy(env, repo)
     slim = _slim_root(env)
     marketplace = {"marketplaces": [{"name": "souliane", "root": str(slim)}]}
-    original_read_bytes = Path.read_bytes
+    original_cmp = registrar_mod.filecmp.cmp
 
-    def read_bytes(path: Path) -> bytes:
-        if path == served / "skills" / "code" / "SKILL.md":
+    def compare(original: Path, copy: Path, *, shallow: bool) -> bool:
+        if copy == served / "skills" / "code" / "SKILL.md":
             reason = "unreadable served skill"
             raise OSError(reason)
-        return original_read_bytes(path)
+        return original_cmp(original, copy, shallow=shallow)
 
-    with patch.object(Path, "read_bytes", read_bytes):
+    with patch.object(registrar_mod.filecmp, "cmp", compare):
         reason, calls = _install(
             CodexPluginRegistrar(repo),
             [_ok(marketplace), _ok(_registered_plugin(slim)), _ok(), _ok(), _post_add_plugins()],
