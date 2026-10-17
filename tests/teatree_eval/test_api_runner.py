@@ -2391,7 +2391,7 @@ class TestThrottleRetry:
     """Layer 2: bounded transient-throttle retry around the SDK drive.
 
     A parallel metered suite shares ONE OAuth token, so a rate-limit burst turns
-    into false reds unless a run rides it out. These pin that a TRANSIENT/SUSTAINED
+    into false reds unless a run rides it out. These pin that a transient
     throttle is retried (with backoff) while a GENUINE cap, credit exhaustion, or
     weekly cap is NEVER retried — the anti-cheat boundary that keeps a real
     behavioral fail from being laundered into a passing retry.

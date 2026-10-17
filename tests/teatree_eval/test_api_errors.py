@@ -2,12 +2,12 @@
 
 The metered ``api`` lane drives many parallel scenarios through ONE shared OAuth
 token, so a burst turns per-token rate limits into false reds. Layer 1 grades a
-raw SDK error message into a retry disposition — TRANSIENT (fast backoff),
-SUSTAINED (window wait), or ``None`` (never a throttle: a genuine cap, credit
-exhaustion, a 7-day weekly cap, a success mislabel, or a real crash).
+raw SDK error message into a retry disposition — a transient throttle (fast
+backoff) or ``None`` (never a throttle: a genuine cap, credit exhaustion, a
+subscription 5h/7d window, a success mislabel, or a real crash).
 """
 
-from teatree.eval.api_errors import ThrottleKind, classify_transient_throttle
+from teatree.eval.api_errors import classify_transient_throttle
 from teatree.llm.anthropic_limits import LimitCause
 
 #: The exact string the SDK surfaces when the subprocess CLI dies mid-stream with
@@ -30,20 +30,17 @@ class TestClassifyTransientThrottle:
     def test_rate_limit_is_transient(self) -> None:
         signal = classify_transient_throttle("Claude Code returned an error result: rate limit exceeded (429)")
         assert signal is not None
-        assert signal.kind is ThrottleKind.TRANSIENT
         assert signal.cause is LimitCause.RATE_LIMIT
 
     def test_overloaded_is_transient(self) -> None:
         signal = classify_transient_throttle("Overloaded")
         assert signal is not None
-        assert signal.kind is ThrottleKind.TRANSIENT
 
     def test_dropped_stream_is_transient(self) -> None:
         # A transport drop under load (a reset connection) carries no limit phrase
         # but is a transient infra signature, so it is ridden out.
         signal = classify_transient_throttle("peer closed connection unexpectedly")
         assert signal is not None
-        assert signal.kind is ThrottleKind.TRANSIENT
         assert signal.cause is None
 
     def test_opaque_error_result_is_not_a_throttle(self) -> None:
@@ -58,7 +55,6 @@ class TestClassifyTransientThrottle:
         # nothing, so it rides out as a TRANSIENT throttle with backoff.
         signal = classify_transient_throttle(_TRANSPORT_CRASH_MESSAGE)
         assert signal is not None
-        assert signal.kind is ThrottleKind.TRANSIENT
         assert signal.cause is None
 
     def test_ephemeral_checkout_git_clone_failure_is_transient(self) -> None:
@@ -67,7 +63,6 @@ class TestClassifyTransientThrottle:
         # out as a TRANSIENT throttle so the retried clone succeeds seconds later.
         signal = classify_transient_throttle(_EPHEMERAL_GIT_CLONE_MESSAGE)
         assert signal is not None
-        assert signal.kind is ThrottleKind.TRANSIENT
         assert signal.cause is None
 
     def test_behavioral_cap_wrapper_is_not_confused_for_transport_crash(self) -> None:

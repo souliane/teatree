@@ -10,11 +10,10 @@ and defines the trajectory-carrying exceptions (:class:`TerminalResultError`,
 
 import dataclasses
 import re
-from enum import Enum
 
 from claude_agent_sdk import Message
 
-from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit, window_horizon
+from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
 
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
@@ -93,33 +92,15 @@ def is_success_result_error(message: str) -> bool:
     return _SUCCESS_RESULT_MARKER in message
 
 
-class ThrottleKind(Enum):
-    """The retry disposition a transient throttle demands.
-
-    ``TRANSIENT`` clears within minutes (a 429, an overloaded 529, a dropped
-    stream, a generic under-load exit-1) and is ridden out with fast exponential
-    backoff. ``SUSTAINED`` is a rolling subscription-window cap that needs a
-    (bounded) window wait before the token frees up.
-    """
-
-    TRANSIENT = "transient"
-    SUSTAINED = "sustained"
-
-
 @dataclasses.dataclass(frozen=True)
 class ThrottleSignal:
-    """A throttle graded from a raw SDK error message: its kind, cause, and wait.
+    """A transient throttle graded from a raw SDK error message, ridden out with exponential backoff.
 
     ``cause`` is the classified :class:`~teatree.llm.anthropic_limits.LimitCause`
     when a limit phrase matched, else ``None`` for a generic transient drop.
-    ``wait_seconds`` carries the SUSTAINED window horizon (the caller clamps it to
-    a bounded cap); it is ``None`` for a TRANSIENT signal, which uses the caller's
-    exponential backoff instead.
     """
 
-    kind: ThrottleKind
     cause: LimitCause | None
-    wait_seconds: float | None
 
 
 #: Substrings marking a TRANSIENT throttle/transport signal the phrase taxonomy
@@ -177,11 +158,10 @@ _PROVISION_TRANSIENT_MARKERS: tuple[str, ...] = ("cannot provision an isolated e
 _RESULT_EVENT_WRAPPER = "returned an error result:"
 
 #: Limit causes that are NEVER a retriable throttle: a $0 metered key has no
-#: time-based recovery (fail loud), a 7-day weekly cap is never worth waiting
-#: out inside a single run (surface loud), a provider spend stop only lifts on a
+#: time-based recovery (fail loud), a subscription 5h or 7d window is never waited
+#: out inside a run (the eval parks instead), a provider spend stop only lifts on a
 #: budget reset or an operator action, and a leak block re-blocks the same context. The
-#: remaining causes ARE retriable — RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a
-#: bounded SUSTAINED window wait.
+#: remaining cause, RATE_LIMIT, is a transient retry.
 _NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset(
     {
         LimitCause.API_CREDIT,
@@ -207,11 +187,7 @@ def _throttle_from_limit(cause: LimitCause) -> ThrottleSignal | None:
     """Map a matched limit *cause* to its retry disposition, or ``None`` when never-retriable."""
     if cause in _NEVER_RETRY_CAUSES:
         return None
-    if cause is LimitCause.SUBSCRIPTION_SESSION:
-        horizon = window_horizon(cause)
-        wait = horizon.total_seconds() if horizon is not None else None
-        return ThrottleSignal(kind=ThrottleKind.SUSTAINED, cause=cause, wait_seconds=wait)
-    return ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=cause, wait_seconds=None)
+    return ThrottleSignal(cause=cause)
 
 
 def classify_transient_throttle(message: str) -> ThrottleSignal | None:
@@ -222,7 +198,7 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     (budget/max-turns — the anti-cheat boundary), a credit exhaustion or weekly
     cap (surface loud), a mislabeled success, or an opaque behavioral error the
     CLI reported via a ``result`` event. A matched limit phrase drives the
-    disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION -> SUSTAINED); an
+    disposition (RATE_LIMIT retries; a subscription window never does); an
     unmatched message carrying the ``result``-event wrapper
     (:data:`_RESULT_EVENT_WRAPPER`) short-circuits to ``None`` — a graded terminus
     is never ridden out even if a transport/provision marker appears inside its
@@ -241,7 +217,7 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     haystack = message.casefold()
     transient_markers = (*_TRANSIENT_INFRA_MARKERS, *_TRANSPORT_CRASH_MARKERS, *_PROVISION_TRANSIENT_MARKERS)
     if any(marker in haystack for marker in transient_markers):
-        return ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=None, wait_seconds=None)
+        return ThrottleSignal(cause=None)
     return None
 
 

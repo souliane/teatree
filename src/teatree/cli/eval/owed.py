@@ -12,6 +12,7 @@ from typing import NoReturn
 
 import typer
 
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.discovery import discover_catalog
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.merged_prs import parse_ts
@@ -114,7 +115,7 @@ def record(
         return
     owed = _read(ledger)
     updated = owed.recorded(names, reason=reason, source=source, since=_moment(now))
-    ledger.write_text(updated.to_json(), encoding="utf-8")
+    write_artifact(ledger, updated.to_json())
     typer.echo(f"recorded {len(set(names))} owed scenario(s) ({reason.value})")
 
 
@@ -138,7 +139,7 @@ def collect(
         ledger = harvest.collect(_moment(now))
     except (OwedLedgerError, CommandFailedError, *SUBPROCESS_UNREACHABLE) as exc:
         _fail(f"eval owed collect failed: {exc}", 1)
-    out.write_text(ledger.to_json(), encoding="utf-8")
+    write_artifact(out, ledger.to_json())
     harvested_through = ledger.harvested_through.isoformat() if ledger.harvested_through else "never"
     typer.echo(f"collected {len(ledger.scenarios)} owed scenario(s), harvested through {harvested_through}")
 
@@ -172,6 +173,6 @@ def settle(
     owed = _read(ledger)
     settled, dropped = owed.settled(passed, _catalog_names(scenarios_dir, keep_when_degraded=owed.names))
     _note_unknown(dropped)
-    ledger.write_text(settled.to_json(), encoding="utf-8")
+    write_artifact(ledger, settled.to_json())
     cleared = len(owed.scenarios) - len(settled.scenarios) - len(dropped)
     typer.echo(f"settled {cleared} passed and dropped {len(dropped)} unknown; {len(settled.scenarios)} still owed")
