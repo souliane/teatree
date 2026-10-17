@@ -2,7 +2,9 @@ import logging
 from typing import TYPE_CHECKING, ClassVar, cast
 from urllib.parse import urlsplit
 
+from django.apps import apps
 from django.db import models
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
@@ -19,6 +21,26 @@ if TYPE_CHECKING:
     from teatree.core.models.types import JSONObject
 
 logger = logging.getLogger(__name__)
+
+
+def pull_request_start_expression(*, ticket_ref: str = "ticket_id") -> models.Expression:
+    task = apps.get_model("core", "Task")
+    transition_row = apps.get_model("core", "TicketTransition")
+    first_admission = (
+        task.objects.filter(ticket_id=models.OuterRef(ticket_ref), admitted_at__isnull=False)
+        .order_by("admitted_at", "pk")
+        .values("admitted_at")[:1]
+    )
+    first_transition = (
+        transition_row.objects.filter(ticket_id=models.OuterRef(ticket_ref))
+        .order_by("created_at", "pk")
+        .values("created_at")[:1]
+    )
+    return Coalesce(
+        models.Subquery(first_admission),
+        models.Subquery(first_transition),
+        output_field=models.DateTimeField(),
+    )
 
 
 def _merge_is_voided(row: object) -> bool:
@@ -184,6 +206,17 @@ class PullRequestQuerySet(models.QuerySet):
         neither is a reason to keep holding an in-flight budget slot.
         """
         return self.exclude(state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED))
+
+    def with_flow_stamps(self) -> "PullRequestQuerySet":
+        merge = (
+            apps.get_model("core", "TicketTransition")
+            .objects.merge_entries()
+            .filter(ticket_id=models.OuterRef("ticket_id"))
+        )
+        return self.annotate(
+            flow_started_at=pull_request_start_expression(),
+            flow_merged_at=models.Subquery(merge.order_by("-created_at", "-pk").values("created_at")[:1]),
+        )
 
     def reconcile_forge_states(self, *, read_state: "Callable[[str], str]") -> int:
         """Settle every live row in this queryset against *read_state*; return the count moved.

@@ -1,21 +1,28 @@
 """The admission score shared by both headless chokepoints, loop claims and task-list inspection.
 
-One score per waiting task, the sum of named parts, highest first; the older row wins a tie,
-so age is the last part. Every caller orders through :data:`ADMISSION_ORDER`, so a new part
-is added here without touching any of them.
+One score per waiting task, the sum of named parts, highest first; a started pull request's
+first admission breaks ties before the older task row. Every caller orders through
+:data:`ADMISSION_ORDER`, so a new part is added here without touching any of them.
 """
 
-from django.db.models import Case, IntegerField, Q, Value, When
-from django.db.models.expressions import BaseExpression
+from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, When
+from django.db.models.expressions import BaseExpression, OrderBy
 
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
+from teatree.core.models.pull_request import PullRequest, pull_request_start_expression
 
 ADMISSION_SCORE_ALIAS = "_admission_score"
-ADMISSION_ORDER: tuple[str, ...] = (f"-{ADMISSION_SCORE_ALIAS}", "pk")
+PR_STARTED_ALIAS = "_pr_started_at"
+ADMISSION_ORDER: tuple[str | OrderBy, ...] = (
+    f"-{ADMISSION_SCORE_ALIAS}",
+    F(PR_STARTED_ALIAS).asc(nulls_last=True),
+    "pk",
+)
 
 #: Stage part: a review-lane row outranks every other row, continuing work outranks a new ticket.
 _REVIEW_STAGE = 400
 _CONTINUING_STAGE = 100
+_STARTED_PR_STAGE = 150
 _NEW_TICKET_STAGE = 0
 #: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
 _EXPEDITED_PRIORITY = 200
@@ -39,9 +46,10 @@ def _priority_part() -> Case:
     )
 
 
-def _stage_part() -> Case:
+def _stage_part(started: Exists) -> Case:
     return Case(
         When(phase__in=cheap_phase_spellings(), then=Value(_REVIEW_STAGE)),
+        When(started, then=Value(_STARTED_PR_STAGE)),
         When(_new_ticket_autostart_q(), then=Value(_NEW_TICKET_STAGE)),
         default=Value(_CONTINUING_STAGE),
         output_field=IntegerField(),
@@ -49,7 +57,11 @@ def _stage_part() -> Case:
 
 
 def admission_priority_annotations() -> dict[str, BaseExpression]:
-    return {ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part()}
+    started = Exists(PullRequest.objects.live().filter(ticket_id=OuterRef("ticket_id")))
+    return {
+        ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part(started),
+        PR_STARTED_ALIAS: Case(When(started, then=pull_request_start_expression())),
+    }
 
 
 __all__ = ["ADMISSION_ORDER", "ADMISSION_SCORE_ALIAS", "admission_priority_annotations"]

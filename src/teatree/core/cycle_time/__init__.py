@@ -14,10 +14,12 @@ from teatree.core.cycle_time.distribution import (
     transition_distribution,
     transition_trend,
 )
+from teatree.core.cycle_time.pull_request_flow import OpenPullRequest, merged_pull_request_seconds, open_pull_requests
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets, spans_since
 from teatree.core.cycle_time.timeline import PhaseSegment, TicketTimeline, build_ticket_timeline, build_ticket_timelines
 
 __all__ = [
+    "OpenPullRequest",
     "PhaseSegment",
     "PhaseSpan",
     "TicketTimeline",
@@ -26,6 +28,8 @@ __all__ = [
     "TrendPoint",
     "build_ticket_timeline",
     "build_ticket_timelines",
+    "merged_pull_request_seconds",
+    "open_pull_requests",
     "percentile",
     "spans_for_tickets",
     "spans_since",

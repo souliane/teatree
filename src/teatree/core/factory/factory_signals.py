@@ -1,6 +1,6 @@
 """Derived-on-read factory quality/velocity signals (SIG-PR-1).
 
-Five quantitative signals computed over the ledgers the FSM and merge/review
+Six quantitative signals computed over the ledgers the FSM and merge/review
 loops already record — ``MergeAudit``/``MergeClear`` (§17.4), ``ReviewVerdict``
 + ``Finding`` severities, ``RedMrFixAttempt``, ``TaskAttempt``, and
 ``Ticket``/``TicketTransition``/``RedCardSignal``. Mirrors
@@ -16,7 +16,7 @@ never fake-green: it is a **provider-shaped** function returning
 register them verbatim. A sample below :data:`~teatree.core.factory.factory_signal_queries.MIN_SAMPLE`
 reports ``insufficient_data``; a provably-silent upstream recorder reports
 ``instrumentation_gap`` — never a fabricated 100%. :func:`compute_factory_signals`
-composes the five readings against the immediately-preceding window as a rolling
+composes the six readings against the immediately-preceding window as a rolling
 baseline into a :class:`FactorySignalsReport` whose per-signal rows carry the
 red-floor verdict (a rubber-stamp review window, a stalled merge loop) the outer
 loop keys on.
@@ -30,6 +30,7 @@ from typing import TypedDict
 
 from django.utils import timezone
 
+from teatree.core.factory.factory_signal_merge_latency import compute_s4
 from teatree.core.factory.factory_signal_queries import (
     MIN_SAMPLE,
     Computation,
@@ -42,8 +43,8 @@ from teatree.core.factory.factory_signal_queries import (
     compute_s1,
     compute_s2,
     compute_s3,
-    compute_s4,
     compute_s5,
+    compute_s6,
     current_window,
 )
 from teatree.project import find_project_root
@@ -95,6 +96,7 @@ __all__ = [
     "first_try_green_rate",
     "merge_latency",
     "net_hand_written_loc",
+    "pr_start_to_merged",
     "repair_iteration_burn",
     "review_catch_rate",
 ]
@@ -116,6 +118,7 @@ DEFECT_ESCAPE_RED = 1.0
 # companion floor — a median clear-to-merge past a full day is a merge loop that is
 # draining, but far too slowly.
 MERGE_LATENCY_RED_HOURS = 24.0
+PR_START_TO_MERGED_RED_HOURS = 48.0
 # repair_burn (mean terminal iteration per succeeded phase, LOWER_IS_BETTER): the phase
 # cap is MAX_PHASE_ITERATIONS = 5, so a mean of 4 means the phases that DO land are
 # almost exhausting their repair budget every time. The high-failure companion detector
@@ -263,6 +266,15 @@ SIGNALS: tuple[SignalSpec, ...] = (
         2.0,
         regress_multiplicative=True,
     ),
+    SignalSpec(
+        "pr_start_to_merged",
+        "quant",
+        Direction.LOWER_IS_BETTER,
+        compute_s6,
+        PR_START_TO_MERGED_RED_HOURS,
+        2.0,
+        regress_multiplicative=True,
+    ),
     SignalSpec("repair_burn", "quant", Direction.LOWER_IS_BETTER, compute_s5, REPAIR_BURN_RED_ITERS, 0.5),
 )
 
@@ -338,6 +350,15 @@ def merge_latency(
     now: datetime | None = None,
 ) -> SignalReading:
     return _provider(compute_s4, window_days, overlay, now)
+
+
+def pr_start_to_merged(
+    *,
+    window_days: int = DEFAULT_WINDOW_DAYS,
+    overlay: str = "",
+    now: datetime | None = None,
+) -> SignalReading:
+    return _provider(compute_s6, window_days, overlay, now)
 
 
 def repair_iteration_burn(

@@ -17,7 +17,7 @@ from datetime import datetime
 from django.apps import apps
 from django.db import transaction
 from django.db.models import F, Q
-from django.db.models.expressions import BaseExpression
+from django.db.models.expressions import BaseExpression, OrderBy
 
 from teatree.config import worker_is_quiescing
 from teatree.core.admission.generation_admission import generation_admission_refusal, reopen_own_stranded_drain
@@ -50,7 +50,7 @@ class ClaimOrder:
     """
 
     annotations: dict[str, BaseExpression]
-    order_by: tuple[str, ...]
+    order_by: tuple[str | OrderBy, ...]
 
 
 def _claimable_now_q(now: datetime) -> Q:

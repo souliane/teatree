@@ -28,6 +28,7 @@ from teatree.dash.cycle_time import (
     clamp_window_days,
 )
 from teatree.dash.views.base import NAV_ITEMS
+from tests.factories import PullRequestFactory
 
 State = Ticket.State
 MINUTE = 60.0
@@ -229,6 +230,14 @@ class CycleTimePageTestCase(TestCase):
 
     def test_the_page_is_in_the_nav(self) -> None:
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
+
+    def test_open_pull_requests_are_shown_with_the_flow_measure(self) -> None:
+        pr = PullRequestFactory(ticket=self.ticket)
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Pull requests: start to merged" in body
+        assert pr.url in body
 
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)

@@ -1,23 +1,19 @@
-"""Derived-on-read ledger queries for the factory signals (SIG-PR-1).
+"""Derived-on-read factory signal queries over the merge, review, repair and PR ledgers.
 
-The query engine behind :mod:`teatree.core.factory.factory_signals`: the low-level
-value types (:class:`SignalReading`, :class:`Window`) plus the five per-signal
-``_compute_s*`` functions that read the merge/review/CI/repair ledgers, and the
-rolling-baseline regression predicates. Kept separate from the report-model +
-composition concern so each file stays single-purpose; every function here is a
-read-only ``select`` — no mutation, no LLM calls, no network.
+Every provider here is a read-only select; report composition lives in factory_signals.
 """
 
 import enum
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from statistics import mean, median
+from statistics import mean
 from typing import NotRequired, TypedDict
 
 from django.db.models import Min
 
-from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable_clear_age_hours
+from teatree.core.cycle_time.distribution import percentile
+from teatree.core.cycle_time.pull_request_flow import merged_pull_request_seconds, open_pull_requests
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
@@ -41,6 +37,7 @@ MIN_SAMPLE = 5
 # failure fraction is this high AND the window carries at least MIN_SAMPLE work attempts,
 # so a small sample is treated as noise, not a fleet-scale collapse.
 HIGH_FAILURE_FRACTION = 0.5
+OPEN_PR_RED_HOURS = 72.0
 
 
 _CATCH_SEVERITIES = frozenset({Severity.BLOCKER, Severity.MAJOR})
@@ -119,6 +116,14 @@ class S5Evidence(TypedDict):
     failed_fraction: float
 
 
+class S6Evidence(TypedDict):
+    merged: int
+    open: int
+    unmeasured_open: int
+    oldest_open_hours: float
+    oldest_open_pr: str
+
+
 class LocEvidence(TypedDict):
     """Net-hand-written-LoC evidence: the two halves behind the net, and the window's commits."""
 
@@ -130,7 +135,7 @@ class LocEvidence(TypedDict):
 # The evidence payload of a :class:`Computation` — one fixed shape per signal,
 # discriminated by which compute function produced it. Replaces the former
 # ``dict[str, Any]`` so each signal's evidence keys are declared, not free-form.
-SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence | LocEvidence
+SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence | S6Evidence | LocEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,43 +397,6 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
-def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
-    """S4 merge_latency: median CLEAR→merge hours + stale-actionable-CLEAR age.
-
-    The exact FK join ``MergeClear.issued_at`` → ``MergeAudit.merged_at``. The
-    staleness companion is independent of the merge sample: an actionable CLEAR
-    older than :data:`~teatree.core.factory.merge_backlog.STALE_CLEAR_HOURS` trips
-    RED even in a zero-merge window.
-    """
-    audits = _merge_audits_in(window, overlay)
-    latencies = [
-        (audit.merged_at - audit.clear.issued_at).total_seconds() / 3600.0
-        for audit in audits
-        if audit.merged_at >= audit.clear.issued_at
-    ]
-    denom = len(latencies)
-    stale_hours = max_actionable_clear_age_hours(overlay, now)
-    hard_red = stale_hours is not None and stale_hours > STALE_CLEAR_HOURS
-    evidence: S4Evidence = {
-        "merges": denom,
-        "stale_clear_hours": round(stale_hours, 2) if stale_hours is not None else 0.0,
-    }
-    reason = "actionable CLEAR older than 48h" if hard_red else ""
-    if denom < MIN_SAMPLE:
-        return Computation(
-            SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA),
-            evidence,
-            hard_red=hard_red,
-            hard_red_reason=reason,
-        )
-    return Computation(
-        SignalReading(round(median(latencies), 3), denom, window.days, SignalStatus.OK),
-        evidence,
-        hard_red=hard_red,
-        hard_red_reason=reason,
-    )
-
-
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
     """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase).
 
@@ -500,4 +468,35 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
         evidence,
         hard_red=hard_red,
         hard_red_reason=reason,
+    )
+
+
+def compute_s6(window: Window, overlay: str, now: datetime) -> Computation:
+    durations = merged_pull_request_seconds(since=window.start, until=window.end, overlay=overlay)
+    open_rows = open_pull_requests(now=now, overlay=overlay)
+    measured = [row for row in open_rows if row.age_hours is not None]
+    oldest = measured[0] if measured else None
+    oldest_hours = oldest.age_hours if oldest is not None and oldest.age_hours is not None else 0.0
+    hard_red = oldest_hours >= OPEN_PR_RED_HOURS
+    evidence: S6Evidence = {
+        "merged": len(durations),
+        "open": len(open_rows),
+        "unmeasured_open": len(open_rows) - len(measured),
+        "oldest_open_hours": round(oldest_hours, 2),
+        "oldest_open_pr": oldest.url if oldest is not None else "",
+    }
+    status = SignalStatus.OK if len(durations) >= MIN_SAMPLE else SignalStatus.INSUFFICIENT_DATA
+    if evidence["unmeasured_open"] and not hard_red:
+        status = SignalStatus.INSTRUMENTATION_GAP
+    hours = [seconds / 3600.0 for seconds in durations]
+    return Computation(
+        SignalReading(
+            round(percentile(hours, 0.5), 3) if status == SignalStatus.OK else 0.0,
+            len(hours),
+            window.days,
+            status,
+        ),
+        evidence,
+        hard_red=hard_red,
+        hard_red_reason="oldest open pull request is at least 72h old" if hard_red else "",
     )

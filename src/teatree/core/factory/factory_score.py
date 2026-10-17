@@ -84,7 +84,7 @@ class ScoredSignal:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FactoryScore:
-    """The recipe-weighted aggregate over the five signals, with provenance + deltas."""
+    """The recipe-weighted aggregate over the six signals, with provenance + deltas."""
 
     aggregate: float | None
     verdict: str
@@ -122,7 +122,7 @@ def _normalize(value: float, direction: Direction, cap: float | None) -> tuple[f
     """
     if cap is not None:
         # The recipe loader permits a cap ONLY on the LOWER_IS_BETTER magnitude
-        # signals (merge_latency, repair_burn), so a capped reading always
+        # signals (merge_latency, pr_start_to_merged, repair_burn), so a capped reading always
         # normalises as "closer to zero is healthier", clamped to 0..1.
         return max(0.0, 1.0 - value / cap), True
     in_range = 0.0 <= value <= 1.0

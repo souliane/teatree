@@ -45,6 +45,7 @@ _DIRECTIONS = {
     "defect_escape": Direction.LOWER_IS_BETTER,
     "review_catch": Direction.HIGHER_IS_BETTER,
     "merge_latency": Direction.LOWER_IS_BETTER,
+    "pr_start_to_merged": Direction.LOWER_IS_BETTER,
     "repair_burn": Direction.LOWER_IS_BETTER,
 }
 
@@ -55,13 +56,15 @@ _HEALTHY = {
     "defect_escape": (0.1, 0.9),
     "review_catch": (0.8, 0.8),
     "merge_latency": (12.0, 0.75),
+    "pr_start_to_merged": (24.0, 0.75),
     "repair_burn": (1.5, 0.7),
 }
 _WEIGHTS = {
     "first_try_green": 0.25,
     "defect_escape": 0.25,
     "review_catch": 0.20,
-    "merge_latency": 0.15,
+    "merge_latency": 0.05,
+    "pr_start_to_merged": 0.10,
     "repair_burn": 0.15,
 }
 
@@ -154,14 +157,24 @@ class TestPureFold:
         assert result.aggregate is None
 
     def test_below_coverage_floor_yields_none_and_red(self) -> None:
-        # coverage_floor is 0.6; only 2 of 5 covered → 0.4 < 0.6 → None + RED.
+        # coverage_floor is 0.6; only 3 of 6 covered → 0.5 < 0.6 → None + RED.
         rows = _healthy_rows()
         for i in (0, 1, 2):
             rows[i] = _row(rows[i].provider_id, 0.0, status=SignalStatus.INSUFFICIENT_DATA)
         result = score_report(self.recipe, _report(rows))
-        assert result.coverage == pytest.approx(0.4)
+        assert result.coverage == pytest.approx(0.5)
         assert result.aggregate is None
         assert result.verdict == SignalVerdict.RED.value
+
+    def test_four_of_six_signals_cover_the_floor(self) -> None:
+        rows = _healthy_rows()
+        for i in (0, 1):
+            rows[i] = _row(rows[i].provider_id, 0.0, status=SignalStatus.INSUFFICIENT_DATA)
+
+        result = score_report(self.recipe, _report(rows))
+
+        assert result.coverage == pytest.approx(4 / 6)
+        assert result.aggregate is not None
 
     def test_uncapped_reading_outside_unit_is_red_not_clamped(self) -> None:
         rows = _healthy_rows()

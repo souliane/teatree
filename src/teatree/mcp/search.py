@@ -223,8 +223,8 @@ def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WI
 
     Delegates to :func:`teatree.core.factory.factory_signals.compute_factory_signals` —
     the same computation path ``t3 <overlay> signals`` uses. Returns the report's
-    ``to_dict()``: the ``overlay`` scope, the trailing window's five signals
-    (first-try-green, defect-escape, review-catch, merge-latency, repair-burn)
+    ``to_dict()``: the ``overlay`` scope, the trailing window's six signals
+    (first-try-green, defect-escape, review-catch, merge-latency, PR start-to-merged, repair-burn)
     with their fail-loud statuses, red-floor trips, and the top-level verdict the
     outer loop keys on.
 
