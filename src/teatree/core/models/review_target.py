@@ -165,7 +165,7 @@ def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
     """
     if not target.head_sha:
         return None
-    return ReviewVerdict.objects.for_pr(target.slug, target.pr_id).filter(reviewed_sha=target.head_sha.lower()).first()
+    return ReviewVerdict.objects.speaking_verdict_at(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
 
 
 __all__ = [

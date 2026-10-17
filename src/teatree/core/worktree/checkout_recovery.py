@@ -5,15 +5,17 @@ from pathlib import Path
 
 from django.utils import timezone
 
+from teatree.core import forge_pr_probe
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, Worktree
+from teatree.core.models import PullRequest, Task, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.checkout_proof import AutoAttestation, DeferredExitAttestation
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,20 @@ def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
     return prior
 
 
-def _expected_branches(task: Task, worktree: Worktree, state: CheckoutState) -> dict[str, str] | None:
+def _owned_pr_url(task: Task, row: Worktree, branch: str) -> str:
+    probe = forge_pr_probe.find_open_pr_for_branch(row.worktree_path, branch)
+    ref = pr_ref_from_url(probe.url) if probe.is_found else None
+    if ref is None:
+        return ""
+    owner = PullRequest.objects.owning_ticket(slug=ref.slug, pr_id=ref.pr_id, pr_url=probe.url)
+    return probe.url if owner == task.ticket else ""
+
+
+def _expected_branches(
+    task: Task, worktree: Worktree, state: CheckoutState
+) -> tuple[dict[str, str], dict[str, str]] | None:
     branches: dict[str, str] = {}
+    pull_requests: dict[str, str] = {}
     for row in Worktree.objects.filter(ticket=task.ticket).exclude(extra__worktree_path__isnull=True):
         if not row.worktree_path or not row.branch:
             return None
@@ -54,10 +68,15 @@ def _expected_branches(task: Task, worktree: Worktree, state: CheckoutState) -> 
             observed = state if row.pk == worktree.pk else checkout_state(Path(row.worktree_path), ticket=task.ticket)
         except (OSError, RuntimeError, ValueError):
             return None
-        if observed.branch != row.branch or observed.branch == "HEAD":
+        if observed.branch == "HEAD":
             return None
+        if observed.branch != row.branch:
+            pr_url = _owned_pr_url(task, row, observed.branch)
+            if not pr_url:
+                return None
+            pull_requests[row.worktree_path] = pr_url
         branches[row.worktree_path] = observed.branch
-    return branches if worktree.worktree_path in branches else None
+    return (branches, pull_requests) if worktree.worktree_path in branches else None
 
 
 def _state_unchanged(task: Task, worktree: Worktree, state: CheckoutState) -> bool:
@@ -73,9 +92,10 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
     if custody is None or table.eviction_refuse_reason() or table.holds(Path(worktree.worktree_path)):
         return False
     prior = _interrupted_writer(task, custody)
-    branches = _expected_branches(task, worktree, state) if prior is not None else None
-    if prior is None or branches is None or not _state_unchanged(task, worktree, state):
+    branch_proof = _expected_branches(task, worktree, state) if prior is not None else None
+    if prior is None or branch_proof is None or not _state_unchanged(task, worktree, state):
         return False
+    branches, pull_requests = branch_proof
     current: Tenure = custody.tenures[-1]
     audit: AutoAttestation = {
         "at": timezone.now().isoformat(),
@@ -84,6 +104,7 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
         "tenures": [entry.as_dict() for entry in custody.tenures],
         "process_table": {"source": table.source, "gaps": list(table.gaps)},
         "branches": branches,
+        "pull_requests": pull_requests,
         "holder": {"id": current.holder, "session": current.session},
     }
     if not _attest(worktree, custody, state.digest, audit):

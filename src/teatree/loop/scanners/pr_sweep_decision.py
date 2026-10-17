@@ -148,7 +148,7 @@ def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool,
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
-    """True iff the EFFECTIVE (newest-wins) verdict vouches for this exact head (#68, #2829).
+    """True iff an unheld merge-safe verdict vouches for this exact head (#68, #2829).
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
@@ -160,12 +160,12 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     the repo therefore cannot self-merge: no independent reviewer means no
     matching row and the auto-merge is refused.
 
-    #2829: defence-in-depth + better UX — returns ``False`` when the EFFECTIVE
-    (most-recent non-stale) verdict at the head is a HOLD, so the solo sweep
+    #2829: defence-in-depth + better UX — returns ``False`` when a standing
+    HOLD exists at the head, so the solo sweep
     FLAGS the PR (``_flag_no_review``) instead of diving into
     ``execute_bound_merge`` to be refused by :func:`assert_review_verdict_gate`.
     Shares ``ReviewVerdict.objects.effective_state_at`` with that gate so the
-    newest-wins logic cannot drift between the two.
+    standing-hold rule cannot drift between the two.
     """
     from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 
@@ -177,25 +177,17 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
     """What the recorded verdicts say about *head_sha* — the holds, and the authorisation (#4380).
 
     The extra precondition on the autonomous, no-CLEAR solo-overlay merge, plus the
-    record that merge names as its authorisation. A standing hold is NOT the effective
-    verdict: a later ``merge_safe`` from a DIFFERENT reviewer wins under newest-wins and
-    still leaves the hold standing, which is exactly the contested head that merged
-    itself. Only the holding reviewer lifting their own hold, a human CLEAR, or a new
-    push clears it.
+    record that merge names as its authorisation. Any standing hold at this head
+    refuses authorization. Push a fix and get the new head reviewed to resolve it.
 
     Both held shapes refuse and both escalate to the owner; :attr:`HeadReview.hold_reason`
     names them apart because they are different events to the reader. A ``merge_safe``
-    standing beside the hold is a real two-reviewer disagreement — necessarily two
-    DISTINCT identities, since :meth:`ReviewVerdict.record` is an ``update_or_create`` on
-    ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``. A hold with none beside
+    standing beside the hold is a disagreement between verdicts, including two
+    recorded under one identity. A hold with none beside
     it is the ordinary outcome of a cold review that holds, and reporting that as a
-    disagreement names a second reviewer who does not exist.
+    disagreement would invent a second verdict.
 
-    Three lookups, and the middle one is why: ``standing_merge_safe_at`` asks who stands
-    beside the hold, ``authorizing_verdict_at`` asks what a merge may rest on, and only
-    the second is gated on newest-wins. Asking one question for both made the wording of
-    a refusal depend on recording order. It costs ONE extra queryset scan per held-head
-    evaluation, on a path that already runs once per open PR per tick.
+    One head read supplies both the standing holds and any pass beside them.
 
     No ``try/except`` on purpose — unlike :func:`record_mergeable_notified`,
     where degrading to empty means "stay quiet", here it would mean "no hold,
@@ -206,9 +198,10 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
     """
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 
-    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-    standing = ReviewVerdict.objects.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-    authorizing = ReviewVerdict.objects.authorizing_verdict_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    at_head = ReviewVerdict.objects.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
+    standing = next((verdict for verdict in at_head if verdict.is_merge_safe()), None)
+    authorizing = standing if not holds else None
     return HeadReview(
         held_verdicts=tuple(_verdict_ref(hold) for hold in holds),
         authorizing_verdict=None if authorizing is None else _verdict_ref(authorizing),
