@@ -12,6 +12,7 @@ from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner_interruption import _record_checkpoint
 from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
+from teatree.core import task_dispatch
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
@@ -154,25 +155,68 @@ class CheckoutFenceTests(TestCase):
         with pytest.raises(InvalidTransitionError, match="parked until"):
             sibling.claim(claimed_by="worker", claimed_by_session="s3")
 
-        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        with (
+            patch.object(task_dispatch, "enqueue_execution"),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
         sibling.refresh_from_db()
         assert sibling.not_before is not None
         assert sibling.not_before <= timezone.now()
-        assert sibling.admitted_at is None
-        assert Task.objects.waiting_for_admission().filter(pk=sibling.pk).exists()
+        assert sibling.admitted_at is not None
         sibling.claim(claimed_by="worker", claimed_by_session="s3")
         for still_parked in (moved_on, self.task):
             still_parked.refresh_from_db()
             assert still_parked.not_before is not None
             assert still_parked.not_before > timezone.now()
 
-    def test_release_before_park_write_does_not_leave_a_stale_delay(self) -> None:
+    def test_release_at_the_post_park_holder_check_rearms_the_task(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
-        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
-        park_task_checkout(self.task, reason="occupied before release", blocked_by=held)
+
+        def release_at_check(task: Task, blocked_by: object) -> bool:
+            assert task.pk == self.task.pk
+            assert blocked_by == held
+            assert Task.objects.get(pk=task.pk).not_before > timezone.now()
+            assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+            return False
+
+        with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=release_at_check):
+            park_task_checkout(self.task, reason="occupied before release", blocked_by=held)
         self.task.refresh_from_db()
         assert self.task.not_before is not None
         assert self.task.not_before <= timezone.now()
+
+    def test_post_park_recheck_does_not_clear_a_new_admission_stamp(self) -> None:
+        held = acquire(self.worktree, holder="task:other", holder_session="s1")
+        stamp = timezone.now()
+
+        def admit_at_check(task: Task, blocked_by: object) -> bool:
+            assert blocked_by == held
+            assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+            Task.objects.filter(pk=task.pk).update(not_before=stamp, admitted_at=stamp)
+            return False
+
+        with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=admit_at_check):
+            park_task_checkout(self.task, reason="occupied before admission", blocked_by=held)
+        self.task.refresh_from_db()
+        assert self.task.admitted_at == stamp
+
+    def test_coalesced_park_refreshes_occupied_by_on_returned_attempt(self) -> None:
+        held = acquire(self.worktree, holder="task:other", holder_session="s1")
+        first = park_task_checkout(self.task, reason="occupied")
+        repeated = park_task_checkout(self.task, reason="occupied", blocked_by=held)
+        assert repeated.pk == first.pk
+        repeated.refresh_from_db()
+        assert repeated.result["occupied_by"] == {"holder": held.holder, "session": held.holder_session}
+
+    def test_fence_park_schedules_an_admission_walk_after_commit(self) -> None:
+        with (
+            patch.object(task_dispatch, "admit_waiting_tasks") as walk,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            park_task_checkout(self.task, reason="unattested checkout")
+            walk.assert_not_called()
+        walk.assert_called_once()
 
     def test_one_page_per_episode_until_a_run_succeeds(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.notify_user") as page:

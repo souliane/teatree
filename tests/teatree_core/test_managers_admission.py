@@ -59,3 +59,15 @@ class TestAdmissionSeatPredicates(TestCase):
             reviewing.pk
         }
         assert set(Task.objects.filter(_lane_occupancy_q(now, cheap=False)).values_list("pk", flat=True)) == {coding.pk}
+
+    def test_future_park_is_not_reported_as_a_released_cheap_seat(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        Task.objects.filter(pk=task.pk).update(
+            admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW - timedelta(seconds=1),
+            not_before=timezone.now() + timedelta(minutes=30),
+        )
+        assert Task.objects.cheap_lane_seats_released() == 0
+
+        Task.objects.filter(pk=task.pk).update(not_before=timezone.now() - timedelta(seconds=1))
+        assert Task.objects.cheap_lane_seats_released() == 1

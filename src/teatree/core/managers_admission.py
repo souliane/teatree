@@ -94,7 +94,7 @@ def waiting_for_admission_rows(queryset: models.QuerySet, now: datetime) -> mode
     )
 
 
-def wake_parked_behind_rows(queryset: models.QuerySet, now: datetime, *, holder: str, holder_session: str) -> int:
+def rearm_parked_behind_rows(queryset: models.QuerySet, now: datetime, *, holder: str, holder_session: str) -> int:
     """Make due now, seatless, each parked row whose newest attempt was refused by ``(holder, holder_session)``."""
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
     attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
@@ -102,7 +102,7 @@ def wake_parked_behind_rows(queryset: models.QuerySet, now: datetime, *, holder:
     newest = attempt_model.objects.filter(task=models.OuterRef("pk")).order_by("-pk").values("pk")[:1]
     behind = attempt_model.objects.filter(
         pk__in=parked.annotate(newest_attempt=models.Subquery(newest)).values("newest_attempt"),
-        result__checkout_blocked_by__holder=holder,
-        result__checkout_blocked_by__session=holder_session,
+        result__occupied_by__holder=holder,
+        result__occupied_by__session=holder_session,
     )
     return parked.filter(pk__in=behind.values("task_id")).update(not_before=now, admitted_at=None)

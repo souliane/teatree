@@ -25,8 +25,8 @@ from teatree.core.managers_admission import (
     _lane_occupancy_q,
     _lane_under_ceiling,
     _unseated_q,
+    rearm_parked_behind_rows,
     waiting_for_admission_rows,
-    wake_parked_behind_rows,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
@@ -495,10 +495,12 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        now = timezone.now()
         return self.filter(
             _cheap_phase_q(),
+            _claimable_now_q(now),
             status=task_model.Status.PENDING,
-            admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
+            admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW,
         ).count()
 
     def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
@@ -533,8 +535,8 @@ class TaskQuerySet(models.QuerySet):
         """
         return waiting_for_admission_rows(self, timezone.now())
 
-    def wake_parked_behind(self, *, holder: str, holder_session: str) -> int:
-        return wake_parked_behind_rows(self, timezone.now(), holder=holder, holder_session=holder_session)
+    def rearm_parked_behind(self, *, holder: str, holder_session: str) -> int:
+        return rearm_parked_behind_rows(self, timezone.now(), holder=holder, holder_session=holder_session)
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

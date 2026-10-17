@@ -18,6 +18,7 @@ from teatree.core.models.worktree_occupancy import (
     WorktreeOccupiedError,
     _worktree_at,
     acquire,
+    checkout_capacity_opened,
     drop_refused_tenure,
     occupancy_holder,
     release,
@@ -144,7 +145,7 @@ def park_task_checkout(task: Task, *, reason: str, blocked_by: OccupancyHolder |
         else None
     )
     blocker = (
-        {"checkout_blocked_by": {"holder": blocked_by.holder, "session": blocked_by.holder_session}}
+        {"occupied_by": {"holder": blocked_by.holder, "session": blocked_by.holder_session}}
         if blocked_by is not None
         else {}
     )
@@ -160,17 +161,24 @@ def park_task_checkout(task: Task, *, reason: str, blocked_by: OccupancyHolder |
         },
     )
     result = {**attempt.result, **blocker}
+    if blocked_by is None:
+        result.pop("occupied_by", None)
     if episode is None:
         result["checkout_episode"] = f"attempt:{attempt.pk}"
     if result != attempt.result:
         TaskAttempt.objects.filter(pk=attempt.pk).update(result=result)
         attempt.result = result
+    own_row = Task.objects.filter(pk=task.pk)
+    seat_freed = bool(own_row.cheap_lane_occupancy() or own_row.expensive_lane_occupancy())
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
+    rearmed = 0
     if blocked_by is not None and not _still_held_by(task, blocked_by):
-        Task.objects.filter(pk=task.pk).wake_parked_behind(
+        rearmed = Task.objects.filter(pk=task.pk).rearm_parked_behind(
             holder=blocked_by.holder, holder_session=blocked_by.holder_session
         )
+    if seat_freed or rearmed:
+        checkout_capacity_opened.send(sender=Task)
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
