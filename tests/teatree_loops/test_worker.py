@@ -707,6 +707,7 @@ def test_checkpoint_grace_keeps_master_lease_fresh() -> None:
         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
         claim_master=lambda: claims.append(clock[0]),
         master_refresh_seconds=60.0,
+        begin_exit=lambda _reason: None,
     )
     holder.append(LoopWorker(seams))
 
@@ -715,6 +716,7 @@ def test_checkpoint_grace_keeps_master_lease_fresh() -> None:
 
     assert len(claims) >= 6
     assert max(later - earlier for earlier, later in pairwise(claims)) <= 60.0
+    assert managers_task_claim.process_exit.reason == ""
 
 
 def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:

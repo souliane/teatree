@@ -123,8 +123,8 @@ SUPERVISOR_POLL_SECONDS = 5.0
 #: once a ``t3 loop claim --take-over`` by a since-dead session goes stale — which is
 #: the "a transient session's claim rots" shape the ticket warns against.
 T3_MASTER_REFRESH_SECONDS = 300.0
-#: How many times a single executor slot may be respawned within one worker
-#: lifetime before the worker gives up and exits NON-ZERO (a crash-looping executor
+#: A single executor slot's respawn budget; a ten-minute healthy run resets it.
+#: Exhaustion makes the worker exit NON-ZERO (a crash-looping executor
 #: is a real fault the OS/container should restart the whole worker for, not one the
 #: supervisor should mask by respawning forever).
 MAX_EXECUTOR_RESPAWNS = 5
