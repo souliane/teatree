@@ -16,11 +16,12 @@ from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
-from teatree.core.merge.pr_url_record import record_pr_url, record_ship_pr_retry_marker
+from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
+from teatree.core.runners.ship_pr_adoption import SHIP_HINT_KEYS, adoptable_pr_url
 from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
@@ -304,7 +305,7 @@ class ShipExecutor(RunnerBase):
         # #1263: short-circuit only when THIS branch already has a PR.
         # A reused ticket can span multiple workstreams. Only the URL
         # associated with this branch can short-circuit its PR creation.
-        recorded_url = self._recorded_url_for_branch(extra, branch)
+        recorded_url = adoptable_pr_url(ticket, host, extra, branch)
         if recorded_url:
             return RunnerResult(ok=True, detail=recorded_url)
 
@@ -510,7 +511,7 @@ class ShipExecutor(RunnerBase):
             if self.opened_pr_verified:
                 self._record_pr_url(self.ticket, self.opened_pr_url, self.opened_pr_branch)
             else:
-                record_ship_pr_retry_marker(self.ticket, self.opened_pr_url, self.opened_pr_branch)
+                record_unverified_pr_url(self.ticket, self.opened_pr_url, self.opened_pr_branch)
 
     @staticmethod
     def _check_branch_currency(
@@ -562,23 +563,6 @@ class ShipExecutor(RunnerBase):
         if "ship_invoking_branch" in extra:
             # #800 N3: canonical locked RMW (was an unlocked extra save).
             ticket.merge_extra(pop_keys=["ship_invoking_branch"])
-
-    @staticmethod
-    def _recorded_url_for_branch(extra: "TicketExtra", branch: str) -> str:
-        """The PR URL recorded for ``branch``, or ``""`` if none.
-
-        #1263: short-circuit only when the *current* branch already has a
-        PR. ``pr_url_by_branch`` is the per-branch index populated by
-        ``_record_pr_url`` on each successful ship; it tells us reliably
-        whether the invoking branch's PR exists. This index is the sole
-        source for branch-specific idempotency.
-        """
-        by_branch = extra.get("pr_url_by_branch")
-        if isinstance(by_branch, Mapping):
-            recorded = by_branch.get(branch)
-            if isinstance(recorded, str) and recorded:
-                return recorded
-        return ""
 
     @staticmethod
     def build_pr_spec(
@@ -642,4 +626,4 @@ class ShipExecutor(RunnerBase):
     def _record_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
         # The ship's single-run hints are ship-owned, so they are cleared here
         # rather than in the shared writer the pre-push hook also calls (#4305).
-        record_pr_url(ticket, url, branch, pop_keys=("pr_title_override", "ship_invoking_branch"))
+        record_pr_url(ticket, url, branch, pop_keys=SHIP_HINT_KEYS)

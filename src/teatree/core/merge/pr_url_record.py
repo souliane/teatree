@@ -42,12 +42,6 @@ def record_pr_url(ticket: "Ticket", url: str, branch: str, *, pop_keys: Sequence
 
     *pop_keys* clears caller-owned single-ship hints in the same locked write.
     """
-    record_pr_url_marker(ticket, url, branch, pop_keys=pop_keys)
-    if url:
-        apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
-
-
-def record_pr_url_marker(ticket: "Ticket", url: str, branch: str, *, pop_keys: Sequence[str] = ()) -> None:
     append_lists: dict[str, list[object]] = {"pr_urls": [url]} if url else {}
     merge_dicts: dict[str, JSONObject] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
     ticket.merge_extra(
@@ -55,7 +49,10 @@ def record_pr_url_marker(ticket: "Ticket", url: str, branch: str, *, pop_keys: S
         merge_into_dicts=merge_dicts,
         pop_keys=list(pop_keys),
     )
+    if url:
+        apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
 
 
-def record_ship_pr_retry_marker(ticket: "Ticket", url: str, branch: str) -> None:
-    record_pr_url_marker(ticket, url, branch, pop_keys=("pr_title_override", "ship_invoking_branch"))
+def record_unverified_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
+    """Index *url* for *branch*'s retry only — no ``pr_urls`` entry, no arbiter row — until a re-read confirms it."""
+    ticket.merge_extra(merge_into_dicts={"pr_url_by_branch": {branch: url}})

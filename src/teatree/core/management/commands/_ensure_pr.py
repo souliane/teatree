@@ -448,7 +448,7 @@ def _record_verified_url(ticket: "Ticket | None", result: EnsurePrResult, branch
     This runs inside the git PRE-push hook, so by the time a ship's own post-push
     refusal fires — the fleet-claim fence, or its PR-open half's no-URL /
     wrong-slug / 404 returns — this PR is already live on the forge. Recorded, the
-    next attempt adopts it (``_recorded_url_for_branch``) rather than retrying
+    next attempt adopts it (``adoptable_pr_url``) rather than retrying
     into ``already exists``. A genuinely orphan branch has no ticket to record on.
     """
     url = result.get("url") or ""

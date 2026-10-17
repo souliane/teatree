@@ -605,7 +605,7 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     own ``merge_extra`` records the PR url in its own committed transaction
     the instant ``create_pr`` returns, so a later rollback of the FSM advance
     cannot strand the PR. A redelivered job then finds the recorded url and
-    adopts it (``ShipExecutor._recorded_url_for_branch``) instead of
+    adopts it (``adoptable_pr_url``) instead of
     re-calling ``create_pr`` and hitting a 409.
     """
     with transaction.atomic():

@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.runners.ship import ShipExecutor
 
@@ -43,19 +44,20 @@ class TestSyncShipRecovery(TestCase):
     def test_os_error_from_forge_is_structured(self) -> None:
         self._assert_external_failure_is_structured(OSError("gh is missing"))
 
-    def test_retry_adopts_pr_when_verification_is_not_confirmed(self) -> None:
+    def test_retry_adopts_pr_once_its_verification_confirms(self) -> None:
         ticket = _shippable_ticket()
         host = _code_host()
-        host.get_pr_open_state.side_effect = OSError("verify unavailable")
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
 
         with _ship_externals(host), _gates_pass():
             first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
         ticket.refresh_from_db()
         assert ticket.extra["pr_url_by_branch"]["feature-branch"] == _PR_URL
+        assert _PR_URL not in ticket.extra.get("pr_urls", [])
         assert not PullRequest.objects.filter(url=_PR_URL).exists()
 
-        host.get_pr_open_state.side_effect = None
+        host.get_pr_open_state.return_value = PrOpenState.OPEN
         with _ship_externals(host) as retry_push, _gates_pass():
             second = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
@@ -65,6 +67,21 @@ class TestSyncShipRecovery(TestCase):
         assert second["detail"] == _PR_URL
         retry_push.assert_not_called()
         host.create_pr.assert_called_once()
+        assert PullRequest.objects.get(url=_PR_URL).create_verification == PullRequest.CreateVerification.CONFIRMED
+
+    def test_retry_does_not_adopt_pr_its_verification_still_cannot_confirm(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+
+        with _ship_externals(host), _gates_pass():
+            call_command("pr", "create", str(ticket.pk), sync=True)
+            retry = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert retry["ok"] is False
+        assert retry["state"] == Ticket.State.SELF_REVIEWED
+        assert host.create_pr.call_count == 2
+        assert not PullRequest.objects.filter(url=_PR_URL).exists()
 
     def test_retry_adopts_pr_when_recording_fails_once_after_create(self) -> None:
         ticket = _shippable_ticket()
