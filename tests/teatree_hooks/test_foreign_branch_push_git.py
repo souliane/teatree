@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/foreign_branch_push_git.py and the gate; no src/teatree/ mirror.
 """The ownership probe reads remote refs outside the checkout."""
 
 import os
@@ -213,11 +214,13 @@ def test_option_shaped_remote_url_is_refused_without_running_program(
     program.chmod(0o755)
     _git(work, "config", "remote.origin.url", f"--upload-pack={program}")
 
-    probe = remote_branch_oid(str(work), "origin", "main")
+    with patch.object(git_probes, "git_probe", wraps=git_probes.git_probe) as probe_git:
+        probe = remote_branch_oid(str(work), "origin", "main")
 
     assert not marker.exists()
     assert not probe.ok
     assert "starts with a dash" in probe.err
+    assert all("ls-remote" not in call.args for call in probe_git.call_args_list)
 
 
 def test_an_empty_remote_is_refused_rather_than_read_as_the_checkout(git_scene: tuple[Path, Path, str]) -> None:
@@ -244,6 +247,7 @@ def test_fetch_probe_runs_outside_checkout(git_scene: tuple[Path, Path, str], tm
     assert not live.failed
     assert not marker.exists()
     fetch_argv = next(call.args for call in probe_git.call_args_list if "fetch" in call.args)
+    assert fetch_argv[0] != str(work)
     assert fetch_argv[-3:] == ("--", str(remote), "refs/heads/main")
 
 
