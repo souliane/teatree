@@ -43,7 +43,7 @@ from teatree.core.gates.directive_interpret_gate import record_returned_directiv
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
 
 if TYPE_CHECKING:
@@ -354,6 +354,9 @@ def _check_before_recording(
     schema_error = validate_result_keys(result)
     if schema_error:
         return _PreRecordCheck(schema_error, result)
+
+    if PUSH_OWNERSHIP_VENUE_FAULT in str(result.get("summary", "")):
+        return _PreRecordCheck(PUSH_OWNERSHIP_VENUE_FAULT, result)
 
     signature = outage_signature(result)
     if signature:

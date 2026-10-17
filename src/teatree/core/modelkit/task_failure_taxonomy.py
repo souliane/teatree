@@ -119,6 +119,7 @@ CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
 
 #: Prefix a finished coding run carries when its CODED transition was refused for plan currency.
 PLAN_STALE_PREFIX = "plan_stale: "
+PUSH_OWNERSHIP_VENUE_FAULT = "venue_fault: push ownership gate had no usable GitHub credential"
 
 
 class FailureKind(models.TextChoices):
@@ -142,6 +143,7 @@ class FailureKind(models.TextChoices):
     RESULT_SCHEMA_INVALID = "result_schema_invalid", "Result envelope violated the schema"
     PROVISION_FAILED = "provision_failed", "Worktree provisioning failed"
     LANDING_UNVERIFIED = "landing_unverified", "Work never landed"
+    VENUE_FAULT = "venue_fault", "Execution venue could not finish the task"
     NO_RESULT_ENVELOPE = "no_result_envelope", "No result envelope produced"
     EVIDENCE_MISSING = "evidence_missing", "Required evidence missing"
     RECORDING_REFUSED = "recording_refused", "Recording refused by a gate"
@@ -187,6 +189,7 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.RESUME_REFUSED: Recovery(_RETRY, environmental=True),
     FailureKind.PROVISION_FAILED: Recovery(_RETRY, environmental=True),
     FailureKind.LANDING_UNVERIFIED: Recovery(_RETRY, environmental=True),
+    FailureKind.VENUE_FAULT: Recovery(_RETRY, environmental=True),
     FailureKind.HARNESS_CRASH: Recovery(_RETRY, environmental=True),
     # A bounded correction exists; whether THIS task earns it is the sweep's own one-shot decision.
     FailureKind.NO_RESULT_ENVELOPE: Recovery(_CORRECT, environmental=False),
@@ -318,6 +321,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
+    (FailureKind.VENUE_FAULT, ("venue_fault:",)),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
     (FailureKind.REVIEW_UNRECORDABLE, (REVIEW_UNRECORDABLE_PREFIX,)),

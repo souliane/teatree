@@ -134,6 +134,42 @@ class TestOnlyATransientForgeFailureIsAskedAgain:
             unresolved="a process start the host refused (EAGAIN), then a process start the host refused (EAGAIN)",
         )
 
+
+@pytest.mark.parametrize(
+    ("tool", "code", "stderr", "expected"),
+    [
+        ("gh", 4, "authentication required", True),
+        ("gh", 1, "HTTP 401: Bad credentials", True),
+        ("gh", 1, "HTTP 502: Bad Gateway", False),
+        ("glab", 4, "unknown command", False),
+    ],
+)
+def test_gh_credential_refusal_is_distinct_from_other_forge_failures(
+    monkeypatch: pytest.MonkeyPatch, tool: str, code: int, stderr: str, *, expected: bool
+) -> None:
+    error = CommandFailedError([tool], code, "", stderr)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", Mock(side_effect=error))
+
+    probe = run_forge_tool(tool, ["api", "user"])
+
+    assert probe.credential_refused is expected
+
+
+def test_forge_stderr_is_scrubbed_before_the_cause_is_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel = "gh" + "p_" + "s" * 36
+    monkeypatch.setenv("GH_TOKEN", sentinel)
+    monkeypatch.setattr(
+        _repo_visibility,
+        "run_allowed_to_fail",
+        Mock(side_effect=CommandFailedError(["gh"], 4, "", "x" * 390 + sentinel + " denied")),
+    )
+
+    probe = run_forge_tool("gh", ["api", "user"])
+
+    assert sentinel not in probe.unresolved
+    assert sentinel[:15] not in probe.unresolved
+    assert "<redacted>" in probe.unresolved
+
     def test_each_attempt_takes_its_own_timeout_from_the_schedule(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = Mock(side_effect=_raise_timeout)
         monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)

@@ -11,6 +11,7 @@ Every mutation of untrusted text here operates on ALREADY-REDACTED text: both
 :func:`bounded` and :func:`_one_line` scrub before they clip or join.
 """
 
+import os
 import re
 import shlex
 import subprocess  # noqa: S404 -- hook code legitimately shells out to Git.
@@ -48,6 +49,7 @@ class GitProbe:
     out: str
     code: int | None = None
     err: str = ""
+    credential_refused: bool = False
 
 
 def push_work_dir(tokens: list[str], cwd: str) -> tuple[str, str]:
@@ -75,7 +77,19 @@ def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> Git
     try:
         proc = subprocess.run(  # noqa: S603 -- trusted internal subprocess; fixed argv, no shell.
             # Use the same Git from PATH as the push this gate judges.
-            ["git", "-C", work_dir or ".", "--no-optional-locks", *args],  # noqa: S607 -- see above.
+            [  # noqa: S607 -- same Git as the push.
+                "git",
+                "-C",
+                work_dir or ".",
+                "--no-optional-locks",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "core.sshCommand=",
+                "-c",
+                "protocol.ext.allow=never",
+                *args,
+            ],
             capture_output=True,
             text=True,
             timeout=affordable,
@@ -101,7 +115,7 @@ def _one_line(stderr: str) -> str:
     wall-clock budget. It was also weaker, since `str.splitlines` splits on six
     characters the scanner treats as no boundary at all.
     """
-    scrubbed = redact_credentials(stderr)
+    scrubbed = redact_credentials(_without_active_tokens(stderr))
     return clip("; ".join(line.strip() for line in scrubbed.splitlines() if line.strip()), _MAX_QUOTED_CHARS)
 
 
@@ -113,7 +127,14 @@ def bounded(text: str) -> str:
     refusal afterwards matches nothing and the surviving prefix of a token is
     published.
     """
-    return clip(redact_credentials(text), _MAX_QUOTED_CHARS)
+    return clip(redact_credentials(_without_active_tokens(text)), _MAX_QUOTED_CHARS)
+
+
+def _without_active_tokens(text: str) -> str:
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if value := os.environ.get(key):
+            text = text.replace(value, "<redacted>")
+    return text
 
 
 def probe_cause(probe: GitProbe) -> str:

@@ -81,6 +81,7 @@ _TRANSIENT_FAILURE: Final[re.Pattern[str]] = re.compile(
     r"|unexpected EOF|context deadline exceeded)"
 )
 _MAX_CAUSE_CHARS: Final[int] = 400
+_GH_AUTH_EXIT: Final[int] = 4
 
 # The PreToolUse hook subprocess inherits a restricted PATH, so a bare
 # ``gh``/``glab`` may not resolve even though it is installed. The probe
@@ -118,6 +119,7 @@ class ForgeProbe:
 
     stdout: str | None
     unresolved: str = ""
+    credential_refused: bool = False
 
 
 def slug_for_cwd(cwd: Path) -> str:
@@ -321,6 +323,7 @@ def run_forge_tool(tool: str, args: list[str], *, budget: Callable[[float], floa
     if binary is None:
         return ForgeProbe(stdout=None, unresolved=PROBE_ABSENT)
     observed: list[str] = []
+    credential_refused = False
     for preferred in _PROBE_ATTEMPT_TIMEOUTS_S:
         timeout = preferred if budget is None else budget(preferred)
         if timeout is None:
@@ -332,7 +335,8 @@ def run_forge_tool(tool: str, args: list[str], *, budget: Callable[[float], floa
             observed.append(f"{PROBE_TIMED_OUT} of {timeout:.3g}s")
         except CommandFailedError as error:
             observed.append(_exit_cause(error))
-            if not _TRANSIENT_FAILURE.search(error.stderr):
+            credential_refused = _gh_credential_refused(tool, error)
+            if credential_refused or not _TRANSIENT_FAILURE.search(error.stderr):
                 break
         except BlockingIOError:
             observed.append(PROBE_SPAWN_REFUSED)
@@ -341,13 +345,24 @@ def run_forge_tool(tool: str, args: list[str], *, budget: Callable[[float], floa
             break
         else:
             return ForgeProbe(stdout=result.stdout)
-    return ForgeProbe(stdout=None, unresolved=", then ".join(observed))
+    return ForgeProbe(stdout=None, unresolved=", then ".join(observed), credential_refused=credential_refused)
 
 
 def _exit_cause(error: CommandFailedError) -> str:
-    stderr = redact_secrets("; ".join(line.strip() for line in error.stderr.splitlines() if line.strip()))
+    raw = error.stderr
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if value := os.environ.get(key):
+            raw = raw.replace(value, "<redacted>")
+    stderr = redact_secrets("; ".join(line.strip() for line in raw.splitlines() if line.strip()))
     return (
         f"exit {error.returncode}: {stderr[:_MAX_CAUSE_CHARS]}" if stderr else f"exit {error.returncode} with no stderr"
+    )
+
+
+def _gh_credential_refused(tool: str, error: CommandFailedError) -> bool:
+    return tool == "gh" and (
+        error.returncode == _GH_AUTH_EXIT
+        or bool(re.search(r"\b(?:HTTP 401|401 Unauthorized)\b", error.stderr, re.IGNORECASE))
     )
 
 

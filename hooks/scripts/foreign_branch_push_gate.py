@@ -62,6 +62,7 @@ dependency-free siblings.
 """
 
 import json
+import os
 import re
 import sys
 from collections.abc import Iterator
@@ -82,6 +83,7 @@ from hooks.scripts.foreign_branch_push_git import (
 from hooks.scripts.foreign_branch_push_read import ParsedPushes, push_specs
 from hooks.scripts.foreign_branch_push_text import (
     UNPINNED,
+    credential_fault_refusal,
     default_branch_rewrite_refusal,
     foreign_commits_body,
     foreign_mr_body,
@@ -231,6 +233,14 @@ def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_Forg
     if verdict == "foreign":
         return _refuse(spec, branch, detail)
     if verdict == "unknown":
+        if failed is not None and failed.credential_refused:
+            return credential_fault_refusal(
+                spec.remote,
+                branch,
+                failed,
+                token_held=bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")),
+                force=spec.force,
+            )
         return _refuse(spec, branch, unobtainable_body(detail, failed))
     return _foreign_commit_refusal(spec, branch, branch_oid)
 
@@ -394,7 +404,7 @@ def _open_mrs(ctx: _ForgeCtx, branch: str) -> "tuple[tuple[OpenMr, ...], GitProb
     argv = ctx.forge.mr_listing_argv(ctx.kind, ctx.repo_path, branch, ctx.host)
     probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
     if probe.stdout is None:
-        return (), GitProbe(ok=False, out="", err=probe.unresolved)
+        return (), GitProbe(ok=False, out="", err=probe.unresolved, credential_refused=probe.credential_refused)
     mrs, unusable = ctx.forge.open_mrs_in(ctx.kind, probe.stdout)
     return mrs, (_unusable_answer(unusable) if unusable else None)
 
@@ -403,7 +413,7 @@ def _forge_answer(ctx: _ForgeCtx, argv: list[str]) -> tuple[object, GitProbe | N
     """What the forge CLI answered, parsed — an empty answer is an empty array — or why there is none."""
     probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
     if probe.stdout is None:
-        return None, GitProbe(ok=False, out="", err=probe.unresolved)
+        return None, GitProbe(ok=False, out="", err=probe.unresolved, credential_refused=probe.credential_refused)
     try:
         return json.loads(probe.stdout.strip() or "[]"), None
     except ValueError:

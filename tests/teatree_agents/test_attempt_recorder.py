@@ -117,6 +117,24 @@ class TestRecordResultEnvelope(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
+    def test_push_ownership_venue_fault_fails_without_an_owner_question(self) -> None:
+        task = self._claimed(phase="debugging")
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Committed locally. venue_fault: push ownership gate had no usable GitHub credential",
+                "needs_user_input": False,
+                "files_modified": [{"path": "a.py", "action": "modified"}],
+            },
+            usage=AttemptUsage(route_candidate_index=0, route_source_skill="debug"),
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.failure_kind == FailureKind.VENUE_FAULT
+        assert task.attempts.failed_route_candidates("debug") == {0: attempt.pk}
+        assert DeferredQuestion.objects.count() == 0
+
     def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
         task = self._claimed()
         blob = {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]}

@@ -16,6 +16,7 @@ reads an ABSOLUTE bare-repo path as a GitHub slug, which would refuse for an
 unreachable forge instead of on the commit authorship this file is about.
 """
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -26,6 +27,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from teatree.agents.codex_app_server_options import CodexAppServerOptions
+from teatree.agents.codex_approval_gate import approval_decision
+from teatree.agents.harness_options import HarnessOptions
+from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 _REPO_ROOT = HOOK_ROUTER.parent.parent.parent
@@ -174,6 +180,79 @@ def _run_if_allowed(result: subprocess.CompletedProcess[str], command: str, scen
             capture_output=True,
             env={**os.environ, **_GIT_ENV},
         )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["task-token", "missing-token", "forge-unavailable", "rejected-token"],
+    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token"],
+)
+def test_codex_push_approval_reaches_the_gate_with_the_task_token(
+    scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
+) -> None:
+    sentinel = "gh" + "p_" + "s" * 36
+    home = tmp_path / "router-home"
+    home.mkdir()
+    routed = scenario != "missing-token"
+    forge_failure = {
+        "forge-unavailable": "HTTP 502: Bad Gateway",
+        "rejected-token": "HTTP 401: Bad credentials",
+    }.get(scenario, "")
+    _git(scene.work, "remote", "set-url", "origin", str(scene.origin))
+    _seed_config_db(home / "config.sqlite3", _GATE_ON)
+    gh = tmp_path / "gh"
+    fail_line = f"echo '{forge_failure}' >&2; exit 1\n" if forge_failure else ""
+    gh.write_text(
+        "#!/bin/sh\n"
+        f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ echo \'HTTP 401: Bad credentials\' >&2; exit 4; }}\n'
+        f"{fail_line}"
+        'case "$*" in\n'
+        "  'api user'*) echo '{\"login\":\"us\"}' ;;\n"
+        '  \'pr list\'*) echo \'[{"number":7,"author":{"login":"us"},'
+        '"url":"https://github.com/example/repo/pull/7","isCrossRepository":false}]\' ;;\n'
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    gh.chmod(0o755)
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    dispatch_env = {"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: "github/example/pat"} if routed else {}
+    options = CodexAppServerOptions(
+        core=HarnessOptions(cwd=str(scene.work), env=dispatch_env),
+        runtime_workspace_roots=(str(scene.work),),
+        sandbox_mode="danger-full-access",
+        sandbox_policy={},
+        config={},
+    )
+
+    decision, reason = asyncio.run(
+        approval_decision(
+            "item/commandExecution/requestApproval",
+            {"command": "git push origin theirs", "cwd": str(scene.work), "threadId": "thread-1"},
+            options,
+        )
+    )
+
+    if routed and not forge_failure:
+        assert (decision, reason) == ("accept", None)
+    elif forge_failure.startswith("HTTP 502"):
+        assert decision == "decline"
+        assert reason is not None
+        assert "Ownership could not be established" in reason
+        assert "Venue fault" not in reason
+    else:
+        assert decision == "decline"
+        assert reason is not None
+        assert "Venue fault" in reason
+        assert "needs_user_input` false" in reason
+        assert "cut our OWN branch" not in reason
+    assert sentinel not in (reason or "")
+    assert sentinel not in caplog.text
 
 
 _INCIDENT = "cd {work}\ngit push --force origin theirs"

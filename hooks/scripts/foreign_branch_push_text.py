@@ -64,6 +64,19 @@ def refusal(remote: str, branch: str, body: str, *, force: bool) -> str:
     )
 
 
+def credential_fault_refusal(remote: str, branch: str, probe: GitProbe, *, token_held: bool, force: bool) -> str:
+    """A refused push whose GitHub ownership check had no usable credential."""
+    credential = "GitHub rejected the GH_TOKEN this process holds" if token_held else "this process holds no GH_TOKEN"
+    forced = " --force" if force else ""
+    return redact_credentials(
+        f"REFUSED: `git push{forced} {bounded(remote)} {bounded(branch)}`. Venue fault: the gate could not "
+        f"check branch ownership because {credential}. The probe said {bounded(probe_cause(probe))}. "
+        "Keep the commit local and report `venue_fault: push ownership gate had no usable GitHub credential` "
+        "in the result summary with `needs_user_input` false. Do not ask the owner to restore authentication, "
+        "turn off this gate, or cut a new branch. The factory will try the next route candidate."
+    )
+
+
 def _remedy(branch: str) -> str:
     """What to do instead — the OWNERSHIP answer, or the re-issue one for an unpinned target.
 
