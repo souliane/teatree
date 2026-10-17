@@ -1168,6 +1168,7 @@ jobs:
           -v "$PWD":/app
           -e PYTHONPATH=/app
           -e TEATREE_JSCPD_SCAN=1
+          -e T3_LOOP_REGISTRY_DIR=/tmp
           ${{ needs.build-image.outputs.image }}
           uv run -p 3.13 pytest --no-header -q -s -n0
           -o cache_dir=/tmp/.pytest_cache

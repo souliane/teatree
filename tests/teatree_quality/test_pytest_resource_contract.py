@@ -227,6 +227,7 @@ def test_real_pytest_refuses_missing_shared_pool(tmp_path: Path) -> None:
     )
     assert result.returncode == 4
     assert "shared pytest worker pool root is missing" in result.stderr
+    assert "set T3_LOOP_REGISTRY_DIR" in result.stderr
 
 
 @pytest.mark.timeout(60)

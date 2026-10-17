@@ -177,7 +177,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     try:
         lease = pool.session_lease(max(1, len(tx)))
     except PoolUnavailableError as exc:
-        raise pytest.UsageError(str(exc)) from exc
+        msg = f"{exc}; create it, or set T3_LOOP_REGISTRY_DIR to a directory every pytest on this host shares"
+        raise pytest.UsageError(msg) from exc
     config.stash[_WORKER_SLOT_LEASE] = lease
     if tx:
         config.option.tx = tx[: lease.workers]
