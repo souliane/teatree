@@ -13,7 +13,6 @@ from pathlib import Path
 
 import typer
 
-from teatree import __version__
 from teatree.agents.codex_sandbox import container_is_the_sandbox
 from teatree.cli.setup.codex_plugin_payload import CodexPayloadError, CodexPluginPayload
 from teatree.cli.setup.codex_plugin_staging import codex_home, reclaiming_new_staging
@@ -99,16 +98,33 @@ class CodexPluginRegistrar:
     def _ensure_plugin(self, codex: str, plugin_root: Path) -> None:
         payload = self._json(dict, codex, "inspect Codex plugins", "plugin", "list")
         source = plugin_root / "plugins" / PLUGIN_NAME
-        served = codex_home() / "plugins" / "cache" / MARKETPLACE_NAME / PLUGIN_NAME / __version__
-        if self._plugin_registered(payload, plugin_root) and self._same_payload(source, served):
+        served = self._served_plugin_path(payload)
+        if self._plugin_registered(payload, plugin_root) and served is not None and self._same_payload(source, served):
             return
         if self._plugin_present(payload):
             self._call(codex, "replace the TeaTree Codex plugin", "plugin", "remove", PLUGIN_ID)
         with reclaiming_new_staging(codex_home()):
             self._call(codex, "install the TeaTree Codex plugin", "plugin", "add", PLUGIN_ID)
+        installed = self._json(dict, codex, "inspect installed Codex plugin", "plugin", "list")
+        served = self._served_plugin_path(installed)
+        if served is None:
+            msg = f"Codex did not report a version for {PLUGIN_ID} after add"
+            raise CodexCliError(msg)
         if not self._same_payload(source, served):
             msg = f"Codex served plugin {served} still differs from the TeaTree payload after add"
             raise CodexCliError(msg)
+
+    @staticmethod
+    def _served_plugin_path(payload: Mapping[str, object]) -> Path | None:
+        plugins = payload.get("installed", [])
+        if not isinstance(plugins, list):
+            return None
+        for entry in plugins:
+            if isinstance(entry, dict) and entry.get("pluginId") == PLUGIN_ID and entry.get("installed") is True:
+                version = entry.get("version")
+                if isinstance(version, str) and version not in {"", ".", ".."} and Path(version).name == version:
+                    return codex_home() / "plugins" / "cache" / MARKETPLACE_NAME / PLUGIN_NAME / version
+        return None
 
     @staticmethod
     def _same_payload(source: Path, served: Path) -> bool:
