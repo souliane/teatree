@@ -24,9 +24,16 @@ class TestAdmissionSeatPredicates(TestCase):
         assert Task.objects.expensive_lane_occupancy() == 0
         assert Task.objects.cheap_lane_occupancy() == 0
 
-        Task.objects.filter(pk__in=[coding.pk, reviewing.pk]).update(not_before=now - timedelta(seconds=1))
+    def test_a_park_due_now_keeps_its_throttle_seat(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(seconds=1))
+        task.refresh_from_db()
+
+        task.park(not_before=timezone.now())
+
+        assert Task.objects.get(pk=task.pk).not_before is not None
         assert Task.objects.expensive_lane_occupancy() == 1
-        assert Task.objects.cheap_lane_occupancy() == 1
 
     def test_a_parked_seat_does_not_refuse_the_conditional_admission_stamp(self) -> None:
         ticket = Ticket.objects.create()

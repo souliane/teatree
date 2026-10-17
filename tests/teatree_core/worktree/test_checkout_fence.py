@@ -211,8 +211,9 @@ class CheckoutFenceTests(TestCase):
         with pytest.raises(InvalidTransitionError, match="parked until"):
             sibling.claim(claimed_by="worker", claimed_by_session="s3")
 
+        released_at = timezone.now()
         with (
-            patch.object(task_dispatch, "enqueue_execution"),
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
             self.captureOnCommitCallbacks(execute=True),
         ):
             assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
@@ -220,6 +221,8 @@ class CheckoutFenceTests(TestCase):
         assert sibling.not_before is not None
         assert sibling.not_before <= timezone.now()
         assert sibling.admitted_at is not None
+        assert sibling.admitted_at >= released_at
+        enqueue.assert_called_once_with(sibling.pk, sibling.phase)
         sibling.claim(claimed_by="worker", claimed_by_session="s3")
         for still_parked in (moved_on, self.task):
             still_parked.refresh_from_db()
@@ -242,20 +245,27 @@ class CheckoutFenceTests(TestCase):
         assert self.task.not_before is not None
         assert self.task.not_before <= timezone.now()
 
-    def test_post_park_recheck_does_not_clear_a_new_admission_stamp(self) -> None:
+    def test_a_walk_admitting_at_the_still_held_by_seam_is_not_enqueued_twice(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
-        stamp = timezone.now()
+        concurrent: list[int] = []
 
-        def admit_at_check(task: Task, behind: object) -> bool:
+        def release_and_admit_at_recheck(task: Task, behind: object) -> bool:
             assert behind == held
             assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
-            Task.objects.filter(pk=task.pk).update(not_before=stamp, admitted_at=stamp)
+            concurrent.extend(task_dispatch.admit_waiting_tasks(at="concurrent walk"))
             return False
 
-        with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=admit_at_check):
+        with (
+            patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=release_and_admit_at_recheck),
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
+        ):
             park_task_checkout(self.task, reason="occupied before admission", behind=held)
-        self.task.refresh_from_db()
-        assert self.task.admitted_at == stamp
+            admitted_at = Task.objects.get(pk=self.task.pk).admitted_at
+            task_dispatch.admit_waiting_tasks(at="next walk")
+
+        assert concurrent == [self.task.pk]
+        assert admitted_at is not None
+        enqueue.assert_called_once_with(self.task.pk, self.task.phase)
 
     def test_coalesced_park_refreshes_occupied_by_on_returned_attempt(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
@@ -385,7 +395,7 @@ class CheckoutFenceTests(TestCase):
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
             self.captureOnCommitCallbacks(execute=True),
-            patch.object(task_dispatch, "enqueue_execution"),
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
             patch(
                 "teatree.core.worktree.occupancy.read_process_table",
                 return_value=ProcessTable(frozenset(), "/proc"),
@@ -399,19 +409,22 @@ class CheckoutFenceTests(TestCase):
             (self.checkout / "new.txt").write_text("run output")
             sibling.claim(claimed_by="worker-2", claimed_by_session="s2")
             assert claim_task_checkout_or_park(sibling) is not None
+            completed_at = timezone.now()
             self.task.complete()
-            held = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
-            assert held is None
-            assert Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"] != initial
+            released = Worktree.objects.get(pk=self.worktree.pk)
+            assert occupancy_holder(released) is None
+            assert not any(not tenure["ended"] for tenure in released.get_extra()["checkout_custody"]["tenures"])
+            assert released.get_extra()["attested_state"] != initial
 
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] != initial
-        assert not any(not tenure["ended"] for tenure in finished.get_extra()["checkout_custody"]["tenures"])
         sibling.refresh_from_db()
         assert sibling.not_before is not None
         assert sibling.not_before <= timezone.now()
         assert sibling.admitted_at is not None
+        assert sibling.admitted_at >= completed_at
+        assert (sibling.pk, sibling.phase) in [enqueued.args for enqueued in enqueue.call_args_list]
         sibling.claim(claimed_by="worker-2", claimed_by_session="s3")
 
     def test_next_phase_started_inside_completion_uses_released_attestation(self) -> None:
