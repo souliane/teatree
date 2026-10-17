@@ -712,8 +712,8 @@ class _ProvisioningSettings:
     # and the provider's cycle boundaries are not discoverable from teatree's data.
     # Per-overlay overridable.
     metered_spend_window_hours: int = 24
-    # Review lane width outside the coding ceiling; shipping and review requests have
-    # one separate retiring seat. Both classes still obey quota brakes. Min 1.
+    # Stored review width (min 1): one extra retiring seat opens below the machine brake;
+    # under load the total cheap cap returns to this width. Quota brakes still apply.
     cheap_phase_admission_ceiling: int = 2
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
