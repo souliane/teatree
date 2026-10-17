@@ -5,7 +5,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.agents.skill_injection import required_load_line
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 _EVIDENCE = re.compile(r"^[A-Za-z0-9_./:# -]{4,160}$")
@@ -38,10 +37,35 @@ class SkillAssurance(TypedDict):
 class SkillDispatchError(ValueError):
     """A mandatory skill was absent or not delivered before a billable turn."""
 
-    def __init__(self, assurance: SkillAssurance) -> None:
+    def __init__(self, assurance: SkillAssurance, *, detail: str | None = None) -> None:
         self.assurance = assurance
-        detail = ", ".join(assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"])))
+        detail = detail or ", ".join(
+            assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"]))
+        )
         super().__init__(f"skill {assurance['status']}: {detail}")
+
+    @classmethod
+    def missing_document(cls, skill: str, path: str) -> "SkillDispatchError":
+        return cls(
+            {
+                "requested": [skill],
+                "found": [skill],
+                "injected": [],
+                "explicit_load": [],
+                "missing": [],
+                "evidence": [],
+                "observed_loads": [],
+                "status": "injection_gap",
+            },
+            detail=path,
+        )
+
+
+def required_load_line(name: str, skill_md: Path | None) -> str:
+    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
+    if skill_md is None:
+        return f"{load}; no SKILL.md resolves for it on this host."
+    return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."
 
 
 def _required_names(skills: Sequence[str], required: set[str]) -> list[str]:

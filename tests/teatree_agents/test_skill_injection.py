@@ -4,12 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents import skill_injection
 from teatree.agents.context_budget import enforce_budget
+from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_subagent_skill_preamble,
+    read_only_venue_skill_contents,
 )
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import resolve_skill_md
@@ -33,6 +36,33 @@ def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
     result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
     assert "--- SKILL: my-skill ---" in result
     assert "# My Skill" in result
+
+
+def test_read_only_venue_embeds_the_rules_document_when_it_cannot_mount_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
+    (tmp_path / "rules" / "RULES.md").write_text("# Always-On Rules\n0. Security first.\n", encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["rules"], {"rules"})
+
+    assert "--- SKILL: rules ---" in rendered
+    assert "# Always-On Rules\n0. Security first." in rendered
+    assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
+
+
+def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+    with pytest.raises(SkillDispatchError, match=r"rules/RULES\.md") as refused:
+        read_only_venue_skill_contents(["rules"], {"rules"})
+    assert refused.value.assurance["requested"] == ["rules"]
+    assert refused.value.assurance["found"] == ["rules"]
+    assert refused.value.assurance["missing"] == []
+    assert refused.value.assurance["status"] == "injection_gap"
 
 
 def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
