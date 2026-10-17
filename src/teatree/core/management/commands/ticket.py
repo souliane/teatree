@@ -413,6 +413,9 @@ class Command(
             request = dataclasses.replace(request, host_kind=resolve_host_kind(request, repo_slug=verdict_slug))
             verdict_slug = _verdict_slug(request, verdict_slug)
             with transaction.atomic():
+                ReviewVerdict.objects.assert_no_standing_hold_at(
+                    slug=verdict_slug, pr_id=request.pr_id, head_sha=request.reviewed_sha
+                )
                 clear = MergeClear.issue(request)
                 # Record the durable read-side sibling (a merge-safe judgment by
                 # construction — issuance refused any non-green verdict) so a later
