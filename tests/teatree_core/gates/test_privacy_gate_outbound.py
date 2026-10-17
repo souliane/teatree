@@ -308,6 +308,7 @@ def test_generic_refusal_redacts_token_and_remote_credentials() -> None:
 def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
     inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Pins scan_outbound_text's masked-text handoff to _generic_matches.
     monkeypatch.setenv(
         "TEATREE_TERM_REGISTRY",
         json.dumps(
@@ -336,6 +337,7 @@ def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
 
 
 def test_generic_detector_exempts_public_ci_path_only_on_forge_write(inject_rules: Callable[..., None]) -> None:
+    # Pins _generic_matches' forge_write=True call into generic_findings.
     inject_rules(public=True)
     body = "/home/runner/work/project"  # privacy-scan:allow synthetic fixture
 
