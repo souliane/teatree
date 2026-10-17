@@ -217,16 +217,8 @@ def _branch_refusal(spec: PushSpec, branch: str, run: "_ForgeRun") -> str | None
     """The refusal for one target *branch*, or ``None`` to allow it."""
     remote_ref = remote_branch_oid(spec.work_dir, spec.remote, branch)
     if not remote_ref.ok:
-        if remote_ref.credential_refused and os.environ.get(CODEX_ROUTER_ENV):
-            return credential_fault_refusal(
-                spec.remote,
-                branch,
-                remote_ref,
-                token_held=any(os.environ.get(key) for key in FORGE_TOKEN_ENV_KEYS),
-                force=spec.force,
-            )
         probe = f"`git ls-remote --heads {spec.remote} refs/heads/{branch}` (run in `{spec.work_dir}`)"
-        return _refuse(spec, branch, unobtainable_body(probe, remote_ref))
+        return _venue_fault(spec, branch, remote_ref) or _refuse(spec, branch, unobtainable_body(probe, remote_ref))
     if not remote_ref.out:
         return None
     # Before ownership: an owned open MR sourced from the default branch must not
@@ -244,16 +236,16 @@ def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_Forg
     if verdict == "foreign":
         return _refuse(spec, branch, detail)
     if verdict == "unknown":
-        if failed is not None and failed.credential_refused and os.environ.get(CODEX_ROUTER_ENV):
-            return credential_fault_refusal(
-                spec.remote,
-                branch,
-                failed,
-                token_held=any(os.environ.get(key) for key in FORGE_TOKEN_ENV_KEYS),
-                force=spec.force,
-            )
-        return _refuse(spec, branch, unobtainable_body(detail, failed))
+        return _venue_fault(spec, branch, failed) or _refuse(spec, branch, unobtainable_body(detail, failed))
     return _foreign_commit_refusal(spec, branch, branch_oid)
+
+
+def _venue_fault(spec: PushSpec, branch: str, failed: GitProbe | None) -> str | None:
+    """The venue-fault refusal when a dispatched Codex router's GitHub credential was refused, else ``None``."""
+    if failed is None or not failed.credential_refused or not os.environ.get(CODEX_ROUTER_ENV):
+        return None
+    token_held = any(os.environ.get(key) for key in FORGE_TOKEN_ENV_KEYS)
+    return credential_fault_refusal(spec.remote, branch, failed, token_held=token_held, force=spec.force)
 
 
 def _default_branch_destructive_refusal(spec: PushSpec, branch: str) -> str | None:

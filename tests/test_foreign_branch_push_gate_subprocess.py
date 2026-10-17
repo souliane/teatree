@@ -182,10 +182,20 @@ def _run_if_allowed(result: subprocess.CompletedProcess[str], command: str, scen
         )
 
 
+# gh 2.102's own stderr: no credential at all (exit 4), and a rejected one on `pr list` (exit 1).
+_GH_NO_CREDENTIAL = (
+    "To get started with GitHub CLI, please run:  gh auth login\\n"
+    "Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token."
+)
+_GH_REJECTED_CREDENTIAL = (
+    "HTTP 401: Bad credentials (https://api.github.com/graphql)\\nTry authenticating with:  gh auth login -h github.com"
+)
+
+
 @pytest.mark.parametrize(
     "scenario",
-    ["task-token", "missing-token", "forge-unavailable", "rejected-token", "interactive-login"],
-    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token", "interactive-login"],
+    ["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
+    ids=["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
 )
 def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
@@ -193,20 +203,18 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     sentinel = "gh" + "p_" + "s" * 36
     home = tmp_path / "router-home"
     home.mkdir()
-    routed = scenario != "interactive-login"
+    routed = scenario != "unrouted-task"
     forge_failure = {
         "forge-unavailable": "HTTP 502: Bad Gateway",
-        "rejected-token": "HTTP 401: Bad credentials",
+        "rejected-token": _GH_REJECTED_CREDENTIAL,
     }.get(scenario, "")
     _git(scene.work, "remote", "set-url", "origin", str(scene.origin))
     _seed_config_db(home / "config.sqlite3", _GATE_ON)
     gh = tmp_path / "gh"
-    fail_line = f"echo '{forge_failure}' >&2; exit 1\n" if forge_failure else ""
+    fail_line = f"printf '{forge_failure}\\n' >&2; exit 1\n" if forge_failure else ""
     gh.write_text(
         "#!/bin/sh\n"
-        f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ '
-        "echo 'You are not logged into any GitHub hosts. "
-        "Try authenticating with:  gh auth login -h github.com' >&2; exit 4; }\n"
+        f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ printf \'{_GH_NO_CREDENTIAL}\\n\' >&2; exit 4; }}\n'
         f"{fail_line}"
         'case "$*" in\n'
         "  'api user'*) echo '{\"login\":\"us\"}' ;;\n"
@@ -223,9 +231,7 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-    dispatch_env = {ROUTED_GH_KEY_ENV: "github/example/pat"} if routed else {}
-    if scenario != "missing-token" and routed:
-        dispatch_env["GH_TOKEN"] = sentinel
+    dispatch_env = {ROUTED_GH_KEY_ENV: "github/example/pat", "GH_TOKEN": sentinel} if routed else {}
     options = CodexAppServerOptions(
         core=HarnessOptions(cwd=str(scene.work), env=dispatch_env),
         runtime_workspace_roots=(str(scene.work),),
@@ -254,10 +260,12 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
         assert reason is not None
         assert "Venue fault" in reason
         assert "push_ownership_venue_fault` true" in reason
+        assert "Only coding and debugging phases act on that field" in reason
         assert "cut our OWN branch" not in reason
         assert "gh auth login" not in reason
-        if scenario in {"missing-token", "interactive-login"}:
-            assert "this process holds no GH_TOKEN" in reason
+        assert "GH_TOKEN environment variable" not in reason
+        held = "this process holds no GH_TOKEN" if scenario == "unrouted-task" else "GitHub rejected the GH_TOKEN"
+        assert held in reason
     assert sentinel not in (reason or "")
     assert sentinel not in caplog.text
 

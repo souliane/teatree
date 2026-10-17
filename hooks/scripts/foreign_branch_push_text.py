@@ -20,6 +20,7 @@ turning this gate off down with it, leaving a fail-closed refusal that names no
 way forward. Measured: a 100000-character refspec left 176 characters.
 """
 
+import re
 from typing import Final
 
 from hooks.scripts.credential_redaction import clip, redact_credentials
@@ -38,6 +39,8 @@ _NO_OVERRIDE: Final[str] = (
     "There is no per-call override for this gate; the owner turns it off deliberately with "
     "`t3 <overlay> gate foreign-push disable`."
 )
+# gh's own remedy lines steer to a login, which a dispatched task must not ask the owner for.
+_GH_LOGIN_HINT: Final[re.Pattern[str]] = re.compile(r"[^:]*:\s+gh auth login.*|.*GH_TOKEN environment variable.*")
 _UNREAD_SUBJECTS: Final[dict[str, str]] = {
     "wrapper": "the `{leader}` wrapper",
     "shell-payload": "the `{leader}` wrapper's script (there is no literal `-c` payload to read)",
@@ -68,15 +71,20 @@ def credential_fault_refusal(remote: str, branch: str, probe: GitProbe, *, token
     """A refused push whose GitHub ownership check had no usable credential."""
     credential = "GitHub rejected the GH_TOKEN this process holds" if token_held else "this process holds no GH_TOKEN"
     forced = " --force" if force else ""
-    cause = "; ".join(part for part in probe_cause(probe).split("; ") if "gh auth login" not in part.lower())
+    cause = clip(_without_login_hints(probe_cause(probe)), _MAX_QUOTED_CHARS)
     return redact_credentials(
         f"REFUSED: `git push{forced} {bounded(remote)} {bounded(branch)}`. Venue fault: the gate could not "
-        f"check branch ownership because {credential}. The probe said {clip(cause, _MAX_QUOTED_CHARS)}. "
-        "In coding and debugging, keep the commit local and set `push_ownership_venue_fault` true "
-        "in the result envelope "
-        "with `needs_user_input` false. Do not ask the owner to restore authentication, "
-        "turn off this gate, or cut a new branch. The factory will try the next route candidate."
+        f"check branch ownership because {credential}. The probe said {cause}. Keep the commit local and set "
+        "`push_ownership_venue_fault` true in the result envelope, with `needs_user_input` false. Only coding "
+        "and debugging phases act on that field: the attempt fails as a venue fault and the factory tries the "
+        "next route candidate. Do not ask the owner to restore authentication, turn off this gate, or cut a "
+        "new branch."
     )
+
+
+def _without_login_hints(cause: str) -> str:
+    kept = (_GH_LOGIN_HINT.sub("", part).strip().rstrip(":") for part in cause.split(";"))
+    return "; ".join(part for part in kept if part)
 
 
 def _remedy(branch: str) -> str:
