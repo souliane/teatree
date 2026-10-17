@@ -246,7 +246,7 @@ def _skill_route_selection(
     skills: list[str],
     phase_candidates: list[str],
 ) -> SkillRouteSelection | None:
-    config = resolve_agent_config(context.overlay)
+    config = resolve_agent_config()
     primary_skill = SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
     route = resolve_skill_route(
         config.skill_models,
