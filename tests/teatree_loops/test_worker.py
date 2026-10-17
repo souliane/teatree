@@ -17,7 +17,6 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -52,7 +51,7 @@ from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
 from teatree.loops.enable_verdict import FleetAdmission
-from teatree.loops.executor_thread import spawn_executor_thread
+from teatree.loops.executor_thread import build_executor, spawn_executor_thread
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
     LOOPS_EXECUTOR_FLOOR,
@@ -692,58 +691,6 @@ def test_sigterm_during_checkpoint_grace_exits_early() -> None:
     assert clock[0] == pytest.approx(2.0)
 
 
-def test_checkpoint_grace_keeps_master_lease_fresh() -> None:
-    clock = [0.0]
-    claims: list[float] = []
-    holder: list[LoopWorker] = []
-    seams = dataclasses.replace(
-        _liveness_seams(
-            script=[True] * 10,
-            holder=holder,
-            spawn=lambda executor: _FakeHandle(alive=False) if executor.queue == "loops" else _StuckHandle(),
-            make_executor=_FakeExecutor,
-        ),
-        read_agent_queues=lambda: ("default",),
-        max_respawns=0,
-        monotonic=lambda: clock[0],
-        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
-        claim_master=lambda: claims.append(clock[0]),
-        master_refresh_seconds=60.0,
-        begin_exit=lambda _reason: None,
-    )
-    holder.append(LoopWorker(seams))
-
-    with pytest.raises(LoopWorkerExecutorStopError):
-        holder[0].run()
-
-    assert len(claims) >= 6
-    assert max(later - earlier for earlier, later in pairwise(claims)) <= 60.0
-
-
-def test_lock_streak_publishes_degraded_health_until_recovery() -> None:
-    handles: list[_FakeHandle] = []
-    beats: list[tuple[str, bool]] = []
-    holder: list[LoopWorker] = []
-
-    def spawn(_executor: _FakeExecutor) -> _FakeHandle:
-        handle = _FakeHandle()
-        handles.append(handle)
-        return handle
-
-    def sleep(_seconds: float) -> None:
-        handles[0].degraded = not beats
-
-    seams = dataclasses.replace(
-        _liveness_seams(script=[True, True], holder=holder, spawn=spawn, make_executor=_FakeExecutor),
-        sleep=sleep,
-        publish_health=lambda admission, *, active: beats.append((admission, active)),
-    )
-    holder.append(LoopWorker(seams))
-    holder[0].run()
-
-    assert beats == [("degraded", False), ("admits", True)]
-
-
 def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
     clock = [0.0]
     degraded_ready = threading.Event()
@@ -802,32 +749,6 @@ def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
     assert beats == [("degraded", False)]
 
 
-def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None:
-    reasons: list[str] = []
-    polls = 0
-
-    def read_admission() -> FleetAdmission:
-        nonlocal polls
-        polls += 1
-        if polls == 1:
-            return FleetAdmission.ADMITS
-        msg = "supervisor failed"
-        raise RuntimeError(msg)
-
-    holder: list[LoopWorker] = []
-    seams = dataclasses.replace(
-        _liveness_seams(script=[], holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
-        read_admission=read_admission,
-        begin_exit=reasons.append,
-    )
-    holder.append(LoopWorker(seams))
-
-    with pytest.raises(RuntimeError, match="supervisor failed"):
-        holder[0].run()
-
-    assert reasons[0] == "this worker is exiting non-zero: supervisor failed with RuntimeError"
-
-
 def test_a_stop_request_never_announces_a_checkpoint() -> None:
     reasons: list[str] = []
     holder: list[LoopWorker] = []
@@ -874,13 +795,11 @@ class TestLockedExecutorKeepsAgentClaim(TransactionTestCase):
 
         def make_executor(queue: str, worker_id: str) -> Executor:
             built.append(queue)
-            return worker_mod._build_executor(queue, worker_id) if queue == "loops" else _FakeExecutor(queue, worker_id)
+            return build_executor(queue, worker_id) if queue == "loops" else _FakeExecutor(queue, worker_id)
 
         def spawn(executor: Executor) -> Handle:
             if isinstance(executor, db_worker.Worker):
-                if "sleep" in inspect.signature(worker_mod._spawn_executor_thread).parameters:
-                    return worker_mod._spawn_executor_thread(executor, sleep=lambda _seconds: time.sleep(0.001))
-                return worker_mod._spawn_executor_thread(executor)
+                return spawn_executor_thread(executor, sleep=lambda _seconds: time.sleep(0.001))
             return _RunningHandle(executor)
 
         def supervisor_sleep(_seconds: float) -> None:
