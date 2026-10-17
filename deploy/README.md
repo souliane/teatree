@@ -629,8 +629,9 @@ that is merely ABSENT does not refuse — that report is true.
 
 `--cap-add SYS_PTRACE` and `--pid host` did not make the worker's unreadable
 same-user host processes readable. In the measured worker, those processes were
-unconfined and had one `NSpid` entry; readable worker peers had two. This matches
-the worker's confinement profile denying inspection of unconfined host peers.
+unconfined and had one `NSpid` entry; readable worker peers had two.
+INFERRED (profile not read on this host): this split is consistent with the
+worker's confinement profile denying inspection of unconfined host peers.
 
 Nor is the guard uniformly blind in either venue. Three measurements: 35 of 325
 sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35
