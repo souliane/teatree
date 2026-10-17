@@ -170,24 +170,26 @@ def test_forge_stderr_is_scrubbed_before_the_cause_is_cut(monkeypatch: pytest.Mo
     assert sentinel[:15] not in probe.unresolved
     assert "<redacted>" in probe.unresolved
 
-    def test_each_attempt_takes_its_own_timeout_from_the_schedule(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        run = Mock(side_effect=_raise_timeout)
-        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
 
-        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
-            stdout=None, unresolved="timeout of 3s, then timeout of 5s"
-        )
-        assert [call.kwargs["timeout"] for call in run.call_args_list] == [3, 5]
+def test_each_attempt_takes_its_own_timeout_from_the_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock(side_effect=_raise_timeout)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
 
-    def test_no_attempt_starts_once_the_budget_is_spent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        run = Mock(side_effect=_raise_timeout)
-        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
-        affordable = {3: 2.5}
+    assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
+        stdout=None, unresolved="timeout of 3s, then timeout of 5s"
+    )
+    assert [call.kwargs["timeout"] for call in run.call_args_list] == [3, 5]
 
-        assert run_forge_tool("glab", ["api", "user"], budget=affordable.get) == ForgeProbe(
-            stdout=None, unresolved="timeout of 2.5s, then no time left in the hook budget"
-        )
-        assert [call.kwargs["timeout"] for call in run.call_args_list] == [2.5]
+
+def test_no_attempt_starts_once_the_budget_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock(side_effect=_raise_timeout)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+    affordable = {3: 2.5}
+
+    assert run_forge_tool("glab", ["api", "user"], budget=affordable.get) == ForgeProbe(
+        stdout=None, unresolved="timeout of 2.5s, then no time left in the hook budget"
+    )
+    assert [call.kwargs["timeout"] for call in run.call_args_list] == [2.5]
 
 
 class TestNegativeVisibilityCaching:
