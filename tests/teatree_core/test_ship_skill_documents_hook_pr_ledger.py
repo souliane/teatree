@@ -124,15 +124,17 @@ class TestReferenceNamesTheInstalledT3Hook:
                 f"the reference must say the wrapper skips on exit `{code}`"
             )
 
-    def test_reference_says_a_ship_push_sets_the_marker_because_it_holds_the_db_lock(self) -> None:
+    def test_reference_says_a_ship_push_skips_the_hook_because_ship_opens_the_pr(self) -> None:
         text = _REFERENCE.read_text(encoding="utf-8")
         for token in (
             "teatree.core.forge_push.SHIP_PUSH_ENV",
             "ship_opens_pr=True",
-            "BEGIN IMMEDIATE",
+            "The ship opens the PR itself right after the push",
             "SKIP=ensure-pr",
         ):
             assert token in text, f"the reference must name `{token}`"
+        ship_push = text.split("- A ship push (", 1)[1].split("\n- ", 1)[0]
+        assert "BEGIN IMMEDIATE" not in ship_push
 
     def test_reference_names_the_shapes_the_hook_does_not_cover(self) -> None:
         text = _REFERENCE.read_text(encoding="utf-8")
