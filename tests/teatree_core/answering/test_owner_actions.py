@@ -323,13 +323,13 @@ class TestCheckoutAttestation(TestCase):
         assert self._carry_out() == []
         assert "not the owner" in captured.output[0]
 
-    def test_typed_punctuation_matches_the_recorded_option(self) -> None:
+    def test_typed_punctuation_cannot_resolve_an_action_card(self) -> None:
         row = self._park_on_a_foreign_edit()
 
         def reader(_text: str) -> InboundReading:
             return InboundReading(InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC)
 
-        assert resolve_answer("Accept.", row, reader=reader) == "Accept"
+        assert resolve_answer("Accept.", row, reader=reader) is None
 
     def test_approval_uses_the_card_option_instead_of_a_fixed_label(self) -> None:
         state = checkout_state(self.checkout)
@@ -367,6 +367,41 @@ class TestCheckoutAttestation(TestCase):
         later.refresh_from_db()
         assert self.task.not_before is None
         assert later.not_before is None
+
+    def test_deferred_accept_does_not_create_another_card_on_park_retry(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        busy = ProcessTable(frozenset({self.checkout}), "/proc")
+        assert self._carry_out(busy) == []
+
+        state = checkout_state(self.checkout)
+        park_task_checkout(
+            self.task,
+            reason=f"checkout {self.checkout} differs from its attested state",
+            attestable=CheckoutAttestation(self.worktree, state, host_evidence=True),
+        )
+
+        assert DeferredQuestion.objects.filter(dedupe_marker=row.dedupe_marker).count() == 1
+        assert not DeferredQuestion.objects.filter(dedupe_marker=row.dedupe_marker, answered_at__isnull=True).exists()
+
+    def test_accept_only_releases_tasks_parked_for_its_checkout(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        other_path = Path(self.enterContext(TemporaryDirectory())) / "other"
+        _init_repo_with_branch(other_path, branch="feature", commits_ahead=0)
+        other_tree = WorktreeFactory(ticket=self.task.ticket, extra={"worktree_path": str(other_path)})
+        other_task = TaskFactory(ticket=self.task.ticket, phase="coding")
+        park_task_checkout(
+            other_task,
+            reason=f"checkout {other_path} differs from its attested state",
+            attestable=CheckoutAttestation(other_tree, checkout_state(other_path), host_evidence=True),
+        )
+        self._answer(row, "Accept")
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        self.task.refresh_from_db()
+        other_task.refresh_from_db()
+        assert self.task.not_before is None
+        assert other_task.not_before is not None
 
     def test_answered_action_can_be_asked_again_for_the_same_state(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -552,6 +587,18 @@ class TestCheckoutAttestation(TestCase):
             assert self._carry_out() == [f"carried out {row.pk}"]
 
         assert self._outcomes(void_card) == []
+        assert DeferredQuestionAudit.objects.filter(question=void_card, action="deferred").count() == 1
+        DeferredQuestionAudit.objects.filter(question=void_card, action="deferred").update(
+            resolved_at=timezone.now() - timedelta(hours=25)
+        )
+        with (
+            stub_forge(TypeError("malformed forge payload")),
+            patch("teatree.core.answering.owner_actions.notify_user") as notice,
+            self.assertLogs("teatree.core.answering.owner_actions", "ERROR"),
+        ):
+            assert self._carry_out() == [f"refused {void_card.pk}"]
+        notice.assert_called_once()
+        assert self._outcomes(void_card) == ["refused"]
 
 
 class TestActionIdentity(TestCase):

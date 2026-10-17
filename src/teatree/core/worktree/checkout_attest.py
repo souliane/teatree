@@ -72,7 +72,10 @@ def read_attestation(
         raise AttestRefusedError(message, retryable=True)
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(Path(path)):
-        message = f"has live or unverifiable processes: {table.refuse_reason()}"
+        message = "has live or unverifiable processes."
+        raise AttestRefusedError(message, retryable=True)
+    if requested_host_evidence and (not table.usable or table.eviction_gaps):
+        message = f"cannot rule out live processes: {table.eviction_refuse_reason()}"
         raise AttestRefusedError(message, retryable=True)
     try:
         state = checkout_state(Path(path), ticket=worktree.ticket)
@@ -86,7 +89,7 @@ def read_attestation(
     if expected_digest and state.digest != expected_digest:
         message = "changed since the owner was asked; ask again."
         raise AttestRefusedError(message)
-    host_evidence = table.usable and requested_host_evidence is not False
+    host_evidence = table.usable and not table.eviction_gaps and requested_host_evidence is not False
     return CheckoutAttestation(worktree, state, host_evidence)
 
 
@@ -104,20 +107,20 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
     process_fact = (
         "Nothing is running in the checkout."
         if attestation.host_evidence
-        else "The host process list could not be read."
+        else "The host process list could not rule out live processes."
     )
     holdings = f"{counted(state.commits_ahead, 'commit')} and {counted(state.uncommitted, 'uncommitted file')}"
     why = (
-        f"The checkout changed since its last run; it holds {holdings}."
+        f"Nothing is running in the checkout; it changed since its last run with {holdings}."
         if attestation.host_evidence
-        else f"The host process list is unavailable; accepting permits one run with {holdings}."
+        else f"The host process list could not rule out live processes; accepting permits one run with {holdings}."
     )
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
         checked=(
             "The checkout differs from its last recorded state."
             if attestation.host_evidence
-            else "The host process list is unavailable.",
+            else "The host process list could not rule out live processes.",
             process_fact,
             f"It holds {counted(state.commits_ahead, 'commit')} not on the target branch.",
             f"It has {counted(state.uncommitted, 'uncommitted file')}.",

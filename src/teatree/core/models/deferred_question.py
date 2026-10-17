@@ -555,7 +555,7 @@ class DeferredQuestionAudit(models.Model):
         on_delete=models.CASCADE,
         related_name="audits",
     )
-    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated"
+    action = models.CharField(max_length=16)
     answer_text = models.TextField(blank=True, default="")
     dismissed_reason = models.TextField(blank=True, default="")
     # Why a NON-resolving action fired. Separate from ``dismissed_reason`` because an

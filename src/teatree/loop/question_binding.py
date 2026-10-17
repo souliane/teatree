@@ -40,7 +40,7 @@ from django.db import transaction
 
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.question_actions import canonical_action_answer, is_action_question
+from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
@@ -191,7 +191,7 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
-    if not text.strip():
+    if not text.strip() or is_action_question(question):
         return None
     match = _DIGIT_RE.match(text)
     if match is None:
@@ -204,7 +204,7 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
             return None
         index = int(match.group(1))
         answer = str(options[index - 1].get("label", "")) or text if 1 <= index <= len(options) else text
-    return canonical_action_answer(question, answer)
+    return answer
 
 
 @dataclass(frozen=True, slots=True)
