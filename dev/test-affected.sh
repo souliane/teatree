@@ -69,7 +69,7 @@ done
 
 if [[ "$FULL" == "1" ]]; then
     echo "=== affected-tests: --full — running the whole suite ==="
-    exec uv run pytest --no-cov -n auto --reuse-db ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    exec uv run pytest --no-cov -n auto --reuse-db --teatree-selected-full ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
 fi
 
 # The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
@@ -81,4 +81,13 @@ echo "==="
 
 read -r -a SELECTED <<< "$(t3 tool affected-tests --base "$BASE" --pytest-args)"
 # A FULL verdict emits no --tach flag ⇒ the whole suite runs.
+SELECTED_FULL=1
+for arg in ${SELECTED[@]+"${SELECTED[@]}"}; do
+    if [[ "$arg" == "--tach" ]]; then
+        SELECTED_FULL=0
+    fi
+done
+if [[ "$SELECTED_FULL" == "1" ]]; then
+    SELECTED+=(--teatree-selected-full)
+fi
 exec uv run pytest --no-cov -n auto --reuse-db ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}

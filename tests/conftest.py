@@ -138,6 +138,12 @@ def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 _WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--teatree-selected-full", action="store_true", help="Run the affected-test selector's full verdict"
+    )
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Bound a bare ``-n auto`` by this process's CPU and usable RAM."""
     return bounded_auto_workers(
@@ -157,7 +163,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
+    refusal = whole_tree_refusal(
+        config.args,
+        root=config.rootpath,
+        sharded=sharded,
+        tach_active=tach_active,
+        full_selected=bool(config.getoption("teatree_selected_full")),
+    )
     if refusal:
         raise pytest.UsageError(refusal)
     tx = list(getattr(config.option, "tx", []))

@@ -33,7 +33,9 @@ def bounded_auto_workers(*, cores: int, memory_mib: int | None, explicit: str | 
     return max(1, min(_LOCAL_MAX_WORKERS, max(1, cores), memory_workers))
 
 
-def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool, tach_active: bool = False) -> str:
+def whole_tree_refusal(
+    args: list[str], *, root: Path, sharded: bool, tach_active: bool = False, full_selected: bool = False
+) -> str:
     """Explain an unsharded whole-tree selection before pytest begins collection.
 
     ``tach_active`` is the impact-analysis plugin's own parsed ``--tach`` option.
@@ -45,7 +47,7 @@ def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool, tach_activ
     this guards against; ``--tach`` deselects at collection time regardless of what
     positionals are given, so it is scoped independently of them.
     """
-    if sharded or tach_active:
+    if sharded or tach_active or full_selected:
         return ""
     tests_root = (root / "tests").resolve()
     selected = [Path(arg) for arg in args if not arg.startswith("-")]
