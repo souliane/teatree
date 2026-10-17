@@ -127,6 +127,16 @@ class TestCheckoutAttestation(TestCase):
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
         assert self._outcomes(row) == ["declined"]
 
+    def test_nonrecommended_tap_cannot_carry_out_if_decline_shortcut_is_missed(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Decline")
+
+        with patch("teatree.core.answering.owner_actions.owner_declined", return_value=False):
+            assert self._carry_out() == [f"refused {row.pk}"]
+
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+
     def test_typed_yes_leaves_the_checkout_card_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
         assert not apply_bound_answer(BoundAnswer(row, "yes", answered_by=_OWNER))
@@ -650,4 +660,6 @@ class TestActionIdentity(TestCase):
 
         assert carry_out_owner_actions() == [f"refused {row.pk}"]
         assert carry_out_owner_actions() == []
-        assert DeferredQuestionAudit.objects.filter(question=row, action="refused").count() == 1
+        assert DeferredQuestionAudit.objects.get(question=row, action="refused").note == (
+            "The action card no longer matches its recorded request."
+        )

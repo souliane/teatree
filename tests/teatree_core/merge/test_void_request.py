@@ -116,6 +116,16 @@ class TestVoidRequest(TestCase):
 
         assert not MergeVoid.objects.exists()
 
+    def test_ticket_change_before_void_tap_refuses_stale_card(self) -> None:
+        with stub_forge():
+            row = self._ask()
+            Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.CODED)
+            assert answer_from_click(_tap("Void", 1), backend=self.backend)
+            assert carry_out_owner_actions() == [f"refused {row.pk}"]
+
+        assert not MergeVoid.objects.exists()
+        assert PullRequest.objects.get(ticket=self.ticket).state == PullRequest.State.MERGED
+
     def test_verified_typed_reply_cannot_void(self) -> None:
         with stub_forge():
             row = self._ask()

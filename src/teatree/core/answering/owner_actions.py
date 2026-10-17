@@ -116,8 +116,14 @@ def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Dec
     if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or answer is None or answer.note != "button":
         return _Decision("refused", "Only the owner's Slack button tap may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
-    if match_action_option(row.options_json, row.answer_text) is None:
-        return _Decision("refused", "The answer did not match a card option; ask again.", notify=True)
+    option = match_action_option(row.options_json, row.answer_text)
+    if option is None or not option.recommended:
+        note = (
+            "The answer did not match a card option; ask again."
+            if option is None
+            else "Only the recommended option may approve this action."
+        )
+        return _Decision("refused", note, notify=True)
     try:
         return _Decision("carried_out", write=_PREPARE[kind](row, action, answer.resolver_id))
     except OwnerActionRefusedError as exc:
