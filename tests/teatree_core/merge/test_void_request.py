@@ -154,6 +154,7 @@ class TestVoidRequest(TestCase):
                 assert not answer_from_click(_tap("Void", 1, user="U0SOMEONEELSE"), backend=self.backend)
         row.refresh_from_db()
         assert row.is_pending
+        assert len(captured.output) == 1
         assert "1800000000.000100" in captured.output[0]
         assert "U0SOMEONEELSE" not in captured.output[0]
 

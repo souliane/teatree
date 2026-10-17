@@ -21,6 +21,7 @@ class CheckoutExitScope:
     prepare: Callable[["Task"], CheckoutExit | None]
     settled: CheckoutExit | None = None
     park_attests: bool = False
+    verified_run: bool = False
 
 
 _checkout_exit: ContextVar[CheckoutExitScope | None] = ContextVar("checkout_exit", default=None)
@@ -48,3 +49,8 @@ def attest_checkout_on_park() -> None:
     """Mark the running holder's coming park as an own exit whose checkout state it may attest."""
     if (scope := _checkout_exit.get()) is not None:
         scope.park_attests = True
+
+
+def mark_verified_checkout_run() -> None:
+    if (scope := _checkout_exit.get()) is not None:
+        scope.verified_run = True

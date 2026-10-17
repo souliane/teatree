@@ -65,6 +65,7 @@ def checkout_rows(path: str) -> list[Worktree]:
 def read_attestation(
     worktree: Worktree, *, expected_digest: str = "", requested_host_evidence: bool | None = None
 ) -> CheckoutAttestation:
+    worktree.refresh_from_db()
     path = worktree.worktree_path
     if len(checkout_rows(path)) != 1 or occupancy_holder(worktree) is not None:
         message = "needs one unoccupied Worktree row to attest."

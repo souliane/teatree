@@ -18,7 +18,7 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.question_actions import ACTION_OUTCOMES
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import AttestRefusedError, read_attestation
+from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, read_attestation
 
 logger = logging.getLogger(__name__)
 _RETRY_AFTER = timedelta(minutes=5)
@@ -48,19 +48,24 @@ def _prepare_attest(_row: DeferredQuestion, action: ActionRequest, _actor: str) 
     if worktree is None:
         message = "The checkout no longer has a record."
         raise OwnerActionRefusedError(message)
-    try:
-        attestation = read_attestation(
-            worktree,
-            expected_digest=action["binding"],
-            requested_host_evidence=action.get("host_evidence"),
-        )
-    except AttestRefusedError as exc:
-        message = f"The checkout {exc}"
-        if exc.retryable:
-            raise OwnerActionDeferredError(message) from exc
-        raise OwnerActionRefusedError(message) from exc
+
+    def read() -> CheckoutAttestation:
+        try:
+            return read_attestation(
+                worktree,
+                expected_digest=action["binding"],
+                requested_host_evidence=action.get("host_evidence"),
+            )
+        except AttestRefusedError as exc:
+            message = f"The checkout {exc}"
+            if exc.retryable:
+                raise OwnerActionDeferredError(message) from exc
+            raise OwnerActionRefusedError(message) from exc
+
+    read()
 
     def write() -> str:
+        attestation = read()
         attestation.record()
         for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
             release_checkout_park(parked)
@@ -121,7 +126,11 @@ def _carry_one(
         DeferredQuestion.objects.select_for_update().get(pk=row.pk)
         if DeferredQuestionAudit.objects.filter(question=row, action__in=ACTION_OUTCOMES).exists():
             return None
-        note = decision.write() if decision.write is not None else decision.note
+        try:
+            note = decision.write() if decision.write is not None else decision.note
+        except OwnerActionRefusedError as exc:
+            decision = _Decision("refused", str(exc), notify=True)
+            note = decision.note
         DeferredQuestionAudit.objects.create(
             question=row, action=decision.outcome, resolver_id=_resolver(answer), note=note
         )
@@ -136,10 +145,19 @@ def _carry_out(row: DeferredQuestion, first_wait: datetime | None) -> _Decision 
         if first_wait is not None and timezone.now() - first_wait >= _EXPIRES_AFTER:
             expired = _Decision("refused", f"Live evidence stayed unavailable for a day: {exc}", notify=True)
             return _carry_one(row, answer, forced=expired)
-        DeferredQuestionAudit.objects.create(
-            question=row, action="deferred", resolver_id=_resolver(answer), note=str(exc)
-        )
-        if first_wait is None:
+        with transaction.atomic():
+            DeferredQuestion.objects.select_for_update().get(pk=row.pk)
+            recent = (
+                DeferredQuestionAudit.objects.filter(question=row, action="deferred").order_by("-resolved_at").first()
+            )
+            if DeferredQuestionAudit.objects.filter(question=row, action__in=ACTION_OUTCOMES).exists() or (
+                recent is not None and timezone.now() - recent.resolved_at < _RETRY_AFTER
+            ):
+                return None
+            DeferredQuestionAudit.objects.create(
+                question=row, action="deferred", resolver_id=_resolver(answer), note=str(exc)
+            )
+        if recent is None:
             _tell_owner(row, f"Waiting for live evidence: {exc}", event="waiting")
         logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
         return None

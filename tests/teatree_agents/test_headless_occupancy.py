@@ -128,6 +128,29 @@ class CheckoutFenceDispatchTests(_DispatchCase):
 
 
 class HeldForTheRunTests(_DispatchCase):
+    def test_a_crashed_run_releases_and_attests_its_own_checkout_edit(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        self.addCleanup(shutil.rmtree, self.checkout)
+        self.worktree.merge_extra(set_keys={"attested_state": checkout_state(self.checkout).digest})
+        clear = ProcessTable(frozenset(), "/proc")
+        failure = RuntimeError("harness crashed")
+
+        def crash(*_: object, **__: object) -> TaskAttempt:
+            (self.checkout / "own.txt").write_text("agent edit")
+            raise failure
+
+        with (
+            mock.patch.object(runner, "_run_agent", side_effect=crash),
+            mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            mock.patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            pytest.raises(RuntimeError, match="harness crashed"),
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        settled = self.fresh()
+        assert occupancy_holder(settled) is None
+        assert settled.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+
     def test_process_settlement_runs_before_checkout_release(self) -> None:
         seen: list[bool] = []
 

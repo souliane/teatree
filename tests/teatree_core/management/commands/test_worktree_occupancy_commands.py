@@ -11,6 +11,7 @@ rather than pointed into the tree.
 import shutil
 import tempfile
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -134,11 +135,14 @@ class AttestTests(_CommandCase):
 
     def test_agent_cannot_attest(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
+        err = StringIO()
         with (
             patch("teatree.core.management.commands._worktree_occupancy.direct_owner_action", return_value=False),
-            pytest.raises(SystemExit),
+            pytest.raises(SystemExit) as refused,
         ):
-            self.run_cmd("attest", str(self.checkout))
+            call_command("worktree", "attest", str(self.checkout), stderr=err)
+        assert refused.value.code == 1
+        assert "only a direct owner command may attest a checkout" in err.getvalue()
         assert "attested_state" not in self.fresh().get_extra()
 
     def test_changed_checkout_is_not_attested(self) -> None:

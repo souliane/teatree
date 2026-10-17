@@ -20,10 +20,17 @@ from teatree.core.merge.void_request import request_void
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
-from teatree.core.models import DeferredQuestion, DeferredQuestionAudit, DmContext, PendingChatInjection, TaskAttempt
+from teatree.core.models import (
+    DeferredQuestion,
+    DeferredQuestionAudit,
+    DmContext,
+    PendingChatInjection,
+    TaskAttempt,
+    Worktree,
+)
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.owner_question_message import bump_text, render_text
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, read_attestation
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, park_task_checkout, verify_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
@@ -415,6 +422,33 @@ class TestCheckoutAttestation(TestCase):
         assert self.task.not_before is not None
         assert self._outcomes(row) == ["refused"]
 
+    def test_a_checkout_changed_after_preparation_is_not_attested(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        reads = 0
+
+        def move_after_first_read(
+            worktree: Worktree, *, expected_digest: str, requested_host_evidence: bool | None
+        ) -> CheckoutAttestation:
+            nonlocal reads
+            attestation = read_attestation(
+                worktree, expected_digest=expected_digest, requested_host_evidence=requested_host_evidence
+            )
+            reads += 1
+            if reads == 1:
+                (self.checkout / "new.txt").write_text("changed during approval")
+            return attestation
+
+        with (
+            patch("teatree.core.answering.owner_actions.read_attestation", side_effect=move_after_first_read),
+            patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=_CLEAR),
+        ):
+            assert carry_out_owner_actions() == [f"refused {row.pk}"]
+
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+        assert self._outcomes(row) == ["refused"]
+
     def test_a_busy_checkout_waits_then_attests_once_the_process_ends(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
@@ -461,7 +495,7 @@ class TestCheckoutAttestation(TestCase):
 
         assert self._carry_out() == [f"carried out {row.pk}"]
 
-    def test_the_checkout_is_read_outside_the_write_lock(self) -> None:
+    def test_the_checkout_is_rechecked_under_the_write_lock(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
         depths: list[int] = []
@@ -474,7 +508,7 @@ class TestCheckoutAttestation(TestCase):
         with patch("teatree.core.worktree.checkout_attest.read_process_table", side_effect=read_table):
             assert carry_out_owner_actions() == [f"carried out {row.pk}"]
 
-        assert depths == [baseline]
+        assert depths == [baseline, baseline + 1]
 
     def test_acceptance_does_not_release_a_later_usage_park(self) -> None:
         row = self._park_on_a_foreign_edit()

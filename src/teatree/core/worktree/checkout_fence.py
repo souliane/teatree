@@ -11,6 +11,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
+from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
@@ -65,6 +66,7 @@ def verify_task_checkout(task: Task, path: str) -> None:
         if held is not None:
             drop_refused_tenure(held, holder=task_holder_id(task), holder_session=task.claimed_by_session)
         raise
+    mark_verified_checkout_run()
 
 
 def _verify_one_checkout(task: Task, path: str) -> None:
