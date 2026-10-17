@@ -57,7 +57,7 @@ Return these sibling envelope fields with a `merge_safe` verdict:
 },
 "anti_vacuity": {
   "ac_coverage": "<how the diff covers the acceptance criteria>",
-  "proven_tests": ["<test ID observed failing on pre-fix code>"],
+  "proven_tests": ["<test ID observed RED before the fix>"],
   "no_new_tests": false
 }
 ```
