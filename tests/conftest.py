@@ -38,9 +38,17 @@ from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
-from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
+from teatree.quality.pytest_resource_contract import (
+    TOTAL_TEST_WORKERS_PER_CORE,
+    PoolUnavailableError,
+    SlotLease,
+    WorkerSlotPool,
+    bounded_auto_workers,
+    whole_tree_refusal,
+)
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
+from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.work_tree import reset_cwd_cache
@@ -127,6 +135,9 @@ def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
 
+_WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Bound a bare ``-n auto`` by this process's CPU and usable RAM."""
     return bounded_auto_workers(
@@ -136,6 +147,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Refuse a non-sharded whole-tree local run before test collection starts."""
     config = session.config
@@ -148,6 +160,25 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
     if refusal:
         raise pytest.UsageError(refusal)
+    tx = list(getattr(config.option, "tx", []))
+    pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
+    try:
+        lease = pool.acquire(max(1, len(tx)), nested=bool(os.environ.get("PYTEST_CURRENT_TEST")))
+    except PoolUnavailableError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    config.stash[_WORKER_SLOT_LEASE] = lease
+    if tx:
+        config.option.tx = tx[: lease.count]
+        if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
+            config.option.numprocesses = lease.count
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if hasattr(config, "workerinput"):
+        return
+    lease = config.stash.get(_WORKER_SLOT_LEASE, None)
+    if lease is not None:
+        lease.release()
 
 
 def load_script(name: str) -> types.ModuleType:

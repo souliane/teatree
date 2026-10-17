@@ -431,11 +431,11 @@ class TestTheWorkerBoundReadsMemory:
         assert per_agent_test_workers(
             cores=8, active_agents=4, ram_available_gb=None, per_worker_gb=_P90_WORKER_GB
         ) == per_agent_test_workers(cores=8, active_agents=4)
-        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 4
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 2
 
     def test_an_unsized_worker_returns_exactly_the_cpu_bound(self) -> None:
         # No per-worker size is the same missing evidence as no reading.
-        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 4
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 2
 
     def test_the_total_stays_within_what_memory_pays_for_across_the_agent_range(self) -> None:
         budget = math.floor((20.0 - RAM_BRAKE_FLOOR_GB) / _P90_WORKER_GB)
@@ -858,7 +858,7 @@ class TestWriteConcurrencyRaise:
 
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
-        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8
 
 
 _PER_CORE_SETTING = "admission_write_concurrency_per_core"

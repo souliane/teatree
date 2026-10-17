@@ -5,7 +5,15 @@ CI's deliberately sharded lanes provide their own explicit xdist budget. A local
 whole-tree call is refused before collection can burn the machine.
 """
 
+import fcntl
+import os
+import sys
+import time
 from pathlib import Path
+from types import TracebackType
+from typing import Self
+
+TOTAL_TEST_WORKERS_PER_CORE = 1
 
 _LOCAL_MAX_WORKERS = 4
 _PARENT_RESERVE_MIB = 512
@@ -51,4 +59,82 @@ def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool, tach_activ
     return ""
 
 
-__all__ = ["bounded_auto_workers", "whole_tree_refusal"]
+class PoolUnavailableError(RuntimeError):
+    def __init__(self, reason: str, path: Path) -> None:
+        super().__init__(f"shared pytest worker pool {reason}: {path}")
+
+
+class SlotLease:
+    def __init__(self, descriptors: list[int]) -> None:
+        self._descriptors = descriptors
+
+    @property
+    def count(self) -> int:
+        return len(self._descriptors)
+
+    def release(self) -> None:
+        for descriptor in self._descriptors:
+            os.close(descriptor)
+        self._descriptors.clear()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self.release()
+
+
+class WorkerSlotPool:
+    def __init__(self, shared_root: Path, *, capacity: int) -> None:
+        self.path = shared_root / "pytest-worker-slots"
+        self.capacity = max(1, capacity)
+
+    def acquire(self, requested: int, *, nested: bool = False, poll_interval: float = 1.0) -> SlotLease:
+        if not self.path.parent.is_dir():
+            reason = "root is missing"
+            raise PoolUnavailableError(reason, self.path.parent)
+        try:
+            self.path.mkdir(exist_ok=True)
+        except OSError as exc:
+            reason = "is unavailable"
+            raise PoolUnavailableError(reason, self.path) from exc
+        if nested and self.capacity == 1:
+            reason = "cannot run nested pytest on one core"
+            raise PoolUnavailableError(reason, self.path)
+        slot_numbers = range(self.capacity - 1, self.capacity) if nested else range(max(1, self.capacity - 1))
+        target = max(1, min(requested, len(slot_numbers)))
+        while True:
+            descriptors: list[int] = []
+            try:
+                for slot in slot_numbers:
+                    slot_path = self.path / f"slot-{slot:04d}.lock"
+                    descriptor = os.open(slot_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.close(descriptor)
+                        continue
+                    descriptors.append(descriptor)
+                    if len(descriptors) == target:
+                        break
+            except OSError as exc:
+                SlotLease(descriptors).release()
+                reason = "is unreadable"
+                raise PoolUnavailableError(reason, self.path) from exc
+            if descriptors:
+                return SlotLease(descriptors)
+            sys.stderr.write(f"pytest worker pool at {self.path} has no free slots ({self.capacity} total); waiting\n")
+            sys.stderr.flush()
+            time.sleep(poll_interval)
+
+
+__all__ = [
+    "TOTAL_TEST_WORKERS_PER_CORE",
+    "PoolUnavailableError",
+    "SlotLease",
+    "WorkerSlotPool",
+    "bounded_auto_workers",
+    "whole_tree_refusal",
+]
