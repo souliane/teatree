@@ -19,6 +19,7 @@ from teatree.forge_credentials import ROUTED_GH_KEY_ENV, ForgeTokenState, resolv
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
 from teatree.utils.env import patched_environ
 from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
+from teatree.utils.hook_registry import loop_registry_dir
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
         ram_available_gb=allocatable_gb,
         per_worker_gb=get_effective_settings().test_worker_ram_gb,
     )
-    return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
+    return {**(env or {}), XDIST_WORKERS_VAR: str(workers), "T3_LOOP_REGISTRY_DIR": str(loop_registry_dir())}
 
 
 def with_routed_github_token(env: dict[str, str] | None, *, overlay: str) -> dict[str, str] | None:

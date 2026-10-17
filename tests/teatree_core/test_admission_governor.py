@@ -51,7 +51,9 @@ from teatree.core.admission_pressure import (
 )
 from teatree.core.models import ConfigSetting
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
+from teatree.quality.pytest_resource_contract import TOTAL_TEST_WORKERS_PER_CORE
 from teatree.utils import ram_scope
+from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_scope import RamHeadroom
 from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB, PINNED_CORES, PINNED_LOAD1
 
@@ -295,10 +297,13 @@ class TestFailSafeAndFloor:
 
 
 class TestTestWorkerBudget:
-    def test_total_workers_stay_bounded_across_the_governable_agent_range(self) -> None:
-        # Up to the widest count the admission ceiling can ever produce, the TOTAL holds.
-        for agents in range(1, 8 * 2 + 1):
-            assert per_agent_test_workers(cores=8, active_agents=agents) * agents <= 8 * 2
+    def test_requests_floor_at_one_when_agents_exceed_pool_capacity(self) -> None:
+        capacity = 8 * TOTAL_TEST_WORKERS_PER_CORE
+        for agents in range(1, capacity * 2 + 1):
+            share = per_agent_test_workers(cores=8, active_agents=agents)
+            assert share * agents <= max(capacity, agents)
+            if agents > capacity:
+                assert share == 1
 
     def test_the_measured_meltdown_arithmetic_can_no_longer_happen(self) -> None:
         # 12 implementers x auto-detected 8 workers produced ~96 workers, load ~70.
@@ -329,7 +334,8 @@ class TestTestWorkerCapWiring:
     def test_cap_applies_even_when_the_child_inherits_the_ambient_env(self) -> None:
         capped = with_test_worker_cap(None, active_agents=4)
         assert capped is not None
-        assert set(capped) == {XDIST_WORKERS_VAR}
+        assert set(capped) == {XDIST_WORKERS_VAR, "T3_LOOP_REGISTRY_DIR"}
+        assert capped["T3_LOOP_REGISTRY_DIR"] == str(loop_registry_dir())
 
 
 class TestTheExportedCapRespondsToMemory:
