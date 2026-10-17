@@ -16,7 +16,6 @@ from teatree.quality.pytest_resource_contract import (
     WorkerSlotPool,
     bounded_auto_workers,
     whole_tree_refusal,
-    worker_specs,
 )
 from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_probe import available_cpu_count
@@ -65,6 +64,7 @@ def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Pat
     )
 
 
+@pytest.mark.timeout(75)
 def test_real_unsharded_pytest_refuses_before_collection() -> None:
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
@@ -175,21 +175,12 @@ def test_four_overlapping_runs_never_hold_more_than_the_capacity(tmp_path: Path)
     runs = [threading.Thread(target=run) for _ in range(4)]
     for thread in runs:
         thread.start()
+    deadline = time.monotonic() + 15
     for thread in runs:
-        thread.join(timeout=15)
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+    assert not any(thread.is_alive() for thread in runs)
     assert len(granted) == 20
     assert peak[0] <= 3
-
-
-@pytest.mark.parametrize(
-    ("tx", "expected"),
-    [
-        (["popen", "popen"], ["popen", "popen"]),
-        (["3*popen", "popen//python=python3"], ["popen", "popen", "popen", "popen//python=python3"]),
-    ],
-)
-def test_multiplied_tx_specs_count_every_worker(tx: list[str], expected: list[str]) -> None:
-    assert worker_specs(tx) == expected
 
 
 _HOLD_ALL_SLOTS = """
@@ -280,7 +271,12 @@ def test_real_pytest_refuses_missing_shared_pool(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
-    "worker_args", [("-n", "3"), ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen")]
+    "worker_args",
+    [
+        ("-n", "3"),
+        ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"),
+        ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"),
+    ],
 )
 def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path, worker_args: tuple[str, ...]) -> None:
     held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY - 1) if _BOX_CAPACITY > 1 else None
@@ -299,6 +295,33 @@ def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path, worker_
             held.release()
     assert result.returncode == 0, result.stderr
     assert "created: 1/1 worker" in result.stdout
+
+
+@pytest.mark.timeout(60)
+def test_real_pytest_capacity_changes_with_named_factor(tmp_path: Path) -> None:
+    plugin = tmp_path / "slot_factor_plugin.py"
+    plugin.write_text(
+        "def pytest_configure(config):\n"
+        "    for module in config.pluginmanager.get_plugins():\n"
+        "        if getattr(module, '__file__', '').endswith('/tests/conftest.py'):\n"
+        "            module.available_cpu_count = lambda: 1\n"
+        "            module.TOTAL_TEST_WORKERS_PER_CORE = 2\n"
+        "            return\n"
+        "    raise RuntimeError('root conftest was not loaded')\n"
+    )
+    env = _standalone_pytest_env(tmp_path)
+    env["PYTHONPATH"] = f"{tmp_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    result = subprocess.run(
+        _pytest_command("-p", "slot_factor_plugin", "-n", "2", "-vv", _BOUNDED_NODE),
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "created: 2/2 workers" in result.stdout
 
 
 @pytest.mark.timeout(60)
@@ -339,12 +362,13 @@ def test_real_nested_pytest_runs_on_its_parents_slot_when_the_pool_is_full(tmp_p
 
 
 @pytest.mark.timeout(60)
-def test_real_pytest_waits_for_a_slot_and_says_why(tmp_path: Path) -> None:
+@pytest.mark.parametrize("worker_args", [("-n", "0"), ("--collect-only", "-n", "2")])
+def test_real_pytest_waits_for_a_slot_and_says_why(tmp_path: Path, worker_args: tuple[str, ...]) -> None:
     held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY)
     stderr_path = tmp_path / "stderr.log"
     with stderr_path.open("w") as stderr:
         run = subprocess.Popen(
-            _pytest_command("-n", "0", "-q", _BOUNDED_NODE),
+            _pytest_command(*worker_args, "-q", _BOUNDED_NODE),
             cwd=_REPO,
             env=_standalone_pytest_env(tmp_path),
             stdout=subprocess.DEVNULL,

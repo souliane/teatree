@@ -64,15 +64,6 @@ def whole_tree_refusal(
     return ""
 
 
-def worker_specs(tx: list[str]) -> list[str]:
-    # Mirrors xdist's ``N*spec`` expansion, so a multiplied ``--tx`` leases every worker it starts.
-    specs: list[str] = []
-    for spec in tx:
-        count, star, rest = spec.partition("*")
-        specs.extend([rest] * int(count) if star and count.isdigit() else [spec])
-    return specs
-
-
 class PoolUnavailableError(RuntimeError):
     def __init__(self, reason: str, path: Path) -> None:
         super().__init__(f"shared pytest worker pool {reason}: {path}")
@@ -168,5 +159,4 @@ __all__ = [
     "WorkerSlotPool",
     "bounded_auto_workers",
     "whole_tree_refusal",
-    "worker_specs",
 ]

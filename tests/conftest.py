@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from xdist.workermanage import parse_tx_spec_config
 
 from hooks.scripts import hook_budget
 from teatree.agents import live_mailbox
@@ -45,7 +46,6 @@ from teatree.quality.pytest_resource_contract import (
     WorkerSlotPool,
     bounded_auto_workers,
     whole_tree_refusal,
-    worker_specs,
 )
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -174,7 +174,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if refusal:
         raise pytest.UsageError(refusal)
     distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
-    tx = worker_specs(list(getattr(config.option, "tx", []))) if distributed else []
+    tx = parse_tx_spec_config(config) if distributed else []
     pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
         lease = pool.session_lease(max(1, len(tx)))
