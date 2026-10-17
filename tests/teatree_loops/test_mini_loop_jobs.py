@@ -66,6 +66,7 @@ class TestDispatchLoopBuildJobs:
             "pending_tasks",
             "incoming_events",
             "outbound_audit",
+            "owner_actions",
             "pending_pr_drain",
             "undelivered_notify",
             "deferred_question_poster",

@@ -43,12 +43,22 @@ def test_a_command_naming_void_merge_is_refused_unless_it_is_a_standalone_read(c
         pytest.param("cd /work/5210-void-merge-transition/teatree && git status", id="a-branch-name-holding-the-word"),
         pytest.param("grep -rn 'void.merge' src/", id="a-dotted-search-pattern"),
         pytest.param("git commit -m 'fix(merge void): hold the restored ticket'", id="the-phrase-merge-void"),
+        pytest.param(f"t3 teatree pr request-void {_URL} 'content missing'", id="the-slack-request"),
     ],
 )
 def test_a_standalone_read_and_unrelated_commands_pass(command: str) -> None:
     assert void_merge_deny_reason(command) is None
 
 
-@pytest.mark.parametrize("escape", ["the Grep tool", "`void.merge`", "`merge void`", "`git commit -F <message file>`"])
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "`t3 <overlay> pr request-void <pr-url> '<why>'`",
+        "the Grep tool",
+        "`void.merge`",
+        "`merge void`",
+        "`git commit -F <message file>`",
+    ],
+)
 def test_the_refusal_names_the_escapes_that_run_no_void(escape: str) -> None:
     assert escape in DENY_REASON

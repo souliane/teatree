@@ -36,6 +36,17 @@ def test_checkout_state_detects_untracked_content_and_tracked_edits(tmp_path: Pa
     assert checkout_state(checkout).digest != edited.digest, "same status, different tracked content"
 
 
+def test_checkout_state_counts_each_changed_path_once(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+    assert checkout_state(checkout).uncommitted == 0
+
+    run_strict(repo=str(checkout), args=["mv", "README.md", "RENAMED.md"])
+    (checkout / "new.txt").write_text("untracked")
+
+    assert checkout_state(checkout).uncommitted == 2
+
+
 def test_checkout_state_counts_commits_ahead(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     _init_repo_with_branch(checkout, branch="feature", commits_ahead=3)
