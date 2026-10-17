@@ -8,7 +8,7 @@ SQLite write lock does not cover push or PR-open I/O, and the FSM moves only onc
 
 from typing import TypedDict
 
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import InvalidTransitionError, Ticket
@@ -141,7 +141,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"
             return _sync_result(ticket, ok=False, detail=detail)
-    except Exception as exc:  # noqa: BLE001 — surface the real cause, never an opaque rc=1
+    except (RuntimeError, DatabaseError) as exc:
         detail = f"PR {opened_pr_url} opened but the FSM advance failed: {exc}" if opened_pr_url else str(exc)
         return _sync_result(ticket, ok=False, detail=detail)
     return _sync_result(ticket, ok=True, detail=result.detail)
