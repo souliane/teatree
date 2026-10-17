@@ -631,7 +631,7 @@ def execute_ship(ticket_id: int) -> TransitionResult:
                 ticket.state,
             )
             return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
-        ticket.request_review()
+        ticket.complete_ship_after_pr_open()
         ticket.save()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

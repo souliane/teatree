@@ -122,11 +122,11 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
     """
     opened_pr_url = ""
     try:
+        ticket.refresh_from_db()
         try:
             ticket.refuse_unless_shippable()
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             return _gate_failure(ticket, exc)
-        ticket.refresh_from_db()
         result = ShipExecutor(ticket, title_override=title).run()
         if not result.ok:
             return _sync_result(ticket, ok=False, detail=result.detail)
@@ -135,8 +135,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
             with transaction.atomic():
                 fresh = Ticket.objects.select_for_update().get(pk=ticket.pk)
                 if fresh.state != Ticket.State.REVIEW_REQUESTED:
-                    fresh.ship()
-                    fresh.request_review()
+                    fresh.complete_ship_after_pr_open()
                     fresh.save()
         except (TransitionNotAllowed, InvalidTransitionError) as exc:
             detail = f"PR {result.detail} opened but the FSM advance was refused: {exc}"

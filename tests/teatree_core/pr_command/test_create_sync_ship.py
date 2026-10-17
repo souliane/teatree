@@ -10,8 +10,10 @@ from django.core.management import call_command
 from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase, override_settings
 
+from teatree.core.gates import pr_budget_gate
 from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands import pr as pr_command
+from teatree.core.management.commands._ship import gates as ship_gates
 from teatree.core.models import PullRequest, Session, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY, _SHIP_BACKEND, _shippable_ticket
@@ -131,6 +133,59 @@ class TestPrCreateSyncShip(TestCase):
 
         assert result["ok"] is True
         assert result["detail"] == _PR_URL
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_sync_retry_adopts_its_recorded_pr_with_budget_one(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch.object(ship_gates.git, "remote_slug", return_value="acme/backend"),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+            patch.object(pr_budget_gate, "cached_forge_open_pr_urls_for_ticket", return_value=set()),
+            patch.object(Ticket, "request_review", side_effect=OperationalError("database is locked")),
+        ):
+            first = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        with (
+            _ship_externals(host) as retry_push,
+            _gates_pass(),
+            patch.object(ship_gates.git, "remote_slug", return_value="acme/backend"),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+            patch.object(pr_budget_gate, "cached_forge_open_pr_urls_for_ticket", return_value=set()),
+        ):
+            second = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert first["ok"] is False
+        assert (
+            first["detail"]
+            == "PR https://github.com/acme/backend/pull/7 opened but the FSM advance failed: database is locked"
+        )
+        assert second["ok"] is True
+        assert second["detail"] == _PR_URL
+        push.assert_called_once()
+        retry_push.assert_not_called()
+        host.create_pr.assert_called_once()
+
+    def test_sync_refreshes_ticket_before_preflight(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+
+        def reopen_during_gates(*_args: object, **_kwargs: object) -> None:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+
+        with (
+            _ship_externals(host) as push,
+            patch.object(pr_command, "_run_visual_qa_gate", side_effect=reopen_during_gates),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), sync=True))
+
+        assert result["allowed"] is False
+        assert "merged" in str(result["error"])
         push.assert_not_called()
         host.create_pr.assert_not_called()
 
@@ -458,19 +513,6 @@ class TestPrCreateSyncShipAtomic(TestCase):
 
     @override_settings(**_SHIP_BACKEND)
     def test_ship_executor_structured_failure_is_atomic(self) -> None:
-        """#860: a non-raising ``RunnerResult(ok=False)`` must roll back too.
-
-        ``#838`` only treats an *exception* as the rollback trigger.
-        ``ShipExecutor.run()`` also has non-raising precondition exits
-        (``"no code host configured"``, ``"no worktree on ticket"``,
-        ``"branch ... already merged into base"``) that return
-        ``RunnerResult(ok=False)`` instead of raising. The old sync path
-        returned a normal ``{"ok": False}`` dict, so the outer
-        ``_ship_sync`` transaction committed — leaving the FSM in a
-        partial ``PR_OPENED`` with no push and no PR. This regression drives
-        the structured-failure path through the real ``ShipExecutor`` and
-        asserts the FSM is NOT left at ``PR_OPENED``.
-        """
         ticket = _shippable_ticket()
 
         with (

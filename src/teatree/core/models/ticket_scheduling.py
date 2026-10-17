@@ -319,9 +319,9 @@ class TicketSchedulingModel(TicketFacet):
         transition bodies. Dirty-collection rule and the no-auto-stash/
         lease-reaper rationale live on :func:`collect_dirty_worktree_paths`
         (#1983 LOC-ratchet split). On dirty: a loud :class:`DirtyWorktreeError`
-        names the dirty worktree(s) and the transition does not advance —
-        every production caller wraps the transition body in an outer
-        ``transaction.atomic``, so the raise rolls that whole atomic back.
+        names the dirty worktree(s) and the transition does not advance.
+        Transition callers wrap their writes in ``transaction.atomic``;
+        the sync preflight has no writes to roll back.
         """
         dirty = collect_dirty_worktree_paths(self)
         if not dirty:
@@ -343,6 +343,11 @@ class TicketSchedulingModel(TicketFacet):
         self._refuse_if_worktree_dirty("shipping")
         get_gate("local_e2e_dod")(self)
         get_gate("forced_repro")(self)
+
+    def complete_ship_after_pr_open(self: "Ticket") -> None:
+        if self.state == self.State.SELF_REVIEWED:
+            self.ship()
+        self.request_review()
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
         """Mark non-terminal tasks for ``phase`` as COMPLETED.

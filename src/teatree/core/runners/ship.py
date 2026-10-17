@@ -105,10 +105,16 @@ class PrTitleInputs(NamedTuple):
     title_override: str = ""
 
 
+class PrSpecContext(NamedTuple):
+    repo_path: str
+    branch: str
+    extra: "TicketExtra"
+
+
 def resolve_pr_title(ticket: "Ticket", extra: Mapping[str, object] | None, inputs: PrTitleInputs) -> str:
     """Resolve the title a PR will SHIP with — the single source of truth.
 
-    Both ``ShipExecutor._build_pr_spec`` (the actual ship) and ``ship_preview``
+    Both ``ShipExecutor.build_pr_spec`` (the actual ship) and ``ship_preview``
     (the ``pr create`` preflight) call this, so the title the preflight
     validates is always the title that will actually ship — they can no longer
     drift. Precedence: an explicit ``--title`` (``inputs.title_override``) wins;
@@ -346,7 +352,9 @@ class ShipExecutor(RunnerBase):
         if refusal is not None:
             return refusal
 
-        spec = self.build_pr_spec(host, repo_path, branch, extra)
+        spec = self.build_pr_spec(
+            ticket, host, PrSpecContext(repo_path, branch, extra), title_override=self.title_override
+        )
         subject, _ = git.last_commit_message(repo=repo_path, skip_merges=True)
         remote_url = git.remote_url(repo=repo_path)
         if refusal := refusal_for_pr_generic_findings(
@@ -560,23 +568,14 @@ class ShipExecutor(RunnerBase):
         return ""
 
     @staticmethod
-    def _build_pr_spec(
+    def build_pr_spec(
         ticket: "Ticket",
         host: "CodeHostBackend",
-        repo_path: str,
-        branch: str,
-        extra: "TicketExtra",
+        context: "PrSpecContext",
+        *,
+        title_override: str = "",
     ) -> PullRequestSpec:
-        return ShipExecutor(ticket).build_pr_spec(host, repo_path, branch, extra)
-
-    def build_pr_spec(
-        self,
-        host: "CodeHostBackend",
-        repo_path: str,
-        branch: str,
-        extra: "TicketExtra",
-    ) -> PullRequestSpec:
-        ticket = self.ticket
+        repo_path, branch, extra = context
         subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
         overlay = get_overlay_for_ticket(ticket)
         # PRODUCE the title via the shared resolver so the ship and the
@@ -586,7 +585,7 @@ class ShipExecutor(RunnerBase):
         title = resolve_pr_title(
             ticket,
             extra,
-            PrTitleInputs(branch=branch, subject=subject, body=body or "", title_override=self.title_override),
+            PrTitleInputs(branch=branch, subject=subject, body=body or "", title_override=title_override),
         )
         close_ticket = should_close_ticket(
             extra,

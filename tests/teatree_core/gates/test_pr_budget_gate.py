@@ -132,6 +132,26 @@ class TestUnlimitedOptOut(TestCase):
 
 
 class TestPerTicketPerRepoScope(TestCase):
+    def test_recorded_pr_for_current_branch_does_not_consume_budget(self) -> None:
+        url = f"https://github.com/{_REPO_A}/pull/1"
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"pr_url_by_branch": {"feat/x": url}},
+        )
+        _pr(ticket, repo=_REPO_A, iid="1")
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=1, body="")])
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host, shipping_branch="feat/x")
+
+    def test_recorded_pr_for_another_branch_still_consumes_budget(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"pr_url_by_branch": {"feat/other": f"https://github.com/{_REPO_A}/pull/1"}},
+        )
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=1, shipping_branch="feat/x")
+
     def test_second_open_pr_for_same_repo_ticket_is_refused_at_limit_one(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
