@@ -146,25 +146,6 @@ def _require_trusted_worker(socket_path: Path, sock: PeerSocket | None) -> None:
         raise FederationUnavailableError(msg)
 
 
-def _require_safe_published_socket(socket_path: Path) -> None:
-    if not WorkerSocketOwner.path(socket_path).exists():
-        return
-    try:
-        socket_info = socket_path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        msg = f"{socket_path.name}: worker identity could not be verified"
-        raise FederationUnavailableError(msg) from exc
-    if (
-        not stat.S_ISSOCK(socket_info.st_mode)
-        or socket_info.st_uid != os.getuid()
-        or stat.S_IMODE(socket_info.st_mode) != _OWNER_MODE
-    ):
-        msg = f"{socket_path.name}: worker identity could not be verified"
-        raise FederationUnavailableError(msg)
-
-
 async def remote_peers(
     own_socket: Path, sender: str, secret: bytes, *, strict: bool = False
 ) -> list[tuple[Path, PeerIdentity]]:
@@ -275,7 +256,6 @@ async def verified_sender(request: Mapping[str, object], *, own_socket: Path, co
 
 
 async def call(socket_path: Path, request: Mapping[str, object], *, wait: float) -> object:
-    await asyncio.to_thread(_require_safe_published_socket, socket_path)
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(str(socket_path), limit=_MAX_RESPONSE_BYTES), _CONNECT_SECONDS
