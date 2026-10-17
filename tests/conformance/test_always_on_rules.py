@@ -1,4 +1,4 @@
-"""The five ranked always-on rules live in one file that every agent entry point links before its first section."""
+"""The six ranked always-on rules live in one file that every agent entry point links before its first section."""
 
 import re
 from pathlib import Path
@@ -14,6 +14,7 @@ _TITLES = (
     "The owner reaches the factory only through the messaging channels",
     "Drive owner interaction toward zero",
     "A thread with the owner opens with enough context, then stays the one place for that work",
+    "Finish what is started before starting more",
 )
 
 _ENTRY_RE = re.compile(r"^(\d+)\. \*\*(.+?):\*\* ", re.MULTILINE)
@@ -74,10 +75,20 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
                 "and is reported."
             ),
         ),
+        (
+            5,
+            (
+                "5. **Finish what is started before starting more:** the factory chooses which ticket or pull "
+                "request to begin, but a pull request that has started comes first, so that work does not pile up "
+                "and branches do not drift into merge conflicts. A pull request is one unit even though it is "
+                "carried out in tasks and steps, and started pull requests are served oldest first. The time "
+                "from a pull request's start to its merge is measured and must tend toward zero."
+            ),
+        ),
     ],
-    ids=["rule-1", "rule-3"],
+    ids=["rule-1", "rule-3", "rule-5"],
 )
-def test_owner_amendments_are_verbatim(rank: int, expected: str) -> None:
+def test_owner_rules_are_verbatim(rank: int, expected: str) -> None:
     lines = _RULES_FILE.read_text(encoding="utf-8").splitlines()
     assert next(line for line in lines if line.startswith(f"{rank}. ")) == expected
 
