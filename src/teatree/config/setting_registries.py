@@ -380,5 +380,6 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "trusted_issue_authors",
         "independent_reviewer_identities",
         "bulk_close_threshold",
+        "eval_ci_account_allowlist",
     }
 )
