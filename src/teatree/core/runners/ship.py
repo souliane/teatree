@@ -327,8 +327,8 @@ class ShipExecutor(RunnerBase):
         """Scan the completed PR, then fence both outward writes.
 
         Split out of ``run`` so each half stays within the return-count gate. The
-        fleet-claim fence (:meth:`_fleet_claim_lost`) is checked after spec
-        construction, immediately before each outward write.
+        fleet-claim fence (:meth:`_fleet_claim_lost`) is checked before spec
+        construction and immediately before each outward write.
         """
         # #940 defense-in-depth: re-check branch currency before pushing. The
         # `pr create` gate already auto-merged the target, but ``execute_ship``
@@ -340,6 +340,8 @@ class ShipExecutor(RunnerBase):
             if currency_error is not None
             else self._refusal_before_outward_write(ticket, host, repo_path)
         )
+        if refusal is None:
+            refusal = self._fleet_claim_lost(repo_path)
         if refusal is not None:
             return refusal
 

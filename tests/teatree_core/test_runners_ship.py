@@ -1803,7 +1803,7 @@ class TestPostPushRefusalLeavesAReconcilableState(TestCase):
             patch.object(
                 ShipExecutor,
                 "_fleet_claim_lost",
-                side_effect=[None, RunnerResult(ok=False, detail="fleet claim lost")],
+                side_effect=[None, None, RunnerResult(ok=False, detail="fleet claim lost")],
             ),
         ):
             result = ShipExecutor(ticket).run()
