@@ -36,7 +36,7 @@ def _unseated_q(now: datetime) -> Q:
     return Q(admitted_at__isnull=True) | Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
 
 
-def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None) -> Q:
+def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None, cheap_total: bool = False) -> Q:
     """The rows holding a seat in one cost class's lane at *now*.
 
     One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
@@ -49,14 +49,21 @@ def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None) -> Q:
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    membership = _cheap_phase_q(cheap_class) if cheap_class is not None else ~_cheap_phase_q()
+    if cheap_class is not None:
+        membership = _cheap_phase_q(cheap_class)
+    elif cheap_total:
+        membership = _cheap_phase_q()
+    else:
+        membership = ~_cheap_phase_q()
     return membership & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
 
 
-def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap_class: CheapClass | None) -> LessThan:
+def _lane_under_ceiling(
+    now: datetime, ceiling: int, *, cheap_class: CheapClass | None, cheap_total: bool = False
+) -> LessThan:
     """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
@@ -65,7 +72,7 @@ def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap_class: CheapClass 
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
     occupied = (
-        task_model.objects.filter(_lane_occupancy_q(now, cheap_class=cheap_class))
+        task_model.objects.filter(_lane_occupancy_q(now, cheap_class=cheap_class, cheap_total=cheap_total))
         .order_by()
         .values(_lane=models.Value(1))
         .annotate(seats=models.Count("*"))

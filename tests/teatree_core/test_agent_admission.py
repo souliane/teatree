@@ -79,11 +79,11 @@ def _machine(load1: float = 1.0, *, cores: int = 8) -> MachineSignal:
 
 
 def _denied(reason: str) -> AgentAdmission:
-    return AgentAdmission(expensive_denied=reason, review_denied=reason, retiring_denied=reason)
+    return AgentAdmission(expensive_denied=reason, cheap_denied=reason, review_denied=reason, retiring_denied=reason)
 
 
 def _admitted() -> AgentAdmission:
-    return AgentAdmission(expensive_denied=None, review_denied=None, retiring_denied=None)
+    return AgentAdmission(expensive_denied=None, cheap_denied=None, review_denied=None, retiring_denied=None)
 
 
 class TestAgentAdmissionDeniedReason(TestCase):
@@ -214,7 +214,7 @@ class TestPhaseAwareVerdict(TestCase):
     def test_the_review_lane_is_bounded_by_its_own_ceiling(self) -> None:
         # The exemption must never become a second unbounded lane (#4097's cost).
         verdict = self._verdict(load1=self._MELTED, occupancy=2)
-        assert "review lane occupancy 2 at/over the review ceiling 2" in (verdict.denied_for(PhaseCost.CHEAP) or "")
+        assert "review lane occupancy 2 at/over the review ceiling 2" in (verdict.denied_reason("reviewing") or "")
 
     def test_a_spent_token_budget_still_denies_the_cheap_class(self) -> None:
         # The exemption is from the MACHINE brake only. A review burns tokens like
@@ -231,7 +231,7 @@ class TestPhaseAwareVerdict(TestCase):
         # Folding reviews back under the coding brake would queue them behind coding again.
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
         assert self._verdict(load1=self._MELTED).denied_for(PhaseCost.CHEAP) is None
-        assert "review ceiling 1" in (self._verdict(load1=self._MELTED, occupancy=1).denied_for(PhaseCost.CHEAP) or "")
+        assert "review ceiling 1" in (self._verdict(load1=self._MELTED, occupancy=1).denied_reason("reviewing") or "")
 
     def test_a_probe_failure_admits_both_classes_fail_open(self) -> None:
         with (
@@ -240,6 +240,9 @@ class TestPhaseAwareVerdict(TestCase):
             verdict = agent_admission_verdict()
         assert verdict.denied_for(PhaseCost.CHEAP) is None
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+        assert verdict.review_lane.ceiling is None
+        assert verdict.retiring_lane.ceiling is None
+        assert verdict.cheap_lane.ceiling is None
 
     def test_the_single_shot_wrapper_defaults_to_the_expensive_class(self) -> None:
         # Back-compat: the phase-less call is the pre-#4098 verdict verbatim, so a
@@ -436,8 +439,11 @@ class TestHeadlessAdmissionStatus(TestCase):
 
         assert status.as_json()["expensive_denied"] == status.as_json()["review_denied"] == quiescing
         assert status.as_json()["retiring_denied"] == quiescing
+        assert status.verdict().review_lane.ceiling == 2
+        assert status.verdict().retiring_lane.ceiling == 1
         assert (
-            f"expensive denied: {quiescing}; review denied: {quiescing}; retiring denied: {quiescing}" in status.line()
+            f"expensive denied: {quiescing}; cheap denied: {quiescing}; review denied: {quiescing}; "
+            f"retiring denied: {quiescing}" in status.line()
         )
 
     def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
@@ -592,6 +598,24 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         assert shipping.admitted_at is not None
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_machine_brake_restores_the_two_seat_cheap_limit(self) -> None:
+        for _ in range(2):
+            review = self._pending("reviewing")
+            Task.objects.filter(pk=review.pk).update(
+                status=Task.Status.CLAIMED,
+                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+            )
+        shipping = self._pending("shipping")
+
+        braked, _ = self._drain_under_load(self._MELTED)
+        shipping.refresh_from_db()
+        assert braked["enqueued"] == []
+        assert shipping.admitted_at is None
+
+        clear, _ = self._drain_under_load(1.0)
+        assert clear["enqueued"] == [shipping.pk]
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_an_unbraked_drain_admits_both_classes(self) -> None:
         coding = self._pending("coding")
         reviewing = self._pending("reviewing")
@@ -709,11 +733,11 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
         return row
 
-    def _probe(self) -> AgentAdmission:
+    def _probe(self, *, load1: float = 1.0) -> AgentAdmission:
         """One chokepoint's verdict, off the live occupancy count — a racer's stale read."""
         with (
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
-            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
         ):
             return agent_admission_verdict()
 
@@ -734,6 +758,16 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         assert racer_one.admit(first.pk, first.phase, at="racer-one") is True
         assert racer_two.admit(second.pk, second.phase, at="racer-two") is False
         assert Task.objects.cheap_class_occupancy(CheapClass.RETIRING) == 1
+
+    def test_braked_lane_total_rejects_a_stale_cross_class_booking(self) -> None:
+        self._seated_row()
+        retiring = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
+        reviewing = self._cheap_row()
+        first, second = self._probe(load1=41.0), self._probe(load1=41.0)
+
+        assert first.admit(retiring.pk, retiring.phase, at="first") is True
+        assert second.admit(reviewing.pk, reviewing.phase, at="second") is False
+        assert Task.objects.cheap_lane_occupancy() == 2
 
     def test_a_row_already_holding_a_live_seat_is_not_admitted_twice(self) -> None:
         # Re-admitting a row already in the runner's hand is a duplicate dispatch, which
@@ -983,7 +1017,9 @@ class TestReviewingIsNeverQueuedBehindCoding(TestCase):
 
         assert not self._admitted(self._task("reviewing"))
         assert self._admitted(self._task("shipping"))
-        assert not self._admitted(self._task("requesting_review"))
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            assert not self._admitted(self._task("requesting_review"))
+        assert any("cheap lane occupancy 3 at/over the cheap ceiling 3" in line for line in logs.output)
 
     def test_full_retiring_lane_leaves_review_seats(self) -> None:
         self._claimed("shipping", 1)

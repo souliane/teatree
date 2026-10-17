@@ -135,7 +135,9 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
             # it is stated here rather than inherited from whatever the host happens to be.
             patch(
                 "teatree.core.agent_admission.agent_admission_verdict",
-                return_value=AgentAdmission(expensive_denied=None, review_denied=None, retiring_denied=None),
+                return_value=AgentAdmission(
+                    expensive_denied=None, cheap_denied=None, review_denied=None, retiring_denied=None
+                ),
             ),
         ):
             # ``call_command`` is annotated as returning None upstream; this command

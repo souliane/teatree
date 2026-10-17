@@ -1611,7 +1611,9 @@ class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
             # so patching its source module leaves the command on the real verdict, and the test
             # then asserts against an admission nobody stubbed.
             "teatree.core.management.commands.tasks.agent_admission_verdict",
-            return_value=AgentAdmission(expensive_denied=expensive, review_denied=cheap, retiring_denied=cheap),
+            return_value=AgentAdmission(
+                expensive_denied=expensive, cheap_denied=cheap, review_denied=cheap, retiring_denied=cheap
+            ),
         )
 
     def test_a_healthy_box_claims_the_head_of_the_queue(self) -> None:
