@@ -26,6 +26,7 @@ from teatree.core.gates.pr_budget_gate import (
     open_pr_urls_for_repo,
     resolve_pr_budget,
 )
+from teatree.core.merge.pr_url_record import record_unverified_pr_url
 from teatree.core.models import ConfigSetting, PullRequest, Ticket
 from teatree.utils.run import CommandFailedError
 
@@ -67,6 +68,13 @@ def _pr(ticket: Ticket, *, repo: str, iid: str, state: str = PullRequest.State.O
 
 
 class TestCountOpenPrsForRepo(TestCase):
+    def test_unverified_retry_marker_does_not_count(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+
+        record_unverified_pr_url(ticket, f"https://github.com/{_REPO_A}/pull/9", "feat/x")
+
+        assert count_open_prs_for_repo(ticket, _REPO_A) == 0
+
     def test_counts_open_rows_scoped_to_ticket_and_repo(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")

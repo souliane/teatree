@@ -9,6 +9,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.gates import pr_budget_gate
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.runners.ship import ShipExecutor
 
@@ -53,7 +54,8 @@ class TestSyncShipRecovery(TestCase):
             first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
         ticket.refresh_from_db()
-        assert ticket.extra["pr_url_by_branch"]["feature-branch"] == _PR_URL
+        assert ticket.extra["unverified_pr_by_branch"]["feature-branch"] == _PR_URL
+        assert "pr_url_by_branch" not in ticket.extra
         assert _PR_URL not in ticket.extra.get("pr_urls", [])
         assert not PullRequest.objects.filter(url=_PR_URL).exists()
 
@@ -68,20 +70,63 @@ class TestSyncShipRecovery(TestCase):
         retry_push.assert_not_called()
         host.create_pr.assert_called_once()
         assert PullRequest.objects.get(url=_PR_URL).create_verification == PullRequest.CreateVerification.CONFIRMED
+        ticket.refresh_from_db()
+        assert "unverified_pr_by_branch" not in ticket.extra
 
     def test_retry_does_not_adopt_pr_its_verification_still_cannot_confirm(self) -> None:
         ticket = _shippable_ticket()
         host = _code_host()
         host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
 
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value="acme/backend"),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+            patch.object(pr_budget_gate, "cached_forge_open_pr_urls_for_ticket", return_value=set()),
+        ):
+            first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+            ticket.refresh_from_db()
+            assert ticket.extra["unverified_pr_by_branch"]["feature-branch"] == _PR_URL
+            retry = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert first["ok"] is False
+        assert retry["ok"] is False
+        assert retry["state"] == Ticket.State.SELF_REVIEWED
+        assert "verify-by-re-read" in str(retry["detail"])
+        assert push.call_count == 2
+        assert host.create_pr.call_count == 2
+        assert not PullRequest.objects.filter(url=_PR_URL).exists()
+
+    def test_fresh_create_after_unconfirmed_retry_clears_marker(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+        host.get_pr_open_state.side_effect = [PrOpenState.UNKNOWN, PrOpenState.UNKNOWN, PrOpenState.OPEN]
+
         with _ship_externals(host), _gates_pass():
             call_command("pr", "create", str(ticket.pk), sync=True)
             retry = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
-        assert retry["ok"] is False
-        assert retry["state"] == Ticket.State.SELF_REVIEWED
+        ticket.refresh_from_db()
+        assert retry["ok"] is True
         assert host.create_pr.call_count == 2
-        assert not PullRequest.objects.filter(url=_PR_URL).exists()
+        assert "unverified_pr_by_branch" not in ticket.extra
+
+    def test_recording_failure_preserves_verification_reason(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+
+        with (
+            _ship_externals(host),
+            _gates_pass(),
+            patch.object(ShipExecutor, "record_opened_pr", side_effect=OperationalError("recording failed")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert result["ok"] is False
+        assert "verify-by-re-read" in str(result["detail"])
+        assert "recording failed" in str(result["detail"])
 
     def test_retry_adopts_pr_when_recording_fails_once_after_create(self) -> None:
         ticket = _shippable_ticket()

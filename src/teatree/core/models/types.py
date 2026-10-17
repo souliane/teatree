@@ -142,6 +142,7 @@ class TicketExtra(TypedDict, total=False):
     # ship can tell whether the *current* invoking branch's PR exists,
     # without short-circuiting on the truthiness of the shared ``pr_urls``.
     pr_url_by_branch: dict[str, str]
+    unverified_pr_by_branch: dict[str, str]
     # ARBITER (F1.3): the ``PullRequest`` rows are the system of record for PR
     # facts (their FSM ``state`` is the authority). This ``prs`` map is a
     # DENORMALIZED SYNC CACHE — a JSON snapshot the dashboard read-model

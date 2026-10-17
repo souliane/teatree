@@ -117,6 +117,16 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
     )
 
 
+def _ship_exception_detail(executor: ShipExecutor, opened_pr_url: str, failed_detail: str, exc: Exception) -> str:
+    if failed_detail:
+        return f"{failed_detail}; recording it failed: {exc}"
+    if opened_pr_url:
+        return f"PR {opened_pr_url} opened but the FSM advance failed: {exc}"
+    if executor.opened_pr_url:
+        return f"PR {executor.opened_pr_url} opened but ship failed: {exc}"
+    return str(exc)
+
+
 def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure:
     """Synchronous ship (#708): preflight, push + open the PR, then advance the FSM in one short commit.
 
@@ -124,6 +134,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
     refused stays recorded, so a re-run adopts it instead of opening a second one.
     """
     opened_pr_url = ""
+    failed_detail = ""
     executor = ShipExecutor(ticket, title_override=title)
     try:
         ticket.refresh_from_db()
@@ -133,6 +144,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
             return _gate_failure(ticket, exc)
         result = executor.run()
         if not result.ok:
+            failed_detail = result.detail
             executor.record_opened_pr()
             return _sync_result(ticket, ok=False, detail=result.detail)
         opened_pr_url = result.detail
@@ -153,14 +165,11 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
             except Exception as record_exc:
                 logger.exception("Could not record opened PR")
                 detail = (
-                    f"PR {executor.opened_pr_url} opened but recording it failed: {record_exc}; original failure: {exc}"
+                    f"PR {executor.opened_pr_url} opened but recording it failed: {record_exc}; "
+                    f"original failure: {failed_detail or exc}"
                 )
                 return _sync_result(ticket, ok=False, detail=detail)
-        if opened_pr_url:
-            detail = f"PR {opened_pr_url} opened but the FSM advance failed: {exc}"
-        elif executor.opened_pr_url:
-            detail = f"PR {executor.opened_pr_url} opened but ship failed: {exc}"
-        else:
-            detail = str(exc)
-        return _sync_result(ticket, ok=False, detail=detail)
+        return _sync_result(
+            ticket, ok=False, detail=_ship_exception_detail(executor, opened_pr_url, failed_detail, exc)
+        )
     return _sync_result(ticket, ok=True, detail=result.detail)

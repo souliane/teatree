@@ -349,7 +349,7 @@ class ShipExecutor(RunnerBase):
         refusal = (
             RunnerResult(ok=False, detail=currency_error)
             if currency_error is not None
-            else self._refusal_before_outward_write(ticket, host, repo_path)
+            else self._refusal_before_outward_write(ticket, host, repo_path, branch)
         )
         if refusal is None:
             refusal = self._fleet_claim_lost(repo_path)
@@ -388,6 +388,7 @@ class ShipExecutor(RunnerBase):
         ticket: "Ticket",
         host: "CodeHostBackend",
         repo_path: str,
+        branch: str,
     ) -> "RunnerResult | None":
         """The PR-budget / debt-delta refusals, reached BEFORE any outward write (#4151).
 
@@ -408,7 +409,7 @@ class ShipExecutor(RunnerBase):
         expected_slug = git.remote_slug(repo=repo_path)
         if expected_slug:
             try:
-                check_pr_budget(ticket, expected_slug, host=host)
+                check_pr_budget(ticket, expected_slug, host=host, shipping_branch=branch)
             except PrBudgetExceededError as exc:
                 return RunnerResult(ok=False, detail=str(exc))
         debt_error = evaluate_debt_delta(ticket, repo_path)

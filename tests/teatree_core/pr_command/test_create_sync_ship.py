@@ -105,6 +105,7 @@ class TestPrCreateSyncShip(TestCase):
         assert result["detail"] == _PR_URL
         push.assert_not_called()
         host.create_pr.assert_not_called()
+        host.get_pr_open_state.assert_not_called()
 
     def test_sync_retry_adopts_its_recorded_pr_with_budget_one(self) -> None:
         ticket = _shippable_ticket()

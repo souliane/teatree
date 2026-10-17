@@ -7,7 +7,7 @@ the ticket had no record of. Both now write here.
 
 from django.test import TestCase
 
-from teatree.core.merge.pr_url_record import record_pr_url
+from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr_url
 from teatree.core.models import PullRequest, Ticket
 
 _URL = "https://github.com/souliane/teatree/pull/4305"
@@ -40,6 +40,16 @@ class TestRecordPrUrl(TestCase):
         ticket.refresh_from_db()
         assert "pr_title_override" not in ticket.extra
         assert "ship_invoking_branch" not in ticket.extra
+
+    def test_confirming_one_branch_keeps_another_branch_retry_marker(self) -> None:
+        ticket = self._ticket()
+        record_unverified_pr_url(ticket, _URL, _BRANCH)
+        record_unverified_pr_url(ticket, "https://github.com/souliane/teatree/pull/4306", "fix/other")
+
+        record_pr_url(ticket, _URL, _BRANCH)
+
+        ticket.refresh_from_db()
+        assert ticket.extra["unverified_pr_by_branch"] == {"fix/other": "https://github.com/souliane/teatree/pull/4306"}
 
     def test_an_empty_url_records_nothing(self) -> None:
         # A caller with no URL has no PR to attribute; recording "" would put a
