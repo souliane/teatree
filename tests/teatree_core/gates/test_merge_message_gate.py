@@ -97,6 +97,15 @@ class TestPublicTargetLeakScan(TestCase):
             _bound_merge(stub)
         assert stub.merge_requests() == []
 
+    def test_a_private_ip_bound_for_a_public_repo_is_refused_before_the_merge_request(self) -> None:
+        stub = _MessageStub(body="Connect to 10.24.8.9")  # privacy-scan:allow synthetic fixture
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            pytest.raises(MergePreconditionError, match="generic:private_ip"),
+        ):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
     def test_the_same_body_to_a_private_repo_merges(self) -> None:
         stub = _MessageStub(body=self._BODY)
         with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False):
