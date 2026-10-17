@@ -18,7 +18,7 @@ class CheckoutExit:
 
 @dataclass
 class CheckoutExitScope:
-    prepare: Callable[["Task"], CheckoutExit | None]
+    prepare: Callable[["Task", bool], CheckoutExit | None]
     settled: CheckoutExit | None = None
     park_attests: bool = False
     verified_run: bool = False
@@ -28,7 +28,7 @@ _checkout_exit: ContextVar[CheckoutExitScope | None] = ContextVar("checkout_exit
 
 
 @contextmanager
-def checkout_exit_scope(prepare: Callable[["Task"], CheckoutExit | None]) -> Generator[CheckoutExitScope]:
+def checkout_exit_scope(prepare: Callable[["Task", bool], CheckoutExit | None]) -> Generator[CheckoutExitScope]:
     scope = CheckoutExitScope(prepare)
     token = _checkout_exit.set(scope)
     try:
@@ -37,11 +37,11 @@ def checkout_exit_scope(prepare: Callable[["Task"], CheckoutExit | None]) -> Gen
         _checkout_exit.reset(token)
 
 
-def prepared_checkout_exit(task: "Task") -> CheckoutExit | None:
+def prepared_checkout_exit(task: "Task", *, attest: bool = True) -> CheckoutExit | None:
     scope = _checkout_exit.get()
     if scope is None:
         return None
-    scope.settled = scope.prepare(task)
+    scope.settled = scope.prepare(task, attest)
     return scope.settled
 
 

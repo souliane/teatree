@@ -337,7 +337,7 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
         task_occupancy_release_deferred,
     )
 
-    exit_state = prepared_checkout_exit(task) if by_holder else None
+    exit_state = prepared_checkout_exit(task, attest=False) if by_holder else None
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
