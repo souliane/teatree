@@ -229,15 +229,15 @@ class CheckoutFenceTests(TestCase):
     def test_release_at_the_post_park_holder_check_rearms_the_task(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
 
-        def release_at_check(task: Task, blocked_by: object) -> bool:
+        def release_at_check(task: Task, behind: object) -> bool:
             assert task.pk == self.task.pk
-            assert blocked_by == held
+            assert behind == held
             assert Task.objects.get(pk=task.pk).not_before > timezone.now()
             assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
             return False
 
         with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=release_at_check):
-            park_task_checkout(self.task, reason="occupied before release", blocked_by=held)
+            park_task_checkout(self.task, reason="occupied before release", behind=held)
         self.task.refresh_from_db()
         assert self.task.not_before is not None
         assert self.task.not_before <= timezone.now()
@@ -246,21 +246,21 @@ class CheckoutFenceTests(TestCase):
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
         stamp = timezone.now()
 
-        def admit_at_check(task: Task, blocked_by: object) -> bool:
-            assert blocked_by == held
+        def admit_at_check(task: Task, behind: object) -> bool:
+            assert behind == held
             assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
             Task.objects.filter(pk=task.pk).update(not_before=stamp, admitted_at=stamp)
             return False
 
         with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=admit_at_check):
-            park_task_checkout(self.task, reason="occupied before admission", blocked_by=held)
+            park_task_checkout(self.task, reason="occupied before admission", behind=held)
         self.task.refresh_from_db()
         assert self.task.admitted_at == stamp
 
     def test_coalesced_park_refreshes_occupied_by_on_returned_attempt(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
         first = park_task_checkout(self.task, reason="occupied")
-        repeated = park_task_checkout(self.task, reason="occupied", blocked_by=held)
+        repeated = park_task_checkout(self.task, reason="occupied", behind=held)
         assert repeated.pk == first.pk
         repeated.refresh_from_db()
         assert repeated.result["occupied_by"] == {"holder": held.holder, "session": held.holder_session}

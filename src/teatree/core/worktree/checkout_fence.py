@@ -138,7 +138,7 @@ def park_task_checkout(
     task: Task,
     *,
     reason: str,
-    blocked_by: OccupancyHolder | None = None,
+    behind: OccupancyHolder | None = None,
     attestable: CheckoutAttestation | None = None,
 ) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
@@ -148,11 +148,7 @@ def park_task_checkout(
         if str(previous.get("summary", "")).startswith(CHECKOUT_PARKED_PREFIX)
         else None
     )
-    blocker = (
-        {"occupied_by": {"holder": blocked_by.holder, "session": blocked_by.holder_session}}
-        if blocked_by is not None
-        else {}
-    )
+    blocker = {"occupied_by": {"holder": behind.holder, "session": behind.holder_session}} if behind is not None else {}
     attempt = TaskAttempt.objects.create(  # no-usage: checkout refused before a harness turn was billed
         task=task,
         ended_at=timezone.now(),
@@ -166,7 +162,7 @@ def park_task_checkout(
         },
     )
     result = {**attempt.result, **blocker}
-    if blocked_by is None:
+    if behind is None:
         result.pop("occupied_by", None)
     if episode is None:
         result["checkout_episode"] = f"attempt:{attempt.pk}"
@@ -178,9 +174,9 @@ def park_task_checkout(
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
     rearmed = 0
-    if blocked_by is not None and not _still_held_by(task, blocked_by):
+    if behind is not None and not _still_held_by(task, behind):
         rearmed = Task.objects.filter(pk=task.pk).rearm_parked_behind(
-            holder=blocked_by.holder, holder_session=blocked_by.holder_session
+            holder=behind.holder, holder_session=behind.holder_session
         )
     if seat_freed or rearmed:
         checkout_capacity_opened.send(sender=Task)
@@ -200,19 +196,19 @@ def park_task_checkout(
     return attempt
 
 
-def _still_held_by(task: Task, blocked_by: OccupancyHolder) -> bool:
+def _still_held_by(task: Task, behind: OccupancyHolder) -> bool:
     return Worktree.objects.filter(
         ticket=task.ticket,
-        occupied_by=blocked_by.holder,
-        occupied_by_session=blocked_by.holder_session,
+        occupied_by=behind.holder,
+        occupied_by_session=behind.holder_session,
         occupancy_expires_at__gt=timezone.now(),
     ).exists()
 
 
-def park_refused_checkout(task: Task, exc: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
-    blocked_by = exc.holder if isinstance(exc, WorktreeOccupiedError) else None
-    attestable = exc.attestable if isinstance(exc, CheckoutFenceError) else None
-    return park_task_checkout(task, reason=str(exc), blocked_by=blocked_by, attestable=attestable)
+def park_refused_checkout(task: Task, refusal: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
+    behind = refusal.holder if isinstance(refusal, WorktreeOccupiedError) else None
+    attestable = refusal.attestable if isinstance(refusal, CheckoutFenceError) else None
+    return park_task_checkout(task, reason=str(refusal), behind=behind, attestable=attestable)
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:
