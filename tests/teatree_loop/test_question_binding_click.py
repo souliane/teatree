@@ -13,6 +13,7 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
 from teatree.loop.question_binding import answer_from_click
 from tests._owner_channel import OWNER_CARD, OWNER_DECISION
@@ -72,6 +73,8 @@ class TestTheTapRoundTrip(TestCase):
         row.refresh_from_db()
         assert [question.pk for question in answered] == [row.pk]
         assert (row.answer_text, row.resolved_via) == ("Yes", "slack")
+        audit = DeferredQuestionAudit.objects.get(question=row, action="answered")
+        assert audit.resolver_id == f"slack:{_OWNER}"
         backend.update_message.assert_called_once()
         update = backend.update_message.call_args.kwargs
         assert (update["channel"], update["ts"]) == (_CHANNEL, _ROOT_TS)
@@ -102,10 +105,12 @@ class TestTheTapRoundTrip(TestCase):
     def test_a_tap_by_another_user_writes_nothing_and_updates_nothing(self) -> None:
         row, backend = _posted_card()
 
-        assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
+        with self.assertLogs("teatree.loop.question_binding", level="WARNING") as logs:
+            assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
 
         row.refresh_from_db()
         assert row.is_pending
+        assert "not the owner" in logs.output[0]
         backend.update_message.assert_not_called()
 
     def test_a_tap_naming_no_user_binds_nothing_while_the_owner_id_is_unknown(self) -> None:

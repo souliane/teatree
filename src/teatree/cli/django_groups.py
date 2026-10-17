@@ -150,6 +150,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
             ("void-merge", "Void a merge whose content never reached the default branch (a human at a terminal)."),
+            ("request-void", "Ask the owner on Slack to correct a merge whose content is absent."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),

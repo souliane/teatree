@@ -10715,6 +10715,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │                    discharge.                                                │
 │ void-merge         Void a merge whose content never reached the default      │
 │                    branch (a human at a terminal).                           │
+│ request-void       Ask the owner on Slack to correct a merge whose content   │
+│                    is absent.                                                │
 │ check-gates        Check whether session gates allow a phase transition.     │
 │ fetch-issue        Fetch issue details from the configured tracker.          │
 │ detect-tenant      Detect the current tenant variant from the overlay.       │
@@ -10881,6 +10883,22 @@ Usage: t3 teatree pr void-merge [OPTIONS] PR_URL
 │ --dry-run              Print the forge evidence and planned changes; write   │
 │                        nothing.                                              │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr request-void`
+
+```
+Usage: t3 teatree pr request-void [OPTIONS] PR_URL REASON
+
+ Ask the owner on Slack to approve a merge correction.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+│ *    reason      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
