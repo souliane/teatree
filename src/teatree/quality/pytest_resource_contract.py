@@ -2,7 +2,9 @@
 
 CI's deliberately sharded lanes provide their own explicit xdist budget. A local
 ``uv run pytest <paths>`` uses this small memory-aware pool, while an unsharded
-whole-tree call is refused before collection can burn the machine.
+whole-tree call is refused before collection can burn the machine. Every run then
+leases its xdist workers from one host-wide file-lock pool, so concurrent runs share
+the cores instead of each taking them all.
 """
 
 import fcntl
