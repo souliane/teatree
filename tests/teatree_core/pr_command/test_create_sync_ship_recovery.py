@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.db import OperationalError
 from django.test import TestCase
 
+import teatree.core.runners.ship as ship_runner
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.runners.ship import ShipExecutor
 
@@ -51,7 +52,7 @@ class TestSyncShipRecovery(TestCase):
         with (
             _ship_externals(host),
             _gates_pass(),
-            patch("teatree.core.runners.ship.verify_pr_exists", side_effect=OSError("verify unavailable")),
+            patch.object(ship_runner, "verify_pr_exists", side_effect=OSError("verify unavailable")),
         ):
             first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
 
