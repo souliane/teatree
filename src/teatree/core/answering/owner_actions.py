@@ -43,7 +43,7 @@ class _Decision:
     write: _Write | None = None
 
 
-def _prepare_attest(_row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
+def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
     worktree = Worktree.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
     if worktree is None:
         message = "The checkout no longer has a record."
@@ -68,7 +68,11 @@ def _prepare_attest(_row: DeferredQuestion, action: ActionRequest, _actor: str) 
         attestation = read()
         attestation.record()
         for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
-            release_checkout_park(parked)
+            latest = parked.attempts.order_by("-pk").values("result").first()
+            result = latest["result"] if latest is not None else {}
+            checkout_id = result.get("checkout_worktree_id") if isinstance(result, dict) else None
+            if checkout_id == worktree.pk or (checkout_id is None and parked.pk == row.parked_task_id):
+                release_checkout_park(parked)
         return f"Attested the checkout at {attestation.state.digest}."
 
     return write
@@ -140,30 +144,34 @@ def _carry_one(
     return decision
 
 
+def _defer_outcome(
+    row: DeferredQuestion, answer: DeferredQuestionAudit | None, first_wait: datetime | None, reason: str
+) -> _Decision | None:
+    if first_wait is not None and timezone.now() - first_wait >= _EXPIRES_AFTER:
+        expired = _Decision("refused", f"The action stayed unavailable for a day: {reason}", notify=True)
+        return _carry_one(row, answer, forced=expired)
+    with transaction.atomic():
+        DeferredQuestion.objects.select_for_update().get(pk=row.pk)
+        recent = DeferredQuestionAudit.objects.filter(question=row, action="deferred").order_by("-resolved_at").first()
+        if DeferredQuestionAudit.objects.filter(question=row, action__in=ACTION_OUTCOMES).exists() or (
+            recent is not None and timezone.now() - recent.resolved_at < _RETRY_AFTER
+        ):
+            return None
+        DeferredQuestionAudit.objects.create(
+            question=row, action="deferred", resolver_id=_resolver(answer), note=reason
+        )
+    if recent is None:
+        _tell_owner(row, f"Waiting to complete the action: {reason}", event="waiting")
+    logger.info("Owner action %s waits: %s", row.pk, reason)
+    return None
+
+
 def _carry_out(row: DeferredQuestion, first_wait: datetime | None) -> _Decision | None:
     answer = DeferredQuestionAudit.objects.owner_answer(row)
     try:
         return _carry_one(row, answer)
     except OwnerActionDeferredError as exc:
-        if first_wait is not None and timezone.now() - first_wait >= _EXPIRES_AFTER:
-            expired = _Decision("refused", f"Live evidence stayed unavailable for a day: {exc}", notify=True)
-            return _carry_one(row, answer, forced=expired)
-        with transaction.atomic():
-            DeferredQuestion.objects.select_for_update().get(pk=row.pk)
-            recent = (
-                DeferredQuestionAudit.objects.filter(question=row, action="deferred").order_by("-resolved_at").first()
-            )
-            if DeferredQuestionAudit.objects.filter(question=row, action__in=ACTION_OUTCOMES).exists() or (
-                recent is not None and timezone.now() - recent.resolved_at < _RETRY_AFTER
-            ):
-                return None
-            DeferredQuestionAudit.objects.create(
-                question=row, action="deferred", resolver_id=_resolver(answer), note=str(exc)
-            )
-        if recent is None:
-            _tell_owner(row, f"Waiting for live evidence: {exc}", event="waiting")
-        logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
-        return None
+        return _defer_outcome(row, answer, first_wait, str(exc))
 
 
 def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -> None:
@@ -189,8 +197,17 @@ def carry_out_owner_actions() -> list[str]:
         try:
             decision = _carry_out(row, waited["first"])
         except Exception:
-            logger.exception("Owner action %s failed; retrying next pass", row.pk)
-            continue
+            logger.exception("Owner action %s failed; retrying after a delay", row.pk)
+            try:
+                decision = _defer_outcome(
+                    row,
+                    DeferredQuestionAudit.objects.owner_answer(row),
+                    waited["first"],
+                    "The action could not complete.",
+                )
+            except Exception:
+                logger.exception("Owner action %s could not record its failed attempt", row.pk)
+                continue
         if decision is None:
             continue
         results.append(f"{decision.outcome.replace('_', ' ')} {row.pk}")

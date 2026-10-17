@@ -159,14 +159,10 @@ def match_action_option(options_json: str, answer: str) -> CardOption | None:
     options = CardOption.parse_all(options_json)
     if not options or sum(option.recommended for option in options) != 1:
         return None
-    normalized = " ".join(answer.casefold().strip(" \t\n.!?").split())
+    normalized = " ".join(answer.casefold().split())
     for option in options:
         if normalized == " ".join(option.label.casefold().split()):
             return option
-    if normalized in {"yes", "yes please", "approve", "go ahead"}:
-        return next(option for option in options if option.recommended)
-    if normalized in {"no", "no thanks", "reject"}:
-        return next((option for option in options if not option.recommended), None)
     return None
 
 

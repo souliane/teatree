@@ -37,7 +37,7 @@ class TestCheckoutAttestCard(TestCase):
         assert card.problems(question) == []
         assert "3 commits" in card.why
         assert "2 uncommitted files" in card.why
-        assert "host process list is unavailable" in card.why
+        assert "host process list could not rule out live processes" in card.why
         assert card.to_evidence()["action"]["binding"] == "d" * 64
 
     def test_long_legacy_title_keeps_the_card_answerable(self) -> None:
@@ -130,6 +130,19 @@ class TestReadAttestation(TestCase):
         assert attestation.recorded == digest
         self.worktree.refresh_from_db()
         assert "attested_state" not in self.worktree.get_extra()
+
+    def test_unreadable_same_user_process_does_not_count_as_host_evidence(self) -> None:
+        table = ProcessTable(frozenset(), "/host-proc", (), ("pid 7 unreadable",))
+        attestation = self._read(table)
+
+        assert not attestation.host_evidence
+        assert attestation.recorded.startswith("owner:")
+        with (
+            patch("teatree.core.worktree.checkout_attest.read_process_table", return_value=table),
+            pytest.raises(AttestRefusedError, match="cannot rule out live processes") as error,
+        ):
+            read_attestation(self.worktree, requested_host_evidence=True)
+        assert error.value.retryable
 
     def test_unreadable_git_state_is_retryable(self) -> None:
         with (

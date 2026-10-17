@@ -107,7 +107,9 @@ def _accept_changed_checkout(
         attest_deferred_exit(task, worktree, state, table) or reattest_on_proof(task, worktree, state, table)
     ):
         message = f"checkout {worktree.worktree_path} differs from its attested state"
-        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=True))
+        raise CheckoutFenceError(
+            message, attestable=CheckoutAttestation(worktree, state, host_evidence=not table.eviction_gaps)
+        )
 
 
 def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> None:
@@ -137,7 +139,11 @@ def park_task_checkout(task: Task, *, reason: str, attestable: CheckoutAttestati
         ended_at=timezone.now(),
         exit_code=0,
         error=f"{CHECKOUT_PARKED_PREFIX}{reason}",
-        result={"summary": f"{CHECKOUT_PARKED_PREFIX}{reason}", "checkout_episode": episode or f"attempt:{task.pk}"},
+        result={
+            "summary": f"{CHECKOUT_PARKED_PREFIX}{reason}",
+            "checkout_episode": episode or f"attempt:{task.pk}",
+            **({"checkout_worktree_id": attestable.worktree.pk} if attestable is not None else {}),
+        },
     )
     if episode is None:
         result = dict(attempt.result)
@@ -148,7 +154,7 @@ def park_task_checkout(task: Task, *, reason: str, attestable: CheckoutAttestati
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
     if attestable is not None:
         question = ask_owner_to_attest(task, attestable)
-        if question is not None and question.is_pending:
+        if question is not None:
             return attempt
     try:
         notify_user(

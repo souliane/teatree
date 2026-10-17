@@ -17,6 +17,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
+from teatree.core.owner_question_message import render_text
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
     claim_task_checkout_or_park,
@@ -93,6 +94,7 @@ class CheckoutFenceTests(TestCase):
             "It holds 0 commits not on the target branch.",
             "It has 1 uncommitted file.",
         ]
+        assert "Nothing is running in the checkout" in render_text(row)
         assert row.evidence["action"]["kind"] == "attest"
 
     def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:
