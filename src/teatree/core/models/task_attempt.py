@@ -69,7 +69,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
         A changed reason, an intervening real attempt, and any non-park attempt all insert
         normally, so the audit trail still shows every genuine transition. So does a park that
-        BILLED spend: it is a run that ended in a park (a deploy checkpoint, a reactive limit),
+        BILLED spend: it is a run that ended in a park (a checkpoint, a reactive limit),
         and folding it would drop its tokens and its session id from the ledger.
         """
         if any(kwargs.get(column) is not None for column in _BILLED_COLUMNS):

@@ -41,6 +41,15 @@ _SHARD_B = {
 
 
 class TestMergePayloads:
+    def test_cache_metadata_survives_merge(self) -> None:
+        cached = {"name": "cached-one", "lane": "clean_room", "content_key": "a" * 64}
+        first = {**_SHARD_A, "trial_count": 1, "cached": [cached], "totals": {**_SHARD_A["totals"], "cached": 1}}
+        second = {**_SHARD_B, "trial_count": 1, "cached": [], "totals": {**_SHARD_B["totals"], "cached": 0}}
+        merged = merge_summary_payloads([first, second], head_sha=_SHA, generated_at=_AT)
+        assert merged["trial_count"] == 1
+        assert merged["totals"]["cached"] == 1
+        assert merged["cached"] == [cached]
+
     def test_rejects_a_shard_from_another_commit(self) -> None:
         with pytest.raises(ValueError, match="SHA"):
             merge_summary_payloads([{**_SHARD_A, "head_sha": "another"}], head_sha=_SHA, generated_at=_AT)

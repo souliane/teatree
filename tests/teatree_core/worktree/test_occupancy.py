@@ -209,10 +209,15 @@ class MidRunCheckoutTests(TestCase):
         self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
 
     def run_to(
-        self, finish: Callable[[Task], None], *, creates_checkout: bool = True, held_at_exit: bool = False
+        self,
+        finish: Callable[[Task], None],
+        *,
+        creates_checkout: bool = True,
+        held_at_exit: bool = False,
+        table: ProcessTable | None = None,
     ) -> None:
         holder, session = task_holder_id(self.task), self.task.claimed_by_session
-        table = ProcessTable(frozenset({self.checkout}) if held_at_exit else frozenset(), "/proc")
+        table = table or ProcessTable(frozenset({self.checkout}) if held_at_exit else frozenset(), "/proc")
         with (
             patch(
                 "teatree.core.worktree.occupancy.read_process_table",
@@ -242,6 +247,14 @@ class MidRunCheckoutTests(TestCase):
     def test_a_failed_run_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
         self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))
         self.assert_released_and_attested()
+
+    def test_unverifiable_processes_prevent_exit_attestation(self) -> None:
+        table = ProcessTable(frozenset(), "/proc", (), ("pid 7 is unreadable",))
+        self.run_to(lambda task: task.complete(), table=table)
+
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(row) is None
+        assert "attested_state" not in row.get_extra()
 
     def test_a_run_that_never_gets_a_checkout_releases_its_claim_and_writes_no_row(self) -> None:
         self.run_to(lambda task: task.complete(), creates_checkout=False)

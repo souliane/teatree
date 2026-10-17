@@ -37,6 +37,7 @@ from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
+from teatree.cli.eval.verdict_cache import verdict_cache_app
 from teatree.cli.eval.verify_benchmark_publish import verify_benchmark_publish
 
 
@@ -70,3 +71,4 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.add_typer(label_app, name="label")
     eval_app.add_typer(quarantine_app, name="quarantine")
     eval_app.add_typer(owed_app, name="owed")
+    eval_app.add_typer(verdict_cache_app, name="verdict-cache")

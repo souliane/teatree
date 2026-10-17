@@ -39,6 +39,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from hooks.scripts import t3_invocation
 from hooks.scripts.banned_terms.deny import emit_banned_term_deny
 from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_terms_marker
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
@@ -209,11 +210,36 @@ def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
         return False
 
     nonpublic = tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
-    skipped = nonpublic
-    term = None if skipped else banned_terms_scanner.scan_text(payload)
-    if term is None:
+    term = None if nonpublic else banned_terms_scanner.scan_text(payload)
+    if term is not None:
+        marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
+        if marker_decision is True:
+            return True
+        if marker_decision is None and emit_banned_term_deny(tool_name, command, payload, term, cwd_repo):
+            return True
+    return _generic_payload_blocks(payload, command, cwd_repo, nonpublic=nonpublic)
+
+
+def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *, nonpublic: bool) -> bool:
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
+    from teatree.hooks.generic_forge_gate import generic_payload_finding  # noqa: PLC0415 — cold-hook read
+
+    finding = generic_payload_finding(
+        payload,
+        command,
+        cwd_repo,
+        nonpublic=nonpublic,
+        ai_signature_scanner_available=t3_invocation.t3_argv("tool", "ai-sig-scan", "-") is not None,
+    )
+    if finding is None:
         return False
-    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
-    if marker_decision is not None:
-        return marker_decision
-    return emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
+    if finding.warn:
+        sys.stderr.write(
+            f"[teatree] NOTE: generic {finding.category} in a local commit; the push gate will rescan it.\n"
+        )
+        return False
+    return emit_pretooluse_deny(
+        f"BLOCKED: generic {finding.category} in a forge publish payload. Redact it before posting. "
+        "If the repo is private, add its host-qualified name to private_repos or verify forge visibility.",
+        gate_id="banned_terms",
+    )

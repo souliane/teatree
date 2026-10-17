@@ -9,7 +9,7 @@ particular none of them import `teatree.paths`, whose module-level
 `resolve_data_dir` would auto-isolate a worktree onto a sibling DB.
 
 The typed `ConfigSetting` value readers (`read_setting` + the `bool`/`int`/`str`/
-`list`/`mapping` coercions + the overlay→global chain) live here; the raw sqlite
+`list`/`mapping` coercions + scope-chain reads) live here; the raw sqlite
 plumbing (path resolution, read-only open, single-row fetch, loop-state status,
 existence probe) lives in `cold_db` and is re-exported so every existing
 `cold_reader.<name>` reference and `patch` target keeps resolving here.
@@ -38,7 +38,6 @@ __all__ = [
     "list_setting",
     "main",
     "mapping_setting",
-    "overlay_then_global",
     "read_setting",
     "read_setting_confirmed",
     "row_exists",
@@ -255,22 +254,6 @@ def mapping_setting(
     if isinstance(value, dict):
         return cast("dict[str, object]", value)
     return {}
-
-
-def overlay_then_global(
-    key: str,
-    overlay: str,
-    *,
-    default: object | None = None,
-    db_path: Path | None = None,
-) -> object | None:
-    """Read `scope=overlay` first, then global `scope=""`, else `default`.
-
-    The cold-path twin of `resolution.py`'s two-tier layering — an overlay-scoped
-    row beats a global one, exactly as a `[overlays.<name>]` value beats `[teatree]`.
-    """
-    value = _read_chain(key, (overlay, _GLOBAL_SCOPE), db_path=db_path)
-    return value if value is not None else default
 
 
 def main(argv: Sequence[str] | None = None) -> int:

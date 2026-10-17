@@ -51,6 +51,8 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.eval.agent_prompt import resolve_agent_path
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, local_stub_path
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD
 from teatree.eval.models import EvalSpec
@@ -151,6 +153,22 @@ def _relative_to_root(path: Path, repo_root: Path) -> str:
         return candidate.as_posix()
 
 
+def _source_or_fixture_changed(spec: EvalSpec, wanted: set[str], repo_root: Path) -> bool:
+    if _relative_to_root(spec.source_path, repo_root) in wanted:
+        return True
+    if any(
+        _relative_to_root(local, repo_root) in wanted
+        for name in spec.cli_stubs
+        if name not in KNOWN_CLI_STUBS
+        if (local := local_stub_path(name, spec.source_path, include_missing=True)) is not None
+    ):
+        return True
+    if spec.fixture == "agent_skill_dir" and spec.agent_path:
+        agent_dir = _relative_to_root(resolve_agent_path(spec.agent_path, spec.source_path.parent).parent, repo_root)
+        return any(path.startswith(f"{agent_dir}/") for path in wanted)
+    return False
+
+
 def _band(
     spec: EvalSpec,
     wanted: set[str],
@@ -158,7 +176,7 @@ def _band(
     repo_root: Path,
 ) -> int | None:
     """The selection band for *spec*, or ``None`` when this diff does not select it."""
-    if _relative_to_root(spec.source_path, repo_root) in wanted:
+    if _source_or_fixture_changed(spec, wanted, repo_root):
         return _PRECISE
     if not spec.agent_path:
         return None

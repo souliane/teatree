@@ -15,6 +15,138 @@ _PR = _WORKFLOWS / "eval-pr.yml"
 _PR_REUSABLE = _WORKFLOWS / "eval-pr-reusable.yml"
 _NIGHTLY = _WORKFLOWS / "eval-nightly.yml"
 _WEEKLY = _WORKFLOWS / "eval.yml"
+_CACHE_ACTION = _WORKFLOWS.parent / "actions" / "eval-verdict-cache" / "action.yml"
+
+
+def test_pr_verdict_caches_merge_main_before_run_and_refresh_before_save() -> None:
+    for workflow in (_PR, _PR_REUSABLE):
+        text = workflow.read_text(encoding="utf-8")
+        steps = (
+            "Restore latest main eval verdicts",
+            "Restore PR eval verdicts",
+            "Combine PR and main verdicts",
+            "Metered behavioral eval",
+            "Record and save eval verdicts",
+        )
+        assert [text.index(f"- name: {step}") for step in steps] == sorted(
+            text.index(f"- name: {step}") for step in steps
+        )
+        assert 'uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json"' in text
+        assert "uses: ./.github/actions/eval-verdict-cache" in text
+        for marker, step in (
+            ("# Run the changed scenarios", "Metered behavioral eval"),
+            ("# Append the sanitized summary", "Publish the sanitized summary"),
+        ):
+            assert text[text.index("      - name:", text.index(marker)) :].startswith(f"      - name: {step}")
+
+
+def test_nightly_refreshes_main_cache_after_long_eval() -> None:
+    text = _NIGHTLY.read_text(encoding="utf-8")
+    steps = (
+        "Nightly smoke behavioral eval",
+        "Record and save eval verdicts",
+    )
+    assert [text.index(f"- name: {step}") for step in steps] == sorted(text.index(f"- name: {step}") for step in steps)
+    for marker, step in (
+        ("# Run the smoke slice", "Nightly smoke behavioral eval"),
+        ("# Append the sanitized summary", "Publish the sanitized summary"),
+    ):
+        assert text[text.index("      - name:", text.index(marker)) :].startswith(f"      - name: {step}")
+
+
+def test_verdict_cache_runs_only_in_eligible_workflow_events() -> None:
+    weekly = _WEEKLY.read_text(encoding="utf-8")
+    assert re.search(r'if \[ "\$GITHUB_EVENT_NAME" = "schedule" \]; then\s+CACHE_ARGS\+=\(--verdict-cache', weekly)
+    assert "github.ref == 'refs/heads/main' && github.event_name == 'schedule'" in weekly
+    for workflow in (_PR, _PR_REUSABLE, _NIGHTLY):
+        text = workflow.read_text(encoding="utf-8")
+        assert '--verdict-cache "$RUNNER_TEMP/eval-verdicts.json"' in text
+    nightly = _NIGHTLY.read_text(encoding="utf-8")
+    save = nightly[nightly.index("      - name: Record and save eval verdicts") :].splitlines()[:4]
+    assert "github.ref == 'refs/heads/main'" in "\n".join(save)
+    for name in ("eval-ci-heal.yml", "eval-benchmark.yml"):
+        assert "--verdict-cache" not in (_WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
+    text = _WEEKLY.read_text(encoding="utf-8")
+    assert "summary-directory: ${{ runner.temp }}/summaries" in text
+    assert 'mkdir -p "$SUMMARY_DIRECTORY"' in _CACHE_ACTION.read_text(encoding="utf-8")
+
+
+def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:
+    action = _CACHE_ACTION.read_text(encoding="utf-8")
+    assert action.count("continue-on-error: true") == 5
+    for workflow, steps in (
+        (
+            _PR,
+            (
+                "Restore latest main eval verdicts",
+                "Keep main verdicts for merge",
+                "Restore PR eval verdicts",
+                "Combine PR and main verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+        (
+            _PR_REUSABLE,
+            (
+                "Restore latest main eval verdicts",
+                "Keep main verdicts for merge",
+                "Restore PR eval verdicts",
+                "Combine PR and main verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+        (_NIGHTLY, ("Restore passing eval verdicts", "Record and save eval verdicts")),
+        (
+            _WEEKLY,
+            (
+                "Restore passing eval verdicts for scheduled single-trial legs",
+                "Restore main eval verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+    ):
+        text = workflow.read_text(encoding="utf-8")
+        for name in steps:
+            section = text.split(f"- name: {name}", 1)[1].split("\n      -", 1)[0]
+            assert "continue-on-error: true" in section, (workflow.name, name)
+
+
+def test_only_successful_eval_jobs_record_agent_writable_summaries() -> None:
+    for workflow in (_PR, _PR_REUSABLE, _NIGHTLY):
+        text = workflow.read_text(encoding="utf-8")
+        record = text[text.index("      - name: Record and save eval verdicts") :].splitlines()[:4]
+        assert "success()" in "\n".join(record), workflow.name
+    weekly = _WEEKLY.read_text(encoding="utf-8")
+    assert "needs.eval.result == 'success'" in "\n".join(weekly[weekly.index("  verdict-ledger:") :].splitlines()[:5])
+
+
+def test_reusable_eval_cache_is_capability_gated_for_old_teatree_refs() -> None:
+    text = _PR_REUSABLE.read_text(encoding="utf-8")
+    assert "uv run t3 eval verdict-cache --help" in text
+    assert "steps.verdict-cache-availability.outputs.enabled" in text
+    assert '"${CACHE_ARGS[@]}"' in text
+    assert (
+        "cp teatree-upstream/.github/actions/eval-verdict-cache/action.yml "
+        ".github/actions/eval-verdict-cache/action.yml"
+    ) in text
+
+
+def test_post_eval_cache_sequence_has_one_implementation() -> None:
+    action = _CACHE_ACTION.read_text(encoding="utf-8")
+    steps = (
+        "Record clean eval verdicts",
+        "Keep recorded verdicts",
+        "Refresh latest main eval verdicts",
+        "Merge latest main eval verdicts",
+        "Save eval verdicts",
+    )
+    positions = [action.index(f"- name: {step}") for step in steps]
+    assert positions == sorted(positions)
+    for workflow in (_PR, _PR_REUSABLE, _NIGHTLY, _WEEKLY):
+        assert "uv run t3 eval verdict-cache record" not in workflow.read_text(encoding="utf-8")
 
 
 class TestPerPrLane:

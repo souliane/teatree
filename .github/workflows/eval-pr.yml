@@ -43,10 +43,10 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED
-#   rather than passing green with zero coverage (mirrors eval.yml). ZERO-IS-RED
+#   rather than passing green with zero coverage (mirrors eval.yml). A validated
+#   cached pass is coverage even when zero scenarios run fresh. ZERO-IS-RED
 #   closes the last vacuous gap: when `detect` promised scenarios (`run=true`)
-#   the eval job asserts it executed >=1 — a run that was SUPPOSED to execute
-#   scenarios but executed ZERO fails, never passes green.
+#   the eval job asserts it invoked >=1 scenario — an empty selection fails.
 #
 # SCENARIO-REACHABILITY (advisory, F12 / #3566)
 #   The `detect` job runs `t3 eval reachability` on every PR: it walks every
@@ -236,6 +236,30 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
+      - name: Restore latest main eval verdicts
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-main-
+      - name: Keep main verdicts for merge
+        continue-on-error: true
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
+            cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
+            rm "$RUNNER_TEMP/eval-verdicts.json"
+          fi
+      - name: Restore PR eval verdicts
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
+      - name: Combine PR and main verdicts
+        continue-on-error: true
+        run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
       # same cheapest-passing per-scenario tier the weekly run pins
       # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
@@ -299,7 +323,9 @@ jobs:
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" \
+                --summary-json "$RUNNER_TEMP/eval-verdict-rows-$name.json" \
+                --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 \
                 | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
               if [ "$scenario_rc" -eq 75 ]; then
@@ -359,6 +385,13 @@ jobs:
               --names-file "$RUNNER_TEMP/eval-owed-$reason.txt"
           done
           uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
+      - name: Record and save eval verdicts
+        continue-on-error: true
+        if: success()
+        uses: ./.github/actions/eval-verdict-cache
+        with:
+          cache-key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
       # summary is the publish-safe dashboard; the transcript stays private. It runs

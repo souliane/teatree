@@ -102,6 +102,7 @@ class JobsForDomainPartitionTestCase(TestCase):
         dispatch_jobs = jobs_for_domain(Domain.DISPATCH, backend)
         names = {job.scanner.name for job in dispatch_jobs}
         assert names == {
+            "owner_actions",
             "pending_tasks",
             "pending_pr_drain",
             "incoming_events",

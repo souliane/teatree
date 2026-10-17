@@ -1643,6 +1643,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           lane does not select.                              │
 │ owed                      The owed-scenario ledger: evals a lane could not   │
 │                           run, re-run by the nightly until they pass.        │
+│ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2439,6 +2440,8 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     this many times          │
 │                                                     (pass@k).                │
 │                                                     [default: 1]             │
+│ --verdict-cache                            PATH     Reuse clean passes from  │
+│                                                     this ledger.             │
 │ --require                                  TEXT     With --trials > 1: 'any' │
 │                                                     (pass@k) or 'all'        │
 │                                                     (pass^k regression       │
@@ -2590,8 +2593,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     --trials/--models (a     │
 │                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
-│                                                     fails loud); the flag    │
-│                                                     only matters for the     │
+│                                                     fails loud; cached       │
+│                                                     passes count as coverage │
+│                                                     when --verdict-cache is  │
+│                                                     set); the flag only      │
+│                                                     matters for the          │
 │                                                     transcript backend,      │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
@@ -3242,6 +3248,53 @@ Usage: t3 eval owed settle [OPTIONS]
 │    --scenarios-dir        PATH  Read the catalog from this scenario          │
 │                                 directory (default: the discovered catalog). │
 │    --help                       Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verdict-cache`
+
+```
+Usage: t3 eval verdict-cache [OPTIONS] COMMAND [ARGS]...
+
+ Manage content-keyed eval pass verdicts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ merge                                                                        │
+│ record                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache merge`
+
+```
+Usage: t3 eval verdict-cache merge [OPTIONS] LEDGER SOURCES...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger       PATH        Ledger JSON to update. [required]              │
+│ *    sources      SOURCES...  Other verdict ledgers to combine. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache record`
+
+```
+Usage: t3 eval verdict-cache record [OPTIONS] LEDGER [SUMMARIES]...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger         PATH            Ledger JSON to update. [required]        │
+│      summaries      [SUMMARIES]...  Single-trial summary JSON files or       │
+│                                     directories.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --run-url        TEXT  Source run URL shown beside reused verdicts.       │
+│                           [required]                                         │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10788,6 +10841,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │                    discharge.                                                │
 │ void-merge         Void a merge whose content never reached the default      │
 │                    branch (a human at a terminal).                           │
+│ request-void       Ask the owner on Slack to correct a merge whose content   │
+│                    is absent.                                                │
 │ check-gates        Check whether session gates allow a phase transition.     │
 │ fetch-issue        Fetch issue details from the configured tracker.          │
 │ detect-tenant      Detect the current tenant variant from the overlay.       │
@@ -10954,6 +11009,22 @@ Usage: t3 teatree pr void-merge [OPTIONS] PR_URL
 │ --dry-run              Print the forge evidence and planned changes; write   │
 │                        nothing.                                              │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr request-void`
+
+```
+Usage: t3 teatree pr request-void [OPTIONS] PR_URL REASON
+
+ Ask the owner on Slack to approve a merge correction.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+│ *    reason      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
