@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import subprocess  # noqa: S404 -- hook code legitimately shells out to Git.
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -77,19 +78,7 @@ def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> Git
     try:
         proc = subprocess.run(  # noqa: S603 -- trusted internal subprocess; fixed argv, no shell.
             # Use the same Git from PATH as the push this gate judges.
-            [  # noqa: S607 -- same Git as the push.
-                "git",
-                "-C",
-                work_dir or ".",
-                "--no-optional-locks",
-                "-c",
-                "credential.helper=",
-                "-c",
-                "core.sshCommand=",
-                "-c",
-                "protocol.ext.allow=never",
-                *args,
-            ],
+            ["git", "-C", work_dir or ".", "--no-optional-locks", *args],  # noqa: S607 -- see above.
             capture_output=True,
             text=True,
             timeout=affordable,
@@ -131,10 +120,10 @@ def bounded(text: str) -> str:
 
 
 def _without_active_tokens(text: str) -> str:
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if value := os.environ.get(key):
-            text = text.replace(value, "<redacted>")
-    return text
+    with teatree_src_on_path():
+        from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
+
+    return scrub_active_tokens(text, os.environ)
 
 
 def probe_cause(probe: GitProbe) -> str:
@@ -182,7 +171,19 @@ def repository_at(work_dir: str) -> GitProbe:
 def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
     """Return the advertised branch OID, empty when absent, or ``ok=False``."""
     ref = f"{_HEADS_PREFIX}{branch}"
-    probe = git_probe(work_dir, "ls-remote", "--heads", remote, ref, timeout=_LS_REMOTE_TIMEOUT_S)
+    url = remote
+    if ":" not in remote and "/" not in remote:
+        configured = git_probe(work_dir, "config", "--get", f"remote.{remote}.url")
+        if configured.code not in {0, _CONFIG_KEY_UNSET}:
+            return configured
+        url = configured.out or remote
+    if not Path(url).is_absolute() and ":" not in url and "/" in url:
+        url = str((Path(work_dir) / url).resolve())
+    try:
+        with tempfile.TemporaryDirectory(prefix="t3-git-probe-") as neutral_dir:
+            probe = git_probe(neutral_dir, "ls-remote", "--heads", url, ref, timeout=_LS_REMOTE_TIMEOUT_S)
+    except OSError as exc:
+        return GitProbe(ok=False, out="", err=f"could not create neutral git probe directory: {exc}")
     if not probe.ok or not probe.out:
         return probe
     for line in probe.out.splitlines():

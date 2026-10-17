@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Final, TypedDict
 from urllib.parse import urlsplit
 
+from teatree.forge_credentials import scrub_active_tokens
 from teatree.hooks import _private_repo_entries, git_config_offline
 from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path
 from teatree.hooks._private_repo_entries import _private_repo_allowlist
@@ -349,10 +350,7 @@ def run_forge_tool(tool: str, args: list[str], *, budget: Callable[[float], floa
 
 
 def _exit_cause(error: CommandFailedError) -> str:
-    raw = error.stderr
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if value := os.environ.get(key):
-            raw = raw.replace(value, "<redacted>")
+    raw = scrub_active_tokens(error.stderr, os.environ)
     stderr = redact_secrets("; ".join(line.strip() for line in raw.splitlines() if line.strip()))
     return (
         f"exit {error.returncode}: {stderr[:_MAX_CAUSE_CHARS]}" if stderr else f"exit {error.returncode} with no stderr"

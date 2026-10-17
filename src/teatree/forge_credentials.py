@@ -9,13 +9,23 @@ credentials, except a ``GH_TOKEN`` whose :data:`ROUTED_GH_KEY_ENV` dispatch
 marker names the route's own pass key.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 #: Names the pass key a dispatched agent's ``GH_TOKEN`` was read from, for a child the secret store is withheld from.
 ROUTED_GH_KEY_ENV = "T3_ROUTED_GH_TOKEN_KEY"
+FORGE_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
+_MIN_ACTIVE_TOKEN_LENGTH = 8
+
+
+def scrub_active_tokens(text: str, env: Mapping[str, str]) -> str:
+    for key in FORGE_TOKEN_ENV_KEYS:
+        value = env.get(key, "")
+        if len(value) >= _MIN_ACTIVE_TOKEN_LENGTH:
+            text = text.replace(value, "<redacted>")
+    return text
 
 
 class ForgeTokenState(StrEnum):
@@ -124,6 +134,7 @@ def resolve_slug_token(slug: str, *, forge: str, credential: str) -> ForgeTokenR
 
 
 __all__ = [
+    "FORGE_TOKEN_ENV_KEYS",
     "ROUTED_GH_KEY_ENV",
     "ForgeCredentialRequest",
     "ForgeCredentialTarget",
@@ -135,4 +146,5 @@ __all__ = [
     "resolve_repo_token",
     "resolve_slug_token",
     "resolve_url_token",
+    "scrub_active_tokens",
 ]

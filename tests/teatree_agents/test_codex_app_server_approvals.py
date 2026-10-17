@@ -27,7 +27,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedC
 from teatree.agents.harness import AgentHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessSpec, register_harness, select_harness
 from teatree.core.models import Session, Task
-from teatree.forge_credentials import ROUTED_GH_KEY_ENV
+from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
@@ -248,7 +248,7 @@ def test_post_tool_router_receives_the_task_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
 ) -> None:
     sentinel = "gh" + "p_" + "s" * 36
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+    for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     observed = tmp_path / "post-env"
     script = tmp_path / "post-router.sh"

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from teatree.agents.codex_router import run_router
-from teatree.forge_credentials import ROUTED_GH_KEY_ENV
+from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests._process_liveness import is_gone_within
 
 
@@ -50,7 +50,7 @@ def test_the_router_receives_the_event_and_the_payload_on_stdin(
 def test_router_runs_with_an_explicit_environment_allowlist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     sentinel = "gh" + "p_" + "s" * 36
     marker = "github/example/pat"
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+    for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("GITLAB_TOKEN", "worker-only-sentinel")
     monkeypatch.setenv("OPENAI_API_KEY", "worker-only-sentinel")
