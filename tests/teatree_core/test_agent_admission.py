@@ -214,7 +214,7 @@ class TestPhaseAwareVerdict(TestCase):
     def test_the_review_lane_is_bounded_by_its_own_ceiling(self) -> None:
         # The exemption must never become a second unbounded lane (#4097's cost).
         verdict = self._verdict(load1=self._MELTED, occupancy=2)
-        assert "review lane occupancy 2 at/over the review ceiling 2" in (verdict.denied_reason("reviewing") or "")
+        assert "review lane occupancy 2 at/over the review ceiling 2" in (verdict.review_denied or "")
 
     def test_a_spent_token_budget_still_denies_the_cheap_class(self) -> None:
         # The exemption is from the MACHINE brake only. A review burns tokens like
@@ -231,7 +231,7 @@ class TestPhaseAwareVerdict(TestCase):
         # Folding reviews back under the coding brake would queue them behind coding again.
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
         assert self._verdict(load1=self._MELTED).denied_for(PhaseCost.CHEAP) is None
-        assert "review ceiling 1" in (self._verdict(load1=self._MELTED, occupancy=1).denied_reason("reviewing") or "")
+        assert "review ceiling 1" in (self._verdict(load1=self._MELTED, occupancy=1).review_denied or "")
 
     def test_a_probe_failure_admits_both_classes_fail_open(self) -> None:
         with (
@@ -654,7 +654,11 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         # headroom it carries is what bounds the lane; without it a single braked drain
         # would admit every pending cheap row at once.
         pending = [self._pending("reviewing") for _ in range(5)]
-        with patch.object(Task.objects, "cheap_class_occupancy", return_value=1):
+        with patch.object(
+            Task.objects,
+            "cheap_class_occupancy",
+            side_effect=lambda cheap_class: 1 if cheap_class is CheapClass.REVIEW else 0,
+        ):
             result, _ = self._drain_under_load(self._MELTED)
 
         # ceiling 2 minus 1 occupied seat leaves headroom for exactly one more.
@@ -668,7 +672,11 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         for _ in range(3):
             self._pending("reviewing")
         with (
-            patch.object(Task.objects, "cheap_class_occupancy", return_value=1),
+            patch.object(
+                Task.objects,
+                "cheap_class_occupancy",
+                side_effect=lambda cheap_class: 1 if cheap_class is CheapClass.REVIEW else 0,
+            ),
             self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs,
         ):
             self._drain_under_load(self._MELTED)
