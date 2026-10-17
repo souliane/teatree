@@ -10,7 +10,7 @@ import sys
 import tempfile
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +27,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedC
 from teatree.agents.harness import AgentHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessSpec, register_harness, select_harness
 from teatree.core.models import Session, Task
+from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
@@ -241,6 +242,38 @@ def test_only_a_file_change_that_ran_reaches_post_tool_use(
     asyncio.run(report_completed_item(item, "thread-1", worker_options))
 
     assert sent == reported
+
+
+def test_post_tool_router_receives_the_task_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    sentinel = "gh" + "p_" + "s" * 36
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    observed = tmp_path / "post-env"
+    script = tmp_path / "post-router.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$GH_TOKEN" = "{sentinel}" ] && '
+        "[ \"$T3_ROUTED_GH_TOKEN_KEY\" = 'github/example/pat' ]; then echo yes > "
+        f"'{observed}'; else echo no > '{observed}'; fi\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(
+        worker_options,
+        core=replace(worker_options.core, env={"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: "github/example/pat"}),
+    )
+
+    asyncio.run(
+        report_completed_item(
+            {"type": "commandExecution", "status": "completed", "command": "pwd", "exitCode": 0},
+            "thread-1",
+            options,
+        )
+    )
+
+    assert observed.read_text().strip() == "yes"
 
 
 def test_failed_post_tool_report_warns_and_turn_completes(

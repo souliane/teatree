@@ -39,6 +39,34 @@ def codex_command() -> tuple[str, ...]:
 
 
 _DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS")
+_ROUTER_AMBIENT_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "T3_CONFIG_DB",
+        "T3_CONTROL_DB_DIR",
+        "T3_OVERLAY_NAME",
+        "T3_REPO",
+        "TEATREE_CLONE_DIR",
+    }
+)
+_ROUTER_DISPATCH_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV)
+
+
+def router_process_env(
+    dispatch_env: Mapping[str, str] | None, *, ambient: Mapping[str, str] = os.environ
+) -> dict[str, str]:
+    """Run the router with an explicit environment allowlist."""
+    retained = {key: value for key, value in ambient.items() if key in _ROUTER_AMBIENT_KEYS}
+    retained.update(
+        {key: value for key, value in (dispatch_env or {}).items() if key in _ROUTER_DISPATCH_KEYS and value}
+    )
+    return retained
 
 
 def forge_token_fingerprint(dispatch_env: Mapping[str, str] | None) -> str:
