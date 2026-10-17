@@ -1,3 +1,4 @@
+# test-path: cross-cutting — runs the eval-ci-heal.yml leg bodies then merges via teatree.eval.summary_json_merge.
 """Static contract checks for the ``eval-ci-heal`` workflow.
 
 `eval-ci-heal.yml` is the workflow_dispatch-only workflow the CI-eval heal loop
