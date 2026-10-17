@@ -168,7 +168,7 @@ def _checkpointed() -> HarnessOutcome:
             num_turns=12,
             usage={"input_tokens": 900, "output_tokens": 300},
         ),
-        stuck_reason="deploy checkpoint: this worker is quiescing for a rolling deploy",
+        stuck_reason="checkpoint: this worker is quiescing for a rolling deploy",
         checkpointed=True,
     )
 
