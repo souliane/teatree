@@ -28,6 +28,17 @@ from teatree.utils.throttled_log import warn_throttled
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ProcessExit:
+    reason: str = ""
+
+    def begin(self, reason: str) -> None:
+        self.reason = reason
+
+
+process_exit = ProcessExit()
+
+
 @dataclass(frozen=True)
 class ClaimOrder:
     """Optional ordering for :meth:`TaskManager.claim_next_pending`.
@@ -112,6 +123,8 @@ def _fleet_admission_refusal() -> str:
 
 def drain_block_reason() -> str:
     """The refusals that mean THIS worker is going away, so an in-flight run checkpoints rather than finishes."""
+    if process_exit.reason:
+        return process_exit.reason
     if worker_is_quiescing():
         return "this worker is quiescing for a rolling deploy"
     return generation_admission_refusal()

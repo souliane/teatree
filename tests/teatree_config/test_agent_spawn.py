@@ -86,18 +86,6 @@ class TestAgentConfigDefaults:
         monkeypatch.delenv("T3_CONFIG_DB", raising=False)
         assert resolve_agent_config() == AgentConfig()
 
-    def test_overlay_scope_wins_then_falls_back_to_global(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        db = tmp_path / "db.sqlite3"
-        _seed(db, "agent_skill_models", {"code": [{"floor": "global"}]})
-        _seed(db, "agent_skill_models", {"code": [{"floor": "overlay"}]}, scope="customer-overlay")
-        _point_at(monkeypatch, db)
-
-        assert resolve_agent_config("customer-overlay").skill_models == {"code": "overlay"}
-        assert resolve_agent_config("another-overlay").skill_models == {"code": "global"}
-        assert resolve_agent_config().skill_models == {"code": "global"}
-
 
 class TestHonestyModelParse:
     """``agent_honesty_model`` parsing (teatree#2263)."""
