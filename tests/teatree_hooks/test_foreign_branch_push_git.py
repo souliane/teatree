@@ -11,7 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
-from hooks.scripts.foreign_branch_push_git import remote_branch_oid
+import hooks.scripts.foreign_branch_push_git as git_probes
+from hooks.scripts.foreign_branch_push_argv import PushSpec
+from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun
+from hooks.scripts.foreign_branch_push_git import live_remote_range, remote_branch_oid
+from teatree.forge_credentials import CODEX_ROUTER_ENV
 
 
 def _git(work: Path, *args: str) -> str:
@@ -111,7 +115,15 @@ def test_url_scoped_system_helper_is_consulted_without_checkout_helper(
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
-        assert not remote_branch_oid(str(work), "origin", "main").ok
+        probe = remote_branch_oid(str(work), "origin", "main")
+        assert not probe.ok
+        assert probe.credential_refused
+        with patch.dict(os.environ, {CODEX_ROUTER_ENV: "1"}):
+            spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+            reason = _branch_refusal(spec, "main", _ForgeRun())
+        assert reason is not None
+        assert "Venue fault" in reason
+        assert "cut our OWN branch" not in reason
         assert system_marker.exists()
         assert not local_marker.exists()
     finally:
@@ -134,7 +146,65 @@ def test_probe_argv_uses_remote_url_and_neutral_directory(tmp_path: Path) -> Non
     assert probe.out == oid
     config_argv = run.call_args_list[0].args[0]
     ls_argv = run.call_args_list[1].args[0]
-    assert config_argv[-3:] == ["config", "--get", "remote.origin.url"]
-    assert ls_argv[-4:] == ["ls-remote", "--heads", "file:///remote.git", "refs/heads/main"]
+    assert config_argv[-3:] == ["remote", "get-url", "origin"]
+    assert ls_argv[-5:] == ["ls-remote", "--heads", "--", "file:///remote.git", "refs/heads/main"]
     assert ls_argv[2] != str(tmp_path)
     assert "-c" not in ls_argv
+
+
+def test_option_shaped_remote_url_is_refused_without_running_program(
+    git_scene: tuple[Path, Path, str], tmp_path: Path
+) -> None:
+    work, _, _ = git_scene
+    marker = tmp_path / "uploadpack-ran"
+    program = tmp_path / "upload:pack"
+    program.write_text(f"#!/bin/sh\ntouch '{marker}'\nexec git-upload-pack \"$@\"\n", encoding="utf-8")
+    program.chmod(0o755)
+    _git(work, "config", "remote.origin.url", f"--upload-pack={program}")
+
+    probe = remote_branch_oid(str(work), "origin", "main")
+
+    assert not probe.ok
+    assert not marker.exists()
+
+
+def test_fetch_probe_runs_outside_checkout(git_scene: tuple[Path, Path, str], tmp_path: Path) -> None:
+    work, remote, oid = git_scene
+    marker = tmp_path / "uploadpack-ran"
+    program = tmp_path / "uploadpack"
+    program.write_text(f"#!/bin/sh\ntouch '{marker}'\nexec git-upload-pack \"$@\"\n", encoding="utf-8")
+    program.chmod(0o755)
+    _git(work, "config", "remote.origin.uploadpack", str(program))
+    _git(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    with patch.object(git_probes, "git_probe", wraps=git_probes.git_probe) as probe_git:
+        live = live_remote_range(str(work), "origin", "main", oid)
+
+    assert not live.failed
+    assert not marker.exists()
+    fetch_argv = next(call.args for call in probe_git.call_args_list if "fetch" in call.args)
+    assert fetch_argv[-3:] == ("--", str(remote), "refs/heads/main")
+
+
+def test_first_configured_remote_url_is_probed(git_scene: tuple[Path, Path, str], tmp_path: Path) -> None:
+    work, _, oid = git_scene
+    empty = tmp_path / "empty.git"
+    _git(tmp_path, "init", "-q", "--bare", str(empty))
+    _git(work, "config", "--add", "remote.origin.url", str(empty))
+
+    assert remote_branch_oid(str(work), "origin", "main").out == oid
+
+
+def test_relative_remote_url_is_resolved_from_repo_root(git_scene: tuple[Path, Path, str]) -> None:
+    work, _, oid = git_scene
+    subdir = work / "subdir"
+    subdir.mkdir()
+    _git(work, "remote", "set-url", "origin", "../remote.git")
+
+    assert remote_branch_oid(str(subdir), "origin", "main").out == oid
+
+
+def test_bare_relative_path_is_resolved_before_neutral_probe(git_scene: tuple[Path, Path, str]) -> None:
+    _, remote, oid = git_scene
+
+    assert remote_branch_oid(str(remote), ".", "main").out == oid

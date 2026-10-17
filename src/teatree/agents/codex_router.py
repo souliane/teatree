@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.agents.codex_app_server_env import router_process_env
+from teatree.forge_credentials import CODEX_ROUTER_ENV
 
 _TEATREE_ROOT = Path(__file__).resolve().parents[3]
 _RUN_HOOK = _TEATREE_ROOT / "hooks" / "scripts" / "run-hook.sh"
@@ -46,7 +47,7 @@ async def run_router(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=router_process_env(dispatch_env),
+            env={**router_process_env(dispatch_env), CODEX_ROUTER_ENV: "1"},
             start_new_session=True,
         )
         stdout, stderr = await asyncio.wait_for(

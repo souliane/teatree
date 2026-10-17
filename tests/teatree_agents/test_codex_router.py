@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from teatree.agents.codex_router import run_router
-from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
+from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests._process_liveness import is_gone_within
 
 
@@ -56,15 +56,22 @@ def test_router_runs_with_an_explicit_environment_allowlist(monkeypatch: pytest.
     monkeypatch.setenv("OPENAI_API_KEY", "worker-only-sentinel")
     monkeypatch.setenv("GH_TOKEN", "worker-only-sentinel")
     monkeypatch.setenv("GITHUB_TOKEN", "worker-only-sentinel")
+    monkeypatch.setenv(CODEX_ROUTER_ENV, "worker-only-sentinel")
     script = _router_script(
         tmp_path,
         'python3 -c \'import hashlib,json,os,sys; value=os.environ.get("GH_TOKEN",""); '
         'print(json.dumps({"names":sorted(os.environ),"hash":hashlib.sha256(value.encode()).hexdigest(),'
         '"marker":os.environ.get("T3_ROUTED_GH_TOKEN_KEY",""),'
+        '"router":os.environ.get("T3_DISPATCHED_CODEX_ROUTER",""),'
         '"in_argv":value in " ".join(sys.argv),"in_stdin":value in sys.stdin.read()}))\'',
     )
     monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
-    dispatch = {"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: marker, "CLAUDE_CODE_OAUTH_TOKEN": "dispatch-only-sentinel"}
+    dispatch = {
+        "GH_TOKEN": sentinel,
+        ROUTED_GH_KEY_ENV: marker,
+        CODEX_ROUTER_ENV: "task-only-sentinel",
+        "CLAUDE_CODE_OAUTH_TOKEN": "dispatch-only-sentinel",
+    }
 
     run = asyncio.run(run_router("PreToolUse", {"tool_name": "Bash"}, str(tmp_path), dispatch_env=dispatch))
 
@@ -73,6 +80,7 @@ def test_router_runs_with_an_explicit_environment_allowlist(monkeypatch: pytest.
     observed = json.loads(run.stdout)
     assert observed["hash"] == hashlib.sha256(sentinel.encode()).hexdigest()
     assert observed["marker"] == marker
+    assert observed["router"] == "1"
     assert "GITLAB_TOKEN" not in observed["names"]
     assert "OPENAI_API_KEY" not in observed["names"]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in observed["names"]
@@ -83,6 +91,7 @@ def test_router_runs_with_an_explicit_environment_allowlist(monkeypatch: pytest.
     without_task_token = asyncio.run(run_router("PreToolUse", {}, str(tmp_path), dispatch_env={}))
     assert without_task_token is not None
     assert "GH_TOKEN" not in json.loads(without_task_token.stdout)["names"]
+    assert json.loads(without_task_token.stdout)["router"] == "1"
 
 
 def test_a_router_that_cannot_start_reports_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

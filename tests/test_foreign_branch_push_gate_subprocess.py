@@ -204,7 +204,9 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     fail_line = f"echo '{forge_failure}' >&2; exit 1\n" if forge_failure else ""
     gh.write_text(
         "#!/bin/sh\n"
-        f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ echo \'HTTP 401: Bad credentials\' >&2; exit 4; }}\n'
+        f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ '
+        "echo 'You are not logged into any GitHub hosts. "
+        "Try authenticating with:  gh auth login -h github.com' >&2; exit 4; }\n"
         f"{fail_line}"
         'case "$*" in\n'
         "  'api user'*) echo '{\"login\":\"us\"}' ;;\n"
@@ -242,7 +244,7 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
 
     if scenario == "task-token":
         assert (decision, reason) == ("accept", None)
-    elif forge_failure.startswith("HTTP 502") or not routed:
+    elif forge_failure.startswith("HTTP 502"):
         assert decision == "decline"
         assert reason is not None
         assert "Ownership could not be established" in reason
@@ -253,6 +255,9 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
         assert "Venue fault" in reason
         assert "push_ownership_venue_fault` true" in reason
         assert "cut our OWN branch" not in reason
+        assert "gh auth login" not in reason
+        if scenario in {"missing-token", "interactive-login"}:
+            assert "this process holds no GH_TOKEN" in reason
     assert sentinel not in (reason or "")
     assert sentinel not in caplog.text
 

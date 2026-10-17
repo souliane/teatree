@@ -16,6 +16,7 @@ from typing import Any
 
 #: Names the pass key a dispatched agent's ``GH_TOKEN`` was read from, for a child the secret store is withheld from.
 ROUTED_GH_KEY_ENV = "T3_ROUTED_GH_TOKEN_KEY"
+CODEX_ROUTER_ENV = "T3_DISPATCHED_CODEX_ROUTER"
 FORGE_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
 _MIN_ACTIVE_TOKEN_LENGTH = 8
 
