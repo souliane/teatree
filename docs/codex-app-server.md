@@ -333,7 +333,9 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
   skill the phase requires, stack skills included, names the others as not available, and points at no
-  skill path. Inline code spans naming a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
+  skill path. It embeds `RULES.md` before the rules skill body, resolving the document beside the selected
+  `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
+  a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
   `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
   context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
