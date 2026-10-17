@@ -14,7 +14,7 @@ from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
 from teatree.core.worktree.checkout_fence import (
@@ -62,6 +62,17 @@ class CheckoutFenceTests(TestCase):
             (self.checkout / "new.txt").write_text("foreign edit")
             with pytest.raises(CheckoutFenceError, match="attested"):
                 verify_task_checkout(self.task, str(self.checkout))
+
+    def test_unattested_changed_checkout_names_missing_proof(self) -> None:
+        (self.checkout / "new.txt").write_text("unattested edit")
+        with (
+            patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ),
+            pytest.raises(CheckoutFenceError, match=r"no attested state.*worktree attest"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
 
     def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
@@ -114,6 +125,54 @@ class CheckoutFenceTests(TestCase):
         park_task_checkout(self.task, reason="held by the owner")
         self.task.refresh_from_db()
         assert self.task.not_before == held.expires_at
+
+    def test_held_checkout_is_skipped_until_its_holder_releases_or_lapses(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)
+        waiting = Task.objects.waiting_for_admission().filter(pk=self.task.pk)
+        assert waiting.exists()
+        held = acquire(self.worktree, holder="task:other", holder_session="s1")
+        assert not waiting.exists()
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        assert waiting.exists()
+
+        acquire(self.worktree, holder="task:other", holder_session="s1")
+        assert not waiting.exists()
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        assert waiting.exists()
+
+    def test_releasing_holder_wakes_only_tasks_whose_newest_park_names_it(self) -> None:
+        holder = TaskFactory(ticket=self.ticket, phase="coding")
+        sibling = TaskFactory(ticket=self.ticket, phase="testing")
+        moved_on = TaskFactory(ticket=self.ticket, phase="debugging")
+        held = acquire(self.worktree, holder=task_holder_id(holder), holder_session="s1")
+        for task in (sibling, moved_on):
+            task.claim(claimed_by="worker", claimed_by_session=f"s-{task.pk}")
+            assert claim_task_checkout_or_park(task) is not None
+        park_task_checkout(moved_on, reason="checkout differs from its attested state")
+        park_task_checkout(self.task, reason="foreign checkout state")
+        Task.objects.filter(pk=sibling.pk).update(admitted_at=timezone.now())
+        with pytest.raises(InvalidTransitionError, match="parked until"):
+            sibling.claim(claimed_by="worker", claimed_by_session="s3")
+
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        sibling.refresh_from_db()
+        assert sibling.not_before is not None
+        assert sibling.not_before <= timezone.now()
+        assert sibling.admitted_at is None
+        assert Task.objects.waiting_for_admission().filter(pk=sibling.pk).exists()
+        sibling.claim(claimed_by="worker", claimed_by_session="s3")
+        for still_parked in (moved_on, self.task):
+            still_parked.refresh_from_db()
+            assert still_parked.not_before is not None
+            assert still_parked.not_before > timezone.now()
+
+    def test_release_before_park_write_does_not_leave_a_stale_delay(self) -> None:
+        held = acquire(self.worktree, holder="task:other", holder_session="s1")
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        park_task_checkout(self.task, reason="occupied before release", blocked_by=held)
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.task.not_before <= timezone.now()
 
     def test_one_page_per_episode_until_a_run_succeeds(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.notify_user") as page:
@@ -198,6 +257,7 @@ class CheckoutFenceTests(TestCase):
 
     def test_worker_completion_attests_only_when_its_checkout_is_released(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        sibling = TaskFactory(ticket=self.ticket, phase="testing")
         with patch(
             "teatree.core.worktree.checkout_fence.read_process_table",
             return_value=ProcessTable(frozenset(), "/proc"),
@@ -216,6 +276,8 @@ class CheckoutFenceTests(TestCase):
             drive_claim(self.task),
         ):
             (self.checkout / "new.txt").write_text("run output")
+            sibling.claim(claimed_by="worker-2", claimed_by_session="s2")
+            assert claim_task_checkout_or_park(sibling) is not None
             self.task.complete()
             held = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
             assert held is None
@@ -224,6 +286,11 @@ class CheckoutFenceTests(TestCase):
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] != initial
+        assert not any(not tenure["ended"] for tenure in finished.get_extra()["checkout_custody"]["tenures"])
+        sibling.refresh_from_db()
+        assert sibling.not_before is not None
+        assert sibling.not_before <= timezone.now()
+        sibling.claim(claimed_by="worker-2", claimed_by_session="s3")
 
     def test_next_phase_started_inside_completion_uses_released_attestation(self) -> None:
         clear = ProcessTable(frozenset(), "/proc")

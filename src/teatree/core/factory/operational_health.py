@@ -48,6 +48,7 @@ from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
+from teatree.core.factory.stalled_checkout_pr import stalled_checkout_pr_signals
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
 from teatree.core.models.known_issue import KnownIssue
@@ -449,15 +450,14 @@ def _dream_staleness_signals() -> SignalCollection:
     )
 
 
-# The deterministic signal collectors, run in order. Each is fail-open on its
-# own so one broken read never suppresses the others; adding a new signal family
-# (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
+# Deterministic collectors run independently so one failed read names itself without suppressing the others.
 _COLLECTORS = (
     _overlay_health_signals,
     _stale_tick_signals,
     _failed_task_signals,
     _consecutive_harness_crash_signals,
     _stalled_backlog_signals,
+    stalled_checkout_pr_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,

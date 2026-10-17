@@ -10,6 +10,37 @@ from teatree.core.models import Session, Task, Ticket
 
 
 class TestAdmissionSeatPredicates(TestCase):
+    def test_future_parked_pending_task_releases_its_seat(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        coding = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        reviewing = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        now = timezone.now()
+        Task.objects.filter(pk__in=[coding.pk, reviewing.pk]).update(
+            status=Task.Status.PENDING,
+            admitted_at=now - timedelta(seconds=1),
+            not_before=now + timedelta(minutes=30),
+        )
+        assert Task.objects.expensive_lane_occupancy() == 0
+        assert Task.objects.cheap_lane_occupancy() == 0
+
+        Task.objects.filter(pk__in=[coding.pk, reviewing.pk]).update(not_before=now - timedelta(seconds=1))
+        assert Task.objects.expensive_lane_occupancy() == 1
+        assert Task.objects.cheap_lane_occupancy() == 1
+
+    def test_a_parked_seat_does_not_refuse_the_conditional_admission_stamp(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        parked = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        waiting = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        now = timezone.now()
+        Task.objects.filter(pk=parked.pk).update(
+            status=Task.Status.PENDING, admitted_at=now, not_before=now + timedelta(minutes=30)
+        )
+        Task.objects.filter(pk=waiting.pk).update(status=Task.Status.PENDING, admitted_at=None)
+
+        assert Task.objects.record_admission(waiting.pk, cheap=False, lane_ceiling=1)
+
     def test_cost_lanes_exclude_expired_pending_seats(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

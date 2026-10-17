@@ -94,7 +94,7 @@ from teatree.config import AgentHarnessProvider
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
+from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_refused_checkout, verify_task_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
@@ -327,7 +327,7 @@ def run_agent(
                         settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
-        return park_task_checkout(task, reason=str(exc))
+        return park_refused_checkout(task, exc)
 
 
 def _run_agent(

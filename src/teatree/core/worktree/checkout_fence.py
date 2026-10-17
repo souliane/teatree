@@ -14,6 +14,7 @@ from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
+    OccupancyHolder,
     WorktreeOccupiedError,
     _worktree_at,
     acquire,
@@ -110,7 +111,13 @@ def _accept_changed_checkout(
     if attested != state.digest and not (
         attest_deferred_exit(task, worktree, state, table) or reattest_on_proof(task, worktree, state, table)
     ):
-        message = f"checkout {worktree.worktree_path} differs from its attested state"
+        if attested is None:
+            message = (
+                f"checkout {worktree.worktree_path} has no attested state; inspect it and run "
+                f"`t3 <overlay> worktree attest {worktree.worktree_path}`"
+            )
+        else:
+            message = f"checkout {worktree.worktree_path} differs from its attested state"
         raise CheckoutFenceError(message)
 
 
@@ -128,7 +135,7 @@ def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutSta
     worktree.merge_extra(set_keys={"checkout_custody": anchored.as_dict()})
 
 
-def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
+def park_task_checkout(task: Task, *, reason: str, blocked_by: OccupancyHolder | None = None) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
     episode = (
@@ -136,20 +143,34 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         if str(previous.get("summary", "")).startswith(CHECKOUT_PARKED_PREFIX)
         else None
     )
+    blocker = (
+        {"checkout_blocked_by": {"holder": blocked_by.holder, "session": blocked_by.holder_session}}
+        if blocked_by is not None
+        else {}
+    )
     attempt = TaskAttempt.objects.create(  # no-usage: checkout refused before a harness turn was billed
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
         error=f"{CHECKOUT_PARKED_PREFIX}{reason}",
-        result={"summary": f"{CHECKOUT_PARKED_PREFIX}{reason}", "checkout_episode": episode or f"attempt:{task.pk}"},
+        result={
+            "summary": f"{CHECKOUT_PARKED_PREFIX}{reason}",
+            "checkout_episode": episode or f"attempt:{task.pk}",
+            **blocker,
+        },
     )
+    result = {**attempt.result, **blocker}
     if episode is None:
-        result = dict(attempt.result)
         result["checkout_episode"] = f"attempt:{attempt.pk}"
+    if result != attempt.result:
         TaskAttempt.objects.filter(pk=attempt.pk).update(result=result)
         attempt.result = result
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
+    if blocked_by is not None and not _still_held_by(task, blocked_by):
+        Task.objects.filter(pk=task.pk).wake_parked_behind(
+            holder=blocked_by.holder, holder_session=blocked_by.holder_session
+        )
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
@@ -160,6 +181,20 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
     except Exception:
         logger.exception("Could not page owner for checkout hold on task %s", task.pk)
     return attempt
+
+
+def _still_held_by(task: Task, blocked_by: OccupancyHolder) -> bool:
+    return Worktree.objects.filter(
+        ticket=task.ticket,
+        occupied_by=blocked_by.holder,
+        occupied_by_session=blocked_by.holder_session,
+        occupancy_expires_at__gt=timezone.now(),
+    ).exists()
+
+
+def park_refused_checkout(task: Task, exc: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
+    blocked_by = exc.holder if isinstance(exc, WorktreeOccupiedError) else None
+    return park_task_checkout(task, reason=str(exc), blocked_by=blocked_by)
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:
@@ -175,10 +210,10 @@ def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None)
     try:
         acquire(worktree, holder=holder, holder_session=session, lease_seconds=lease_seconds)
     except WorktreeOccupiedError as exc:
-        return park_task_checkout(task, reason=str(exc))
+        return park_refused_checkout(task, exc)
     try:
         verify_task_checkout(task, path)
     except CheckoutFenceError as exc:
         release(worktree, holder=holder, holder_session=session)
-        return park_task_checkout(task, reason=str(exc))
+        return park_refused_checkout(task, exc)
     return None

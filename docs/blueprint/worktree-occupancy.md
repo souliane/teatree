@@ -24,7 +24,8 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 ## The writer fence
 
 - A writing task also needs, for every checkout of its ticket, exactly one `Worktree` row for the path across all tickets, a host-covering process table with no live process in the checkout, and a checkout state matching `Worktree.extra.attested_state`; first sight attests only a pristine checkout, counted against the ticket's target branch.
-- A refusal — an occupied checkout or a failed fence — parks the task under its own `checkout_parked:` reason naming the cause, without spending its repair budget, until the holder's lease expires or 30 minutes pass, and sends one owner notice per episode.
+- A refusal — an occupied checkout or a failed fence — parks the task under its own `checkout_parked:` reason naming the cause, without spending its repair budget, until the holder's lease expires or 30 minutes pass, and sends one owner notice per episode. A missing attested state is named explicitly with the `worktree attest` action; a changed checkout is never silently accepted.
+- An occupancy refusal records the fully qualified holder and session on the parked attempt. Releasing that holder wakes only the ticket's pending tasks whose newest attempt names that pair; a refusal for another reason keeps its retry time. A post-park holder check closes the release-before-park race. The admission walk skips tickets whose checkout is still held and sees them again after release or lease lapse.
 
 ## Exit attestation and custody re-attestation
 

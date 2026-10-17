@@ -25,6 +25,8 @@ from teatree.core.managers_admission import (
     _lane_occupancy_q,
     _lane_under_ceiling,
     _unseated_q,
+    waiting_for_admission_rows,
+    wake_parked_behind_rows,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
@@ -525,16 +527,14 @@ class TaskQuerySet(models.QuerySet):
         return bool(seat.update(admitted_at=now))
 
     def waiting_for_admission(self) -> models.QuerySet:
-        """PENDING rows due now and holding no seat — what both headless chokepoints may admit or fail.
+        """PENDING rows due now, holding no seat, behind no held checkout — what both headless chokepoints may admit.
 
         ``_claimable_now_q`` keeps a usage-window-parked row out until its window re-arms.
         """
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        return waiting_for_admission_rows(self, timezone.now())
 
-        now = timezone.now()
-        return self.filter(_claimable_now_q(now), _unseated_q(now), status=task_model.Status.PENDING).select_related(
-            "ticket"
-        )
+    def wake_parked_behind(self, *, holder: str, holder_session: str) -> int:
+        return wake_parked_behind_rows(self, timezone.now(), holder=holder, holder_session=holder_session)
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
