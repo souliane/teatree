@@ -2,7 +2,7 @@
 
 Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5.6 ("Adaptive admission governor"). The rule it implements: static concurrency settings are ceilings, and every dispatcher asks one pure governor before admitting work.
 
-A pending task holds its five-minute admission seat only while it is due (`not_before` is empty or past). A checkout-fence park with a future retry releases that seat in the shared occupancy predicate used by both the lane probe and the conditional admission stamp. A wake on holder release clears the old admission stamp so the task can enter the walk on the next drain; a due park still retains the usual five-minute duplicate-dispatch guard.
+A pending task holds its five-minute admission seat only while it is due (`not_before` is empty or past). A checkout-fence park with a future retry releases that seat in the shared occupancy predicate used by both the lane probe and the conditional admission stamp. A park that frees a seat schedules a new admission walk after commit. A wake on holder release clears the old admission stamp and schedules the walk after commit; a due park still retains the usual five-minute duplicate-dispatch guard. The cheap-lane released-seat warning excludes future parked rows.
 
 ## The governor
 

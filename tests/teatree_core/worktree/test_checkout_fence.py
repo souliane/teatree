@@ -382,6 +382,8 @@ class CheckoutFenceTests(TestCase):
             verify_task_checkout(self.task, str(self.checkout))
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(task_dispatch, "enqueue_execution"),
             patch(
                 "teatree.core.worktree.occupancy.read_process_table",
                 return_value=ProcessTable(frozenset(), "/proc"),
@@ -407,6 +409,7 @@ class CheckoutFenceTests(TestCase):
         sibling.refresh_from_db()
         assert sibling.not_before is not None
         assert sibling.not_before <= timezone.now()
+        assert sibling.admitted_at is not None
         sibling.claim(claimed_by="worker-2", claimed_by_session="s3")
 
     def test_next_phase_started_inside_completion_uses_released_attestation(self) -> None:
