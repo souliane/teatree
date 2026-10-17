@@ -10,6 +10,7 @@ user's ownership rather than root's.
 import os
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 import yaml
@@ -135,7 +136,7 @@ class TestMigrationScriptIsShipped:
             assert result.returncode == 0, result.stderr
             target = target_dir / "db.sqlite3"
             assert target.read_bytes()[18] == 2
-            with sqlite3.connect(target) as reader:
+            with closing(sqlite3.connect(target)) as reader:
                 assert reader.execute("SELECT body FROM note").fetchall() == [("wal-resident",)]
                 assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
         finally:
