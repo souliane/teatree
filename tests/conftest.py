@@ -175,14 +175,14 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     tx = list(getattr(config.option, "tx", []))
     pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
-        lease = pool.acquire(max(1, len(tx)), nested=bool(os.environ.get("PYTEST_CURRENT_TEST")))
+        lease = pool.session_lease(max(1, len(tx)))
     except PoolUnavailableError as exc:
         raise pytest.UsageError(str(exc)) from exc
     config.stash[_WORKER_SLOT_LEASE] = lease
     if tx:
-        config.option.tx = tx[: lease.count]
+        config.option.tx = tx[: lease.workers]
         if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
-            config.option.numprocesses = lease.count
+            config.option.numprocesses = lease.workers
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -897,6 +897,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # never reads a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    # CI points the worker-slot pool at /tmp; registries under test stay in the sandboxed HOME.
+    monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh
     # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
     # cache before its network/subprocess ``gh`` call. Update checks always run here

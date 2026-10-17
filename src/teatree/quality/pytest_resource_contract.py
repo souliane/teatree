@@ -14,6 +14,7 @@ from types import TracebackType
 from typing import Self
 
 TOTAL_TEST_WORKERS_PER_CORE = 1
+INHERITED_LEASE_ENV = "TEATREE_PYTEST_WORKER_LEASE"
 
 _LOCAL_MAX_WORKERS = 4
 _PARENT_RESERVE_MIB = 512
@@ -71,8 +72,9 @@ class SlotLease:
         self._descriptors = descriptors
 
     @property
-    def count(self) -> int:
-        return len(self._descriptors)
+    def workers(self) -> int:
+        # An empty lease is a nested run riding the slot its ancestor's blocked worker holds.
+        return max(1, len(self._descriptors))
 
     def release(self) -> None:
         for descriptor in self._descriptors:
@@ -93,7 +95,14 @@ class WorkerSlotPool:
         self.path = shared_root / "pytest-worker-slots"
         self.capacity = max(1, capacity)
 
-    def acquire(self, requested: int, *, nested: bool = False, poll_interval: float = 1.0) -> SlotLease:
+    def session_lease(self, requested: int) -> SlotLease:
+        if os.environ.get(INHERITED_LEASE_ENV):
+            return SlotLease([])
+        lease = self.acquire(requested)
+        os.environ[INHERITED_LEASE_ENV] = str(self.path)
+        return lease
+
+    def acquire(self, requested: int, *, poll_interval: float = 1.0) -> SlotLease:
         if not self.path.parent.is_dir():
             reason = "root is missing"
             raise PoolUnavailableError(reason, self.path.parent)
@@ -102,15 +111,12 @@ class WorkerSlotPool:
         except OSError as exc:
             reason = "is unavailable"
             raise PoolUnavailableError(reason, self.path) from exc
-        if nested and self.capacity == 1:
-            reason = "cannot run nested pytest on one core"
-            raise PoolUnavailableError(reason, self.path)
-        slot_numbers = range(self.capacity - 1, self.capacity) if nested else range(max(1, self.capacity - 1))
-        target = max(1, min(requested, len(slot_numbers)))
+        target = max(1, min(requested, self.capacity))
+        reported = False
         while True:
             descriptors: list[int] = []
             try:
-                for slot in slot_numbers:
+                for slot in range(self.capacity):
                     slot_path = self.path / f"slot-{slot:04d}.lock"
                     descriptor = os.open(slot_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
                     try:
@@ -127,12 +133,17 @@ class WorkerSlotPool:
                 raise PoolUnavailableError(reason, self.path) from exc
             if descriptors:
                 return SlotLease(descriptors)
-            sys.stderr.write(f"pytest worker pool at {self.path} has no free slots ({self.capacity} total); waiting\n")
-            sys.stderr.flush()
+            if not reported:
+                sys.stderr.write(
+                    f"pytest worker pool at {self.path} has no free slots ({self.capacity} total); waiting\n"
+                )
+                sys.stderr.flush()
+                reported = True
             time.sleep(poll_interval)
 
 
 __all__ = [
+    "INHERITED_LEASE_ENV",
     "TOTAL_TEST_WORKERS_PER_CORE",
     "PoolUnavailableError",
     "SlotLease",
