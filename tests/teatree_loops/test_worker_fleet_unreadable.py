@@ -26,6 +26,7 @@ class _FakeHandle:
     def __init__(self, executor: _FakeExecutor) -> None:
         self.joined = False
         self.executor = executor
+        self.degraded = False
 
     def is_alive(self) -> bool:
         return not self.joined and self.executor.running
