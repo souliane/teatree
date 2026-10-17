@@ -36,7 +36,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.models.question_actions import held_question
+from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
@@ -142,6 +142,8 @@ class DeferredQuestion(models.Model):
     # dropped unaudited, and never before the owner was asked N times".
     escalated_at = models.DateTimeField(null=True, blank=True)
     escalation_count = models.PositiveIntegerField(default=0)
+
+    objects = DeferredQuestionQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_deferred_question"
@@ -562,6 +564,8 @@ class DeferredQuestionAudit(models.Model):
     note = models.TextField(blank=True, default="")
     resolver_id = models.CharField(max_length=255, blank=True, default="")
     resolved_at = models.DateTimeField(default=timezone.now)
+
+    objects = DeferredQuestionAuditQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_deferred_question_audit"

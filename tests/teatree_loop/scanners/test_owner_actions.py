@@ -50,7 +50,7 @@ class TestOwnerActionScanner(TestCase):
 def test_scanner_surfaces_an_unreadable_action_queue() -> None:
     with (
         patch(
-            "teatree.core.answering.owner_actions.DeferredQuestion.objects.filter",
+            "teatree.core.answering.owner_actions.DeferredQuestion.objects.awaiting_action_outcome",
             side_effect=OperationalError("unreadable"),
         ),
         pytest.raises(OperationalError, match="unreadable"),

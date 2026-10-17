@@ -3,9 +3,10 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import transaction
+from django.db.models import Max, Min
 from django.utils import timezone
 
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
@@ -14,7 +15,7 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.question_actions import ACTION_OUTCOMES, action_awaiting_outcome, owner_answerer
+from teatree.core.models.question_actions import ACTION_OUTCOMES
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_attest import AttestRefusedError, read_attestation
@@ -86,18 +87,18 @@ _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str],
 }
 
 
-def _decide(row: DeferredQuestion, actor: str) -> _Decision:
+def _resolver(answer: DeferredQuestionAudit | None) -> str:
+    return answer.resolver_id if answer is not None else ""
+
+
+def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Decision:
     action = read_action(row.evidence)
     if action is None or row.dedupe_marker != action_marker(action):
         return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
-    proof = (
-        DeferredQuestionAudit.objects.filter(question=row, action="answered", resolver_id=actor).order_by("-pk").first()
-    )
     if (
         row.resolved_via != DeferredQuestion.ResolvedVia.SLACK
-        or not actor
-        or proof is None
-        or (proof.note != "button" and not proof.note.startswith("verified-typed:"))
+        or answer is None
+        or (answer.note != "button" and not answer.note.startswith("verified-typed:"))
     ):
         return _Decision("refused", "Only the owner's verified Slack answer may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
@@ -107,21 +108,41 @@ def _decide(row: DeferredQuestion, actor: str) -> _Decision:
     if not option.recommended:
         return _Decision("declined", "The owner declined.")
     try:
-        return _Decision("carried_out", write=_PREPARE[kind](row, action, actor))
+        return _Decision("carried_out", write=_PREPARE[kind](row, action, answer.resolver_id))
     except OwnerActionRefusedError as exc:
         return _Decision("refused", str(exc), notify=True)
 
 
-def _carry_one(row: DeferredQuestion, *, forced: _Decision | None = None) -> _Decision | None:
-    actor = owner_answerer(row, DeferredQuestionAudit)
-    decision = forced or _decide(row, actor)
+def _carry_one(
+    row: DeferredQuestion, answer: DeferredQuestionAudit | None, *, forced: _Decision | None = None
+) -> _Decision | None:
+    decision = forced or _decide(row, answer)
     with transaction.atomic():
         DeferredQuestion.objects.select_for_update().get(pk=row.pk)
         if DeferredQuestionAudit.objects.filter(question=row, action__in=ACTION_OUTCOMES).exists():
             return None
         note = decision.write() if decision.write is not None else decision.note
-        DeferredQuestionAudit.objects.create(question=row, action=decision.outcome, resolver_id=actor, note=note)
+        DeferredQuestionAudit.objects.create(
+            question=row, action=decision.outcome, resolver_id=_resolver(answer), note=note
+        )
     return decision
+
+
+def _carry_out(row: DeferredQuestion, first_wait: datetime | None) -> _Decision | None:
+    answer = DeferredQuestionAudit.objects.owner_answer(row)
+    try:
+        return _carry_one(row, answer)
+    except OwnerActionDeferredError as exc:
+        if first_wait is not None and timezone.now() - first_wait >= _EXPIRES_AFTER:
+            expired = _Decision("refused", f"Live evidence stayed unavailable for a day: {exc}", notify=True)
+            return _carry_one(row, answer, forced=expired)
+        DeferredQuestionAudit.objects.create(
+            question=row, action="deferred", resolver_id=_resolver(answer), note=str(exc)
+        )
+        if first_wait is None:
+            _tell_owner(row, f"Waiting for live evidence: {exc}", event="waiting")
+        logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
+        return None
 
 
 def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -> None:
@@ -138,24 +159,14 @@ def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -
 
 def carry_out_owner_actions() -> list[str]:
     results: list[str] = []
-    for row in action_awaiting_outcome(DeferredQuestion):
-        last_defer = (
-            DeferredQuestionAudit.objects.filter(question=row, action="deferred").order_by("-resolved_at").first()
+    for row in DeferredQuestion.objects.awaiting_action_outcome():
+        waited = DeferredQuestionAudit.objects.filter(question=row, action="deferred").aggregate(
+            first=Min("resolved_at"), last=Max("resolved_at")
         )
-        expired = row.answered_at is not None and timezone.now() - row.answered_at >= _EXPIRES_AFTER
-        if not expired and last_defer is not None and timezone.now() - last_defer.resolved_at < _RETRY_AFTER:
+        if waited["last"] is not None and timezone.now() - waited["last"] < _RETRY_AFTER:
             continue
         try:
-            forced = _Decision("refused", "Live evidence remained unavailable for 24 hours; ask again.", notify=True)
-            decision = _carry_one(row, forced=forced if expired else None)
-        except OwnerActionDeferredError as exc:
-            DeferredQuestionAudit.objects.create(
-                question=row, action="deferred", resolver_id=owner_answerer(row, DeferredQuestionAudit), note=str(exc)
-            )
-            if last_defer is None:
-                _tell_owner(row, f"Waiting for live evidence: {exc}", event="waiting")
-            logger.info("Owner action %s waits for live evidence: %s", row.pk, exc)
-            continue
+            decision = _carry_out(row, waited["first"])
         except Exception:
             logger.exception("Owner action %s failed; retrying next pass", row.pk)
             continue

@@ -18,7 +18,6 @@ from teatree.core.modelkit.question_card import (
 )
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.models.question_actions import owner_answerer
 from teatree.core.models.worktree_occupancy import occupancy_holder
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -144,7 +143,7 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
         )
         if latest is not None and latest.parked_task_id == task.pk:
             option = match_action_option(latest.options_json, latest.answer_text)
-            if option is not None and not option.recommended and owner_answerer(latest, DeferredQuestionAudit):
+            if option is not None and not option.recommended and DeferredQuestionAudit.objects.owner_answer(latest):
                 return None
         with transaction.atomic():
             obsolete = (

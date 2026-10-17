@@ -442,13 +442,24 @@ class TestCheckoutAttestation(TestCase):
     def test_deferred_action_expires_with_a_visible_refusal(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Accept")
-        DeferredQuestion.objects.filter(pk=row.pk).update(answered_at=timezone.now() - timedelta(hours=25))
+        busy = ProcessTable(frozenset({self.checkout}), "/proc")
 
         with patch("teatree.core.answering.owner_actions.notify_user") as notice:
-            assert self._carry_out(ProcessTable(frozenset({self.checkout}), "/proc")) == [f"refused {row.pk}"]
+            assert self._carry_out(busy) == []
+            DeferredQuestionAudit.objects.filter(question=row, action="deferred").update(
+                resolved_at=timezone.now() - timedelta(hours=25)
+            )
+            assert self._carry_out(busy) == [f"refused {row.pk}"]
 
         assert self._outcomes(row) == ["refused"]
-        notice.assert_called_once()
+        assert notice.call_count == 2
+
+    def test_a_day_old_answer_is_tried_before_it_can_expire(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        DeferredQuestion.objects.filter(pk=row.pk).update(answered_at=timezone.now() - timedelta(hours=25))
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
 
     def test_the_checkout_is_read_outside_the_write_lock(self) -> None:
         row = self._park_on_a_foreign_edit()

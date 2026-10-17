@@ -1,6 +1,8 @@
 """Dedupe and answer helpers for durable owner action questions."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
+
+from django.db import models
 
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import match_action_option
@@ -46,22 +48,21 @@ def held_question(
     return None
 
 
-def action_awaiting_outcome(model: "type[DeferredQuestion]") -> "QuerySet[DeferredQuestion]":
-    return (
-        model.objects.filter(
-            audience=model.Audience.OWNER_QUESTION,
-            answered_at__isnull=False,
-            evidence__has_key="action",
+class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
+    def awaiting_action_outcome(self) -> Self:
+        return (
+            self.filter(
+                audience=self.model.Audience.OWNER_QUESTION,
+                answered_at__isnull=False,
+                evidence__has_key="action",
+            )
+            .exclude(audits__action__in=ACTION_OUTCOMES)
+            .order_by("answered_at", "pk")
         )
-        .exclude(audits__action__in=ACTION_OUTCOMES)
-        .order_by("answered_at", "pk")
-    )
 
 
-def owner_answerer(row: "DeferredQuestion", audit_model: "type[DeferredQuestionAudit]") -> str:
-    answer = (
-        audit_model.objects.filter(question=row, action="answered", resolver_id__startswith="slack:")
-        .order_by("-pk")
-        .first()
-    )
-    return answer.resolver_id if answer is not None else ""
+class DeferredQuestionAuditQuerySet(models.QuerySet["DeferredQuestionAudit"]):
+    def owner_answer(self, question: "DeferredQuestion") -> "DeferredQuestionAudit | None":
+        return (
+            self.filter(question=question, action="answered", resolver_id__startswith="slack:").order_by("-pk").first()
+        )
