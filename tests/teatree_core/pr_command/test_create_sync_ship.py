@@ -1,5 +1,5 @@
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -34,7 +34,7 @@ def _code_host() -> MagicMock:
 
 
 @contextmanager
-def _ship_externals(host: MagicMock) -> Iterator[MagicMock]:
+def _ship_externals(host: MagicMock) -> Generator[MagicMock]:
     """Stub only what a real ship reaches outside the process: the overlay registry, the forge, git, the push."""
     with (
         patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -48,7 +48,7 @@ def _ship_externals(host: MagicMock) -> Iterator[MagicMock]:
 
 
 @contextmanager
-def _gates_pass() -> Iterator[None]:
+def _gates_pass() -> Generator[None]:
     with (
         patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
         patch.object(pr_command, "validate_pr_metadata", return_value=None),
