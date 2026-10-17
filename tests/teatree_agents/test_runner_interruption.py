@@ -168,7 +168,7 @@ def _checkpointed() -> HarnessOutcome:
             num_turns=12,
             usage={"input_tokens": 900, "output_tokens": 300},
         ),
-        stuck_reason="deploy checkpoint: this worker is quiescing for a rolling deploy",
+        stuck_reason="checkpoint: this worker is quiescing for a rolling deploy",
         checkpointed=True,
     )
 
@@ -196,7 +196,7 @@ class TestADeployCheckpointParksTheRunToResumeIt(TestCase):
         attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
 
         assert attempt is not None
-        assert attempt.error.startswith("limit_parked: deploy checkpoint")
+        assert attempt.error.startswith("limit_parked: checkpoint:")
         assert attempt.agent_session_id == _CHECKPOINTED_SESSION
         assert attempt.input_tokens == 900
         assert attempt.output_tokens == 300
@@ -220,7 +220,7 @@ class TestADeployCheckpointParksTheRunToResumeIt(TestCase):
         assert attempt is not None
         assert attempt.exit_code == 0
         assert attempt.input_tokens == 900, "the interrupted run's spend is still recorded"
-        assert "deploy checkpoint" in str(attempt.result["summary"])
+        assert "checkpoint:" in str(attempt.result["summary"])
 
     def test_a_completed_row_is_still_a_no_op(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED, claimed_by="")

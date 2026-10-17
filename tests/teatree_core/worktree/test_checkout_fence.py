@@ -404,7 +404,7 @@ class CheckoutFenceTests(TestCase):
             ),
         ):
             (self.checkout / "new.txt").write_text("checkpointed run output")
-            _record_checkpoint(self.task, checkpoint="deploy checkpoint: worker quiescing", usage=AttemptUsage())
+            _record_checkpoint(self.task, checkpoint="checkpoint: worker quiescing", usage=AttemptUsage())
 
         page.assert_not_called()
         finished = Worktree.objects.get(pk=self.worktree.pk)
@@ -539,7 +539,7 @@ class CheckoutFenceTests(TestCase):
             task=self.task,
             ended_at=timezone.now() - timedelta(seconds=1),
             exit_code=1,
-            error="limit_parked: deploy checkpoint: earlier run",
+            error="limit_parked: checkpoint: earlier run",
         )
 
         with (
