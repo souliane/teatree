@@ -526,7 +526,7 @@ def test_subagent_key_tracks_the_entire_cloned_head(tmp_path: Path, monkeypatch:
     assert verdict_key(spec, config) != before
 
 
-@pytest.mark.parametrize("failure", ["missing", "timeout", "refusal"])
+@pytest.mark.parametrize("failure", ["missing", "missing_git", "timeout", "refusal"])
 def test_unavailable_checkout_only_reruns_spawning_specs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -534,7 +534,16 @@ def test_unavailable_checkout_only_reruns_spawning_specs(
     spawning = dataclasses.replace(plain, name="spawning", tools=("Agent",))
     other_spawning = dataclasses.replace(spawning, name="other-spawning")
     config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
-    monkeypatch.setattr(verdict_cache, "resolve_teatree_repo_root", lambda: None if failure == "missing" else tmp_path)
+    if failure == "missing_git":
+
+        def missing_git() -> None:
+            raise OSError
+
+        monkeypatch.setattr(verdict_cache, "resolve_teatree_repo_root", missing_git)
+    else:
+        monkeypatch.setattr(
+            verdict_cache, "resolve_teatree_repo_root", lambda: None if failure == "missing" else tmp_path
+        )
     if failure == "timeout":
 
         def timed_out(**_kwargs: object) -> None:
@@ -613,6 +622,23 @@ class TestKeyTracksTheModelAndCapsTheBackendRuns(TestCase):
                 assert len(self._key(backend)) == 64
                 assert seen == packages
 
+    def test_each_backend_package_version_rekeys(self) -> None:
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/model-a")
+        for backend, changed in (
+            ("api", "claude-agent-sdk"),
+            ("anthropic_api", "anthropic"),
+            ("anthropic_api", "pydantic-ai-slim"),
+            ("pydantic_ai", "pydantic-ai-slim"),
+        ):
+            with self.subTest(backend=backend, package=changed):
+                self.monkeypatch.setattr("teatree.eval.verdict_cache.importlib.metadata.version", lambda _: "1")
+                before = self._key(backend)
+                self.monkeypatch.setattr(
+                    "teatree.eval.verdict_cache.importlib.metadata.version",
+                    lambda package, changed=changed: "2" if package == changed else "1",
+                )
+                assert self._key(backend) != before
+
     def test_openai_model_environment_override_rekeys(self) -> None:
         self.monkeypatch.setenv("T3_OPENAI_COMPATIBLE_MODEL", "vendor/model-a")
         before = self._key("pydantic_ai")
@@ -648,9 +674,10 @@ def test_key_tracks_cli_and_harness_versions(tmp_path: Path, monkeypatch: pytest
     config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
     original = verdict_key(spec, config)
     (cli / "app.py").write_text("version 2")
-    assert verdict_key(spec, config) != original
+    after_cli = verdict_key(spec, config)
+    assert after_cli != original
     monkeypatch.setattr("teatree.eval.verdict_cache.importlib.metadata.version", lambda _: "other")
-    assert verdict_key(spec, config) != original
+    assert verdict_key(spec, config) != after_cli
 
 
 @pytest.mark.parametrize(
@@ -723,6 +750,38 @@ def test_partition_reruns_only_the_changed_graded_section(tmp_path: Path) -> Non
     assert [spec.name for spec in fresh] == ["one"]
     assert [hit.name for hit in cached] == ["two"]
     assert cached[0].model == spec_b.model
+
+
+def test_partition_keeps_scenario_grading_another_file_cached(tmp_path: Path) -> None:
+    changed = _spec(tmp_path)
+    other_file = tmp_path / "OTHER.md"
+    other_file.write_text("## Graded\noriginal\n", encoding="utf-8")
+    unchanged = dataclasses.replace(changed, name="other", agent_path=str(other_file))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    ledger = VerdictLedger.load(tmp_path / "verdicts.json")
+    ledger.record(
+        [
+            {
+                "head_sha": "abc",
+                "trial_count": 1,
+                "scenarios": [
+                    {
+                        "name": spec.name,
+                        "lane": spec.lane,
+                        "content_key": verdict_key(spec, config),
+                        "outcome": "PASS",
+                        "cache_eligible": True,
+                    }
+                    for spec in (changed, unchanged)
+                ],
+            }
+        ],
+        run_url="https://example.test/run/1",
+    )
+    Path(changed.agent_path).write_text("## Graded\nchanged\n", encoding="utf-8")
+    fresh, cached, _keys = partition([changed, unchanged], ledger, config)
+    assert [spec.name for spec in fresh] == ["one"]
+    assert [hit.name for hit in cached] == ["other"]
 
 
 def test_partition_hashes_shared_code_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

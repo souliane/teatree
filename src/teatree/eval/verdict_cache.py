@@ -195,10 +195,10 @@ def _shared_inputs(specs: list[EvalSpec], config: VerdictRunConfig) -> SharedVer
 
 
 def _checkout_tree() -> str | None:
-    repo_root = resolve_teatree_repo_root()
-    if repo_root is None:
-        return None
     try:
+        repo_root = resolve_teatree_repo_root()
+        if repo_root is None:
+            return None
         revision = run_with_status(
             repo=str(repo_root), args=["rev-parse", "HEAD^{tree}"], env=git_env_without_overrides(), timeout=30
         )

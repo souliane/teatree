@@ -85,11 +85,15 @@ def test_recorded_pass_skips_runner_on_second_dispatch(
     assert second["totals"]["cached"] == 1
     assert second["cached"][0]["run_url"] == "local"
     assert "| one | clean_room | cached pass |" in markdown_path.read_text()
-    capsys.readouterr()
+    text_output = capsys.readouterr().out
+    key = first["scenarios"][0]["content_key"]
+    assert f"CACHED PASS one (key {key}, from run local)" in text_output
     dispatch_resolved_run([spec], dataclasses.replace(run, output_format="json"), grader=None, escalation=None)
     json_output = json.loads(capsys.readouterr().out)
     assert list(json_output) == ["scenarios", "summary", "cached"]
     assert json_output["cached"][0]["name"] == "one"
+    assert json_output["cached"][0]["content_key"] == key
+    assert json_output["cached"][0]["run_url"] == "local"
     dispatch_resolved_run([spec], dataclasses.replace(run, output_format="html"), grader=None, escalation=None)
     html_output = capsys.readouterr().out
     assert html_output.lstrip().lower().startswith("<!doctype html>")

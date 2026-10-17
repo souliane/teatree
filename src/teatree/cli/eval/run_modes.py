@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.cli.eval.run_persistence import persist_single
 from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.judge import ClaudeJudge, JudgeBudget, ModelSeamJudge
 from teatree.eval.matrix import MatrixRow
@@ -185,11 +186,6 @@ class RunGuards:
             raise typer.Exit(code=1) from None
 
 
-def run_model_label(specs: list[EvalSpec]) -> str:
-    models = sorted({spec.model for spec in specs})
-    return ",".join(models)
-
-
 def with_model(spec: EvalSpec, model: str) -> EvalSpec:
     return dataclasses.replace(spec, model=model)
 
@@ -214,27 +210,6 @@ def make_grader(*, enabled: bool, judge_budget: int, backend: str = "api") -> Ju
         )
 
     return _grade
-
-
-def persist_single(
-    results: list[ScenarioResult],
-    *,
-    specs: list[EvalSpec],
-    max_turns: int | None,
-    baseline: bool,
-    cached_specs: list[EvalSpec] | None = None,
-) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_run  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    record = persist_run(
-        results,
-        model=run_model_label([*specs, *(cached_specs or [])]),
-        max_turns_override=max_turns,
-        cached_specs=cached_specs or (),
-    )
-    if baseline:
-        record.mark_baseline()
-    return record
 
 
 def persist_pass_at_k_run(
