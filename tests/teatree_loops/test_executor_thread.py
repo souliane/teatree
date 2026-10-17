@@ -1,10 +1,13 @@
 import sqlite3
+import threading
+import time
 
 import pytest
 from django.db import OperationalError, connection
 from django.test import TestCase
 
 from teatree.loops.executor_thread import LockTolerantRun, build_executor, spawn_executor_thread
+from teatree.loops.worker import LoopWorker, WorkerSeams
 
 
 class ScriptedExecutor:
@@ -60,6 +63,28 @@ def test_stop_during_backoff_returns_without_retry() -> None:
     assert executor.calls == 1
 
 
+def test_stop_during_long_backoff_ends_within_worker_join() -> None:
+    executor = ScriptedExecutor(8)
+    long_backoff = threading.Event()
+
+    def sleep(_seconds: float) -> None:
+        if executor.calls >= 5:
+            long_backoff.set()
+            time.sleep(0.6)
+
+    handle = spawn_executor_thread(executor, sleep=sleep, monotonic=lambda: 0.0)
+    assert long_backoff.wait(timeout=3)
+    worker = LoopWorker(WorkerSeams(make_executor=lambda _queue, _id: executor, spawn=lambda _executor: handle))
+    worker._slots = [worker._spawn_slot("loops", 0)]
+    try:
+        survivors = worker._stop_pool()
+        assert survivors == []
+        assert not handle.is_alive()
+    finally:
+        executor.running = False
+        handle.join(timeout=6)
+
+
 def test_quiet_run_resets_the_delay() -> None:
     clock = [0.0]
     delays: list[float] = []
@@ -79,19 +104,19 @@ def test_quiet_run_resets_the_delay() -> None:
 
 def test_long_lock_streak_repeats_one_line_error_every_ten_minutes(caplog: pytest.LogCaptureFixture) -> None:
     clock = [0.0]
-    executor = ScriptedExecutor(4)
+    executor = ScriptedExecutor(250)
     last_waited_call = [0]
 
     def wait(_seconds: float) -> None:
         if executor.calls != last_waited_call[0]:
-            clock[0] += 601.0
+            clock[0] += 5.0
             last_waited_call[0] = executor.calls
 
     LockTolerantRun(executor, sleep=wait, monotonic=lambda: clock[0]).run()
 
     alerts = [record for record in caplog.records if record.levelname == "ERROR"]
     assert [record.getMessage() for record in alerts] == [
-        f"Executor database lock has persisted for {age}s; still retrying" for age in (601, 1202, 1803)
+        f"Executor database lock has persisted for {age}s; still retrying" for age in (600, 1200)
     ]
     assert all(record.exc_info is None for record in alerts)
 

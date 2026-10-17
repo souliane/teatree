@@ -31,6 +31,9 @@ class Executor(Protocol):
 
 
 class Handle(Protocol):
+    @property
+    def degraded(self) -> bool: ...
+
     def is_alive(self) -> bool: ...
 
     def join(self, timeout: float | None = None) -> None: ...
@@ -122,6 +125,7 @@ class LockTolerantRun:
         try:
             while self.executor.running:
                 started = self.monotonic()
+                alert_due = False
                 try:
                     self.executor.run()
                 except OperationalError as exc:
@@ -141,13 +145,15 @@ class LockTolerantRun:
                         "Executor database lock attempt %d (%.0fs streak); retrying in %.1fs", attempts, age, delay
                     )
                     if now >= next_alert:
-                        logger.log(logging.ERROR, "Executor database lock has persisted for %.0fs; still retrying", age)
                         self._degraded = True
                         next_alert = now + LOCK_ALERT_SECONDS
+                        alert_due = True
                 else:
                     return
                 finally:
                     close_thread_db_connections()
+                if alert_due:
+                    logger.error("Executor database lock has persisted for %.0fs; still retrying", age)
                 self._wait(delay)
                 delay = min(delay * 2, LOCK_BACKOFF_CAP_SECONDS)
         finally:

@@ -33,7 +33,6 @@ reconciler IS the process-watchdog surface.
 
 import logging
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -58,6 +57,7 @@ from teatree.loops.executor_thread import build_executor as _build_executor
 from teatree.loops.executor_thread import spawn_executor_thread as _spawn_executor_thread
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 from teatree.loops.worker_health import publish_worker_heartbeat
+from teatree.loops.worker_lease_cleanup import _reap_expired_leases, _reclaim_dead_owner_leases
 from teatree.utils.ram_probe import default_provision_concurrency
 
 if TYPE_CHECKING:
@@ -166,32 +166,6 @@ class FleetAdmissionUnreadableError(RuntimeError):
 _CRASH_MESSAGE = "A loops/default executor thread died and exhausted its respawn budget; exiting non-zero."
 _STOP_MESSAGE = "The executor pool did not stop within its bounded grace period; exiting non-zero."
 _UNREADABLE_MESSAGE = "The fleet admission verdict was unreadable for too many polls; exiting non-zero."
-
-
-def _reclaim_dead_owner_leases() -> None:
-    """Return every ``loop:<name>``/``t3-master`` lease held by a dead session to the pool (#3571).
-
-    The worker supervisor's runtime half of the dead-owner reclaim (``run_boot_sweeps``
-    owns the boot half): a loop whose owning session crashed — or whose pid was reused /
-    lives in another container namespace — is otherwise SKIPped by the live worker
-    forever. Lazy-imported so the module's import graph carries no Django/ORM edge.
-    """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    LoopLease.objects.reclaim_dead_owner_leases()
-
-
-def _reap_expired_leases() -> None:
-    """Delete long-expired work-lease rows nothing will consult again (#4253).
-
-    ``acquire`` mints a ``work:<kind>:<hash>`` row per unit of work and nothing retires
-    it, so the table grows without bound and an operator reading it cannot tell a live
-    holder from hours of debris. Owner slots are never in range — their ``generation`` is
-    the fencing token — so this is disjoint from the reclaim above.
-    """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    LoopLease.objects.reap_expired_leases()
 
 
 def _claim_t3_master() -> None:
@@ -425,7 +399,7 @@ class LoopWorker:
                     "Executor for queue %r (slot %d) died %d times — giving up; the worker will exit non-zero.",
                     slot.queue,
                     slot.index,
-                    slot.respawns,
+                    slot.respawns + 1,
                 )
                 return slot
             logger.warning(
@@ -514,15 +488,6 @@ class LoopWorker:
         if unreadable:
             raise FleetAdmissionUnreadableError(_UNREADABLE_MESSAGE)
 
-    @staticmethod
-    def _exit_reason_for_exception(reason: str) -> str:
-        if reason:
-            return reason
-        failure = sys.exception()
-        if failure is None:
-            return ""
-        return f"this worker is exiting non-zero: supervisor failed with {type(failure).__name__}"
-
     def run(self) -> None:
         """Reconcile, expire stale jobs, then supervise the pool against the fleet verdict until stopped."""
         seams = self._seams
@@ -554,17 +519,19 @@ class LoopWorker:
                     crashed = True
                     exit_reason = (
                         f"this worker is exiting non-zero: executor for queue {exhausted.queue} "
-                        f"(slot {exhausted.index}) died {exhausted.respawns} times"
+                        f"(slot {exhausted.index}) died {exhausted.respawns + 1} times"
                     )
                     break
                 self._per_poll_maintenance()
                 if not self._stop.is_set() and admission is not FleetAdmission.UNREADABLE:
-                    degraded = any(getattr(slot.handle, "degraded", False) for slot in self._slots)
+                    degraded = any(slot.handle.degraded for slot in self._slots)
                     seams.publish_health(
                         "degraded" if degraded else admission.value, active=bool(self._slots) and not degraded
                     )
+        except BaseException as failure:
+            exit_reason = f"this worker is exiting non-zero: supervisor failed with {type(failure).__name__}"
+            raise
         finally:
-            exit_reason = self._exit_reason_for_exception(exit_reason)
             if exit_reason:
                 checkpoint_executor_threads(
                     self._slots + self._retiring,

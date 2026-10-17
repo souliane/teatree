@@ -52,6 +52,7 @@ from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
 from teatree.loops.enable_verdict import FleetAdmission
+from teatree.loops.executor_thread import spawn_executor_thread
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
     LOOPS_EXECUTOR_FLOOR,
@@ -615,11 +616,15 @@ def test_a_healthy_respawn_refunds_its_crash_budget_after_ten_minutes() -> None:
     )
     worker = LoopWorker(seams)
     worker._resize_pool(("loops",))
-    worker._respawn_dead_executors()
+    for expected in (1, 2, 3):
+        worker._respawn_dead_executors()
+        assert worker._slots[0].respawns == expected
+        handles[-1]._alive = False
+    handles[-1]._alive = True
 
     clock[0] = 599.0
     worker._respawn_dead_executors()
-    assert worker._slots[0].respawns == 1
+    assert worker._slots[0].respawns == 3
 
     clock[0] = 600.0
     worker._respawn_dead_executors()
@@ -737,6 +742,64 @@ def test_lock_streak_publishes_degraded_health_until_recovery() -> None:
     holder[0].run()
 
     assert beats == [("degraded", False), ("admits", True)]
+
+
+def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
+    clock = [0.0]
+    degraded_ready = threading.Event()
+    release = threading.Event()
+    beats: list[tuple[str, bool]] = []
+    holder: list[LoopWorker] = []
+
+    class LockedExecutor(_FakeExecutor):
+        calls = 0
+
+        def run(self) -> None:
+            self.calls += 1
+            if self.calls <= 2:
+                message = "database is locked"
+                raise OperationalError(message)
+            release.wait(timeout=10)
+
+    def backoff(_seconds: float) -> None:
+        if executor.calls == 1:
+            clock[0] = 601.0
+        else:
+            degraded_ready.set()
+            release.wait(timeout=10)
+
+    def supervisor_sleep(_seconds: float) -> None:
+        assert degraded_ready.wait(timeout=10)
+
+    polls = [0]
+
+    def read_admission() -> FleetAdmission:
+        polls[0] += 1
+        if polls[0] == 1:
+            return FleetAdmission.ADMITS
+        release.set()
+        holder[0].request_stop()
+        return FleetAdmission.NONE
+
+    executor = LockedExecutor("loops", "worker-0-loops")
+    seams = dataclasses.replace(
+        _liveness_seams(
+            script=[True],
+            holder=holder,
+            spawn=lambda _executor: spawn_executor_thread(executor, sleep=backoff, monotonic=lambda: clock[0]),
+            make_executor=lambda _queue, _id: executor,
+        ),
+        sleep=supervisor_sleep,
+        read_admission=read_admission,
+        publish_health=lambda admission, *, active: beats.append((admission, active)),
+    )
+    holder.append(LoopWorker(seams))
+    try:
+        holder[0].run()
+    finally:
+        release.set()
+
+    assert beats == [("degraded", False)]
 
 
 def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None:
@@ -870,6 +933,22 @@ class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
         outcomes: list[HarnessOutcome] = []
         checkpoint_ready = threading.Event()
         park_done = threading.Event()
+        crashes: list[BaseException] = []
+
+        class FailingLoopExecutor(_FakeExecutor):
+            def run(self) -> None:
+                message = "disk I/O error"
+                raise OperationalError(message)
+
+        class AgentThread(threading.Thread):
+            @property
+            def degraded(self) -> bool:
+                return False
+
+        def make_executor(queue: str, worker_id: str) -> _FakeExecutor:
+            if queue == "loops":
+                return FailingLoopExecutor(queue, worker_id)
+            return _FakeExecutor(queue, worker_id)
 
         def drive_agent() -> None:
             try:
@@ -884,8 +963,8 @@ class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
 
         def spawn(executor: _FakeExecutor) -> Handle:
             if executor.queue == "loops":
-                return _FakeHandle(alive=False)
-            thread = threading.Thread(target=drive_agent)
+                return spawn_executor_thread(executor)
+            thread = AgentThread(target=drive_agent)
             thread.start()
             return thread
 
@@ -895,8 +974,8 @@ class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
                 script=[True] * 10,
                 holder=holder,
                 spawn=spawn,
-                make_executor=_FakeExecutor,
-                max_respawns=2,
+                make_executor=make_executor,
+                max_respawns=3,
             ),
             read_agent_queues=lambda: ("default",),
             sleep=lambda _seconds: time.sleep(0.01),
@@ -907,6 +986,7 @@ class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
             mock.patch.object(managers_task_claim.process_exit, "reason", ""),
             mock.patch.object(managers_task_claim, "worker_is_quiescing", return_value=False),
             mock.patch.object(managers_task_claim, "generation_admission_refusal", return_value=""),
+            mock.patch.object(threading, "excepthook", lambda args: crashes.append(args.exc_value)),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
             future = pool.submit(holder[0].run)
@@ -923,8 +1003,10 @@ class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
         agent.refresh_from_db()
         assert agent.status == Task.Status.PENDING
         assert agent.claimed_by == ""
+        assert len(crashes) == 4
+        assert all(isinstance(error, OperationalError) and "disk I/O error" in str(error) for error in crashes)
         assert agent.attempts.latest("pk").error == (
-            "limit_parked: checkpoint: this worker is exiting non-zero: executor for queue loops (slot 0) died 2 times"
+            "limit_parked: checkpoint: this worker is exiting non-zero: executor for queue loops (slot 0) died 4 times"
         )
 
 
