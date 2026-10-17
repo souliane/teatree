@@ -47,8 +47,8 @@ from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_heartbeat import HEARTBEAT_INTERVAL_SECONDS as _HEARTBEAT_INTERVAL
 from teatree.agents.runner_heartbeat import (
-    HEARTBEAT_INTERVAL_SECONDS,
     HeartbeatRuntime,
     drain_reason_closing_connection,
     drive_with_heartbeat,
@@ -108,8 +108,6 @@ logger = logging.getLogger(__name__)
 # this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
 # ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
 __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
-
-_HEARTBEAT_INTERVAL = HEARTBEAT_INTERVAL_SECONDS
 
 # Lease duration the heartbeat renews to. The renewal runs as an asyncio task on
 # the SAME event loop the headless agent drives, so under CPU/event-loop

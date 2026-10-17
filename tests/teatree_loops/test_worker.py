@@ -65,6 +65,7 @@ from teatree.loops.worker import (
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
 from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness
 
 if TYPE_CHECKING:
@@ -118,6 +119,15 @@ class _FakeHandle:
 class _StuckHandle(_FakeHandle):
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
+
+
+class _RunningHandle(_FakeHandle):
+    def __init__(self, executor: Executor) -> None:
+        super().__init__()
+        self.executor = executor
+
+    def is_alive(self) -> bool:
+        return self.executor.running
 
 
 def _make_worker(*, script, sleep, **seam_overrides):
@@ -656,17 +666,9 @@ def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None
         msg = "supervisor failed"
         raise RuntimeError(msg)
 
-    class RunningHandle(_FakeHandle):
-        def __init__(self, executor: _FakeExecutor) -> None:
-            super().__init__()
-            self.executor = executor
-
-        def is_alive(self) -> bool:
-            return self.executor.running
-
     holder: list[LoopWorker] = []
     seams = dataclasses.replace(
-        _liveness_seams(script=[], holder=holder, spawn=RunningHandle, make_executor=_FakeExecutor),
+        _liveness_seams(script=[], holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
         read_admission=read_admission,
         begin_exit=reasons.append,
     )
@@ -676,6 +678,22 @@ def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None
         holder[0].run()
 
     assert reasons[0] == "this worker is exiting non-zero: supervisor failed with RuntimeError"
+
+
+def test_a_stop_request_never_announces_a_checkpoint() -> None:
+    reasons: list[str] = []
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(script=[True] * 5, holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
+        read_agent_queues=lambda: ("default",),
+        sleep=lambda _seconds: holder[0].request_stop(),
+        begin_exit=reasons.append,
+    )
+    holder.append(LoopWorker(seams))
+
+    holder[0].run()
+
+    assert reasons == []
 
 
 @contextlib.contextmanager
@@ -691,6 +709,10 @@ def _lock_first_six_transactions(
 
 
 class TestLockedExecutorKeepsAgentClaim(TransactionTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(file_backed_default_database())
+
     def test_six_locked_loop_attempts_keep_the_agent_claim_and_serve_work(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket)
@@ -702,14 +724,6 @@ class TestLockedExecutorKeepsAgentClaim(TransactionTestCase):
         holder: list[LoopWorker] = []
         enqueued = False
 
-        class AgentHandle(_FakeHandle):
-            def __init__(self, executor: Executor) -> None:
-                super().__init__()
-                self.executor = executor
-
-            def is_alive(self) -> bool:
-                return self.executor.running
-
         def make_executor(queue: str, worker_id: str) -> Executor:
             built.append(queue)
             return worker_mod._build_executor(queue, worker_id) if queue == "loops" else _FakeExecutor(queue, worker_id)
@@ -717,7 +731,7 @@ class TestLockedExecutorKeepsAgentClaim(TransactionTestCase):
         def spawn(executor: Executor) -> Handle:
             if isinstance(executor, db_worker.Worker):
                 return worker_mod._spawn_executor_thread(executor, sleep=lambda _seconds: time.sleep(0.001))
-            return AgentHandle(executor)
+            return _RunningHandle(executor)
 
         def supervisor_sleep(_seconds: float) -> None:
             nonlocal enqueued
