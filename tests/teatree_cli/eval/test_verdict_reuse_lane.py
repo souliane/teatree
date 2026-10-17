@@ -16,6 +16,7 @@ from teatree.eval.verdict_cache import VerdictLedger
 def test_recorded_pass_skips_runner_on_second_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Key tests cannot prove a cached dispatch makes zero runner calls.
     agent = tmp_path / "SKILL.md"
     agent.write_text("## Graded\nrule\n", encoding="utf-8")
     spec = EvalSpec(
