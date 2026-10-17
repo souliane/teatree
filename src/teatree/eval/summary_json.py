@@ -55,7 +55,12 @@ AnyResult = ScenarioResult | PassAtKResult
 class SummaryCacheData:
     keys: Mapping[str, str]
     cached: Sequence[CachedPass]
-    backend: str = ""
+    backend: str
+
+    def __post_init__(self) -> None:
+        if self.keys and not self.backend:
+            message = "verdict cache keys require a backend"
+            raise ValueError(message)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,7 +223,7 @@ def render_summary_json(
     the single-trial ``list[ScenarioResult]`` or the multi-trial
     ``Sequence[PassAtKResult]``.
     """
-    cache = cache or SummaryCacheData({}, ())
+    cache = cache or SummaryCacheData({}, (), "none")
     rows = [_row(result) for result in results]
     scenario_rows = [row.as_json(escalation=(escalations or {}).get(row.name)) for row in rows]
     for result, row in zip(results, scenario_rows, strict=True):
@@ -226,6 +231,7 @@ def render_summary_json(
             row["content_key"] = key
             row["cache_eligible"] = (
                 isinstance(result, ScenarioResult)
+                and row["outcome"] == "PASS"
                 and not result.skipped
                 and not result.run.is_error
                 and result.run.fell_back is not True
@@ -243,7 +249,7 @@ def render_summary_json(
     }
     payload = {
         "generated_at": generated_at,
-        "model": _model_of(results),
+        "model": _model_of(results) if results else (cache.cached[0].model if cache.cached else "unknown"),
         "head_sha": head_sha,
         "trial_count": 1 if not results or isinstance(results[0], ScenarioResult) else results[0].trials,
         "totals": totals,

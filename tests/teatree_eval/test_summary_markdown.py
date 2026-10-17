@@ -120,11 +120,14 @@ class TestSingleTrialSummary:
 
 
 def test_cached_row_uses_trials_and_cost_columns_for_their_meanings() -> None:
-    cached = CachedPass("one", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head")
+    cached = CachedPass(
+        "one", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head", "claude-sonnet-4-6"
+    )
     markdown = render_summary_markdown([], cached=[cached])
     assert "| one | clean_room | cached pass | cached | — |" in markdown
     assert "key `" + "a" * 64 + "`" in markdown
     assert "https://example.test/run" in markdown
+    assert "model `claude-sonnet-4-6`" in markdown
 
 
 class TestMultiTrialSummary:

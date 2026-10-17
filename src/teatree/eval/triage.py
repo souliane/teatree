@@ -51,6 +51,12 @@ class ScenarioRecord(TypedDict, total=False):
     cache_eligible: bool
 
 
+class EvalSummaryRecord(TypedDict, total=False):
+    head_sha: str
+    trial_count: int
+    scenarios: list[ScenarioRecord]
+
+
 class TriageClass(StrEnum):
     """The six mutually-exclusive classes a red (or skipped) scenario falls into.
 

@@ -53,10 +53,10 @@ from teatree.agents.compaction_guard import with_compaction_off
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.agent_prompt import (
     SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
+    resolve_agent_path,
     scenario_skill_catalog_roots,
     scenario_system_prompt,
 )
-from teatree.eval.agent_prompt import resolve_agent_path as _resolve_agent_path
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -135,7 +135,6 @@ EMPTY_SETTINGS = '{"hooks":{}}'
 #: own, so loading it cannot resurrect a skill-suggestion
 #: hook the ``settings=EMPTY_SETTINGS`` isolation already suppresses — the exact
 #: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
-_SKILL_CATALOG_FIXTURE_RELATIVE_PATH = SKILL_CATALOG_FIXTURE_RELATIVE_PATH
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
@@ -226,7 +225,7 @@ class CleanRoomConfig:
     #: their untouched defaults, so a scenario declaring none is byte-identical
     #: to before this field existed — this is a WIDENING lever, never a
     #: narrowing one. Non-empty registers the eval-only fixture plugin
-    #: (:data:`_SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
+    #: (:data:`SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
     #: genuinely discoverable, then filters the listing to exactly this set.
     skills: tuple[str, ...] = ()
     #: Scenario-owned plugin roots that publish one of ``skills``. The core
@@ -251,7 +250,7 @@ def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
     reaches this — none of the ``available_skills``-declaring scenarios expose
     the ``Agent`` spawn tool).
     """
-    path = teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
+    path = teatree_root().joinpath(*SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     return {"type": "local", "path": str(path)}
 
 
@@ -571,7 +570,7 @@ class ApiInProcessRunner:
                 bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs, source_path=spec.source_path))
                 env = prepend_to_path(env, bindir)
             if spec.fixture:
-                skill_path = _resolve_agent_path(spec.agent_path, spec.source_path.parent)
+                skill_path = resolve_agent_path(spec.agent_path, spec.source_path.parent)
                 repo = stack.enter_context(provision_fixture(spec.fixture, skill_path=skill_path))
                 yield repo, str(repo), env
                 return

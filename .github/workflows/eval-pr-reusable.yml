@@ -276,6 +276,7 @@ jobs:
           mkdir -p .github/actions/eval-verdict-cache
           cp teatree-upstream/.github/actions/eval-verdict-cache/action.yml .github/actions/eval-verdict-cache/action.yml
       - name: Restore latest main eval verdicts
+        continue-on-error: true
         if: steps.verdict-cache-availability.outputs.enabled == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -283,6 +284,7 @@ jobs:
           key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: eval-verdicts-main-
       - name: Keep main verdicts for merge
+        continue-on-error: true
         if: steps.verdict-cache-availability.outputs.enabled == 'true'
         run: |
           if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
@@ -290,6 +292,7 @@ jobs:
             rm "$RUNNER_TEMP/eval-verdicts.json"
           fi
       - name: Restore PR eval verdicts
+        continue-on-error: true
         if: steps.verdict-cache-availability.outputs.enabled == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -297,6 +300,7 @@ jobs:
           key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
       - name: Combine PR and main verdicts
+        continue-on-error: true
         if: steps.verdict-cache-availability.outputs.enabled == 'true'
         run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
@@ -390,6 +394,7 @@ jobs:
             fi
             exit "$rc"
       - name: Record and save eval verdicts
+        continue-on-error: true
         if: success() && steps.verdict-cache-availability.outputs.enabled == 'true'
         uses: ./.github/actions/eval-verdict-cache
         with:

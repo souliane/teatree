@@ -230,24 +230,28 @@ jobs:
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py
       - name: Restore latest main eval verdicts
+        continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/eval-verdicts.json
           key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: eval-verdicts-main-
       - name: Keep main verdicts for merge
+        continue-on-error: true
         run: |
           if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
             cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
             rm "$RUNNER_TEMP/eval-verdicts.json"
           fi
       - name: Restore PR eval verdicts
+        continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/eval-verdicts.json
           key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
       - name: Combine PR and main verdicts
+        continue-on-error: true
         run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
       # same cheapest-passing per-scenario tier the weekly run pins
@@ -335,6 +339,7 @@ jobs:
             fi
             exit "$rc"
       - name: Record and save eval verdicts
+        continue-on-error: true
         if: success()
         uses: ./.github/actions/eval-verdict-cache
         with:

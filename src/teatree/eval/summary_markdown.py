@@ -145,7 +145,7 @@ def render_summary_markdown(
     rows.extend(_SummaryRow(item.name, item.lane, "cached pass", "cached", "—") for item in cached)
     passed, failed, skipped, incomplete = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
-    model = _model_of(results)
+    model = _model_of(results) if results else (cached[0].model if cached else "unknown")
     unknown = _unknown_cost_runs(results)
     cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (

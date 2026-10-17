@@ -357,6 +357,22 @@ class TestTheAgentSeesOnlyAFreshStagingDir:
 
 
 class TestVerdictCacheStaging:
+    def test_exit_75_copies_written_reports(self, tmp_path: Path) -> None:
+        reports = [tmp_path / name for name in ("transcript.html", "summary.md", "summary.json")]
+
+        def exhausted(_argv: list[str], *, artifacts_dir: Path) -> int:
+            for report in reports:
+                (artifacts_dir / report.name).write_text(report.name, encoding="utf-8")
+            return 75
+
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=exhausted),
+            pytest.raises(typer.Exit) as exc,
+        ):
+            _args(trials=1, transcript_html=reports[0], summary_md=reports[1], summary_json=reports[2]).dispatch()
+        assert exc.value.exit_code == 75
+        assert [report.read_text(encoding="utf-8") for report in reports] == [report.name for report in reports]
+
     def test_aborted_harness_does_not_copy_agent_planted_summary(self, tmp_path: Path) -> None:
         summary = tmp_path / "summary.json"
 

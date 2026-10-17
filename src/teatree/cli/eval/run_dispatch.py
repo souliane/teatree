@@ -18,7 +18,7 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, with_model
-from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
+from teatree.cli.eval.single_trial import SingleTrialGates, VerdictReuse, run_single_trial
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import DEFAULT_JUDGE_BUDGET, EvalSpec
 from teatree.eval.presets import Preset, resolve_preset_model
@@ -180,9 +180,7 @@ def dispatch_resolved_run(
             summary_json=run.summary_json,
         )
         return
-    cached = []
-    cached_specs: list[EvalSpec] = []
-    content_keys: dict[str, str] = {}
+    reuse = VerdictReuse([], [], {})
     if run.verdict_cache is not None:
         ledger = VerdictLedger.load(run.verdict_cache)
         config = VerdictRunConfig(
@@ -196,16 +194,14 @@ def dispatch_resolved_run(
         selected_specs = specs
         specs, cached, content_keys = partition(specs, ledger, config)
         cached_names = {item.name for item in cached}
-        cached_specs = [spec for spec in selected_specs if spec.name in cached_names]
+        reuse = VerdictReuse(cached, [spec for spec in selected_specs if spec.name in cached_names], content_keys)
         typer.echo(
             f"verdict cache: {len(cached)} cached, {len(specs)} to run",
             err=run.output_format in {"json", "html"},
         )
     run_single_trial(
         specs,
-        cached=cached,
-        cached_specs=cached_specs,
-        content_keys=content_keys,
+        reuse=reuse,
         backend=run.backend,
         max_turns=run.max_turns,
         transcript_dir=run.transcript_dir,

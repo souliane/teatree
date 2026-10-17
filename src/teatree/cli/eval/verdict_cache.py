@@ -2,11 +2,14 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import typer
 
 from teatree.eval.verdict_cache import VerdictLedger
+
+if TYPE_CHECKING:
+    from teatree.eval.triage import EvalSummaryRecord
 
 verdict_cache_app = typer.Typer(help="Manage content-keyed eval pass verdicts.")
 
@@ -29,7 +32,7 @@ def record(
     summaries: list[Path] | None = typer.Argument(None, help="Single-trial summary JSON files or directories."),
     run_url: str = typer.Option(..., "--run-url", help="Source run URL shown beside reused verdicts."),
 ) -> None:
-    payloads: list[dict[str, Any]] = []
+    payloads: list[EvalSummaryRecord] = []
     for path in summaries or []:
         paths = sorted(path.glob("eval-*.json")) if path.is_dir() else [path]
         for summary in paths:

@@ -16,6 +16,7 @@ class CachedPass:
     run_url: str
     recorded_at: str
     head_sha: str
+    model: str = ""
 
     def as_json(self) -> dict[str, str]:
         return dataclasses.asdict(self)

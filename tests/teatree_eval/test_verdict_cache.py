@@ -20,6 +20,7 @@ from teatree.eval.models import (
     ToolCallCountMatcher,
 )
 from teatree.eval.verdict_cache import VerdictLedger, VerdictRunConfig, partition, verdict_key
+from tests._git_repo import make_git_repo, run_git
 
 
 def _spec(tmp_path: Path) -> EvalSpec:
@@ -68,6 +69,13 @@ def test_key_tracks_overlay_local_stub(tmp_path: Path) -> None:
     original = verdict_key(spec, config)
     stub.write_text("second")
     assert verdict_key(spec, config) != original
+
+
+@pytest.mark.parametrize("name", ["t3@on_behalf_forbidden", "glab@linked_sources"])
+def test_built_in_profile_stub_is_keyable(tmp_path: Path, name: str) -> None:
+    spec = dataclasses.replace(_spec(tmp_path), cli_stubs=(name,))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    assert len(verdict_key(spec, config)) == 64
 
 
 def test_key_tracks_agent_skill_dir_references(tmp_path: Path) -> None:
@@ -228,8 +236,20 @@ def test_ledger_records_only_clean_passes_and_expires(tmp_path: Path) -> None:
                         "outcome": "PASS",
                         "cache_eligible": True,
                     },
-                    {"name": "flaky", "content_key": "b" * 64, "outcome": "FLAKY"},
-                    {"name": "fail", "content_key": "c" * 64, "outcome": "BEHAVIOR_FAIL"},
+                    {
+                        "name": "flaky",
+                        "lane": "clean_room",
+                        "content_key": "b" * 64,
+                        "outcome": "FLAKY",
+                        "cache_eligible": True,
+                    },
+                    {
+                        "name": "fail",
+                        "lane": "clean_room",
+                        "content_key": "c" * 64,
+                        "outcome": "BEHAVIOR_FAIL",
+                        "cache_eligible": True,
+                    },
                     {"name": "keyless", "outcome": "PASS"},
                     {
                         "name": "unmetered",
@@ -249,6 +269,15 @@ def test_ledger_records_only_clean_passes_and_expires(tmp_path: Path) -> None:
     assert VerdictLedger.load(path).lookup("a" * 64, now=now + timedelta(days=29)) is not None
     assert VerdictLedger.load(path).lookup("a" * 64, now=now + timedelta(days=31)) is None
     assert VerdictLedger.load(path).lookup("a" * 64, now=now - timedelta(seconds=1)) is None
+
+
+def test_ledger_ignores_incomplete_identity_even_when_marked_eligible(tmp_path: Path) -> None:
+    ledger = VerdictLedger.load(tmp_path / "ledger.json")
+    ledger.record(
+        [{"trial_count": 1, "scenarios": [{"content_key": "a" * 64, "outcome": "PASS", "cache_eligible": True}]}],
+        run_url="local",
+    )
+    assert ledger.entries == {}
 
 
 def test_ledger_write_redacts_metadata_before_it_reaches_disk(tmp_path: Path) -> None:
@@ -330,6 +359,79 @@ def test_key_tracks_runner_discovered_overlay_skill(tmp_path: Path) -> None:
     config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
     before = verdict_key(spec, config)
     skill.write_text("second")
+    assert verdict_key(spec, config) != before
+
+
+@pytest.mark.parametrize("relative", ["agents/helper.md", "hooks/on-start.sh", ".mcp.json"])
+def test_key_tracks_whole_overlay_plugin(tmp_path: Path, relative: str) -> None:
+    plugin = tmp_path / "overlay"
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    skill = plugin / "skills" / "review" / "SKILL.md"
+    manifest.parent.mkdir(parents=True)
+    skill.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"overlay"}')
+    skill.write_text("review")
+    source = plugin / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("first")
+    spec = dataclasses.replace(_spec(plugin), available_skills=("review",))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    before = verdict_key(spec, config)
+    source.write_text("second")
+    assert verdict_key(spec, config) != before
+
+
+def test_tree_key_tracks_symlink_target_and_executable_mode(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    root.mkdir()
+    target = tmp_path / "script.sh"
+    target.write_text("first")
+    (root / "script.sh").symlink_to(target)
+    before = verdict_cache._tree_digest(root)
+    target.write_text("second")
+    changed = verdict_cache._tree_digest(root)
+    assert changed != before
+    target.chmod(0o755)
+    assert verdict_cache._tree_digest(root) != changed
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("T3_EVAL_MAX_TURNS", "12"),
+        ("T3_EVAL_WATCHDOG_SECONDS", "1200"),
+        ("T3_EVAL_JUDGE_MAX_BUDGET_USD", "3"),
+    ],
+)
+def test_key_tracks_effective_env_caps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    spec = _spec(tmp_path)
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=True)
+    monkeypatch.delenv(variable, raising=False)
+    before = verdict_key(spec, config)
+    monkeypatch.setenv(variable, value)
+    assert verdict_key(spec, config) != before
+
+
+def test_subagent_key_tracks_the_entire_cloned_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src" / "teatree").mkdir(parents=True)
+    for name in ("skills", "agents", ".claude-plugin"):
+        (repo / name).mkdir()
+    source = repo / "outside-harness.txt"
+    source.write_text("first")
+    make_git_repo(repo, initial_commit=False)
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-qm", "first")
+    monkeypatch.setattr(verdict_cache, "teatree_root", lambda: repo)
+    monkeypatch.setattr(verdict_cache, "resolve_teatree_repo_root", lambda: repo)
+    spec = dataclasses.replace(_spec(tmp_path), tools=("Agent",))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    before = verdict_key(spec, config)
+    source.write_text("second")
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-qm", "second")
     assert verdict_key(spec, config) != before
 
 
@@ -441,6 +543,7 @@ def test_partition_reruns_only_the_changed_graded_section(tmp_path: Path) -> Non
     fresh, cached, _keys = partition([spec_a, spec_b], ledger, config)
     assert [spec.name for spec in fresh] == ["one"]
     assert [hit.name for hit in cached] == ["two"]
+    assert cached[0].model == spec_b.model
 
 
 def test_partition_hashes_shared_code_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -453,6 +556,28 @@ def test_partition_hashes_shared_code_once(tmp_path: Path, monkeypatch: pytest.M
     def counted(root: Path) -> str:
         nonlocal calls
         if root == code_root:
+            calls += 1
+        return original(root)
+
+    monkeypatch.setattr(verdict_cache, "_tree_digest", counted)
+    partition([spec, dataclasses.replace(spec, name="two")], VerdictLedger.load(tmp_path / "ledger.json"), config)
+    assert calls == 1
+
+
+def test_partition_hashes_shared_overlay_plugin_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = tmp_path / "overlay"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text('{"name":"overlay"}')
+    (plugin / "skills" / "review").mkdir(parents=True)
+    (plugin / "skills" / "review" / "SKILL.md").write_text("review")
+    spec = dataclasses.replace(_spec(plugin), available_skills=("review",))
+    config = VerdictRunConfig(backend="api", effort="high", max_turns=None, max_budget_usd=2, judge=False)
+    original = verdict_cache._tree_digest
+    calls = 0
+
+    def counted(root: Path) -> str:
+        nonlocal calls
+        if root == plugin:
             calls += 1
         return original(root)
 

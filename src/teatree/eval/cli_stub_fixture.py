@@ -258,7 +258,7 @@ KNOWN_CLI_STUBS: dict[str, str] = {
 _LOCAL_PROFILE_RE = re.compile(r"[a-z][a-z0-9_-]*@[a-z][a-z0-9_-]*\Z")
 
 
-def _local_stub_path(name: str, source_path: Path | None) -> Path | None:
+def _local_stub_path(name: str, source_path: Path | None, *, include_missing: bool = False) -> Path | None:
     """Return an overlay-owned profile beside *source_path*, if one exists.
 
     Core owns the built-in generic profiles above. An overlay may add a scenario-
@@ -270,7 +270,7 @@ def _local_stub_path(name: str, source_path: Path | None) -> Path | None:
     if source_path is None or not _LOCAL_PROFILE_RE.fullmatch(name):
         return None
     candidate = source_path.parent / "cli_stubs" / f"{name}.sh"
-    return candidate if candidate.is_file() else None
+    return candidate if include_missing or candidate.is_file() else None
 
 
 def is_known_cli_stub(name: str, *, source_path: Path | None = None) -> bool:

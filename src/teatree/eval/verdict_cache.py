@@ -6,9 +6,10 @@ import importlib.metadata
 import json
 import logging
 import re
+import stat
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from teatree.eval.agent_prompt import (
     SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
@@ -17,9 +18,15 @@ from teatree.eval.agent_prompt import (
     scenario_system_prompt,
 )
 from teatree.eval.artifact_redaction import write_artifact
+from teatree.eval.cli_stub_fixture import _stub_body
+from teatree.eval.ephemeral_checkout import resolve_teatree_repo_root
+from teatree.eval.judge import resolve_judge_budget_usd
 from teatree.eval.models import DEFAULT_JUDGE_BUDGET, CachedPass, EvalSpec
 from teatree.eval.production_hooks import teatree_root
+from teatree.eval.resource_caps import resolve_max_turns_override, resolve_watchdog_seconds
 from teatree.eval.toolset import scenario_exposes_subagent_spawn
+from teatree.eval.triage import EvalSummaryRecord
+from teatree.utils.git_run import git_env_without_overrides, run_with_status
 
 VERDICT_TTL = timedelta(days=30)
 _LOG = logging.getLogger(__name__)
@@ -47,18 +54,36 @@ class SharedVerdictInputs:
     hooks: str
     plugin: list[str]
     packages: dict[str, str]
+    checkout_tree: str = ""
+    overlay_plugins: dict[Path, str] = dataclasses.field(default_factory=dict)
 
 
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     if not root.is_dir():
         raise FileNotFoundError(root)
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.is_symlink() and "__pycache__" not in path.parts and path.suffix != ".pyc":
-            digest.update(path.relative_to(root).as_posix().encode())
-            digest.update(b"\0")
+
+    def visit(path: Path, ancestors: frozenset[tuple[int, int]]) -> None:
+        metadata = path.stat()
+        identity = (metadata.st_dev, metadata.st_ino)
+        if path.is_dir():
+            if identity in ancestors:
+                message = f"symlink cycle in {root}"
+                raise ValueError(message)
+            digest.update(f"d:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}\0".encode())
+            for child in sorted(path.iterdir()):
+                if child.name in {".git", ".venv", "__pycache__"} or child.suffix == ".pyc":
+                    continue
+                visit(child, ancestors | {identity})
+        elif path.is_file():
+            digest.update(f"f:{path.relative_to(root).as_posix()}:{stat.S_IMODE(metadata.st_mode)}\0".encode())
             digest.update(path.read_bytes())
             digest.update(b"\0")
+
+    for child in sorted(root.iterdir()):
+        if child.name in {".git", ".venv", "__pycache__"} or child.suffix == ".pyc":
+            continue
+        visit(child, frozenset({(root.stat().st_dev, root.stat().st_ino)}))
     return digest.hexdigest()
 
 
@@ -66,16 +91,14 @@ def _optional_tree_digest(root: Path) -> str:
     return _tree_digest(root) if root.is_dir() else "missing"
 
 
-def _fixture_digest(spec: EvalSpec) -> list[str]:
+def _fixture_digest(spec: EvalSpec, overlay_plugins: Mapping[Path, str]) -> list[str]:
     if not spec.available_skills:
         return []
     core_root = teatree_root().resolve()
     catalog = core_root.joinpath(*SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     digests = [_optional_tree_digest(catalog / "skills" / name) for name in spec.available_skills]
     digests.append(_optional_tree_digest(catalog / ".claude-plugin"))
-    for root in scenario_skill_catalog_roots(spec):
-        digests.append(_tree_digest(root / ".claude-plugin"))
-        digests.extend(_optional_tree_digest(root / "skills" / name) for name in spec.available_skills)
+    digests.extend(overlay_plugins.get(root) or _tree_digest(root) for root in scenario_skill_catalog_roots(spec))
     return digests
 
 
@@ -91,11 +114,27 @@ def _typed_data(value: object) -> object:
 def _shared_inputs(specs: list[EvalSpec], config: VerdictRunConfig) -> SharedVerdictInputs:
     root = teatree_root()
     needs_plugin = any(spec.production_hooks or scenario_exposes_subagent_spawn(spec) for spec in specs)
+    overlay_roots = {plugin for spec in specs for plugin in scenario_skill_catalog_roots(spec)}
+    checkout_tree = ""
+    if any(scenario_exposes_subagent_spawn(spec) for spec in specs):
+        repo_root = resolve_teatree_repo_root()
+        if repo_root is None:
+            message = "sub-agent checkout root unavailable"
+            raise FileNotFoundError(message)
+        revision = run_with_status(
+            repo=str(repo_root), args=["rev-parse", "HEAD^{tree}"], env=git_env_without_overrides(), timeout=30
+        )
+        if revision.returncode != 0 or not revision.stdout.strip():
+            message = "cannot read sub-agent checkout tree"
+            raise OSError(message)
+        checkout_tree = revision.stdout.strip()
     return SharedVerdictInputs(
         harness=_tree_digest(root / "src" / "teatree"),
         hooks=_tree_digest(root / "hooks") if any(spec.production_hooks for spec in specs) else "",
         plugin=([_tree_digest(root / part) for part in ("skills", "agents", ".claude-plugin")] if needs_plugin else []),
         packages={package: importlib.metadata.version(package) for package in _BACKEND_PACKAGES[config.backend]},
+        checkout_tree=checkout_tree,
+        overlay_plugins={plugin: _tree_digest(plugin) for plugin in sorted(overlay_roots)},
     )
 
 
@@ -108,11 +147,9 @@ def verdict_key(spec: EvalSpec, config: VerdictRunConfig, *, shared_inputs: Shar
         "schema": _SCHEMA,
         "spec": spec_data,
         "system_prompt": scenario_system_prompt(spec),
-        "fixtures": _fixture_digest(spec),
-        "local_stubs": {
-            name: hashlib.sha256((spec.source_path.parent / "cli_stubs" / f"{name}.sh").read_bytes()).hexdigest()
-            for name in spec.cli_stubs
-            if re.fullmatch(r"[a-z][a-z0-9_-]*@[a-z][a-z0-9_-]*", name)
+        "fixtures": _fixture_digest(spec, shared.overlay_plugins),
+        "cli_stubs": {
+            name: hashlib.sha256(_stub_body(name, spec.source_path).encode()).hexdigest() for name in spec.cli_stubs
         },
         "agent_skill_dir": (
             _tree_digest(resolve_agent_path(spec.agent_path, spec.source_path.parent).parent)
@@ -122,10 +159,16 @@ def verdict_key(spec: EvalSpec, config: VerdictRunConfig, *, shared_inputs: Shar
         "harness": shared.harness,
         "hooks": shared.hooks if spec.production_hooks else "",
         "plugin": shared.plugin if spec.production_hooks or scenario_exposes_subagent_spawn(spec) else [],
+        "checkout_tree": shared.checkout_tree if scenario_exposes_subagent_spawn(spec) else "",
         "packages": shared.packages,
-        "run": dataclasses.asdict(config),
+        "run": {
+            **dataclasses.asdict(config),
+            "effective_max_turns": resolve_max_turns_override(config.max_turns),
+            "watchdog_seconds": spec.watchdog_seconds or resolve_watchdog_seconds(),
+            "judge_budget_usd": resolve_judge_budget_usd() if config.judge else None,
+        },
     }
-    return hashlib.sha256(json.dumps(inputs, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 @dataclasses.dataclass
@@ -167,7 +210,7 @@ class VerdictLedger:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def record(self, summaries: list[dict[str, Any]], *, run_url: str, now: datetime | None = None) -> None:
+    def record(self, summaries: list[EvalSummaryRecord], *, run_url: str, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
         self.entries = {key: value for key, value in self.entries.items() if self.lookup(key, now=now)}
         for summary in summaries:
@@ -175,19 +218,22 @@ class VerdictLedger:
                 continue
             for row in summary.get("scenarios", []):
                 key = row.get("content_key")
-                if (
-                    row.get("outcome") == "PASS"
-                    and row.get("cache_eligible") is True
-                    and isinstance(key, str)
-                    and re.fullmatch(r"[0-9a-f]{64}", key)
-                ):
-                    self.entries[key] = {
-                        "name": row["name"],
-                        "lane": row["lane"],
-                        "run_url": run_url,
-                        "recorded_at": now.isoformat(),
-                        "head_sha": summary.get("head_sha", ""),
-                    }
+                name = row.get("name")
+                lane = row.get("lane")
+                if row.get("outcome") != "PASS" or row.get("cache_eligible") is not True:
+                    continue
+                if not isinstance(name, str) or not name or not isinstance(lane, str) or not lane:
+                    continue
+                if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+                    continue
+                head_sha = summary.get("head_sha")
+                self.entries[key] = {
+                    "name": name,
+                    "lane": lane,
+                    "run_url": run_url,
+                    "recorded_at": now.isoformat(),
+                    "head_sha": head_sha if isinstance(head_sha, str) else "",
+                }
 
     def merge(self, other: "VerdictLedger", *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -215,13 +261,19 @@ def partition(
     keys: dict[str, str] = {}
     try:
         shared = _shared_inputs(specs, config)
-    except (OSError, ValueError, KeyError, importlib.metadata.PackageNotFoundError) as exc:
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        importlib.metadata.PackageNotFoundError,
+    ) as exc:
         _LOG.warning("verdict cache: cannot key partition: %s; running fresh", exc)
         return list(specs), [], {}
     for spec in specs:
         try:
             key = verdict_key(spec, config, shared_inputs=shared)
-        except (OSError, ValueError, KeyError, importlib.metadata.PackageNotFoundError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, importlib.metadata.PackageNotFoundError) as exc:
             _LOG.warning("verdict cache: cannot key %s: %s; running fresh", spec.name, exc)
             fresh.append(spec)
             continue
@@ -230,5 +282,5 @@ def partition(
         if hit is None or hit.name != spec.name or hit.lane != spec.lane:
             fresh.append(spec)
         else:
-            cached.append(hit)
+            cached.append(dataclasses.replace(hit, model=spec.model))
     return fresh, cached, keys

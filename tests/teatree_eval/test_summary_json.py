@@ -18,6 +18,7 @@ import pytest
 from teatree.eval.models import (
     HEADLESS_SURFACE,
     INTERACTIVE_SURFACE,
+    CachedPass,
     EvalRun,
     EvalSpec,
     EvalToolCall,
@@ -30,6 +31,36 @@ from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.eval.summary_json import SummaryCacheData, render_summary_json, write_summary_json
 
 SENTINEL = "SECRET_TRANSCRIPT_SENTINEL_dQw4w9"
+
+
+def test_all_cached_summary_names_model() -> None:
+    cached = CachedPass(
+        "alpha", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head", "claude-sonnet-4-6"
+    )
+    payload = json.loads(
+        render_summary_json([], head_sha="head", generated_at="now", cache=SummaryCacheData({}, [cached], "api"))
+    )
+    assert payload["model"] == "claude-sonnet-4-6"
+
+
+def test_cache_data_with_keys_requires_backend() -> None:
+    with pytest.raises(ValueError, match="backend"):
+        SummaryCacheData({"alpha": "a" * 64}, [], "")
+
+
+def test_failing_result_is_never_cache_eligible() -> None:
+    result = _behavioral_red()
+    payload = json.loads(
+        render_summary_json(
+            [result],
+            head_sha="head",
+            generated_at="now",
+            cache=SummaryCacheData({result.spec.name: "a" * 64}, [], "anthropic_api"),
+        )
+    )
+    assert payload["scenarios"][0]["cache_eligible"] is False
+
+
 _MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git worktree")
 _HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 

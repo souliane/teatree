@@ -74,6 +74,46 @@ def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
     assert 'mkdir -p "$SUMMARY_DIRECTORY"' in _CACHE_ACTION.read_text(encoding="utf-8")
 
 
+def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:
+    action = _CACHE_ACTION.read_text(encoding="utf-8")
+    assert action.count("continue-on-error: true") == 5
+    for workflow, steps in (
+        (
+            _PR,
+            (
+                "Restore latest main eval verdicts",
+                "Keep main verdicts for merge",
+                "Restore PR eval verdicts",
+                "Combine PR and main verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+        (
+            _PR_REUSABLE,
+            (
+                "Restore latest main eval verdicts",
+                "Keep main verdicts for merge",
+                "Restore PR eval verdicts",
+                "Combine PR and main verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+        (_NIGHTLY, ("Restore passing eval verdicts", "Record and save eval verdicts")),
+        (
+            _WEEKLY,
+            (
+                "Restore passing eval verdicts for scheduled single-trial legs",
+                "Restore main eval verdicts",
+                "Record and save eval verdicts",
+            ),
+        ),
+    ):
+        text = workflow.read_text(encoding="utf-8")
+        for name in steps:
+            section = text.split(f"- name: {name}", 1)[1].split("\n      -", 1)[0]
+            assert "continue-on-error: true" in section, (workflow.name, name)
+
+
 def test_only_successful_eval_jobs_record_agent_writable_summaries() -> None:
     for workflow in (_PR, _PR_REUSABLE, _NIGHTLY):
         text = workflow.read_text(encoding="utf-8")

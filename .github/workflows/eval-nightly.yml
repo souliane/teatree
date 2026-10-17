@@ -193,6 +193,7 @@ jobs:
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py
       - name: Restore passing eval verdicts
+        continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/eval-verdicts.json
@@ -232,6 +233,7 @@ jobs:
               --summary-json "$RUNNER_TEMP/eval-verdict-rows-nightly.json" \
               --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee
       - name: Record and save eval verdicts
+        continue-on-error: true
         if: success() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/eval-verdict-cache
         with:

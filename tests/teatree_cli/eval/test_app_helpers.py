@@ -5,6 +5,7 @@ The fresh-run-only validator gates ``--trials`` / ``--models`` on the metered
 the metered/api lane explicitly rather than silently grading a stored transcript.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.eval.app_helpers import (
     BenchmarkSelection,
+    RunReportPaths,
     reject_multi_trial_with_model_override,
     require_api_backend_for_fresh_run,
     require_metering_backend_for_cost_bounds,
@@ -27,6 +29,17 @@ from teatree.eval.backends import (
     TRANSCRIPT_BACKEND,
     UNMETERED_FRESH_BACKENDS,
 )
+from teatree.eval.models import CachedPass
+
+
+def test_transcript_report_includes_cached_passes(tmp_path: Path) -> None:
+    report = tmp_path / "transcript.html"
+    cached = CachedPass("alpha", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head")
+    RunReportPaths(transcript_html=report).write_single_trial([], cached=[cached])
+    html = report.read_text(encoding="utf-8")
+    assert "Cached passes" in html
+    assert "alpha" in html
+    assert "https://example.test/run" in html
 
 
 class TestRequireApiBackendForFreshRun:

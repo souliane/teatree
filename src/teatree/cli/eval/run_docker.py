@@ -6,11 +6,12 @@ host; the container is ephemeral (``--rm``), so the durable-history flags
 (``--baseline`` / ``--gate-regressions``) are unsupported and the in-container run
 is forced ``--no-persist``.
 
-The container — and the agent under test running inside it — gets a fresh, empty
+The container — and the agent under test running inside it — gets an isolated
 staging directory as its only writable mount, never the reports' own directory:
 on CI that is ``$RUNNER_TEMP``, which also holds the uploaded run log and the
 checkout's credentials. Only the reports the run asked for leave the staging
 directory, each redacted on the way out; anything else written there is discarded.
+When verdict reuse is requested, a sanitized copy of the ledger is staged first.
 """
 
 import dataclasses
@@ -181,7 +182,7 @@ class RunDockerArgs:
                     self.verdict_cache.read_text(encoding="utf-8", errors="replace"),
                 )
             code = self._run_in_image(Path(staging))
-            if code in {0, 1}:
+            if code in {0, 1, 75}:
                 self._copy_reports_out(Path(staging))
         raise typer.Exit(code=code)
 

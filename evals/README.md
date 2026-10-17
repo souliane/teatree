@@ -37,13 +37,19 @@ dataclass and the matchers operate on plain captured tool calls.
 
 A fresh single-trial run can read a JSON ledger with `--verdict-cache <path>`.
 The content key covers the resolved scenario, graded skill prompt, declared fixture
-skills, CLI and harness code, backend package version, and run settings. Clean
+skills, CLI and harness code, backend package version, and effective run settings.
+The harness hash covers all of `src/teatree`, so an unrelated source change can
+invalidate every verdict. A scenario that can spawn a sub-agent also keys the
+committed tree of the full checkout it clones. Overlay scenarios key the whole
+local SDK plugin root, including hooks, agents and MCP configuration. File modes
+and symlink targets are included. Clean
 passes younger than 30 days are reused; failures, flaky recoveries, skipped,
 unmetered `api` runs, and multi-trial verdicts are never stored. Passes from
 `anthropic_api` and `pydantic_ai` can be stored without a cost figure. `--summary-json` lists
 newly run scenarios in `scenarios[]`, reused passes in `cached[]`, and their count
-in `totals.cached`. The Markdown dashboard labels cached passes with their key
-and source run. To update a ledger from sanitized single-trial summaries, run
+in `totals.cached`. The Markdown dashboard and its weekly merge label cached
+passes with their key and source run. Cache bookkeeping is best effort in CI;
+the eval verdict still gates the job. To update a ledger from sanitized single-trial summaries, run
 `t3 eval verdict-cache record <ledger> <summary.json> --run-url <run-url>`.
 To combine passing entries from multiple ledgers, run
 `t3 eval verdict-cache merge <ledger> <source.json> [source.json ...]`.

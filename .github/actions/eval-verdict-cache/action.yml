@@ -19,6 +19,7 @@ runs:
   using: composite
   steps:
     - name: Record clean eval verdicts
+      continue-on-error: true
       shell: bash
       env:
         RUN_URL: ${{ inputs.run-url }}
@@ -33,12 +34,14 @@ runs:
         fi
         uv run t3 eval verdict-cache record "$RUNNER_TEMP/eval-verdicts.json" "${summaries[@]}" --run-url "$RUN_URL"
     - name: Keep recorded verdicts
+      continue-on-error: true
       if: inputs.refresh-main == 'true'
       shell: bash
       run: |
         cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-current.json"
         rm "$RUNNER_TEMP/eval-verdicts.json"
     - name: Refresh latest main eval verdicts
+      continue-on-error: true
       if: inputs.refresh-main == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
@@ -46,10 +49,12 @@ runs:
         key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: eval-verdicts-main-
     - name: Merge latest main eval verdicts
+      continue-on-error: true
       if: inputs.refresh-main == 'true'
       shell: bash
       run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-current.json"
     - name: Save eval verdicts
+      continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ${{ runner.temp }}/eval-verdicts.json

@@ -8,6 +8,7 @@ domain value, or exits 2 (usage error) naming the valid choices.
 import dataclasses
 import os
 from collections.abc import Callable, Sequence
+from html import escape
 from pathlib import Path
 
 import typer
@@ -284,7 +285,11 @@ class RunReportPaths:
         a no-op.
         """
         self._write(
-            results, lambda: render_html(results), cached=cached or [], content_keys=content_keys or {}, backend=backend
+            results,
+            lambda: self.render_cached_html(results, cached or []),
+            cached=cached or [],
+            content_keys=content_keys or {},
+            backend=backend,
         )
 
     def write_pass_at_k(self, results: list[PassAtKResult]) -> None:
@@ -312,6 +317,17 @@ class RunReportPaths:
             write_summary_json(
                 results, self.summary_json, cache=SummaryCacheData(content_keys or {}, cached or [], backend)
             )
+
+    @staticmethod
+    def render_cached_html(results: list[ScenarioResult], cached: Sequence[CachedPass]) -> str:
+        rendered = render_html(results)
+        if not cached:
+            return rendered
+        items = "".join(
+            f"<li>{escape(item.name)} (key {escape(item.content_key)}, from run {escape(item.run_url)})</li>"
+            for item in cached
+        )
+        return rendered.replace("</body>", f"<section><h2>Cached passes</h2><ul>{items}</ul></section>\n</body>")
 
 
 def reject_unsupported_run_output(

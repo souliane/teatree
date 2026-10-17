@@ -43,6 +43,20 @@ def _write_shards(tmp_path: Path) -> Path:
 
 
 class TestMergeSummaries:
+    def test_cached_source_survives_dashboard_merge(self, tmp_path: Path) -> None:
+        shard = tmp_path / "cached.md"
+        key = "a" * 64
+        shard.write_text(
+            "| scenario | lane | verdict | trials | cost |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| alpha | clean_room | cached pass | cached | — |\n\n"
+            f"- alpha: key `{key}` from https://example.test/run/1\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard), *_META])
+        assert result.exit_code == 0, result.output
+        assert f"- alpha: key `{key}` from https://example.test/run/1" in result.output
+
     def test_merges_to_one_table_with_summed_totals_and_cost(self, tmp_path: Path) -> None:
         shard_dir = _write_shards(tmp_path)
         result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard_dir), *_META])

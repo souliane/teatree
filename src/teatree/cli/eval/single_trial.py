@@ -11,7 +11,6 @@ history/regression gates. The multi-trial and model-matrix shapes live in
 import dataclasses
 import json
 import sys
-from html import escape
 from pathlib import Path
 
 import typer
@@ -43,7 +42,7 @@ from teatree.eval.backends import (
 )
 from teatree.eval.models import CachedPass, EvalSpec
 from teatree.eval.parallel import run_specs
-from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_html, render_json, render_text
+from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.summary_json import SummaryCacheData, write_summary_json
 from teatree.llm.anthropic_limits import CreditExhaustedError
@@ -61,6 +60,13 @@ class SingleTrialGates:
     gate_cost_regression: bool
     cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE
     gate_cost_bounds: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class VerdictReuse:
+    cached: list[CachedPass]
+    cached_specs: list[EvalSpec]
+    content_keys: dict[str, str]
 
 
 def make_escalation_runner(
@@ -98,19 +104,13 @@ def _make_single_runner(backend: str, params: ApiRunnerParams, transcript_dir: P
 
 
 def _emit_single_results(results: list[ScenarioResult], cached: list[CachedPass], output_format: str) -> None:
-    renderers = {"json": render_json, "html": render_html}
+    renderers = {"json": render_json, "html": lambda items: RunReportPaths.render_cached_html(items, cached)}
     rendered = renderers.get(output_format, render_text)(results)
     if output_format == "json" and cached:
         payload = json.loads(rendered)
         payload["cached"] = [item.as_json() for item in cached]
         typer.echo(json.dumps(payload))
         return
-    if output_format == "html" and cached:
-        items = "".join(
-            f"<li>{escape(item.name)} (key {escape(item.content_key)}, from run {escape(item.run_url)})</li>"
-            for item in cached
-        )
-        rendered = rendered.replace("</body>", f"<section><h2>Cached passes</h2><ul>{items}</ul></section>\n</body>")
     typer.echo(rendered, nl=output_format != "html")
     if output_format == "text":
         for item in cached:
@@ -151,9 +151,7 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     gates: SingleTrialGates,
     escalation: EscalationConfig | None = None,
     summary_json: Path | None = None,
-    cached: list[CachedPass] | None = None,
-    cached_specs: list[EvalSpec] | None = None,
-    content_keys: dict[str, str] | None = None,
+    reuse: VerdictReuse | None = None,
 ) -> None:
     """Run every spec once, render, drop the per-run artifacts, and gate the result.
 
@@ -167,9 +165,8 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     ``escalate_trials`` more times. A recovered scenario clears the lane gate but
     is recorded as FLAKY, separate from clean PASS.
     """
-    cached = cached or []
-    cached_specs = cached_specs or []
-    content_keys = content_keys or {}
+    reuse = reuse or VerdictReuse([], [], {})
+    cached, cached_specs, content_keys = reuse.cached, reuse.cached_specs, reuse.content_keys
     reports = RunReportPaths(transcript_html, summary_md, summary_json)
     if not specs and cached:
         _emit_single_results([], cached, output_format)
