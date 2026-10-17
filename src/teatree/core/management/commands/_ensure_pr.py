@@ -61,6 +61,7 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
     from teatree.core.models.pending_pull_request import PendingPullRequestManager, SerializedPrSpec
+    from teatree.core.overlay import OverlayBase
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,12 @@ def discharge_if_settled(repo_path: str, branch_name: str, result: EnsurePrResul
 
 def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Owe the PR for a branch git has not put on the remote yet (the FIRST push)."""
+    title, description, _, _ = _generated_pr_text(repo_path, branch_name)
+    remote = git.remote_url(repo=repo_path)
+    if refusal := refusal_for_pr_generic_findings(
+        title=title, description=description, target_repo=remote, forge=forge_from_url(remote)
+    ):
+        return EnsurePrResult(branch=branch_name, error=refusal)
     return _owe_pr(repo_path, branch_name, reason=UNPUSHED_DEFERRAL)
 
 
@@ -334,32 +341,9 @@ def _unresolved_host_result(repo_path: str, branch_name: str, *, generic: str) -
     return owed
 
 
-def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
-    """Build the PR spec from the branch's own commit and create it, or defer (#792).
-
-    The "no commits between" create failure is the pre-push stale-remote
-    race (the remote ref still lags this in-flight push); deferring it lets
-    the push proceed so the post-push ``ensure-pr`` opens the PR. Every
-    other create failure is real and re-raised.
-    """
-    # #2025: resolve the forge from the branch's repo origin host, not by
-    # token-presence precedence — opening a PR on a GitLab-hosted repo with
-    # a GitHub-first overlay ran ``gh`` against a GitLab remote.
-    try:
-        host = code_host_for_repo_from_overlay(repo_path)
-    except BackendResolutionError as exc:
-        return _unresolved_host_result(repo_path, branch_name, generic=str(exc))
-    if host is None:
-        return EnsurePrResult(error=_no_host_error(repo_path, branch_name))
-    # An MR its own author cannot approve is refused before it exists: afterwards the only remedy
-    # is to close it and open another under the right identity.
-    if refusal := unapprovable_author_refusal(host, git.remote_url(repo=repo_path)):
-        return EnsurePrResult(error=refusal)
-
+def _generated_pr_text(repo_path: str, branch_name: str) -> tuple[str, str, "Ticket | None", "OverlayBase"]:
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
-    # A genuinely orphan branch has no owning ticket to scope the overlay by, so
-    # it keeps the ambient default; a branch that HAS one is shipped under it.
     owning_ticket = _ticket_for_branch(branch_name, repo_path)
     overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     close_ticket = should_close_ticket(
@@ -384,6 +368,32 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     warn_if_open_questions_missing(description)
     warn_if_owner_ratification_unbacked(description)
     warn_if_precheck_incomplete(description)
+    return title, description, owning_ticket, overlay
+
+
+def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Build the PR spec from the branch's own commit and create it, or defer (#792).
+
+    The "no commits between" create failure is the pre-push stale-remote
+    race (the remote ref still lags this in-flight push); deferring it lets
+    the push proceed so the post-push ``ensure-pr`` opens the PR. Every
+    other create failure is real and re-raised.
+    """
+    # #2025: resolve the forge from the branch's repo origin host, not by
+    # token-presence precedence — opening a PR on a GitLab-hosted repo with
+    # a GitHub-first overlay ran ``gh`` against a GitLab remote.
+    try:
+        host = code_host_for_repo_from_overlay(repo_path)
+    except BackendResolutionError as exc:
+        return _unresolved_host_result(repo_path, branch_name, generic=str(exc))
+    if host is None:
+        return EnsurePrResult(error=_no_host_error(repo_path, branch_name))
+    # An MR its own author cannot approve is refused before it exists: afterwards the only remedy
+    # is to close it and open another under the right identity.
+    if refusal := unapprovable_author_refusal(host, git.remote_url(repo=repo_path)):
+        return EnsurePrResult(error=refusal)
+
+    title, description, owning_ticket, overlay = _generated_pr_text(repo_path, branch_name)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git_remote.slug_from_remote(remote)

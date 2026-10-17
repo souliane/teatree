@@ -39,6 +39,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from hooks.scripts import t3_invocation
 from hooks.scripts.banned_terms.deny import emit_banned_term_deny
 from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_terms_marker
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
@@ -221,35 +222,24 @@ def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
 
 def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *, nonpublic: bool) -> bool:
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import ai_signature_scan, forge_write_scope, publish_surface  # noqa: PLC0415 — cold-hook read
-    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-hook read
-    from teatree.hooks.leak_policy import LEAK, Surface, Verdict, Visibility, decide  # noqa: PLC0415 — cold-hook read
-    from teatree.hooks.privacy_generic_detectors import generic_findings  # noqa: PLC0415 — cold-hook read
+    from teatree.hooks.generic_forge_gate import generic_payload_finding  # noqa: PLC0415 — cold-hook read
 
-    local_commit = publish_surface.command_targets_local_commit(command, cwd_repo)
-    surface = Surface.LOCAL_COMMIT if local_commit else Surface.DIFF
-    verdict = decide(LEAK, Visibility.NON_PUBLIC if nonpublic else Visibility.UNKNOWN, surface)
-    if verdict is Verdict.ALLOW or not (local_commit or forge_write_scope.is_forge_write(command, cwd_repo)):
+    finding = generic_payload_finding(
+        payload,
+        command,
+        cwd_repo,
+        nonpublic=nonpublic,
+        ai_signature_scanner_available=t3_invocation.t3_argv("tool", "ai-sig-scan", "-") is not None,
+    )
+    if finding is None:
         return False
-    findings = generic_findings(payload, allowlist=allowlist_terms(), forge_write=not local_commit)
-    if not findings:
-        return False
-    # The later AI-signature gate owns trailer emails and gives the specific refusal.
-    signature_lines = {lineno for lineno, _, _ in ai_signature_scan.scan_text(payload)}
-    findings = [
-        finding
-        for finding in findings
-        if finding.category != "email" or payload.count("\n", 0, finding.position) + 1 not in signature_lines
-    ]
-    if not findings:
-        return False
-    if verdict is Verdict.WARN:
+    if finding.warn:
         sys.stderr.write(
-            f"[teatree] NOTE: generic {findings[0].category} in a local commit; the push gate will rescan it.\n"
+            f"[teatree] NOTE: generic {finding.category} in a local commit; the push gate will rescan it.\n"
         )
         return False
     return emit_pretooluse_deny(
-        f"BLOCKED: generic {findings[0].category} in a forge publish payload. Redact it before posting. "
+        f"BLOCKED: generic {finding.category} in a forge publish payload. Redact it before posting. "
         "If the repo is private, add its host-qualified name to private_repos or verify forge visibility.",
         gate_id="banned_terms",
     )

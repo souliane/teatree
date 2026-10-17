@@ -63,9 +63,11 @@ def _is_exempt(masked: str, start: int, end: int) -> bool:
     return masked[start:end] == " " * (end - start)
 
 
-def generic_findings(text: str, *, allowlist: tuple[str, ...] = (), forge_write: bool = False) -> list[GenericFinding]:
+def generic_findings(
+    text: str, *, allowlist: tuple[str, ...] = (), forge_write: bool = False, masked_text: str | None = None
+) -> list[GenericFinding]:
     findings: list[GenericFinding] = []
-    masked = mask_exempt(text, allowlist) if allowlist else text
+    masked = masked_text if masked_text is not None else mask_exempt(text, allowlist)
     allowed_paths = {entry.casefold() for entry in allowlist if entry.startswith("/")}
     offset = 0
     for line in text.splitlines(keepends=True):

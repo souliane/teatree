@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from hooks.scripts import t3_invocation
 from hooks.scripts.banned_terms import gate as banned_terms_gate
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
-from teatree.hooks import _repo_visibility, banned_terms_scanner, public_visibility
+from teatree.hooks import _repo_visibility, banned_term_registry, banned_terms_scanner, public_visibility
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 
 
@@ -1419,6 +1420,27 @@ def test_generic_detector_respects_private_and_unknown_bash_targets(
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_respects_configured_private_repo_without_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "config.sqlite3"
+    _seed_config_db(db, {"private_repos": ["github.com/acme/widget"]})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+    body = "Contact person@firm.tld"  # privacy-scan:allow synthetic fixture
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f'gh issue comment 5 --repo acme/widget --body "{body}"'},
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is False
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
 def test_generic_detector_blocks_non_trailer_copy_of_trailer_email(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1429,6 +1451,50 @@ def test_generic_detector_blocks_non_trailer_copy_of_trailer_email(
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
     body_file = tmp_path / "body.md"
     body_file.write_text("Ping xa@b.co\nCo-Authored-By: Claude <xa@b.co>\n")  # privacy-scan:allow synthetic fixture
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"gh issue create --repo souliane/teatree --body-file {body_file}"},
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data)
+    assert "generic email" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_blocks_trailer_email_when_ai_scanner_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    monkeypatch.setattr(t3_invocation, "t3_argv", lambda *_args: None)
+    body = "Co-Authored-By: Claude <xa@b.co>"  # privacy-scan:allow synthetic fixture
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"gh issue comment 5 --repo souliane/teatree --body '{body}'"},
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data)
+    assert "generic email" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("in_process_banned_terms_scanner")
+def test_generic_detector_distinguishes_form_feed_separated_trailer_and_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    body_file = tmp_path / "body.md"
+    body_file.write_text(
+        "Co-Authored-By: Claude <xa@b.co>\fPing person@firm.tld"  # privacy-scan:allow synthetic fixture
+    )
     data = {
         "tool_name": "Bash",
         "tool_input": {"command": f"gh issue create --repo souliane/teatree --body-file {body_file}"},
@@ -1504,6 +1570,32 @@ def test_generic_detector_warns_on_local_commit(
     assert "person@firm.tld" not in captured.err  # privacy-scan:allow synthetic fixture
 
 
+def test_generic_detector_warns_on_local_commit_when_allowlist_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY", json.dumps({"leak": ["placeholder-leak"], "prose_collider": [], "tone": []})
+    )
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+    def unreadable_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
+        del db_path
+        message = "unreadable"
+        raise banned_term_registry.BannedTermsUnsetError(message)
+
+    monkeypatch.setattr(banned_terms_scanner, "scan_text", lambda _payload: None)
+    monkeypatch.setattr(banned_term_registry, "allowlist_terms", unreadable_allowlist)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'git commit -m "Contact person@firm.tld"'},  # privacy-scan:allow synthetic fixture
+        "cwd": str(tmp_path),
+    }
+
+    assert handle_banned_terms_pretool(data) is False
+    assert "generic email" in capsys.readouterr().err
+
+
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")
 def test_generic_detector_honors_exact_allow_but_not_an_extended_address(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1515,7 +1607,7 @@ def test_generic_detector_honors_exact_allow_but_not_an_extended_address(
                 "leak": ["placeholder-leak"],
                 "prose_collider": [],
                 "tone": [],
-                "allow": ["person@firm.tld"],  # privacy-scan:allow synthetic fixture
+                "allow": ["person@firm.tld", "firm"],  # privacy-scan:allow synthetic fixture
             }
         ),
     )  # privacy-scan:allow synthetic fixture
@@ -1532,6 +1624,7 @@ def test_generic_detector_honors_exact_allow_but_not_an_extended_address(
 
     assert post("person@firm.tld") is False  # privacy-scan:allow synthetic fixture
     assert post("person@firm.tld.biz") is True  # privacy-scan:allow synthetic fixture
+    assert post("other@firm.tld") is True  # privacy-scan:allow synthetic fixture
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")

@@ -290,16 +290,18 @@ def test_generic_detector_blocks_public_forge_write(
     assert f"generic:{category}" in [match.pattern_name for match in result.matches]
 
 
-def test_legacy_bare_generic_name_stays_redacted() -> None:
+def test_generic_refusal_redacts_token_and_remote_credentials() -> None:
     synthetic_api_key = "glpat-XXXXXXXXXXXXXXXX"  # privacy-scan:allow synthetic detector fixture
     result = privacy_gate.PrivacyGateResult(
-        target_repo=REAL_PUBLIC,
+        target_repo="https://u:private-token@github.com/souliane/teatree.git",  # privacy-scan:allow synthetic fixture
         is_public=True,
-        matches=(privacy_gate.PrivacyMatch("api_key", synthetic_api_key, 0),),
+        matches=(privacy_gate.PrivacyMatch("generic:api_key", synthetic_api_key, 0),),
     )  # privacy-scan:allow synthetic fixture
 
     refusal = format_refusal(result)
     assert "glpat-XXXXXXXXXXXXXXXX" not in refusal  # privacy-scan:allow synthetic fixture
+    assert "private-token" not in refusal
+    assert "github.com/souliane/teatree" in refusal
     assert "[redacted]" in refusal
 
 
@@ -313,7 +315,7 @@ def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
                 "leak": ["placeholder-leak"],
                 "prose_collider": [],
                 "tone": [],
-                "allow": ["person@firm.tld"],  # privacy-scan:allow synthetic fixture
+                "allow": ["person@firm.tld", "firm"],  # privacy-scan:allow synthetic fixture
             }
         ),
     )  # privacy-scan:allow synthetic fixture
@@ -327,6 +329,10 @@ def test_generic_detector_keeps_exact_allow_and_refuses_extended_address(
         text="person@firm.tld.biz",  # privacy-scan:allow synthetic fixture
         target_repo=REAL_PUBLIC,
     ).refused  # privacy-scan:allow synthetic fixture
+    assert scan_outbound_text(
+        text="other@firm.tld",  # privacy-scan:allow synthetic fixture
+        target_repo=REAL_PUBLIC,
+    ).refused  # privacy-scan:allow synthetic fixture
 
 
 def test_generic_detector_exempts_public_ci_path_only_on_forge_write(inject_rules: Callable[..., None]) -> None:
@@ -335,6 +341,50 @@ def test_generic_detector_exempts_public_ci_path_only_on_forge_write(inject_rule
 
     assert not scan_outbound_text(text=body, target_repo=REAL_PUBLIC).refused
     assert any(hit.category == "home_path" for hit in privacy_gate.generic_findings(body))
+
+
+def test_pr_generic_refusal_is_independent_of_unreadable_term_rules(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inject_rules(public=True)
+    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": None)
+
+    refusal = privacy_gate.refusal_for_pr_generic_findings(
+        title="fix",
+        description="Contact person@firm.tld",  # privacy-scan:allow synthetic fixture
+        target_repo=REAL_PUBLIC,
+        forge="github",
+    )
+
+    assert refusal is not None
+    assert "generic:email" in refusal
+
+
+def test_pr_generic_refusal_honors_an_exact_allow_next_to_a_term(
+    inject_rules: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inject_rules(public=True)
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps(
+            {
+                "leak": ["placeholder-leak"],
+                "prose_collider": [],
+                "tone": [],
+                "allow": ["person@firm.tld"],  # privacy-scan:allow synthetic fixture
+            }
+        ),
+    )  # privacy-scan:allow synthetic fixture
+
+    assert (
+        privacy_gate.refusal_for_pr_generic_findings(
+            title="fix",
+            description="person@firm.tld placeholder-leak",  # privacy-scan:allow synthetic fixture
+            target_repo=REAL_PUBLIC,
+            forge="github",
+        )
+        is None
+    )
 
 
 def test_generic_detector_ignores_push_scanner_marker_on_forge_write(inject_rules: Callable[..., None]) -> None:

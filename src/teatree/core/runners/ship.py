@@ -324,12 +324,11 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> RunnerResult:
-        """Fence both writes and scan the completed PR before pushing.
+        """Scan the completed PR, then fence both outward writes.
 
         Split out of ``run`` so each half stays within the return-count gate. The
-        fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
-        before EACH outward write. Commit text and the completed PR spec are
-        checked before the push.
+        fleet-claim fence (:meth:`_fleet_claim_lost`) is checked after spec
+        construction, immediately before each outward write.
         """
         # #940 defense-in-depth: re-check branch currency before pushing. The
         # `pr create` gate already auto-merged the target, but ``execute_ship``
@@ -344,20 +343,20 @@ class ShipExecutor(RunnerBase):
         if refusal is not None:
             return refusal
 
-        fence = self._fleet_claim_lost(repo_path)
-        if fence is not None:
-            return fence
-
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
+        subject, _ = git.last_commit_message(repo=repo_path, skip_merges=True)
         remote_url = git.remote_url(repo=repo_path)
         if refusal := refusal_for_pr_generic_findings(
-            title=f"{subject}\n{extra.get('pr_title_override') or ''}\n{spec.title}",
-            description=f"{body or ''}\n{spec.description}",
+            title=f"{subject}\n{spec.title}",
+            description=spec.description,
             target_repo=remote_url,
             forge=forge_from_url(remote_url),
         ):
             return RunnerResult(ok=False, detail=refusal)
+
+        fence = self._fleet_claim_lost(repo_path)
+        if fence is not None:
+            return fence
 
         pushed = push_branch(repo=repo_path, remote="origin", branch=branch, ship_opens_pr=True)
         if not pushed.ok:

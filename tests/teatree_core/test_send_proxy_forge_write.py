@@ -66,6 +66,16 @@ class TestRouteForgeWriteCleanPath(TestCase):
         assert row.destination == "github:souliane/teatree"
         assert row.action == "issue_create"
 
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_documentation_ip_to_a_public_target_passes_through(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["github:souliane/teatree"])
+        with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True):
+            out = route_forge_write(
+                forge="github", repo="souliane/teatree", text="See 192.0.2.4", action="issue_create", target="t"
+            )
+        assert out == "See 192.0.2.4"
+        assert SendAudit.objects.count() == 1
+
 
 class TestRouteForgeWriteLeakGate(TestCase):
     @pytest.mark.usefixtures("configured_banned_term_registry")

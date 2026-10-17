@@ -34,6 +34,7 @@ def test_empty_text_has_no_findings() -> None:
         ("jdoe@gmail.com", "jdoe@gmail.com", []),  # privacy-scan:allow synthetic fixture
         ("glpat-XXXXXXXXXXXXXXXXXXXX", "glpat-XXXXXXXXXXXXXXXXXXXX", []),  # privacy-scan:allow synthetic fixture
         ("jdoe", "jdoe@gmail.com", ["email"]),  # privacy-scan:allow synthetic fixture
+        ("firm", "jdoe@firm.tld", ["email"]),  # privacy-scan:allow synthetic fixture
         ("jdoe", "/home/jdoe/src", ["home_path"]),  # privacy-scan:allow synthetic fixture
         ("/home/jdoe", "/home/jdoe/src", []),  # privacy-scan:allow synthetic fixture
     ],
