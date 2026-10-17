@@ -51,6 +51,7 @@ src/teatree/hooks/leak_policy.py
 src/teatree/hooks/opaque_id.py
 src/teatree/hooks/own_repo_url_carve_out.py
 src/teatree/hooks/privacy_diff_comments.py
+src/teatree/hooks/privacy_generic_detectors.py
 src/teatree/hooks/remote_holds.py
 src/teatree/hooks/repo_visibility_cli.py
 src/teatree/hooks/term_fingerprint.py
