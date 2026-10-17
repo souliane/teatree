@@ -124,12 +124,14 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
     assert "unsharded whole-tree pytest is refused" not in result.stderr
 
 
-def test_slot_pool_caps_explicit_requests_and_releases(tmp_path: Path) -> None:
+def test_slot_pool_caps_explicit_requests_and_releases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     pool = WorkerSlotPool(tmp_path, capacity=3)
     with pool.acquire(9) as lease:
         assert lease.workers == 3
+    assert "running 3 of 9 requested workers" in capsys.readouterr().err
     with pool.acquire(2) as lease:
         assert lease.workers == 2
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.timeout(5)
@@ -297,6 +299,26 @@ def test_real_pytest_caps_explicit_workers_to_free_slots(tmp_path: Path, worker_
             held.release()
     assert result.returncode == 0, result.stderr
     assert "created: 1/1 worker" in result.stdout
+
+
+@pytest.mark.timeout(60)
+def test_real_collect_only_run_leases_one_slot_whatever_its_n(tmp_path: Path) -> None:
+    held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY - 1) if _BOX_CAPACITY > 1 else None
+    try:
+        result = subprocess.run(
+            _pytest_command("-n", "3", "--collect-only", "-q", _BOUNDED_NODE),
+            cwd=_REPO,
+            env=_standalone_pytest_env(tmp_path),
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    finally:
+        if held is not None:
+            held.release()
+    assert result.returncode == 0, result.stderr
+    assert "requested workers" not in result.stderr
 
 
 @pytest.mark.timeout(60)

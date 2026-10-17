@@ -173,7 +173,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     )
     if refusal:
         raise pytest.UsageError(refusal)
-    tx = worker_specs(list(getattr(config.option, "tx", [])))
+    distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
+    tx = worker_specs(list(getattr(config.option, "tx", []))) if distributed else []
     pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
         lease = pool.session_lease(max(1, len(tx)))

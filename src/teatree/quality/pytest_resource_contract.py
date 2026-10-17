@@ -124,26 +124,7 @@ class WorkerSlotPool:
             raise PoolUnavailableError(reason, self.path) from exc
         target = max(1, min(requested, self.capacity))
         reported = False
-        while True:
-            descriptors: list[int] = []
-            try:
-                for slot in range(self.capacity):
-                    slot_path = self.path / f"slot-{slot:04d}.lock"
-                    descriptor = os.open(slot_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
-                    try:
-                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        os.close(descriptor)
-                        continue
-                    descriptors.append(descriptor)
-                    if len(descriptors) == target:
-                        break
-            except OSError as exc:
-                SlotLease(descriptors).release()
-                reason = "is unreadable"
-                raise PoolUnavailableError(reason, self.path) from exc
-            if descriptors:
-                return SlotLease(descriptors)
+        while not (descriptors := self._lock_free_slots(target)):
             if not reported:
                 sys.stderr.write(
                     f"pytest worker pool at {self.path} has no free slots ({self.capacity} total); waiting\n"
@@ -151,6 +132,32 @@ class WorkerSlotPool:
                 sys.stderr.flush()
                 reported = True
             time.sleep(poll_interval)
+        if len(descriptors) < requested:
+            sys.stderr.write(
+                f"pytest worker pool at {self.path}: running {len(descriptors)} of {requested} requested workers\n"
+            )
+        return SlotLease(descriptors)
+
+    def _lock_free_slots(self, target: int) -> list[int]:
+        descriptors: list[int] = []
+        try:
+            for slot in range(self.capacity):
+                descriptor = os.open(
+                    self.path / f"slot-{slot:04d}.lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+                )
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(descriptor)
+                    continue
+                descriptors.append(descriptor)
+                if len(descriptors) == target:
+                    break
+        except OSError as exc:
+            SlotLease(descriptors).release()
+            reason = "is unreadable"
+            raise PoolUnavailableError(reason, self.path) from exc
+        return descriptors
 
 
 __all__ = [
