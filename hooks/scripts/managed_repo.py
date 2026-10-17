@@ -17,7 +17,7 @@ import contextlib
 import re
 import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors hook_router).
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,7 +41,7 @@ _AGENT_STATE_PATH_RE = re.compile(
 
 
 @contextlib.contextmanager
-def teatree_src_on_path() -> Iterator[None]:
+def teatree_src_on_path() -> Generator[None]:
     """Put the sibling ``src/`` on ``sys.path`` for the block, then restore it.
 
     The hook runs in the user's session shell with no guarantee ``teatree`` is

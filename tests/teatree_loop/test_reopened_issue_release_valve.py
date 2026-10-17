@@ -12,7 +12,7 @@ together.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -31,7 +31,7 @@ _URL = "https://github.com/souliane/teatree/issues/4152"
 
 
 @contextlib.contextmanager
-def _forge_says_reopened() -> Iterator[None]:
+def _forge_says_reopened() -> Generator[None]:
     with (
         patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}),
         patch.object(issue_reopen, "issue_reopen_state", return_value=IssueReopenState.REOPENED),

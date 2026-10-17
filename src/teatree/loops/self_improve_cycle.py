@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from django.core.management import call_command
@@ -27,7 +27,7 @@ def _scan_label(value: object) -> str:
 
 
 @contextmanager
-def _as_loop_runner() -> Iterator[None]:
+def _as_loop_runner() -> Generator[None]:
     """Run as the worker's own principal, which the t3-master gate never treats as a rival."""
     identity = runner_identity_env(os.getpid())
     saved = {key: os.environ.get(key) for key in identity}

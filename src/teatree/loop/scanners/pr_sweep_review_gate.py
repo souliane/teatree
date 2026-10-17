@@ -19,7 +19,7 @@ self-PR scanner's reviewer dedups through its own ledger, which this arm's
 per-head claim cannot see, so one green head bought two reviews of one tree.
 
 A head carrying an unreconciled HOLD never reaches here at all: the caller
-refuses first (#4380). Arming a fresh reviewer over a hold nobody took back is
+refuses first (#4380). Arming a fresh reviewer over a hold still active at this head is
 how a contested head accumulated the later verdict that merged it.
 """
 

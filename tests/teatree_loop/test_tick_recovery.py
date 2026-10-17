@@ -241,7 +241,7 @@ class TestAFailingMechanicalHandlerReachesTheTick(TestCase):
                 report = TickReport(started_at=datetime.now(UTC))
                 report.actions = [
                     DispatchAction(kind="mechanical", zone=zone, detail="x", payload=cast("ActionPayload", payload)),
-                    DispatchAction(kind="mechanical", zone="sentinel", detail="x", payload=cast("ActionPayload", {})),
+                    DispatchAction(kind="mechanical", zone="sentinel", detail="x", payload={}),
                 ]
                 sentinel = {"sentinel": lambda _p, ran=ran: ran.append("sentinel")}
 

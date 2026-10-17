@@ -41,7 +41,7 @@ a clean skip, a sub-agent on the real clone is repo corruption.
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -130,7 +130,7 @@ def _clone_detached(repo_root: Path, checkout: Path) -> bool:
 
 
 @contextmanager
-def provision_ephemeral_checkout() -> Iterator[Path]:
+def provision_ephemeral_checkout() -> Generator[Path]:
     """Yield a throwaway independent ``git clone`` of the real teatree clone.
 
     The yielded directory is an independent clone at a detached ``HEAD``: its own

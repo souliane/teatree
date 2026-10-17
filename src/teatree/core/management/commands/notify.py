@@ -40,7 +40,7 @@ import io
 import os
 import sys
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated
@@ -96,7 +96,7 @@ def _first_line(text: str) -> str:
 
 
 @contextmanager
-def _overlay_env(overlay: str) -> Iterator[None]:
+def _overlay_env(overlay: str) -> Generator[None]:
     """Set ``T3_OVERLAY_NAME`` for the call, restoring the prior value after."""
     if not overlay:
         yield

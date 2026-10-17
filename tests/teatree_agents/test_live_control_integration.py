@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -92,7 +92,7 @@ class _FakeCliRun:
 
 
 @contextlib.contextmanager
-def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Iterator[None]:
+def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Generator[None]:
     wrapper = run.root / "claude"
     wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{_FAKE_CLI}" "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)

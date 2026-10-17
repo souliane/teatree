@@ -34,7 +34,7 @@ suspenders (``setting_sources=[]`` + a plain-string ``system_prompt`` + empty
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,7 +54,7 @@ _DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 def isolated_claude_env(
     conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
     forbidden_vars: tuple[str, ...] = (),
-) -> Iterator[tuple[dict[str, str], str]]:
+) -> Generator[tuple[dict[str, str], str]]:
     """Yield ``(env, cwd)`` that runs ``claude`` free of the developer's context.
 
     ``env`` is the parent environment with the home-anchored discovery roots

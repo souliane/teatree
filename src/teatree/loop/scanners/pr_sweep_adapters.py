@@ -10,14 +10,12 @@ module focused on logic and under the module-health LOC cap.
 
 import json
 import logging
-import os
-import shutil
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
-from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
+from teatree.loop.scanners.base import ScannerError, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (
     build_compare_query,
     chunk_heads,
@@ -32,7 +30,6 @@ from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASO
 from teatree.loop.scanners.pr_sweep_types import NO_OWNING_TICKET_REASON as _NO_OWNING_TICKET_REASON
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
-from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -321,16 +318,7 @@ class GhPrApiClient:
     @staticmethod
     def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
         resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
-        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
-            detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
-            return 4, "", f"{detail}; refusing ambient gh authentication"
-        gh = shutil.which("gh") or "gh"
-        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
-        env.pop("GITHUB_TOKEN", None)
-        try:
-            result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
-        except FileNotFoundError:
-            return 127, "", "gh not installed"
+        result = run_gh(argv, resolution=resolution)
         return result.returncode, result.stdout, result.stderr
 
 
@@ -390,10 +378,7 @@ OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
     }
 )
 
-_HELD_REMEDY = (
-    "the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at that SHA, "
-    "or a new commit moves the head"
-)
+_HELD_REMEDY = "the auto-merge is refused; push a fix and get the new head reviewed"
 
 _FLAG_TEXTS: dict[str, str] = {
     _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
@@ -401,10 +386,10 @@ _FLAG_TEXTS: dict[str, str] = {
         "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
     ),
     _CONTESTED_HOLD_REASON: (
-        f"two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, so {_HELD_REMEDY}"
+        f"two cold reviews disagree at this PR's live head — a HOLD remains active at this head, so {_HELD_REMEDY}"
     ),
     _HOLD_AT_HEAD_REASON: (
-        f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
+        f"a cold review returned HOLD at this PR's live head and it remains active at this head, so {_HELD_REMEDY}"
     ),
     _NO_OWNING_TICKET_REASON: (
         "no ticket owns this PR, so no merge gate binds: `worktree adopt <checkout>` or `ticket clear`"

@@ -119,7 +119,7 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
         # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
         ticket.code_direct(parent_task=task)
     elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
-        if task.parent_task_id != held.task_pk:  # ty: ignore[unresolved-attribute]
+        if task.parent_task_id != held.task_pk:
             queue_self_review_rework(ticket, held, after=task)
             return False
         ticket.address_self_review(parent_task=task)
@@ -302,7 +302,7 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
         for question in questions
         if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker or question.tool_use_id))
     }
-    tickets = Ticket.objects.annotate(newest_task=Max("tasks__pk")).in_bulk(
+    tickets = Ticket.objects.annotate(newest_task_pk=Max("tasks__pk")).in_bulk(
         {int(match["ticket"]) for match in wedges.values()}
     )
     healed: dict[int, str] = {}
@@ -312,7 +312,7 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
             continue
         if ticket.state in Ticket.marker_release_states():
             healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
-        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > _wedged_task_pk(match):
+        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task_pk or 0) > _wedged_task_pk(match):
             healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
     return healed
 

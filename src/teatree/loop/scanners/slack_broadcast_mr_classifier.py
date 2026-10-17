@@ -4,26 +4,26 @@ The broadcast scanner
 (:class:`teatree.loop.scanners.slack_broadcasts.SlackBroadcastsScanner`) is
 injected with an ``MrStateClassifier`` — a function mapping MR/PR URLs to
 per-URL :class:`~teatree.loop.scanners.slack_broadcasts.MrState` records. This
-module holds the production implementation: :class:`GlabGhMrStateClassifier`
-shells out to ``glab mr view`` / ``gh pr view`` per host, plus the JSON-parsing
-helpers that turn a subprocess payload into a verdict. Keeping the shell-out
-classifier in its own module keeps the scanner unit-testable without ``glab`` /
-``gh`` and focused on the broadcast decision path.
+module holds the production implementation: :class:`ForgeMrStateClassifier`
+reads GitLab through HTTP and GitHub through the backend CLI transport, then
+turns each payload into a verdict.
 """
 
 import json
-import os
-import shutil
 from collections.abc import Sequence
 from typing import cast
+from urllib.parse import quote
+
+import httpx
 
 from teatree.forge_credentials import ForgeTokenState, resolve_url_token
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, classify_http_error, run_gh
+from teatree.loop.scanners.gitlab_http import gitlab_api_for
 from teatree.loop.scanners.slack_broadcasts import MrState
 from teatree.types import RawAPIDict
 from teatree.url_classify import Forge, forge_of, repo_and_iid
 
-__all__ = ["GlabGhMrStateClassifier"]
+__all__ = ["ForgeMrStateClassifier"]
 
 
 def _classifier_error(error_class: ScannerErrorClass, detail: str) -> ScannerError:
@@ -62,7 +62,7 @@ def _classifier_int(data: RawAPIDict, key: str) -> int:
 def _classifier_head_sha(data: RawAPIDict, *, key: str) -> str:
     """The MR's head commit from the payload the classifier already fetched.
 
-    GitLab's ``glab mr view -F json`` carries the head at top-level ``sha``
+    GitLab MR JSON carries the head at top-level ``sha``
     with ``diff_refs.head_sha`` as the authoritative sibling; GitHub's
     ``gh pr view --json headRefOid`` carries ``headRefOid``. An unreadable
     value degrades to ``""`` — a fail-open "unknown head" the re-review path
@@ -88,20 +88,20 @@ def _classifier_author(data: RawAPIDict, *, key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-class GlabGhMrStateClassifier:
-    """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
+class ForgeMrStateClassifier:
+    """Production :class:`MrStateClassifier` for GitLab MRs and GitHub PRs.
 
-    Each URL is dispatched by host: ``glab mr view <url> -F json`` for
-    GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
-    pulls. The classifier reads ``state`` (merged-or-not) and a coarse
+    GitLab metadata is read over the token-authenticated HTTP backend;
+    GitHub metadata uses the backend's gh runner. The classifier reads
+    ``state`` (merged-or-not) and a coarse
     approval flag (GitLab ``upvotes > 0``, GitHub
     ``reviewDecision == APPROVED``).
 
-    Transient vs verdict (F5.3): ``merged=False`` is a *verdict* — the tool
+    Transient vs verdict (F5.3): ``merged=False`` is a *verdict* — the read
     ran, returned a parseable payload, and the MR was not merged — so the
     scanner may safely dispatch a reviewer / seed a nag row for it. A
-    FAILURE to reach that verdict (the binary is missing, the token is
-    expired / rc≠0, or the output is not parseable JSON) is NOT a verdict:
+    FAILURE to reach that verdict (a missing GitHub binary, an expired
+    token, an HTTP or CLI error, or invalid JSON) is NOT a verdict:
     the classifier raises :class:`ScannerError` so the dispatcher records
     the degradation (#1287) and skips the tick, instead of silently
     classifying a possibly-MERGED MR as open — which would nag reviewers
@@ -109,8 +109,8 @@ class GlabGhMrStateClassifier:
     forge / IID) stays ``merged=False`` (it is a deterministic non-match, not
     a transient failure).
 
-    Every token is resolved from the overlay owning the URL. Process-global
-    CLI logins and token variables are scrubbed and can never cross overlays.
+    Every token is resolved from the overlay owning the URL. The owning
+    overlay also supplies the GitLab API host.
     """
 
     def __call__(self, urls: Sequence[str]) -> list[MrState]:
@@ -126,42 +126,24 @@ class GlabGhMrStateClassifier:
 
     @staticmethod
     def _classify_gitlab(url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
         parsed = repo_and_iid(url)
         if parsed is None:
             return MrState(url=url, merged=False, approved=False)
         project, iid_num = parsed
         iid = str(iid_num)
         resolution = resolve_url_token(url, credential="gitlab_token")
-        if resolution.state is not ForgeTokenState.TOKEN:
+        if resolution.state is not ForgeTokenState.TOKEN or not resolution.token:
             raise _classifier_error(
                 ScannerErrorClass.AUTH,
                 f"{resolution.setting} for {url!r} is {resolution.state.value}: {resolution.detail}",
             )
-        glab = shutil.which("glab") or "glab"
-        env = dict(os.environ)
-        env["GITLAB_TOKEN"] = resolution.token
         try:
-            # ``-R <project>`` makes glab resolve the MR against an explicit
-            # project path instead of the current cwd's git remote — the
-            # scanner runs from the loop process which has no repo cwd, so
-            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
-            # every broadcast is dropped. With ``-R`` + numeric IID glab
-            # routes the API call directly.
-            result = run_allowed_to_fail(
-                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError as exc:
-            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"glab not installed for {url!r}: {exc}") from exc
-        if result.returncode != 0:
-            raise _classifier_error(
-                classify_gh_stderr(result.stderr),
-                f"glab mr view {url!r} rc={result.returncode}: {result.stderr.strip()[:200]}",
-            )
-        data = _parse_classifier_json(result.stdout, tool="glab mr view", url=url)
+            payload = gitlab_api_for(resolution).get_json(f"projects/{quote(project, safe='')}/merge_requests/{iid}")
+        except (httpx.HTTPError, ValueError) as exc:
+            raise _classifier_error(classify_http_error(exc), f"GitLab MR {url!r}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"GitLab MR {url!r} returned non-object JSON")
+        data = payload
         state = _classifier_str(data, "state").lower()
         merged = state in {"merged", "closed_as_merged"}
         upvotes = _classifier_int(data, "upvotes")
@@ -177,26 +159,14 @@ class GlabGhMrStateClassifier:
 
     @staticmethod
     def _classify_github(url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
         resolution = resolve_url_token(url, credential="github_token")
-        if resolution.state is not ForgeTokenState.TOKEN:
+        if resolution.state is not ForgeTokenState.TOKEN or not resolution.token:
             raise _classifier_error(
                 ScannerErrorClass.AUTH,
                 f"{resolution.setting} for {url!r} is {resolution.state.value}: {resolution.detail}; "
                 "refusing ambient gh authentication",
             )
-        gh = shutil.which("gh") or "gh"
-        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
-        env.pop("GITHUB_TOKEN", None)
-        try:
-            result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision,author,headRefOid"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError as exc:
-            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"gh not installed for {url!r}: {exc}") from exc
+        result = run_gh(["pr", "view", url, "--json", "state,reviewDecision,author,headRefOid"], resolution=resolution)
         if result.returncode != 0:
             raise _classifier_error(
                 classify_gh_stderr(result.stderr),

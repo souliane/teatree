@@ -35,7 +35,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -51,7 +51,7 @@ from privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 
 
 @contextmanager
-def _config_db(db: Path) -> Iterator[None]:
+def _config_db(db: Path) -> Generator[None]:
     """Point the cold config reader at *db* for the duration of the block."""
     previous = os.environ.get("T3_CONFIG_DB")
     os.environ["T3_CONFIG_DB"] = str(db)

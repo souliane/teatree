@@ -9,13 +9,13 @@ below.
 import fcntl
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
 
 @contextmanager
-def _exclusive_lock(lock_path: Path) -> Iterator[None]:
+def _exclusive_lock(lock_path: Path) -> Generator[None]:
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)

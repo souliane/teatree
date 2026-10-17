@@ -7,7 +7,7 @@ run is recorded as a ``needs_user_input`` hand-off that parks the task behind a 
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import patch
 
@@ -47,7 +47,7 @@ class _Harness:
         self.session: FakeHarnessSession | None = None
 
     @contextlib.asynccontextmanager
-    async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: Any) -> AsyncGenerator[FakeHarnessSession]:
         self.opened_options = options
         self.session = FakeHarnessSession(self._messages)
         yield self.session
@@ -56,15 +56,16 @@ class _Harness:
 def _task() -> Task:
     ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
     session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    task = Task.objects.create(ticket=ticket, session=session, phase="shipping")
-    task.renew_lease = lambda **_kw: None
-    return task
+    return Task.objects.create(ticket=ticket, session=session, phase="shipping")
 
 
 def _drive(task: Task, harness: _Harness) -> HarnessOutcome:
     options = _build_options(task, "ctx", phase="shipping", skills=[])
     watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
-    with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
+    with (
+        patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
+        patch.object(task, "renew_lease", new=lambda **_kw: None),
+    ):
         return asyncio.run(_drive_with_heartbeat(task, "p", options, harness, watchdog=watchdog))
 
 

@@ -8,7 +8,7 @@ nothing at all on a run that changed nothing.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -25,7 +25,7 @@ _URL = "https://github.com/souliane/teatree/pull/3816"
 
 
 @contextlib.contextmanager
-def _merged_forge(url: str = _URL) -> Iterator[None]:
+def _merged_forge(url: str = _URL) -> Generator[None]:
     """Stand in for the live forge: *url* reads MERGED, anything else UNKNOWN."""
 
     def _probe(pr_url: str) -> PrOpenState:

@@ -26,7 +26,7 @@ so every existing scenario is byte-identical to before this field existed.
 
 import os
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -289,7 +289,7 @@ def _stub_body(name: str, source_path: Path | None) -> str:
 
 
 @contextmanager
-def provision_cli_stubs(names: Sequence[str], *, source_path: Path | None = None) -> Iterator[Path]:
+def provision_cli_stubs(names: Sequence[str], *, source_path: Path | None = None) -> Generator[Path]:
     """Yield a throwaway ``bin/`` dir holding an executable stub for each name.
 
     The directory (and every stub in it) is removed when the context exits. Prepend

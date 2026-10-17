@@ -16,7 +16,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -36,7 +36,7 @@ _SHA_B = "b" * 40
 
 
 @contextmanager
-def _ephemeral_row() -> Iterator[None]:
+def _ephemeral_row() -> Generator[None]:
     """Run the wrapped write against the LIVE control DB in a transaction that NEVER commits.
 
     A prior shape created the row in autocommit, then relied on ``finally:
@@ -80,7 +80,7 @@ def _seed_config_db(db: Path, key: str, value: object) -> None:
 
 
 @contextmanager
-def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
+def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Generator[None]:
     """Run the block with *overlay_name*'s effective autonomy pinned to *autonomy*.
 
     An eval-isolation helper for assertions whose outcome depends on the

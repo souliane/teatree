@@ -319,10 +319,10 @@ def _lane_moved_on(
 ) -> bool:
     if parked is None:
         return False
-    newest = latest_run.get((parked.ticket_id, parked.phase))  # ty: ignore[unresolved-attribute]
+    newest = latest_run.get((parked.ticket_id, parked.phase))
     if newest is None or newest.pk <= parked.pk or newest.pk in still_parked:
         return False
-    if newest.parent_task_id == parked.pk:  # ty: ignore[unresolved-attribute]
+    if newest.parent_task_id == parked.pk:
         return False
     return newest.created_at is not None and newest.created_at > question.created_at
 

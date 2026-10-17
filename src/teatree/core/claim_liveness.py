@@ -28,7 +28,7 @@ can prove premature, never widen one.
 
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -146,7 +146,7 @@ def current_owner() -> tuple[int, str]:
 
 
 @contextmanager
-def driving(task_pk: int) -> Iterator[None]:
+def driving(task_pk: int) -> Generator[None]:
     """Mark *task_pk* as executing in this process for the duration of the block.
 
     Entered around the whole in-process execution of a task, so a sweep on a sibling
