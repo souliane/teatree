@@ -14,7 +14,7 @@ from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
@@ -122,6 +122,17 @@ class CheckoutRecoveryTests(_RecoveryCase):
         extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         self.assert_parked(ProcessTable(frozenset({self.path}), "/host-proc"))
+
+    def test_recovery_refuses_visible_checkout_process_after_nested_writer(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        acquire(self.worktree, holder=task_holder_id(self.next_task))
+
+        table = ProcessTable(frozenset({self.path}), "/host-proc")
+        assert not reattest_on_proof(self.next_task, self.worktree, checkout_state(self.path), table)
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
 
     def test_a_hand_holder_between_runs_refuses(self) -> None:
         acquire(self.worktree, holder="operator", holder_session="terminal")

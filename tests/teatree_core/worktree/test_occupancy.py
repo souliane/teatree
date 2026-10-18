@@ -304,7 +304,7 @@ class MidRunCheckoutTests(TestCase):
             depths.append(len(connection.atomic_blocks))
             return ()
 
-        with patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=probe):
+        with patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=probe):
             self.run_to(finish)
         return depths
 
@@ -329,7 +329,7 @@ class MidRunCheckoutTests(TestCase):
         def finish(task: Task) -> None:
             Task.objects.get(pk=task.pk).fail(reason="cancelled: operator", by_holder=False)
             with (
-                patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes") as wait,
+                patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes") as wait,
                 pytest.raises(LeaseLostError),
             ):
                 task.complete()
@@ -347,7 +347,7 @@ class MidRunCheckoutTests(TestCase):
             return ()
 
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=cancel),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=cancel),
             pytest.raises(LeaseLostError),
         ):
             self.run_to(lambda task: task.complete())
@@ -362,7 +362,7 @@ class MidRunCheckoutTests(TestCase):
             return [object()]
 
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=cancel),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=cancel),
             patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
             pytest.raises(LeaseLostError),
         ):
@@ -377,7 +377,7 @@ class MidRunCheckoutTests(TestCase):
             return ()
 
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=cancel),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=cancel),
             pytest.raises(LeaseLostError),
         ):
             self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))
@@ -387,7 +387,7 @@ class MidRunCheckoutTests(TestCase):
 
     def test_blank_failure_reason_is_refused_before_checkout_settle(self) -> None:
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes") as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes") as wait,
             pytest.raises(ValueError, match="non-blank"),
         ):
             self.run_to(lambda task: task.fail_claimed(reason=" "))
@@ -402,7 +402,7 @@ class MidRunCheckoutTests(TestCase):
             waited_at.append(timezone.now())
             return ()
 
-        with patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=observe):
+        with patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=observe):
             self.run_to(
                 lambda task: record_result_envelope(task, {"summary": "reviewed"}, phase="architectural_review")
             )
