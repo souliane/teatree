@@ -228,14 +228,18 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
 
 
 def _remote_url(work_dir: str, remote: str) -> GitProbe:
-    """The location git contacts for *remote* — a name's first URL, a relative path anchored at the repo root."""
+    """The push location for *remote*, resolved in the checkout before a neutral probe."""
     if not remote or remote.startswith("-"):
         return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")
-    url = remote
-    configured = git_probe(work_dir, "remote", "get-url", remote)
+    configured = git_probe(work_dir, "remote", "get-url", "--push", remote)
     if configured.ok:
         url = configured.out
-    elif configured.code != _REMOTE_NOT_CONFIGURED:
+    elif configured.code == _REMOTE_NOT_CONFIGURED:
+        resolved = git_probe(work_dir, "ls-remote", "--get-url", "--", remote)
+        if not resolved.ok:
+            return resolved
+        url = resolved.out
+    else:
         return configured
     if not url or url.startswith("-"):
         return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")

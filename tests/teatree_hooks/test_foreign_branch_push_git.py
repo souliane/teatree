@@ -159,6 +159,40 @@ def test_url_scoped_system_helper_is_consulted_without_checkout_helper(
     assert not local_marker.exists()
 
 
+def test_rewritten_http_remote_ignores_checkout_credential_helper(
+    git_scene: tuple[Path, Path, str], challenge_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, _ = git_scene
+    alias = f"{challenge_url}/alias"
+    marker = tmp_path / "local-helper-ran"
+    helper = tmp_path / "local-helper"
+    helper.write_text(
+        f"#!/bin/sh\ntouch '{marker}'\nprintf 'username=sentinel\\npassword=sentinel\\n'\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    _git(work, "config", "--local", f"url.{challenge_url}.insteadOf", alias)
+    _git(work, "config", "--local", "credential.helper", str(helper))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+    executable = shutil.which("git")
+    assert executable is not None
+    subprocess.run(
+        [executable, "-C", str(work), "ls-remote", "--heads", alias, "refs/heads/main"],
+        capture_output=True,
+        check=False,
+    )
+    assert marker.exists()
+    marker.unlink()
+
+    probe = remote_branch_oid(str(work), alias, "main")
+
+    assert not probe.ok
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize(
     "helper_answer",
     ["", "username=sentinel\\npassword=sentinel\\n"],
@@ -338,7 +372,7 @@ def test_probe_argv_uses_remote_url_and_neutral_directory(tmp_path: Path) -> Non
     assert probe.out == oid
     config_argv = run.call_args_list[0].args[0]
     ls_argv = run.call_args_list[1].args[0]
-    assert config_argv[-3:] == ["remote", "get-url", "origin"]
+    assert config_argv[-4:] == ["remote", "get-url", "--push", "origin"]
     assert ls_argv[-5:] == ["ls-remote", "--heads", "--", "file:///remote.git", "refs/heads/main"]
     assert ls_argv[2] != str(tmp_path)
     assert "-c" not in ls_argv
