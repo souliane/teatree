@@ -110,7 +110,8 @@ the next writer attests it only after the process is gone and the state is uncha
 
 An attestable refusal also asks the owner in Slack. The card links the ticket,
 names the waiting step and what it will do, links any open pull request in the
-checkout's repo that it may hold up while open or says none was open when asked,
+checkout's repo that it may hold up while open or says none was open when asked;
+design-review and wrap-up cards link it without claiming those steps hold it up,
 gives the commit and uncommitted-file counts and whether nothing was found running,
 and says what Accept and Decline each do. A re-ask replaces a pending card when
 its step or pull-request wording changes.

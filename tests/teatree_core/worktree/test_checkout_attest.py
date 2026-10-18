@@ -246,6 +246,19 @@ class TestCheckoutAttestCard(TestCase):
         assert "no pull request for this folder was open when asked" in text
         assert other.url not in text
 
+    def test_design_review_and_wrap_up_do_not_claim_the_pull_request_waits(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        pull_request = PullRequestFactory(ticket=ticket)
+
+        for phase in ("architectural_review", "retro"):
+            with self.subTest(phase=phase):
+                row, text = _ask(TaskFactory(ticket=ticket, phase=phase))
+
+                assert pull_request.url in text
+                assert "may hold up" not in text
+                assert "may wait" not in text
+                assert "also has" in render_text(row)
+
     def test_checked_facts_do_not_repeat_the_missing_process_evidence(self) -> None:
         row, _text = _ask(TaskFactory(), host_evidence=False)
 

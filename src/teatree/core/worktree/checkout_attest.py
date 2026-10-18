@@ -20,16 +20,16 @@ from teatree.core.worktree.worktree_paths import paths_match
 
 logger = logging.getLogger(__name__)
 
-_STEPS: dict[str, tuple[str, str]] = {
-    "coding": ("coding", "write the change"),
-    "testing": ("testing", "run and fix the tests"),
-    "shipping": ("shipping", "push the work for review"),
-    "debugging": ("debugging", "fix a failing check"),
-    "e2e": ("end-to-end", "test the app end to end"),
-    "retro": ("wrap-up", "note lessons from the run"),
-    "architectural_review": ("design review", "fix design problems in the code"),
+_STEPS: dict[str, tuple[str, str, bool]] = {
+    "coding": ("coding", "write the change", True),
+    "testing": ("testing", "run and fix the tests", True),
+    "shipping": ("shipping", "push the work for review", True),
+    "debugging": ("debugging", "fix a failing check", True),
+    "e2e": ("end-to-end", "test the app end to end", True),
+    "retro": ("wrap-up", "note lessons from the run", False),
+    "architectural_review": ("design review", "fix design problems in the code", False),
 }
-_NEXT_STEP = ("next", "continue the work")
+_NEXT_STEP = ("next", "continue the work", False)
 
 
 class AttestRefusedError(RuntimeError):
@@ -106,18 +106,21 @@ def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
     return attestation
 
 
-def _options(attestation: CheckoutAttestation, *, blocks_pull_request: bool) -> tuple[CardOption, CardOption]:
+def _options(
+    attestation: CheckoutAttestation, *, has_pull_request: bool, may_block_pull_request: bool
+) -> tuple[CardOption, CardOption]:
     accept = (
         "The step resumes on the folder as it is; changes the factory did not make become part of its work."
         if attestation.host_evidence
         else "The step runs once on the folder as it is; "
         "edits the factory did not make, even unfinished ones, become part of its work."
     )
-    decline = (
-        "The step stays stuck until the folder changes; the pull request may wait while open."
-        if blocks_pull_request
-        else "The step stays stuck until the folder changes; no pull request for this folder was open when asked."
-    )
+    if may_block_pull_request:
+        decline = "The step stays stuck until the folder changes; the pull request may wait while open."
+    elif has_pull_request:
+        decline = "The step stays stuck until the folder changes; that pull request was open when asked."
+    else:
+        decline = "The step stays stuck until the folder changes; no pull request for this folder was open when asked."
     return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
 
@@ -125,13 +128,14 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
     ticket = task.ticket
     title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
     subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else title
-    step, work = _STEPS.get(normalize_phase(task.phase), _NEXT_STEP)
+    step, work, may_block_pull_request = _STEPS.get(normalize_phase(task.phase), _NEXT_STEP)
     pull_request = PullRequest.objects.first_live_url(ticket=ticket, repo=attestation.worktree.repo_path)
-    waits = (
-        f"it may hold up <{pull_request}|this pull request> while open"
-        if pull_request
-        else "no pull request for this folder was open when asked"
-    )
+    if pull_request and may_block_pull_request:
+        waits = f"it may hold up <{pull_request}|this pull request> while open"
+    elif pull_request:
+        waits = f"this ticket also has <{pull_request}|an open pull request>"
+    else:
+        waits = "no pull request for this folder was open when asked"
     state = attestation.state
     process_fact = (
         "Nothing is running in the checkout."
@@ -154,7 +158,11 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
         ),
         blocker="Only the owner may accept a checkout state the factory did not record.",
         why=f"It will {work}; {waits}; {doubt}.",
-        options=_options(attestation, blocks_pull_request=bool(pull_request)),
+        options=_options(
+            attestation,
+            has_pull_request=bool(pull_request),
+            may_block_pull_request=bool(pull_request) and may_block_pull_request,
+        ),
         action=attestation.action,
     )
     return f"Should the {step} step of {subject} run on its working folder as it is now?", card
