@@ -15,9 +15,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Task, Worktree
 from teatree.core.models.task_claim import drive_claim
@@ -293,6 +295,34 @@ class MidRunCheckoutTests(TestCase):
             self.run_to(lambda task: task.complete(), held_at_exit=True)
         row = Worktree.objects.get(pk=self.worktree.pk)
         assert "deferred_exit" not in row.get_extra()
+
+    def transaction_depths_at_process_wait(self, finish: Callable[[Task], None]) -> list[int]:
+        depths: list[int] = []
+
+        def probe(_checkout: Path) -> tuple[()]:
+            depths.append(len(connection.atomic_blocks))
+            return ()
+
+        with patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=probe):
+            self.run_to(finish)
+        return depths
+
+    def test_completion_waits_on_live_processes_before_opening_its_write_transaction(self) -> None:
+        baseline = len(connection.atomic_blocks)
+
+        assert self.transaction_depths_at_process_wait(lambda task: task.complete()) == [baseline]
+
+    def test_a_recorded_result_waits_on_live_processes_before_opening_its_write_transaction(self) -> None:
+        self.task.phase = "architectural_review"
+        self.task.save(update_fields=["phase"])
+        baseline = len(connection.atomic_blocks)
+
+        depths = self.transaction_depths_at_process_wait(
+            lambda task: record_result_envelope(task, {"summary": "reviewed"}, phase="architectural_review")
+        )
+
+        assert depths == [baseline]
+        assert Task.objects.get(pk=self.task.pk).status == Task.Status.COMPLETED
 
 
 class RefuseIfOccupiedTests(_OccupancyCase):

@@ -13,6 +13,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
+from teatree.core.models.checkout_exit import atomic_after_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
@@ -270,7 +271,7 @@ class Task(models.Model):
         ``complete_claimed`` refuses the write when a rival reclaimed the
         row under this worker, raising ``LeaseLostError``.
         """
-        with transaction.atomic():
+        with atomic_after_checkout_exit(self):
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self._advance_ticket()
             self.observe_transition("task.completed")
@@ -296,7 +297,7 @@ class Task(models.Model):
         """
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
-        with transaction.atomic():
+        with atomic_after_checkout_exit(self):
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self.observe_transition("task.completed")
         try:
