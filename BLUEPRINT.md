@@ -863,14 +863,15 @@ post-write result.
   is a line-level upsert rather than an append, so it keeps its own `update_issue` and
   its allowlist row, but its read now goes through the Rule 5 guard: the body each
   upsert is computed from is the body it was authorised on, one fetch.
-- **One read of `self_forge_identities`, three consumers.**
+- **One read of `self_forge_identities`.**
   `core.self_forge_identities.declared_identities_for_url` is the URL-keyed face of
   `hooks.foreign_mr_cli.declared_self_identities_raw`, the single read of that setting —
-  the foreign-MR push gate, the review-candidate self-author skip and this guard had
-  each hand-rolled it, which is how they drifted on case. The shared reader PRESERVES
-  case, deliberately: the push gate lowercases and the review-candidate comparison is
-  case-sensitive, so folding in the reader would have silently narrowed the latter. The
-  primitive lives in the hooks layer because the cold PreToolUse subprocess reads it too
+  the foreign-MR push gate, the review-candidate self-author skip, this guard and
+  `cli.review.own_mr.owner_authored_mr` use it. The review own-MR proof includes
+  logins declared in `self_forge_identities` for the API host. The shared reader
+  PRESERVES case: the push gate lowercases, review-candidate casefolds, and the
+  review own-MR proof compares exactly. The primitive lives in the hooks layer
+  because the cold PreToolUse subprocess reads it too
   and may import only stdlib plus `teatree.config`.
 - **The MCP create dedupes in two calls, so the pass cannot be skipped.**
   `<forge>_issue_create` is the surface an agent actually files from, so it is where a

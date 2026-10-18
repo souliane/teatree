@@ -377,7 +377,8 @@ class ReviewService:
         AUTHORED, replying to a reviewer is the owner's own voice on the
         owner's own work and posts without approval. Authorship is PROVED
         here — :func:`~teatree.cli.review.own_mr.owner_authored_mr` reads the
-        MR's author against the posting identity and fails CLOSED — and the
+        MR's author against the posting identity, aliases, and API-host bot
+        declarations and fails CLOSED — and the
         proof is passed to the peek and the publish so both resolve the same
         verdict. A reply on a COLLEAGUE's MR is unaffected and stays gated.
         The receipt DM fires from the publish body either way.
