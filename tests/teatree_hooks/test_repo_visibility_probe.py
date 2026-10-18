@@ -134,24 +134,62 @@ class TestOnlyATransientForgeFailureIsAskedAgain:
             unresolved="a process start the host refused (EAGAIN), then a process start the host refused (EAGAIN)",
         )
 
-    def test_each_attempt_takes_its_own_timeout_from_the_schedule(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        run = Mock(side_effect=_raise_timeout)
-        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
 
-        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
-            stdout=None, unresolved="timeout of 3s, then timeout of 5s"
-        )
-        assert [call.kwargs["timeout"] for call in run.call_args_list] == [3, 5]
+@pytest.mark.parametrize(
+    ("tool", "code", "stderr", "expected"),
+    [
+        ("gh", 4, "authentication required", True),
+        ("gh", 1, "HTTP 401: Bad credentials", True),
+        ("gh", 1, "HTTP 502: Bad Gateway", False),
+        ("glab", 4, "unknown command", False),
+    ],
+)
+def test_gh_credential_refusal_is_distinct_from_other_forge_failures(
+    monkeypatch: pytest.MonkeyPatch, tool: str, code: int, stderr: str, *, expected: bool
+) -> None:
+    error = CommandFailedError([tool], code, "", stderr)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", Mock(side_effect=error))
 
-    def test_no_attempt_starts_once_the_budget_is_spent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        run = Mock(side_effect=_raise_timeout)
-        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
-        affordable = {3: 2.5}
+    probe = run_forge_tool(tool, ["api", "user"])
 
-        assert run_forge_tool("glab", ["api", "user"], budget=affordable.get) == ForgeProbe(
-            stdout=None, unresolved="timeout of 2.5s, then no time left in the hook budget"
-        )
-        assert [call.kwargs["timeout"] for call in run.call_args_list] == [2.5]
+    assert probe.credential_refused is expected
+
+
+def test_forge_stderr_is_scrubbed_before_the_cause_is_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel = "gh" + "p_" + "s" * 36
+    monkeypatch.setenv("GH_TOKEN", sentinel)
+    monkeypatch.setattr(
+        _repo_visibility,
+        "run_allowed_to_fail",
+        Mock(side_effect=CommandFailedError(["gh"], 4, "", "x" * 390 + sentinel + " denied")),
+    )
+
+    probe = run_forge_tool("gh", ["api", "user"])
+
+    assert sentinel not in probe.unresolved
+    assert sentinel[:15] not in probe.unresolved
+    assert "<redacted>" in probe.unresolved
+
+
+def test_each_attempt_takes_its_own_timeout_from_the_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock(side_effect=_raise_timeout)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+
+    assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
+        stdout=None, unresolved="timeout of 3s, then timeout of 5s"
+    )
+    assert [call.kwargs["timeout"] for call in run.call_args_list] == [3, 5]
+
+
+def test_no_attempt_starts_once_the_budget_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock(side_effect=_raise_timeout)
+    monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+    affordable = {3: 2.5}
+
+    assert run_forge_tool("glab", ["api", "user"], budget=affordable.get) == ForgeProbe(
+        stdout=None, unresolved="timeout of 2.5s, then no time left in the hook budget"
+    )
+    assert [call.kwargs["timeout"] for call in run.call_args_list] == [2.5]
 
 
 class TestNegativeVisibilityCaching:
