@@ -27,7 +27,7 @@ _STEPS: dict[str, tuple[str, str, bool]] = {
     "debugging": ("debugging", "fix a failing check", True),
     "e2e": ("end-to-end", "test the app end to end", True),
     "retro": ("wrap-up", "note lessons from the run", False),
-    "architectural_review": ("design review", "fix design problems in the code", False),
+    "architectural_review": ("design review", "fix design problems", False),
 }
 _NEXT_STEP = ("next", "continue the work", False)
 

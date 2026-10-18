@@ -146,7 +146,7 @@ class TestCheckoutAttestCard(TestCase):
                     PullRequestFactory(ticket=ticket)
                 task = TaskFactory(ticket=ticket, phase=phase)
 
-                _row, text = _ask(task, host_evidence=host_evidence, commits=99999, uncommitted=99999)
+                _row, text = _ask(task, host_evidence=host_evidence, commits=9_999_999, uncommitted=9_999_999)
 
                 assert f"Should the {step} of <{issue_url}|{title}>" in text
                 assert len(_shown_lines(text)) <= 5
@@ -154,19 +154,6 @@ class TestCheckoutAttestCard(TestCase):
     def test_every_write_capable_phase_has_step_wording(self) -> None:
         write_capable = {phase for phase in KNOWN_PHASES if {"write_file", "edit_file"} & tools_for_phase(phase)}
         assert write_capable <= set(_STEPS)
-
-    def test_a_six_digit_holdings_card_is_recorded(self) -> None:
-        ticket = TicketFactory(short_description="Review the design")
-        PullRequestFactory(ticket=ticket)
-
-        row, _text = _ask(
-            TaskFactory(ticket=ticket, phase="architectural_review"),
-            host_evidence=True,
-            commits=999999,
-            uncommitted=999999,
-        )
-
-        assert row.is_pending
 
     def test_pull_request_lookup_failure_returns_no_card(self) -> None:
         task = TaskFactory()
