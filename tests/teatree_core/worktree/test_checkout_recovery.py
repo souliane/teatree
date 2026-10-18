@@ -117,12 +117,6 @@ class CheckoutRecoveryTests(_RecoveryCase):
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] == self.anchor
 
-    def test_nested_previous_writer_still_refuses_visible_checkout_process(self) -> None:
-        extra = self.worktree.get_extra()
-        extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
-        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
-        self.assert_parked(ProcessTable(frozenset({self.path}), "/host-proc"))
-
     def test_recovery_refuses_visible_checkout_process_after_nested_writer(self) -> None:
         extra = self.worktree.get_extra()
         extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
