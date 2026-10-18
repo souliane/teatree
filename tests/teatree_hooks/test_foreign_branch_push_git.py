@@ -20,6 +20,8 @@ from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun, _
 from hooks.scripts.foreign_branch_push_git import GitProbe, live_remote_range, remote_branch_oid
 from hooks.scripts.foreign_branch_push_text import credential_fault_refusal
 from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS
+from teatree.hooks._repo_visibility import ForgeProbe
+from teatree.hooks.foreign_mr_cli import OpenMr
 
 
 def _git(work: Path, *args: str) -> str:
@@ -293,6 +295,30 @@ def test_routed_ls_remote_credential_refusal_names_venue_fault(
     assert reason is not None
     assert "Venue fault" in reason
     assert "GitHub rejected the GH_TOKEN" in reason
+
+
+def test_routed_forge_login_credential_refusal_names_venue_fault(
+    git_scene: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, oid = git_scene
+    _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
+    monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
+    monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    found = GitProbe(ok=True, out=oid)
+    refused = ForgeProbe(stdout=None, unresolved="gh exit 4: HTTP 401", credential_refused=True)
+
+    with (
+        patch("hooks.scripts.foreign_branch_push_gate.remote_branch_oid", return_value=found),
+        patch("hooks.scripts.foreign_branch_push_gate._open_mrs", return_value=((OpenMr("1", "colleague"),), None)),
+        patch("teatree.hooks.foreign_mr_cli.run_forge_tool", return_value=refused),
+    ):
+        reason = _branch_refusal(spec, "main", _ForgeRun())
+
+    assert reason is not None
+    assert "Venue fault" in reason
+    assert "Ownership could not be established" not in reason
+    assert "sentinel-task-token" not in reason
 
 
 def test_unrouted_ls_remote_credential_refusal_keeps_general_refusal(
