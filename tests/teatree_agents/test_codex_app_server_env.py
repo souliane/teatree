@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from teatree.agents.codex_app_server_env import codex_process_env
+from teatree.agents.codex_app_server_env import codex_process_env, router_process_env
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 _SECRETS = {
@@ -37,6 +37,23 @@ def test_the_routed_token_and_the_worker_cap_are_the_only_dispatch_keys_taken(tm
 
 def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:
     assert "GH_TOKEN" not in _env(tmp_path / "home")
+
+
+def test_router_keeps_worker_hook_paths_without_inheriting_other_credentials() -> None:
+    hook_env = {
+        "T3_DATA_DIR": "/tmp/t3-data",
+        "XDG_DATA_HOME": "/tmp/xdg-data",
+        "UV_TOOL_DIR": "/tmp/uv-tools",
+        "T3_HOOK_PYTHON": "/tmp/python",
+        "T3_HOOK_STATE_DIR": "/tmp/hook-state",
+        "T3_SKILL_SEARCH_DIRS": "/tmp/skills",
+        "TEATREE_TERM_REGISTRY": "test-registry",
+    }
+
+    env = router_process_env({}, ambient={"PATH": "/usr/bin", **hook_env, **_SECRETS})
+
+    assert {key: env[key] for key in hook_env} == hook_env
+    assert not _SECRETS.keys() & env.keys()
 
 
 def test_git_answers_a_github_credential_request_with_the_routed_token(tmp_path: Path) -> None:
