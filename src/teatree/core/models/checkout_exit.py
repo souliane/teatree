@@ -20,6 +20,7 @@ class CheckoutExit:
 class CheckoutExitScope:
     prepare: Callable[["Task", bool], CheckoutExit | None]
     settled: CheckoutExit | None = None
+    settled_for: tuple[int, bool] | None = None
     park_attests: bool = False
     verified_run: bool = False
 
@@ -41,8 +42,15 @@ def prepared_checkout_exit(task: "Task", *, attest: bool = True) -> CheckoutExit
     scope = _checkout_exit.get()
     if scope is None:
         return None
-    scope.settled = scope.prepare(task, attest)
+    if scope.settled_for != (task.pk, attest):
+        scope.settled, scope.settled_for = scope.prepare(task, attest), (task.pk, attest)
     return scope.settled
+
+
+def forget_checkout_exit() -> None:
+    if (scope := _checkout_exit.get()) is not None:
+        scope.settled = None
+        scope.settled_for = None
 
 
 def attest_checkout_on_park() -> None:
