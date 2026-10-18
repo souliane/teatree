@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
-from teatree.loop.scanners.base import ScannerError, ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
 from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
@@ -196,7 +196,7 @@ class PrSweepScanner:
         errors: list[ScannerError] = []
         for slug in self.repos:
             try:
-                prs = self._safe_list(slug)
+                prs = self._list_open_prs(slug)
             except ScannerError as exc:
                 # F5.8: record-and-continue rather than re-raise mid-pass. A
                 # later repo's auth/rate-limit failure must not discard the
@@ -242,7 +242,7 @@ class PrSweepScanner:
         :class:`MergeAttempt` (``None`` when the PR is no longer open, so a
         merged / closed PR is a quiet no-op rather than an error).
         """
-        pr = next((candidate for candidate in self._safe_list(slug) if candidate.number == pr_id), None)
+        pr = next((candidate for candidate in self._list_open_prs(slug) if candidate.number == pr_id), None)
         if pr is None:
             return None
         attempt = self._evaluate(pr)
@@ -260,7 +260,7 @@ class PrSweepScanner:
             attempt.merged,
         )
 
-    def _safe_list(self, slug: str) -> list[PrSummary]:
+    def _list_open_prs(self, slug: str) -> list[PrSummary]:
         try:
             return self.api.list_open_prs(slug=slug)
         except ScannerError:
@@ -268,9 +268,13 @@ class PrSweepScanner:
             # so this scanner is recorded in ``report.errors`` and skipped for
             # one tick (#1287). Silently swallowing would mask the failure.
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("pr_sweep failed to list PRs for %s", slug)
-            return []
+            raise ScannerError(
+                scanner="pr_sweep",
+                error_class=ScannerErrorClass.UNKNOWN,
+                detail=f"Could not list open PRs for {slug} ({type(exc).__name__})",
+            ) from exc
 
     def _evaluate(self, pr: PrSummary) -> MergeAttempt:
         if pr.is_conflicted:

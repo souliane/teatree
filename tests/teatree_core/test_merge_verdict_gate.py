@@ -9,8 +9,7 @@ at the live head — every HOLD remains active until a newly reviewed head repla
 The keystone-path tests drive the REAL ``merge_ticket_pr`` (so the gate is the
 production ``execute_bound_merge`` chokepoint, only the ``gh`` subprocess is
 stubbed). The solo-path tests drive ``PrSweepScanner._evaluate_solo_overlay``
-through ``scan()`` so the companion ``has_independent_cold_review`` predicate
-(the defence-in-depth flag) is exercised on the same standing-hold rule.
+through ``scan()`` so ``head_review_state`` exercises the same standing-hold rule.
 
 Every "refuse" scenario merges on the pre-#2829 code (no gate) — they are the
 RED-before-fix anti-vacuity proof: each asserts the PR is NOT merged AND the

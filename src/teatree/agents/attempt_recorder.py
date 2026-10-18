@@ -44,7 +44,7 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
-from teatree.core.models.checkout_exit import atomic_after_checkout_exit
+from teatree.core.models.task_claim import atomic_after_checkout_exit
 
 if TYPE_CHECKING:
     from teatree.agents.pydantic_ai_turn import ToolCallEntry
@@ -220,12 +220,13 @@ def record_result_envelope(
 
     record_reactive_envelopes(task, result, phase=phase)
 
+    ended_at = timezone.now()
     try:
         with atomic_after_checkout_exit(task):
             recorded_result = with_transport_records(result, usage)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                ended_at=timezone.now(),
+                ended_at=ended_at,
                 exit_code=0,
                 result=recorded_result,
                 **usage_fields(usage),

@@ -6,8 +6,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from django.db import transaction
-
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
@@ -49,12 +47,10 @@ def prepared_checkout_exit(task: "Task", *, attest: bool = True) -> CheckoutExit
     return scope.settled
 
 
-@contextmanager
-def atomic_after_checkout_exit(task: "Task") -> Generator[None]:
-    """Settle *task*'s checkout exit, then open the terminal write: the settle can wait minutes on live processes."""
-    prepared_checkout_exit(task)
-    with transaction.atomic():
-        yield
+def forget_checkout_exit() -> None:
+    if (scope := _checkout_exit.get()) is not None:
+        scope.settled = None
+        scope.settled_for = None
 
 
 def attest_checkout_on_park() -> None:
