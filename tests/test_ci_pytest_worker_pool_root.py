@@ -14,10 +14,11 @@ def _pytest_steps() -> list[tuple[str, str]]:
 
 class TestPytestWorkerPoolRoot:
     def test_host_steps_inherit_the_runner_local_root(self) -> None:
-        assert load()["env"]["T3_LOOP_REGISTRY_DIR"] == "/tmp"
+        assert load()["env"]["TEATREE_PYTEST_WORKER_POOL_ROOT"] == "/tmp"
+        assert "T3_LOOP_REGISTRY_DIR" not in load()["env"]
 
     def test_every_dockerized_pytest_forwards_the_root(self) -> None:
         dockerized = [(name, run) for name, run in _pytest_steps() if "docker run" in run]
         assert dockerized
-        missing = [name for name, run in dockerized if "-e T3_LOOP_REGISTRY_DIR=/tmp" not in run]
+        missing = [name for name, run in dockerized if "-e TEATREE_PYTEST_WORKER_POOL_ROOT=/tmp" not in run]
         assert missing == []

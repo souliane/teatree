@@ -51,9 +51,8 @@ from teatree.core.admission_pressure import (
 )
 from teatree.core.models import ConfigSetting
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
-from teatree.quality.pytest_resource_contract import TOTAL_TEST_WORKERS_PER_CORE
+from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV, TOTAL_TEST_WORKERS_PER_CORE, worker_pool_root
 from teatree.utils import ram_scope
-from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_scope import RamHeadroom
 from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB, PINNED_CORES, PINNED_LOAD1
 
@@ -334,8 +333,8 @@ class TestTestWorkerCapWiring:
     def test_cap_applies_even_when_the_child_inherits_the_ambient_env(self) -> None:
         capped = with_test_worker_cap(None, active_agents=4)
         assert capped is not None
-        assert set(capped) == {XDIST_WORKERS_VAR, "T3_LOOP_REGISTRY_DIR"}
-        assert capped["T3_LOOP_REGISTRY_DIR"] == str(loop_registry_dir())
+        assert set(capped) == {XDIST_WORKERS_VAR, POOL_ROOT_ENV}
+        assert capped[POOL_ROOT_ENV] == str(worker_pool_root())
 
 
 class TestTheExportedCapRespondsToMemory:

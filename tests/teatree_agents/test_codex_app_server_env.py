@@ -5,8 +5,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from teatree.agents.codex_app_server_env import codex_process_env
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
@@ -34,35 +32,34 @@ def test_the_routed_token_and_the_worker_cap_are_the_only_dispatch_keys_taken(tm
             **_SECRETS,
             "GH_TOKEN": "ghp-routed",
             "PYTEST_XDIST_AUTO_NUM_WORKERS": "3",
-            "T3_LOOP_REGISTRY_DIR": str(shared_root),
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
         },
     )
 
     assert env["GH_TOKEN"] == "ghp-routed"
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
-    assert env["T3_LOOP_REGISTRY_DIR"] == str(shared_root)
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
     assert env["T3_DISPATCHED_AGENT"] == "1"
     assert not {key for key in _SECRETS if key != "GH_TOKEN"} & env.keys()
     assert "ghp-routed" not in {value for key, value in env.items() if key != "GH_TOKEN"}
     assert not {"ambient-gh-secret", "ambient-github-secret"} & set(env.values())
 
 
-def test_codex_process_without_dispatch_uses_the_parent_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    shared_root = tmp_path / "xdg" / "teatree"
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared-pool"
+    env = codex_process_env(
+        tmp_path / "private-home",
+        ambient={
+            "PATH": "/usr/bin",
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+        },
+    )
 
-    env = _env(tmp_path / "private-home")
-
-    assert env["T3_LOOP_REGISTRY_DIR"] == str(shared_root)
-    assert env["HOME"] != str(shared_root.parent)
-
-
-def test_an_empty_pool_override_uses_the_parent_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-
-    env = codex_process_env(tmp_path / "private-home", ambient={"PATH": "/usr/bin", "T3_LOOP_REGISTRY_DIR": ""})
-
-    assert env["T3_LOOP_REGISTRY_DIR"] == str(tmp_path / "xdg" / "teatree")
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
 
 
 def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:

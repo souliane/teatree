@@ -133,7 +133,7 @@ permissions:
   contents: read
 
 env:
-  T3_LOOP_REGISTRY_DIR: /tmp
+  TEATREE_PYTEST_WORKER_POOL_ROOT: /tmp
 
 # Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
 # push-to-main or scheduled run (unique run_id group) so the full-tree
@@ -875,7 +875,7 @@ jobs:
           -e COVERAGE_FILE=/app/coverage.shard${{ matrix.group }}
           -e PYTHONPATH=/app
           -e TEATREE_TEST_DB_TEMPLATE_DIR=/app/.cache/django-test-template
-          -e T3_LOOP_REGISTRY_DIR=/tmp
+          -e TEATREE_PYTEST_WORKER_POOL_ROOT=/tmp
           ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -p no:tach
@@ -1168,7 +1168,7 @@ jobs:
           -v "$PWD":/app
           -e PYTHONPATH=/app
           -e TEATREE_JSCPD_SCAN=1
-          -e T3_LOOP_REGISTRY_DIR=/tmp
+          -e TEATREE_PYTEST_WORKER_POOL_ROOT=/tmp
           ${{ needs.build-image.outputs.image }}
           uv run -p 3.13 pytest --no-header -q -s -n0
           -o cache_dir=/tmp/.pytest_cache
