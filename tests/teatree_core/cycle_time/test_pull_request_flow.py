@@ -40,6 +40,42 @@ class PullRequestFlowTests(TestCase):
 
         assert durations == pytest.approx((6 * 3600,), abs=1)
 
+    def test_first_admission_sets_open_age_and_merged_duration_after_readmission(self) -> None:
+        pr = self._pr(hours=8)
+        later = TaskFactory(ticket=pr.ticket, session=SessionFactory(ticket=pr.ticket), phase="coding")
+        Task.objects.filter(pk=later.pk).update(admitted_at=self.now - timedelta(hours=2))
+
+        open_row = open_pull_requests(now=self.now)[0]
+
+        assert open_row.age_hours == pytest.approx(8, abs=0.1)
+
+        PullRequest.objects.filter(pk=pr.pk).update(state=PullRequest.State.MERGED)
+        edge = TicketTransitionFactory(
+            ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+        )
+        TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now)
+
+        durations = merged_pull_request_seconds(
+            since=self.now - timedelta(days=1), until=self.now + timedelta(seconds=1)
+        )
+
+        assert durations == pytest.approx((8 * 3600,), abs=1)
+
+    def test_merged_duration_excludes_other_overlays(self) -> None:
+        included = self._pr(hours=6, state=PullRequest.State.MERGED)
+        excluded = self._pr(hours=12, state=PullRequest.State.MERGED, overlay="other")
+        for pr in (included, excluded):
+            edge = TicketTransitionFactory(
+                ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now)
+
+        durations = merged_pull_request_seconds(
+            since=self.now - timedelta(days=1), until=self.now + timedelta(seconds=1), overlay="t3-teatree"
+        )
+
+        assert durations == pytest.approx((6 * 3600,), abs=1)
+
     def test_merge_before_first_admission_is_excluded(self) -> None:
         pr = self._pr(hours=1, state=PullRequest.State.MERGED)
         edge = TicketTransitionFactory(

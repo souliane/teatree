@@ -138,6 +138,20 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         assert drain_queue_body()["enqueued"] == [started.pk]
         assert not self._admitted(older)
 
+    def test_started_planning_pull_request_precedes_unstarted_coding_task(self) -> None:
+        self._fill_coding_lane()
+        unstarted = self._task("coding")
+        started_ticket = Ticket.objects.create()
+        first = self._task("scoping", status=Task.Status.COMPLETED, ticket=started_ticket)
+        Task.objects.filter(pk=first.pk).update(admitted_at=timezone.now() - dt.timedelta(hours=2))
+        started = self._task("planning", ticket=started_ticket)
+        PullRequest.objects.record_opened(
+            ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/13"
+        )
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(unstarted)
+
     def test_oldest_started_pull_request_precedes_older_task_row(self) -> None:
         self._fill_coding_lane()
         newer_ticket = Ticket.objects.create()
