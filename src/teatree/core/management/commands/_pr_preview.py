@@ -45,7 +45,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
     """Return ``(repo_path, title, description)`` for the PR that will ship.
 
     The title is resolved through ``runners.ship.resolve_pr_title`` — the SAME
-    helper ``ShipExecutor._build_pr_spec`` uses — so the preview (and the
+    helper ``ShipExecutor.build_pr_spec`` uses — so the preview (and the
     ``pr create`` preflight built on it) validate the title that will actually
     ship, not a title regenerated from the commit subject. An explicit
     ``--title`` (the ``title`` arg) wins, then a title pinned on
@@ -53,7 +53,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
     (``metadata.build_pr_title``, returning the subject unchanged by default),
     then the ``Resolve <issue_url>`` fallback.
 
-    Honoring the override here is parity with ``_build_pr_spec``: ignoring it
+    Honoring the override here is parity with ``build_pr_spec``: ignoring it
     made the preflight apply an overlay's title grammar (e.g. a customer-MR
     requiring a GitLab issue URL) to the wrong title, false-failing a tooling
     PR whose pinned title satisfied the grammar.

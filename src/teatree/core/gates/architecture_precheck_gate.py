@@ -16,7 +16,7 @@ A body with no pre-check section — a tactical change that legitimately skips t
 gate — is silent, so ``precheck_findings``'s all-unanswered result on freeform
 prose never surfaces as a spurious warn.
 
-Shared by both PR-creation chokepoints (``ShipExecutor._build_pr_spec`` and the
+Shared by both PR-creation chokepoints (``ShipExecutor.build_pr_spec`` and the
 orphan-branch ``create_or_defer_pr``) so the warn cannot drift between them.
 """
 
