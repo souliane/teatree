@@ -1,4 +1,4 @@
-"""Inspect a run's own checkout processes before releasing or stopping them."""
+"""Inspect checkout processes and stop owned survivors at run exit."""
 
 import ctypes
 import errno
@@ -142,12 +142,18 @@ def wait_for_owned_checkout_processes(
 def finish_owned_checkout_processes(
     checkout: Path, *, beat_seconds: float = OWN_PROCESS_BEAT_SECONDS
 ) -> tuple[CheckoutProcess, ...]:
+    def same_identity(process: CheckoutProcess) -> bool:
+        return any(
+            (current.pid, current.started) == (process.pid, process.started) and not current.shared_server
+            for current in owned_checkout_processes(checkout)
+        )
+
     survivors = wait_for_owned_checkout_processes(checkout, beat_seconds=beat_seconds)
     if not survivors:
         return ()
     for process in survivors:
         if process.stoppable_on_exit:
-            _stop_if(process.pid, lambda process=process: process in owned_checkout_processes(checkout))
+            _stop_if(process.pid, lambda process=process: same_identity(process))
     if not any(process.stoppable_on_exit for process in survivors):
         return survivors
     time.sleep(beat_seconds)
@@ -156,7 +162,7 @@ def finish_owned_checkout_processes(
         if process.stoppable_on_exit:
             _stop_if(
                 process.pid,
-                lambda process=process: process in owned_checkout_processes(checkout),
+                lambda process=process: same_identity(process),
                 stop_signal=signal.SIGKILL,
             )
     return wait_for_owned_checkout_processes(checkout, beat_seconds=beat_seconds)

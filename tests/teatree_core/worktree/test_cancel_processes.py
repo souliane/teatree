@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.cleanup.process_table import venue_proc_root
+from teatree.core.worktree import cancel_processes
 from teatree.core.worktree.cancel_processes import (
     _PIDFD_OPEN,
     StopResult,
@@ -161,6 +162,46 @@ def test_finished_run_ends_its_marked_test_process_before_releasing_checkout(
     try:
         assert finish_owned_checkout_processes(checkout, beat_seconds=0.01) == ()
         assert child.wait(timeout=10) == -(signal.SIGKILL if ignore_term else signal.SIGTERM)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate()
+
+
+@pytest.mark.skipif(sys.platform != "linux" or venue_proc_root() is None, reason="needs a Linux /proc and pidfd")
+def test_exit_stops_child_when_its_writer_flag_changes_during_identity_check(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = """
+import sys
+handle = open('partial.txt', 'w')
+print('ready', flush=True)
+for _ in sys.stdin:
+    if handle is None:
+        handle = open('partial.txt', 'w')
+    else:
+        handle.close()
+        handle = None
+    print('toggled', flush=True)
+"""
+    child = subprocess.Popen([sys.executable, "-c", code], cwd=checkout, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    assert child.stdin is not None
+    assert child.stdout is not None
+    assert child.stdout.readline() == b"ready\n"
+    assert owned_checkout_processes(checkout)[0].writer
+    syscall = cancel_processes._syscall
+
+    def toggle_before_pidfd_open(number: int, *args: int | None) -> int:
+        if number == _PIDFD_OPEN:
+            child.stdin.write(b"toggle\n")
+            child.stdin.flush()
+            assert child.stdout.readline() == b"toggled\n"
+        return syscall(number, *args)
+
+    try:
+        with patch.object(cancel_processes, "_syscall", side_effect=toggle_before_pidfd_open):
+            assert finish_owned_checkout_processes(checkout, beat_seconds=0.01) == ()
+        assert child.wait(timeout=10) == -signal.SIGTERM
     finally:
         if child.poll() is None:
             child.kill()
