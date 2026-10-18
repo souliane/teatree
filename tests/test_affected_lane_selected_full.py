@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.quality.affected_tests import Selection
+
 _BASH = shutil.which("bash") or "/bin/bash"
 _LANE = Path(__file__).resolve().parents[1] / "dev" / "test-affected.sh"
 _SCOPED = "--tach --tach-base origin/main -p teatree.quality.force_keep_plugin"
@@ -40,11 +42,19 @@ def _pytest_argv(tmp_path: Path, *lane_args: str, selection: str) -> list[str]:
     return result.stdout.splitlines()
 
 
-@pytest.mark.parametrize(("lane_args", "selection"), [(("--full",), ""), ((), "--create-db")])
+@pytest.mark.parametrize(
+    ("lane_args", "selection"),
+    [(("--full",), ""), ((), " ".join(Selection(full=True, reason="migration", create_db=True).pytest_args()))],
+)
 def test_a_full_verdict_declares_itself_to_the_whole_tree_guard(
     tmp_path: Path, lane_args: tuple[str, ...], selection: str
 ) -> None:
     assert "--teatree-selected-full" in _pytest_argv(tmp_path, *lane_args, selection=selection)
+
+
+def test_a_full_verdict_without_a_database_change_runs_the_whole_tree(tmp_path: Path) -> None:
+    selection = " ".join(Selection(full=True, reason="changed selector").pytest_args())
+    assert "--teatree-selected-full" in _pytest_argv(tmp_path, selection=selection)
 
 
 def test_a_scoped_selection_stays_under_the_whole_tree_guard(tmp_path: Path) -> None:

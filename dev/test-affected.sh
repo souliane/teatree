@@ -75,7 +75,7 @@ fi
 # The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
 # a scoped run adds `--tach --tach-base <base> -p teatree.quality.force_keep_plugin`
 # (plugin deselects, force-keep layer re-adds our escalations) plus any --doctest-modules
-# targets and --create-db; a FULL run emits at most --create-db and runs the whole suite.
+# targets and --create-db; a FULL run emits --teatree-selected-full and any DB flag.
 t3 tool affected-tests --base "$BASE"
 echo "==="
 
@@ -88,14 +88,4 @@ if [[ -z "$SELECTED_OUTPUT" ]]; then
     exit 4
 fi
 read -r -a SELECTED <<< "$SELECTED_OUTPUT"
-# A FULL verdict emits no --tach flag ⇒ the whole suite runs.
-SELECTED_FULL=1
-for arg in ${SELECTED[@]+"${SELECTED[@]}"}; do
-    if [[ "$arg" == "--tach" ]]; then
-        SELECTED_FULL=0
-    fi
-done
-if [[ "$SELECTED_FULL" == "1" ]]; then
-    SELECTED+=(--teatree-selected-full)
-fi
 exec uv run pytest --no-cov -n auto --reuse-db ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
