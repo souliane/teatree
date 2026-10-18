@@ -612,7 +612,7 @@ class CheckoutFenceTests(TestCase):
         wait.assert_called_once()
         assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 
-    def test_a_reaped_run_waits_for_its_processes_and_never_attests(self) -> None:
+    def test_a_reaped_run_finishes_owned_processes_without_attesting(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         verify_task_checkout(self.task, str(self.checkout))
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
@@ -623,7 +623,7 @@ class CheckoutFenceTests(TestCase):
         ):
             (self.checkout / "partial.txt").write_text("half done")
             Task.objects.get(pk=self.task.pk).fail(reason="lease_expired: reaped", by_holder=False)
-        wait.assert_called_once()
+        wait.assert_called_once_with(self.checkout)
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] == initial

@@ -99,7 +99,7 @@ logger = logging.getLogger(__name__)
 
 
 def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait: bool = True) -> CheckoutExit:
-    """Wait for the run's own processes, then say whether its checkout may be released and what it attests."""
+    """Finish owned processes when requested, then check release and attestation evidence."""
     path = Path(worktree.worktree_path)
     if wait and finish_owned_checkout_processes(path):
         return _defer_checkout_exit(task, worktree, attest=attest, cause="own_processes")
@@ -138,12 +138,12 @@ def _defer_checkout_exit(
 
 
 def _prepare_task_checkout_exit(
-    task: Task, ticket: "Ticket", *, attest: bool, holder: str, holder_session: str
+    task: Task, *, attest: bool, wait: bool, holder: str, holder_session: str
 ) -> CheckoutExit | None:
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
-    row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
-    return None if row is None else _settle_checkout_exit(task, row, attest=attest)
+    row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
+    return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -200,8 +200,8 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
 @contextmanager
 def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Generator[None]:
     with checkout_exit_scope(
-        lambda task, attest: _prepare_task_checkout_exit(
-            task, ticket, attest=attest, holder=holder, holder_session=holder_session
+        lambda task, attest, wait: _prepare_task_checkout_exit(
+            task, attest=attest, wait=wait, holder=holder, holder_session=holder_session
         )
     ) as scope:
         try:

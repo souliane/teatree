@@ -112,8 +112,14 @@ attestation, the next writer's fence can re-attest, including an in-session clai
 Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
 A writing run whose exit was deferred by a checkout process records that exit state;
 the next writer attests it only after the process is gone and the state is unchanged.
-At normal exit the runner waits for its own checkout processes, then ends surviving
-descendants and marked children before releasing; a survivor still holds the checkout.
+On completion, ordinary failure, lease-expiry reap, and attested park, checkout
+settlement waits two 60-second beats for descendants and marked children, sends
+SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
+for two more beats. Each signal rechecks PID and start time through a pidfd.
+The shared Codex App Server, unmarked non-descendants, and foreign processes are
+never exit stop targets; a survivor still holds the checkout. An agent-issued
+cancel waits two beats and signals nothing; an owner stop follows the narrower
+descendant-writer rule.
 A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
 
 An attestable refusal also asks the owner in Slack. The card links the ticket and

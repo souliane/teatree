@@ -251,6 +251,12 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))
         self.assert_released_and_attested()
 
+    def test_agent_cancelled_failure_does_not_stop_checkout_processes(self) -> None:
+        with patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes") as stop:
+            self.run_to(lambda task: task.fail_claimed(reason="cancelled: agent ended the run"))
+        stop.assert_not_called()
+        assert Task.objects.get(pk=self.task.pk).failure_kind == "cancelled"
+
     def test_unverifiable_processes_prevent_exit_attestation(self) -> None:
         table = ProcessTable(frozenset(), "/proc", (), ("pid 7 is unreadable",))
         self.run_to(lambda task: task.complete(), table=table)
