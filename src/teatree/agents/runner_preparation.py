@@ -16,16 +16,9 @@ from teatree.agents._runner_env import (
 )
 from teatree.agents._runner_options import SpawnOverrides, _build_options, _turn_ceiling
 from teatree.agents.compaction_guard import CompactionGuard
-from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
-from teatree.agents.harness_registry import (
-    HarnessFallbackError,
-    HarnessFallbackKind,
-    InvalidHarnessProviderError,
-    NoAvailableHarnessError,
-    UnknownHarnessError,
-)
+from teatree.agents.harness_dispatch import DispatchHarness
+from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.prompt import (
     build_read_only_system_context,
     build_read_only_task_prompt,
@@ -36,22 +29,14 @@ from teatree.agents.prompt import (
 )
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts, read_only_system_context
 from teatree.agents.runner_interruption import _record_failure
-from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
-from teatree.agents.skill_routing import AmbiguousSkillRouteError, ConflictingHarnessRoutingError
 from teatree.agents.stage_skill_prompt import stage_skills_present
-from teatree.agents.usage_window import (
-    maybe_park_for_active_window,
-    park_on_timed_rejections,
-    park_task_on_all_exhausted,
-)
+from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider
-from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
-from teatree.types import SkillMetadata
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 logger = logging.getLogger(__name__)
@@ -167,50 +152,6 @@ class _ChildEnvDispatch:
 
 
 _DEFAULT_CHILD_ENV_DISPATCH = _ChildEnvDispatch()
-
-
-def _preflight(
-    task: Task,
-    *,
-    phase: str,
-    overlay_skill_metadata: SkillMetadata,
-) -> Preflight | TaskAttempt:
-    """The refusals that must all pass before a turn can be billed, as one short-circuit."""
-    refusal = pre_harness_refusal(task, phase=phase)
-    if refusal is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
-        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
-
-    staged = staged_skills_or_refusal(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
-    if isinstance(staged, TaskAttempt):
-        return staged
-    stage_skills, skills = staged
-    dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
-    if isinstance(dispatch, TaskAttempt):
-        return dispatch
-
-    return Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
-
-
-def _resolve_backend_or_failure(
-    task: Task, *, phase: str = "", skills: list[str] | None = None
-) -> DispatchHarness | TaskAttempt:
-    """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
-    try:
-        return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
-    except NoAvailableHarnessError as exc:
-        parked = park_on_timed_rejections(task, exc.rejected)
-        return parked or _record_failure(task, error=str(exc))  # no-usage: no candidate opened, so no turn billed
-    except (
-        NotImplementedError,
-        UnknownHarnessError,
-        InvalidHarnessProviderError,
-        CredentialError,
-        AmbiguousSkillRouteError,
-        ConflictingHarnessRoutingError,
-        InvalidAgentConfigError,
-    ) as exc:
-        return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
 
 
 def _admission_park_or_child_env(

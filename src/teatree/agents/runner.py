@@ -1,17 +1,4 @@
-"""Headless agent runner — executes tasks without a terminal.
-
-Drives an in-process agent behind the :class:`~teatree.agents.harness.Harness` seam and builds a real-environment
-:class:`~claude_agent_sdk.ClaudeAgentOptions`, opens a session via the harness
-backend selected by ``agent_harness`` (default: the ``claude-agent-sdk``
-``ClaudeSDKClient``), captures the typed messages it yields, and stores the
-result in ``TaskAttempt.result``. Unlike the clean-room eval runner
-(``teatree.eval.api_runner``), this path runs a REAL task: it keeps the
-developer's environment, skills, and context — no isolation, no
-``setting_sources=[]``.
-
-Wires only to ``Task`` / ``TaskAttempt`` models — no dashboard, no
-process registry, no platform autostart.
-"""
+"""Headless task runner with checkout custody and harness dispatch."""
 
 import asyncio
 import logging
@@ -25,9 +12,16 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents._runner_env import DispatchCredential, _provider_child_env, agent_spawn_env
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
 from teatree.agents.compaction_guard import GuardedHarness
+from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness
-from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
+from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.agents.harness_registry import (
+    HarnessFallbackError,
+    HarnessFallbackKind,
+    InvalidHarnessProviderError,
+    NoAvailableHarnessError,
+    UnknownHarnessError,
+)
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
@@ -55,8 +49,6 @@ from teatree.agents.runner_preparation import (
     _admission_park_or_child_env,
     _capped_forge_env,
     _ChildEnvDispatch,
-    _preflight,
-    _resolve_backend_or_failure,
     _resolve_child_env_or_failure,
 )
 from teatree.agents.runner_preparation import prepare_run as _prepare_run_impl
@@ -71,12 +63,19 @@ from teatree.agents.runner_route_recording import learn_route_failure as _learn_
 from teatree.agents.runner_route_recording import park_after_route_failure as _park_after_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
+from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_routing import runtime_fallback_reason
+from teatree.agents.skill_routing import (
+    AmbiguousSkillRouteError,
+    ConflictingHarnessRoutingError,
+    runtime_fallback_reason,
+)
 from teatree.agents.spawn_payload import AgentSpawnError
+from teatree.agents.usage_window import park_on_timed_rejections
+from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
@@ -275,28 +274,7 @@ def run_agent(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Drive an agent for *task* in-process, holding its checkout for the whole run (#3952).
-
-    The #3903 Task-seam dedupe cannot see an agent that ALREADY holds a checkout,
-    so the loop's own agent and an operator-dispatched one land in one working
-    tree and interleave commits. The claim is taken here — the outermost point of
-    a dispatch, before the harness resolves — and released on every exit path.
-    A refusal is a recorded FAILED attempt naming the incumbent: the run must not
-    proceed into a tree someone else is editing, and it must not vanish silently.
-
-    Nested INSIDE that claim, the drive runs inside
-    :func:`~teatree.core.models.task_claim.drive_claim` (#4164), so a sweep can tell a
-    memory-thrashed event loop that stalled past its 900s lease from a dead worker —
-    in-process (the ``loops``-queue sweeps, sibling threads of this one) AND cross-process
-    (``reclaim_orphaned_claims`` / ``reap_stale_claims``, which run inside the separate
-    ``loops_tick`` subprocess every tick spawns). Without it a sweep reads the lapsed lease
-    as death, fails the row (which does not kill this process) and enqueues a SECOND agent
-    onto the same worktree.
-
-    The order is load-bearing: occupancy refuses a tree another holder is already editing
-    before any lease work happens, and ``drive_claim`` then keeps the lease alive for the
-    run occupancy admitted. Collapsing either one re-opens the bug the other closes.
-    """
+    """Hold checkout occupancy before driving the task claim and harness."""
     namespace = nested_pid_namespace()
     try:
         with occupy_ticket_checkout(
@@ -442,6 +420,50 @@ def _run_agent(
     )
     release_finished_thread(task)
     return attempt
+
+
+def _preflight(
+    task: Task,
+    *,
+    phase: str,
+    overlay_skill_metadata: SkillMetadata,
+) -> _Preflight | TaskAttempt:
+    """The refusals that must all pass before a turn can be billed, as one short-circuit."""
+    refusal = pre_harness_refusal(task, phase=phase)
+    if refusal is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
+        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
+
+    staged = staged_skills_or_refusal(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    if isinstance(staged, TaskAttempt):
+        return staged
+    stage_skills, skills = staged
+    dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
+    if isinstance(dispatch, TaskAttempt):
+        return dispatch
+
+    return _Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
+
+
+def _resolve_backend_or_failure(
+    task: Task, *, phase: str = "", skills: list[str] | None = None
+) -> DispatchHarness | TaskAttempt:
+    """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
+    try:
+        return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
+    except NoAvailableHarnessError as exc:
+        parked = park_on_timed_rejections(task, exc.rejected)
+        return parked or _record_failure(task, error=str(exc))  # no-usage: no candidate opened, so no turn billed
+    except (
+        NotImplementedError,
+        UnknownHarnessError,
+        InvalidHarnessProviderError,
+        CredentialError,
+        AmbiguousSkillRouteError,
+        ConflictingHarnessRoutingError,
+        InvalidAgentConfigError,
+    ) as exc:
+        return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
 
 
 def _renew_lease_closing_connection(task: Task) -> None:
