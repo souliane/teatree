@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
@@ -117,11 +118,27 @@ class TicketEvidenceModel(TicketFacet):
             self.merge_extra(set_keys={TASK_THREADS_KEY: threads})
         return raw
 
+    @staticmethod
+    def _pop_extra_keys(merged: "JSONObject", keys: Sequence[str | tuple[str, str]] | None) -> None:
+        for key in keys or []:
+            if isinstance(key, str):
+                merged.pop(key, None)
+                continue
+            parent, child = key
+            current = merged.get(parent)
+            if not isinstance(current, dict) or child not in current:
+                continue
+            remaining = {name: value for name, value in current.items() if name != child}
+            if remaining:
+                merged[parent] = remaining
+            else:
+                merged.pop(parent)
+
     def merge_extra(
         self,
         *,
         set_keys: "TicketExtra | None" = None,
-        pop_keys: "list[str] | None" = None,
+        pop_keys: "Sequence[str | tuple[str, str]] | None" = None,
         also_set: "TicketSiblingFields | None" = None,
         append_to_lists: "dict[str, list[object]] | None" = None,
         merge_into_dicts: "dict[str, JSONObject] | None" = None,
@@ -186,8 +203,7 @@ class TicketEvidenceModel(TicketFacet):
                 base = {} if isinstance(current, str) else dict(current or {})
                 base.update(entries)
                 merged[key] = base
-            for key in pop_keys or []:
-                merged.pop(key, None)
+            self._pop_extra_keys(merged, pop_keys)
             unchanged = locked.extra == merged and all(
                 getattr(locked, field) == value for field, value in (also_set or {}).items()
             )
