@@ -358,6 +358,10 @@ class DeferredExitRecoveryTests(_RecoveryCase):
         assert audit["holder"] == {"id": task_holder_id(self.next_task), "session": ""}
         assert serialize_worktree(self.worktree)["auto_attestation"] == audit
 
+    def test_cancelled_holder_cannot_use_the_deferred_record(self) -> None:
+        Task.objects.filter(pk=self.previous.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
+        self.assert_parked(self.container_table)
+
     def test_claim_path_admits_the_next_writer(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.container_table):
             assert claim_task_checkout_or_park(self.next_task) is None

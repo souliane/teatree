@@ -15,9 +15,9 @@ def unowned_pr_refusal(pr: PrSummary, *, identities: tuple[str, ...], flag: Call
     """
     if not pr_authored_by_self(author=pr.author, self_identities=identities):
         return None
-    if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
-        return None
     if resolve_gated_ticket(slug=pr.slug, pr_id=pr.number) is not None:
+        return None
+    if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
         return None
     flag(slug=pr.slug, pr_id=pr.number, reason=NO_OWNING_TICKET_REASON, url=pr.url)
     return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="blocked", reason=NO_OWNING_TICKET_REASON, url=pr.url)

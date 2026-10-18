@@ -20,6 +20,17 @@ from teatree.utils.url_slug import pr_ref_from_url
 logger = logging.getLogger(__name__)
 
 
+def _holder_task(holder: str, task: Task) -> Task | None:
+    pk = holder.removeprefix("task:")
+    if not holder.startswith("task:") or not pk.isdigit():
+        return None
+    return Task.objects.filter(pk=int(pk), ticket=task.ticket).first()
+
+
+def _cancelled(task: Task | None) -> bool:
+    return task is not None and task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
+
+
 def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
     if not custody.tenures:
         return None
@@ -35,14 +46,8 @@ def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
     ):
         return None
     prior_holder, _ = next(iter(identities))
-    if not prior_holder.startswith("task:") or not prior_holder[5:].isdigit():
-        return None
-    prior = Task.objects.filter(pk=int(prior_holder[5:]), ticket=task.ticket).first()
-    if (
-        prior is None
-        or not tools_for_phase(prior.phase) & {"write_file", "edit_file", MCP_WRITE}
-        or (prior.status == Task.Status.FAILED and prior.failure_kind == FailureKind.CANCELLED)
-    ):
+    prior = _holder_task(prior_holder, task)
+    if prior is None or not tools_for_phase(prior.phase) & {"write_file", "edit_file", MCP_WRITE} or _cancelled(prior):
         return None
     return prior
 
@@ -142,7 +147,7 @@ def attest_deferred_exit(task: Task, worktree: Worktree, state: CheckoutState, t
         or (worktree.occupied_by, worktree.occupied_by_session) != claimant
     ):
         return False
-    if not _state_unchanged(task, worktree, state):
+    if _cancelled(_holder_task(record["holder"], task)) or not _state_unchanged(task, worktree, state):
         return False
     audit: DeferredExitAttestation = {
         "at": timezone.now().isoformat(),
