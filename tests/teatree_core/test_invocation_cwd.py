@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, invocation_cwd, operator_cwd
+from teatree.core import invocation_cwd as invocation_cwd_module
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd, invocation_cwd, operator_cwd
 from tests._git_repo import make_git_repo
 
 
@@ -69,6 +70,61 @@ class TestInvocationCwd:
 
         assert str(unusable) in caplog.text
         assert INVOCATION_CWD_ENV in caplog.text
+
+
+class TestInvocationCwdDeclarationProblem:
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_unset_or_blank_is_not_declared(self, monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+        if value is None:
+            monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+        else:
+            monkeypatch.setenv(INVOCATION_CWD_ENV, value)
+
+        assert invocation_cwd_module.invocation_cwd_declaration_problem() == (
+            f"{INVOCATION_CWD_ENV} is unset (not declared)"
+        )
+
+    @pytest.mark.parametrize("kind", ["missing", "file", "dangling", "quoted"])
+    def test_unresolvable_declaration_quotes_the_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    ) -> None:
+        value = tmp_path / ("a 'quoted' path" if kind == "quoted" else kind)
+        if kind == "file":
+            value.touch()
+        elif kind == "dangling":
+            value.symlink_to(tmp_path / "absent-target")
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(value))
+
+        assert invocation_cwd_module.invocation_cwd_declaration_problem() == (
+            f"{INVOCATION_CWD_ENV}={str(value)!r} is declared but does not resolve here"
+        )
+
+    def test_valid_directory_has_no_problem(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(tmp_path))
+
+        assert invocation_cwd_module.invocation_cwd_declaration_problem() is None
+        assert declared_invocation_cwd() == tmp_path
+
+    def test_unreadable_parent_is_unresolvable_and_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        value = tmp_path / "unreadable" / "child"
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(value))
+        original_is_dir = Path.is_dir
+
+        def deny_parent(path: Path) -> bool:
+            if path == value:
+                raise PermissionError(value)
+            return original_is_dir(path)
+
+        monkeypatch.setattr(Path, "is_dir", deny_parent)
+
+        assert invocation_cwd_module.invocation_cwd_declaration_problem() == (
+            f"{INVOCATION_CWD_ENV}={str(value)!r} is declared but does not resolve here"
+        )
+        with caplog.at_level("WARNING", logger="teatree.core.invocation_cwd"):
+            assert declared_invocation_cwd() is None
+        assert str(value) in caplog.text
 
 
 class TestOperatorCwd:

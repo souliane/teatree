@@ -47,6 +47,17 @@ INVOCATION_CWD_ENV = "TEATREE_INVOCATION_CWD"
 _log = logging.getLogger(__name__)
 
 
+def _read_declaration() -> tuple[str, Path | None]:
+    value = os.environ.get(INVOCATION_CWD_ENV, "").strip()
+    if not value:
+        return value, None
+    candidate = Path(value)
+    try:
+        return value, candidate if candidate.is_dir() else None
+    except OSError:
+        return value, None
+
+
 def declared_invocation_cwd() -> Path | None:
     """The declared container-side cwd, or ``None`` when nothing usable was declared.
 
@@ -63,11 +74,10 @@ def declared_invocation_cwd() -> Path | None:
     wrongness this module exists to fix, and the refusals that tell operators to
     export this variable are unreadable if a bad value discards without a word.
     """
-    declared = os.environ.get(INVOCATION_CWD_ENV, "").strip()
+    declared, candidate = _read_declaration()
     if not declared:
         return None
-    candidate = Path(declared)
-    if candidate.is_dir():
+    if candidate is not None:
         return candidate
     _log.warning(
         "%s=%r is not a directory in this runtime — ignoring it and falling back to the process cwd. "
@@ -76,6 +86,15 @@ def declared_invocation_cwd() -> Path | None:
         declared,
     )
     return None
+
+
+def invocation_cwd_declaration_problem() -> str | None:
+    declared, candidate = _read_declaration()
+    if not declared:
+        return f"{INVOCATION_CWD_ENV} is unset (not declared)"
+    if candidate is not None:
+        return None
+    return f"{INVOCATION_CWD_ENV}={declared!r} is declared but does not resolve here"
 
 
 def invocation_cwd() -> Path:
@@ -99,4 +118,10 @@ def operator_cwd() -> Path:
     return invocation_cwd()
 
 
-__all__ = ["INVOCATION_CWD_ENV", "declared_invocation_cwd", "invocation_cwd", "operator_cwd"]
+__all__ = [
+    "INVOCATION_CWD_ENV",
+    "declared_invocation_cwd",
+    "invocation_cwd",
+    "invocation_cwd_declaration_problem",
+    "operator_cwd",
+]

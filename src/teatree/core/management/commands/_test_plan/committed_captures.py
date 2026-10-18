@@ -23,7 +23,7 @@ from pathlib import Path
 
 from teatree.core.evidence.bdd_scenario_source import BddSourceError, validate_bdd_source
 from teatree.core.evidence.test_plan_validation import TestPlanImageValidationError, validate_test_plan_images
-from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd, invocation_cwd_declaration_problem
 from teatree.core.management.commands._test_plan.file_store import PLAN_DIR_NAME
 from teatree.core.management.commands._test_plan.render import SideManifest, WorkflowEmbed
 from teatree.core.management.commands._test_plan.state import TestPlanValidationError
@@ -58,7 +58,12 @@ def resolve_default_plans_dir() -> Path:
     root = cwd / PLANS_DIR_DEFAULT
     if root.is_dir():
         return root
-    origin = INVOCATION_CWD_ENV if declared else "the process working directory — nothing declared an invocation cwd"
+    problem = None if declared else invocation_cwd_declaration_problem()
+    origin = INVOCATION_CWD_ENV
+    if problem:
+        origin = f"the process working directory — {problem}"
+        if problem == f"{INVOCATION_CWD_ENV} is unset (not declared)":
+            origin = f"the process working directory — nothing declared an invocation cwd ({problem})"
     msg = (
         f"Cannot resolve a plans directory: {root} does not exist. The default is "
         f"{PLANS_DIR_DEFAULT}/ under {cwd}, which came from {origin}. No capture was "

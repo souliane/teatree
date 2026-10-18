@@ -9,7 +9,12 @@ resolving) because the resolver returns it.
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd, invocation_cwd
+from teatree.core.invocation_cwd import (
+    INVOCATION_CWD_ENV,
+    declared_invocation_cwd,
+    invocation_cwd,
+    invocation_cwd_declaration_problem,
+)
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_review_state import has_passed_review
 from teatree.core.provision.worktree_adopt import NotAWorktreeError, WorktreeAdoptError, adopt_worktree_for_ticket
@@ -47,17 +52,11 @@ def _worktree_missing_error(ticket: Ticket) -> WorktreeMissingError:
     return WorktreeMissingError(error="ticket has no worktree")
 
 
-def _undeclared_invocation_cwd_error(process_cwd: Path) -> WorktreeMissingError:
-    """Blame the lost propagation, not the directory it degraded to (#4281).
-
-    ``deploy/t3`` starts the CLI in the image WORKDIR, so an undeclared
-    invocation cwd refuses a directory the operator never stood in — and "not a
-    git worktree" then sends them auditing that path instead of the variable
-    that failed to cross the container boundary.
-    """
+def _unusable_invocation_cwd_error(process_cwd: Path, problem: str) -> WorktreeMissingError:
+    """Name why the declared cwd degraded to the image WORKDIR (#4281)."""
     return WorktreeMissingError(
         error=(
-            f"Refusing to adopt: {INVOCATION_CWD_ENV} is unset, so adoption fell back to the "
+            f"Refusing to adopt: {problem}, so adoption fell back to the "
             f"process cwd {process_cwd}, which is not a git worktree. Under `deploy/t3` that is "
             "the container's WORKDIR rather than where you stood — run pr create from the "
             f"follow-up PR's worktree, or export {INVOCATION_CWD_ENV} to its container-side path."
@@ -88,7 +87,9 @@ def _adopt_invoking_worktree(ticket: Ticket) -> Worktree | WorktreeMissingError:
     try:
         return adopt_worktree_for_ticket(ticket, cwd=str(cwd))
     except NotAWorktreeError as exc:
-        return _undeclared_invocation_cwd_error(cwd) if declared is None else WorktreeMissingError(error=str(exc))
+        if declared is None and (problem := invocation_cwd_declaration_problem()):
+            return _unusable_invocation_cwd_error(cwd, problem)
+        return WorktreeMissingError(error=str(exc))
     except WorktreeAdoptError as exc:
         return WorktreeMissingError(error=str(exc))
 
