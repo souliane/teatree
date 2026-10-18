@@ -18,7 +18,7 @@ propagates cleanly into ``report.errors`` without crashing the tick.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -118,7 +118,7 @@ class TestPrSweepGhApiClientAuthFailure:
 
 
 class TestPrSweepScannerPropagatesError:
-    """``PrSweepScanner._safe_list`` must propagate ``ScannerError`` to the dispatcher."""
+    """PR listing failures reach the dispatcher as structured errors."""
 
     def test_scanner_propagates_scanner_error_from_api(self) -> None:
         class _AuthFailingApi:
@@ -153,6 +153,17 @@ class TestPrSweepScannerPropagatesError:
         with pytest.raises(ScannerError) as excinfo:
             scanner.scan()
         assert excinfo.value.error_class == ScannerErrorClass.AUTH
+
+    def test_on_demand_listing_failure_is_not_a_closed_pr(self) -> None:
+        api = Mock()
+        api.list_open_prs.side_effect = RuntimeError("listing failed")
+        scanner = PrSweepScanner(
+            repos=("owner/repo",), api=api, keystone=Mock(), notifier=NullMergeNotifier(), overlay="t"
+        )
+
+        with pytest.raises(ScannerError) as caught:
+            scanner.evaluate_one(slug="owner/repo", pr_id=1)
+        assert caught.value.error_class == ScannerErrorClass.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
