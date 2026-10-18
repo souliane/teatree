@@ -14,7 +14,7 @@ from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt,
 
 _ADMISSION = f"{LIMIT_PARKED_PREFIX}admission: all_accounts_exhausted window on lane 'subscription' active"
 _ALL_SPENT = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
-_CHECKPOINT = f"{LIMIT_PARKED_PREFIX}deploy checkpoint: this worker is quiescing for a rolling deploy"
+_CHECKPOINT = f"{LIMIT_PARKED_PREFIX}checkpoint: this worker is quiescing for a rolling deploy"
 
 
 class ParkCoalescingTest(TestCase):

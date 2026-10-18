@@ -17,7 +17,7 @@ and a later reader auditing why the shipped change contradicts its issue trusts
 the attribution and never re-derives the evidence. The citation is checked, never
 the prose, so an entry citing nothing is silent.
 
-Shared by both PR-creation chokepoints (``ShipExecutor._build_pr_spec`` and the
+Shared by both PR-creation chokepoints (``ShipExecutor.build_pr_spec`` and the
 orphan-branch ``create_or_defer_pr``) so the warn cannot drift between them.
 """
 

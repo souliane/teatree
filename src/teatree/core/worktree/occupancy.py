@@ -137,12 +137,12 @@ def _defer_checkout_exit(
 
 
 def _prepare_task_checkout_exit(
-    task: Task, ticket: "Ticket", *, holder: str, holder_session: str
+    task: Task, ticket: "Ticket", *, attest: bool, holder: str, holder_session: str
 ) -> CheckoutExit | None:
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
     row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
-    return None if row is None else _settle_checkout_exit(task, row, attest=True)
+    return None if row is None else _settle_checkout_exit(task, row, attest=attest)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -179,7 +179,9 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
         release(row, holder=holder, holder_session=holder_session)
         return
     cancelled = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
-    settled = scope.settled or _settle_checkout_exit(task, row, attest=scope.verified_run or parked, wait=not cancelled)
+    reaped = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.LEASE_EXPIRED
+    attests = parked or (scope.verified_run and not (cancelled or reaped))
+    settled = scope.settled or _settle_checkout_exit(task, row, attest=attests, wait=not cancelled)
     if not settled.release:
         logger.warning(
             "Keeping checkout %s occupied after task %s: its processes are still live", row.worktree_path, task.pk
@@ -197,7 +199,9 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
 @contextmanager
 def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Generator[None]:
     with checkout_exit_scope(
-        lambda task: _prepare_task_checkout_exit(task, ticket, holder=holder, holder_session=holder_session)
+        lambda task, attest: _prepare_task_checkout_exit(
+            task, ticket, attest=attest, holder=holder, holder_session=holder_session
+        )
     ) as scope:
         try:
             yield

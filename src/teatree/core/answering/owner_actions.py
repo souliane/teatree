@@ -15,7 +15,7 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.question_actions import ACTION_OUTCOMES
+from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, read_attestation
@@ -111,14 +111,19 @@ def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Dec
     action = read_action(row.evidence)
     if action is None or row.dedupe_marker != action_marker(action):
         return _Decision("refused", "The action card no longer matches its recorded request.", notify=True)
+    if owner_declined(row):
+        return _Decision("declined", "The owner declined.")
     if row.resolved_via != DeferredQuestion.ResolvedVia.SLACK or answer is None or answer.note != "button":
         return _Decision("refused", "Only the owner's Slack button tap may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
-    if option is None:
-        return _Decision("refused", "The answer did not match a card option; ask again.", notify=True)
-    if not option.recommended:
-        return _Decision("declined", "The owner declined.")
+    if option is None or not option.recommended:
+        note = (
+            "The answer did not match a card option; ask again."
+            if option is None
+            else "Only the recommended option may approve this action."
+        )
+        return _Decision("refused", note, notify=True)
     try:
         return _Decision("carried_out", write=_PREPARE[kind](row, action, answer.resolver_id))
     except OwnerActionRefusedError as exc:

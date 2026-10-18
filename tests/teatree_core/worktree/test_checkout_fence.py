@@ -557,16 +557,50 @@ class CheckoutFenceTests(TestCase):
     def test_cancelled_run_does_not_attest_partial_tree(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         clear = ProcessTable(frozenset(), "/proc")
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
-            verify_task_checkout(self.task, str(self.checkout))
-        initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
             patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):
+            verify_task_checkout(self.task, str(self.checkout))
+            initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
             (self.checkout / "partial.txt").write_text("half done")
             Task.objects.get(pk=self.task.pk).fail(reason="cancelled: owner stop", by_holder=False)
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(finished) is None
+        assert finished.get_extra()["attested_state"] == initial
+
+    def test_failed_run_attests_its_own_checkout_edit(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+            initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+            (self.checkout / "partial.txt").write_text("half done")
+            self.task.fail(reason="failed: runner error", by_holder=True)
+        finished = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(finished) is None
+        assert finished.get_extra()["attested_state"] == checkout_state(self.checkout).digest != initial
+
+    def test_agent_cancelled_run_does_not_attest_partial_tree(self) -> None:
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        clear = ProcessTable(frozenset(), "/proc")
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
+            drive_claim(self.task),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+            initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
+            (self.checkout / "partial.txt").write_text("half done")
+            self.task.fail(reason="cancelled: agent stop", by_holder=True)
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] == initial
@@ -606,7 +640,7 @@ class CheckoutFenceTests(TestCase):
             ),
         ):
             (self.checkout / "new.txt").write_text("checkpointed run output")
-            _record_checkpoint(self.task, checkpoint="deploy checkpoint: worker quiescing", usage=AttemptUsage())
+            _record_checkpoint(self.task, checkpoint="checkpoint: worker quiescing", usage=AttemptUsage())
 
         page.assert_not_called()
         finished = Worktree.objects.get(pk=self.worktree.pk)
@@ -741,7 +775,7 @@ class CheckoutFenceTests(TestCase):
             task=self.task,
             ended_at=timezone.now() - timedelta(seconds=1),
             exit_code=1,
-            error="limit_parked: deploy checkpoint: earlier run",
+            error="limit_parked: checkpoint: earlier run",
         )
 
         with (

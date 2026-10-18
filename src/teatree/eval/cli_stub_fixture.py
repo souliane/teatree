@@ -258,8 +258,8 @@ KNOWN_CLI_STUBS: dict[str, str] = {
 _LOCAL_PROFILE_RE = re.compile(r"[a-z][a-z0-9_-]*@[a-z][a-z0-9_-]*\Z")
 
 
-def _local_stub_path(name: str, source_path: Path | None) -> Path | None:
-    """Return an overlay-owned profile beside *source_path*, if one exists.
+def local_stub_path(name: str, source_path: Path | None, *, include_missing: bool = False) -> Path | None:
+    """Return an overlay-owned profile beside *source_path*; include_missing allows an unwritten path.
 
     Core owns the built-in generic profiles above. An overlay may add a scenario-
     specific world without putting its private nouns in vendored core by shipping
@@ -270,18 +270,18 @@ def _local_stub_path(name: str, source_path: Path | None) -> Path | None:
     if source_path is None or not _LOCAL_PROFILE_RE.fullmatch(name):
         return None
     candidate = source_path.parent / "cli_stubs" / f"{name}.sh"
-    return candidate if candidate.is_file() else None
+    return candidate if include_missing or candidate.is_file() else None
 
 
 def is_known_cli_stub(name: str, *, source_path: Path | None = None) -> bool:
     """Whether *name* is a built-in stub or an overlay-local profile."""
-    return name in KNOWN_CLI_STUBS or _local_stub_path(name, source_path) is not None
+    return name in KNOWN_CLI_STUBS or local_stub_path(name, source_path) is not None
 
 
-def _stub_body(name: str, source_path: Path | None) -> str:
+def stub_body(name: str, source_path: Path | None) -> str:
     if name in KNOWN_CLI_STUBS:
         return KNOWN_CLI_STUBS[name]
-    local = _local_stub_path(name, source_path)
+    local = local_stub_path(name, source_path)
     if local is not None:
         return local.read_text(encoding="utf-8")
     msg = f"unknown cli_stub: {name!r}"
@@ -310,7 +310,7 @@ def provision_cli_stubs(names: Sequence[str], *, source_path: Path | None = None
             # to the selected profile's behaviour.
             binary = name.split("@", 1)[0]
             stub = bindir / binary
-            stub.write_text(_stub_body(name, source_path), encoding="utf-8")
+            stub.write_text(stub_body(name, source_path), encoding="utf-8")
             stub.chmod(0o755)
         yield bindir
 

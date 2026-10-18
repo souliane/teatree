@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.gates.merge_quality_gate import MergeQualityVerdictError, assert_merge_quality_verdict
 from teatree.core.merge.errors import MergePreconditionError
@@ -20,7 +22,8 @@ from teatree.core.models.review_target import review_target_for_task
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
-from teatree.loop.scanners.pr_sweep_types import NO_OWNING_TICKET_REASON
+from teatree.loop.scanners.pr_sweep_ticket_gate import unowned_pr_refusal
+from teatree.loop.scanners.pr_sweep_types import NO_OWNING_TICKET_REASON, PrSummary
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -101,6 +104,23 @@ class TestGatesBindAfterAdoption(TestCase):
         target = review_target_for_task(self.reviewing)
         assert target is not None
         assert (target.slug, target.pr_id) == (_SLUG, _PR_ID)
+
+    def test_owned_pr_needs_no_second_review_verdict_read(self) -> None:
+        assert reconcile_manual_prs([_refs_only_signal()]) == 1
+        pr = PrSummary(
+            slug=_SLUG,
+            number=_PR_ID,
+            head_sha=_HEAD,
+            is_draft=False,
+            has_changes_requested=False,
+            url=_PR_URL,
+            author="souliane",
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            assert unowned_pr_refusal(pr, identities=("souliane",), flag=lambda **_kwargs: None) is None
+
+        assert not any("teatree_review_verdict" in query["sql"].lower() for query in queries)
 
 
 class TestDocsNameTheOwnershipFloor:

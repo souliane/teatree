@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
-from teatree.loop.scanners.base import ScannerError, classify_gh_stderr, run_gh
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (
     build_compare_query,
     chunk_heads,
@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
+#: More open PRs than this is refused, never read as a partial listing.
+OPEN_PR_CEILING = 500
 
 
 class GhPrJson(TypedDict, total=False):
@@ -157,6 +159,21 @@ def _has_changes_requested(reviews: list[object]) -> bool:
     return False
 
 
+def _open_pr_rows(out: str, *, slug: str) -> list[object]:
+    """The listing's rows, or a refusal: an unreadable or over-ceiling listing is not "no open PRs"."""
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, list):
+        detail = f"gh pr list {slug!r} printed no readable JSON list: {out.strip()[:200]!r}"
+        raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+    if len(data) > OPEN_PR_CEILING:
+        detail = f"{slug} has more than {OPEN_PR_CEILING} open PRs; a sweep over part of them would misread the rest"
+        raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+    return data
+
+
 @dataclass(slots=True)
 class GhPrApiClient:
     """``gh``-backed :class:`teatree.loop.scanners.pr_sweep.PrApiClient`.
@@ -174,7 +191,7 @@ class GhPrApiClient:
             "--state",
             "open",
             "--limit",
-            "100",
+            str(OPEN_PR_CEILING + 1),
             "--json",
             (
                 "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
@@ -196,14 +213,7 @@ class GhPrApiClient:
                 error_class=error_class,
                 detail=detail,
             )
-        if not out.strip():
-            return []
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(data, list):
-            return []
+        data = _open_pr_rows(out, slug=slug)
         decoded = [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
         return self._resolve_behind_base(slug=slug, prs=decoded)
 

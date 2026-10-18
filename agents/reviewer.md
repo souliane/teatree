@@ -57,12 +57,12 @@ Return these sibling envelope fields with a `merge_safe` verdict:
 },
 "anti_vacuity": {
   "ac_coverage": "<how the diff covers the acceptance criteria>",
-  "proven_tests": ["<test::id with revert-fix -> RED proof>"],
+  "proven_tests": ["<test ID observed RED before the fix>"],
   "no_new_tests": false
 }
 ```
 
-Use `"no_new_tests": true` with an empty `proven_tests` list only when the diff adds no regression test.
+Use `"no_new_tests": true` with an empty `proven_tests` list only when the diff adds no regression test. `proven_tests` contains test ID strings, not objects; other keys are dropped before recording.
 
 Allowed values, exactly as written — anything else is refused:
 

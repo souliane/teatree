@@ -11,6 +11,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.management.commands import _void_merge_commands
 from teatree.core.management.commands import pr as pr_mod
@@ -167,6 +168,7 @@ class TestRequestVoidCommand(TestCase):
         second = DeferredQuestion.owner_pending().get()
         assert second.pk != first.pk
         assert f"question {second.pk}" in out
+        assert carry_out_owner_actions() == [f"declined {first.pk}"]
 
     def test_a_refused_plan_records_no_card_and_exits_non_zero(self) -> None:
         present = replace(ABSENT, merge_blobs=ABSENT.head_blobs)
