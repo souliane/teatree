@@ -67,7 +67,7 @@ class TestCheckoutAttestCard(TestCase):
 
         _row, text = _ask(TaskFactory(ticket=ticket))
 
-        assert "no pull request was open when asked" in text
+        assert "no pull request for this folder was open when asked" in text
         assert "/pull/" not in text
 
     def test_card_never_uses_internal_words(self) -> None:
@@ -98,7 +98,8 @@ class TestCheckoutAttestCard(TestCase):
         }
         declines = {
             True: "The step stays stuck until the folder changes; the pull request may wait while open.",
-            False: "The step stays stuck until the folder changes; no pull request was open when asked.",
+            False: "The step stays stuck until the folder changes; "
+            "no pull request for this folder was open when asked.",
         }
         for host_evidence, with_pull_request in product((False, True), repeat=2):
             with self.subTest(host_evidence=host_evidence, with_pull_request=with_pull_request):
@@ -194,6 +195,19 @@ class TestCheckoutAttestCard(TestCase):
         assert "debugging step" in second.question
         assert "coding step" not in second.question
 
+    def test_an_unchanged_reask_keeps_one_pending_card(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+
+        first = ask_owner_to_attest(task, attestation)
+        second = ask_owner_to_attest(task, attestation)
+
+        assert first is not None
+        assert second is not None
+        assert first.pk == second.pk
+        assert DeferredQuestion.owner_pending().filter(parked_task=task).count() == 1
+
     def test_a_changed_pull_request_state_replaces_the_held_card(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         pull_request = PullRequestFactory(ticket=ticket)
@@ -211,7 +225,7 @@ class TestCheckoutAttestCard(TestCase):
         assert second.pk != first.pk
         first.refresh_from_db()
         assert not first.is_pending
-        assert "no pull request was open when asked" in render_text(second)
+        assert "no pull request for this folder was open when asked" in render_text(second)
 
     def test_the_card_links_only_a_pull_request_in_its_checkout_repo(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -229,7 +243,7 @@ class TestCheckoutAttestCard(TestCase):
 
         _row, text = _ask(TaskFactory(ticket=ticket))
 
-        assert "no pull request was open when asked" in text
+        assert "no pull request for this folder was open when asked" in text
         assert other.url not in text
 
     def test_checked_facts_do_not_repeat_the_missing_process_evidence(self) -> None:

@@ -116,7 +116,7 @@ def _options(attestation: CheckoutAttestation, *, blocks_pull_request: bool) -> 
     decline = (
         "The step stays stuck until the folder changes; the pull request may wait while open."
         if blocks_pull_request
-        else "The step stays stuck until the folder changes; no pull request was open when asked."
+        else "The step stays stuck until the folder changes; no pull request for this folder was open when asked."
     )
     return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
@@ -130,7 +130,7 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
     waits = (
         f"it may hold up <{pull_request}|this pull request> while open"
         if pull_request
-        else "no pull request was open when asked"
+        else "no pull request for this folder was open when asked"
     )
     state = attestation.state
     process_fact = (
