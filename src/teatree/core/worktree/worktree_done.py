@@ -32,7 +32,7 @@ exception net that catches whatever slipped through.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from teatree.config import clone_root
@@ -505,13 +505,19 @@ def _reap_or_report(worktree: Worktree, *, workspace: Path, dry_run: bool) -> Re
     """One row's disposition, or an ``error`` outcome — a raising row never aborts the sweep.
 
     A single unreadable row used to abort the whole first pass, so every row after
-    it went unexamined and the backlog could only ever grow.
+    it went unexamined and the backlog could only ever grow. Every line ends with
+    the checkout it judged.
     """
+    checkout = "unresolvable"
     try:
-        return reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
+        checkout = resolve_worktree_path(workspace, worktree)
+        outcome = reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
     except Exception as exc:  # one bad row must not cost the sweep every row after it
         logger.exception("reaping wt#%s failed", worktree.pk)
-        return ReapOutcome("error", f"ERROR wt#{worktree.pk} '{worktree.branch}': {exc!r} — row skipped, nothing wiped")
+        outcome = ReapOutcome(
+            "error", f"ERROR wt#{worktree.pk} '{worktree.branch}': {exc!r} — row skipped, nothing wiped"
+        )
+    return replace(outcome, label=f"{outcome.label} [checkout: {checkout}]")
 
 
 def reap_done_worktrees(workspace: Path, *, dry_run: bool) -> list[str]:

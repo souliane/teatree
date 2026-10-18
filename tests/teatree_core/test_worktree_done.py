@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.cleanup.cleanup_ownership import OwnershipVerdict
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
@@ -512,6 +513,104 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
         assert len(lines) == 1
         assert lines[0].startswith("WOULD WIPE")
+
+
+class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
+    def test_a_wipe_and_its_preview_name_the_checkout(self) -> None:
+        """Django TestCase: real git under tmp_path through reap_done_worktrees_detailed."""
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        suffix = f"[checkout: {self.wt_path}]"
+
+        preview = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+        assert len(preview) == 1
+        assert preview[0].action == "would-wipe"
+        assert preview[0].label.startswith("WOULD WIPE")
+        with self.subTest(outcome="would-wipe"):
+            assert preview[0].label.endswith(suffix)
+
+        wiped = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+        assert len(wiped) == 1
+        assert wiped[0].action == "wiped"
+        with self.subTest(outcome="wiped"):
+            assert wiped[0].label.endswith(suffix)
+
+        self.wt_path.mkdir(parents=True)
+        Worktree.objects.create(
+            overlay="test",
+            ticket=worktree.ticket,
+            repo_path="myrepo",
+            branch=self.slug,
+            extra={"worktree_path": str(self.wt_path), "clone_path": str(self.repo_main)},
+        )
+        dead_preview = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+        assert len(dead_preview) == 1
+        assert dead_preview[0].action == "would-wipe"
+        assert dead_preview[0].label.startswith("WOULD RELEASE")
+        with self.subTest(outcome="would-release"):
+            assert dead_preview[0].label.endswith(suffix)
+
+    def test_a_kept_line_names_the_checkout(self) -> None:
+        """Django TestCase: real git under tmp_path through reap_done_worktrees_detailed."""
+        self._make_worktree(Ticket.State.WORK_STARTED)
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["kept"]
+        assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_each_pre_gate_line_names_the_checkout(self) -> None:
+        """Django TestCase: real git under tmp_path through reap_done_worktrees_detailed."""
+        self._make_worktree(Ticket.State.MERGED)
+        cases = (
+            ("teatree.core.cleanup.reap_pre_gates.is_clean_ignored", True, "skipped"),
+            (
+                "teatree.core.cleanup.reap_pre_gates.is_excluded_by_ownership",
+                OwnershipVerdict(excluded=True, reason="colleague-owned"),
+                "excluded",
+            ),
+            (
+                "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+                LivenessVerdict(active=True, reason="live session"),
+                "active",
+            ),
+        )
+        for target, verdict, action in cases:
+            with self.subTest(action=action), patch(target, return_value=verdict):
+                outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+                assert [outcome.action for outcome in outcomes] == [action]
+                assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_an_error_line_names_the_checkout(self) -> None:
+        """Django TestCase: real git under tmp_path through reap_done_worktrees_detailed."""
+        self._make_worktree(Ticket.State.WORK_STARTED)
+
+        with patch.object(worktree_done, "reap_done_worktree", side_effect=RuntimeError("boom")):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["error"]
+        assert "row skipped, nothing wiped" in outcomes[0].label
+        assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_an_unresolvable_checkout_still_reports_and_the_sweep_continues(self) -> None:
+        """Django TestCase: real git under tmp_path through reap_done_worktrees_detailed."""
+        bad_ticket = Ticket.objects.create(issue_url="https://example.com/issues/bad", state=Ticket.State.MERGED)
+        bad = Worktree.objects.create(
+            overlay="test",
+            ticket=bad_ticket,
+            repo_path="myrepo",
+            branch="bad",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        Worktree.objects.filter(pk=bad.pk).update(extra=["not-a-dict"])
+        self._make_worktree(Ticket.State.WORK_STARTED)
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["error", "kept"]
+        assert outcomes[0].label.endswith("[checkout: unresolvable]")
+        assert outcomes[1].label.endswith(f"[checkout: {self.wt_path}]")
 
 
 class TestReaperGatesAndEmit(_ReaperFixture):
