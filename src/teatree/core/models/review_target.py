@@ -11,7 +11,7 @@ reader's key disagree; one resolver is what stops them disagreeing again.
 
 :func:`verdict_at` is the read-back the writer verifies its own persistence with, and it
 queries exactly what the consumers do — :meth:`ReviewVerdict.objects.for_pr`'s
-``slug__iexact``, the predicate the merge gate's ``authorizing_verdict_at`` and the
+``slug__iexact``, the predicate the merge gate's ``effective_state_at`` and the
 landed-work guard both read. A stricter read-back would refuse a row those consumers can
 see, which is a false "never persisted" on a forge slug spelled another way.
 """

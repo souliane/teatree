@@ -59,7 +59,6 @@ from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
 from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
-    has_independent_cold_review,
     head_review_state,
     own_or_same_repo,
     record_mergeable_notified,
@@ -362,7 +361,7 @@ class PrSweepScanner:
         if review.held_verdicts:
             self._flag(slug=pr.slug, pr_id=pr.number, reason=review.hold_reason, url=pr.url, detail=review.hold_detail)
             return held_head_attempt(pr, review=review)
-        if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
+        if review.authorizing_verdict is None:
             return self._flag_no_review(pr, unusable_clear=unusable_clear)
         if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
             pr=pr,
