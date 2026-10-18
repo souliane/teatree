@@ -18,6 +18,7 @@ from django.db.models.signals import post_save
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.factory import factory_signal_queries
 from teatree.core.factory.factory_signals import (
     SIGNALS,
     VISIBILITY_SIGNALS,
@@ -156,6 +157,16 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
         assert row.verdict == SignalVerdict.RED
         assert row.evidence["oldest_open_pr"] == older.url
         assert row.evidence["oldest_open_hours"] == pytest.approx(80, abs=0.1)
+
+    def test_red_reason_uses_configured_open_pull_request_age_limit(self) -> None:
+        self._pr(age_hours=100)
+        window = factory_signal_queries.current_window(self.now, 7)
+
+        with mock.patch.object(factory_signal_queries, "OPEN_PR_RED_HOURS", 96.0):
+            result = factory_signal_queries.compute_s6(window, "t3-teatree", self.now)
+
+        assert result.hard_red is True
+        assert result.hard_red_reason == "oldest open pull request is at least 96h old"
 
     def test_young_open_pull_request_is_not_red(self) -> None:
         self._pr(age_hours=10)

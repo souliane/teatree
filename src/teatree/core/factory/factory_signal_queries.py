@@ -536,5 +536,5 @@ def compute_s6(window: Window, overlay: str, now: datetime) -> Computation:
         ),
         evidence,
         hard_red=hard_red,
-        hard_red_reason="oldest open pull request is at least 72h old" if hard_red else "",
+        hard_red_reason=f"oldest open pull request is at least {OPEN_PR_RED_HOURS:g}h old" if hard_red else "",
     )
