@@ -5,6 +5,7 @@ souliane/teatree#443 split of test_models.py.
 
 from django.test import TestCase
 
+from teatree.core.merge.pr_url_record import record_unverified_pr_url
 from teatree.core.models import PullRequest, Ticket
 
 
@@ -185,6 +186,12 @@ class TestOwningTicketReadsTheDeliveryPipelinesOwnIndex(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={"pr_url_by_branch": {"feat/x": _URL}})
 
         assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_unverified_retry_marker_does_not_attribute_a_pr(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        record_unverified_pr_url(ticket, _URL, "feat/x")
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) is None
 
     def test_resolves_through_the_recorded_url_list(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={"pr_urls": [_URL]})
