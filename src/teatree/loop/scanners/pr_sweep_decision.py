@@ -160,12 +160,9 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     the repo therefore cannot self-merge: no independent reviewer means no
     matching row and the auto-merge is refused.
 
-    #2829: defence-in-depth + better UX — returns ``False`` when a standing
-    HOLD exists at the head, so the solo sweep
-    FLAGS the PR (``_flag_no_review``) instead of diving into
-    ``execute_bound_merge`` to be refused by :func:`assert_review_verdict_gate`.
-    Shares ``ReviewVerdict.objects.effective_state_at`` with that gate so the
-    standing-hold rule cannot drift between the two.
+    #2829: returns ``False`` when a standing HOLD exists at the head, through
+    ``ReviewVerdict.objects.effective_state_at`` — the rule
+    :func:`assert_review_verdict_gate` reads, so the two cannot drift.
     """
     from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 

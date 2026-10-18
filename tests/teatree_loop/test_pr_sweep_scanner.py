@@ -2009,7 +2009,7 @@ class TestSlackMergeNotifier:
 
 
 class TestErrorIsolation:
-    def test_api_failure_does_not_crash_sweep(self) -> None:
+    def test_api_failure_surfaces_as_scanner_error(self) -> None:
         @dataclass(slots=True)
         class _BoomApi:
             calls: int = 0
@@ -2036,9 +2036,10 @@ class TestErrorIsolation:
             overlay="teatree",
         )
 
-        signals = scanner.scan()
+        with pytest.raises(ScannerError) as caught:
+            scanner.scan()
 
-        assert signals == []
+        assert caught.value.error_class == ScannerErrorClass.UNKNOWN
         assert api.calls == 1
 
     def test_evaluate_failure_on_one_pr_does_not_prevent_sibling_from_merging(self) -> None:

@@ -246,37 +246,6 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return HeadVerdictState.MERGE_SAFE
         return HeadVerdictState.NO_MERGE_SAFE
 
-    def standing_merge_safe_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
-        """The newest non-stale ``merge_safe`` at *head_sha*, even beside a hold.
-
-        A pass beside a hold is shown as disagreement, never authorization.
-        """
-        return next(
-            (
-                verdict
-                for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-                if verdict.is_merge_safe()
-            ),
-            None,
-        )
-
-    def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
-        """The non-stale ``merge_safe`` row authorizing this head, else ``None``.
-
-        Answers "WHICH verdict authorised this merge" — the record #4380 asks the
-        solo-overlay merge path to name, since ``reason=solo_overlay_no_clear`` states
-        that no CLEAR existed but not what was relied on instead.
-
-        Gated on :meth:`effective_state_at` rather than re-deriving the rule, because
-        that method is shared with the merge keystone's ``assert_review_verdict_gate``
-        and a second copy of the standing-hold rule would drift from it. Past the gate it
-        delegates the selection to :meth:`standing_merge_safe_at` so the newest-non-stale
-        rule exists once.
-        """
-        if self.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha) is not HeadVerdictState.MERGE_SAFE:
-            return None
-        return self.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-
     def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         """Every standing hold at this head, including one followed by a pass."""
         return [
