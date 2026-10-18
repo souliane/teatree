@@ -142,6 +142,81 @@ class TestHandoverCreate(_PinnedSessionTestCase):
         assert SessionHandover.objects.get().from_session == "cc-session"
 
 
+class TestParkForTheNextSession(_PinnedSessionTestCase):
+    def test_park_parks_the_row_while_another_session_owns_the_loop(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+
+        data = json.loads(_call("handover", "create", "--park", json_output=True))
+
+        assert data["to_session"] == ""
+        assert data["parked_for_next"] is True
+        row = SessionHandover.objects.get()
+        assert row in SessionHandover.objects.claimable_for("next-session")
+        assert row not in SessionHandover.objects.claimable_for("this-session")
+
+    def test_the_loop_owner_is_told_to_park_and_can(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="this-session", owner_pid=os.getpid())
+        err = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command("handover", "create", stdout=StringIO(), stderr=err, json_output=True)
+
+        assert exit_info.value.code == 1
+        assert "cannot hand off to itself" in err.getvalue()
+        assert "--park" in err.getvalue()
+        assert not SessionHandover.objects.exists()
+
+        data = json.loads(_call("handover", "create", "--park", json_output=True))
+        assert data["to_session"] == ""
+
+    def test_park_with_an_explicit_target_is_refused_before_the_barrier(self) -> None:
+        err = StringIO()
+        with (
+            mock.patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push") as drive,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            call_command("handover", "create", "--park", "--to", "owner-X", stdout=StringIO(), stderr=err)
+        assert exit_info.value.code == 2
+        assert "--park and --to cannot be combined" in err.getvalue()
+        assert not SessionHandover.objects.exists()
+        drive.assert_not_called()
+
+    def test_an_explicitly_parked_report_names_who_can_claim(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        report = _call_human("handover", "create", "--park")
+        assert "claimable by any session except this-session on SessionStart" in report
+
+    def test_an_implicitly_parked_report_names_who_can_claim(self) -> None:
+        report = _call_human("handover", "create")
+        assert "claimable by any session except this-session on SessionStart" in report
+
+    def test_an_owner_addressed_report_carries_no_claim_line(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        report = _call_human("handover", "create")
+        assert "claimable by any session" not in report
+
+    def test_park_retargets_this_sessions_owner_addressed_row(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        first = json.loads(_call("handover", "create", body="FIRST", json_output=True))
+        second = json.loads(_call("handover", "create", "--park", body="SECOND", json_output=True))
+
+        assert second["handover_id"] == first["handover_id"]
+        assert second["updated_existing"] is True
+        row = SessionHandover.objects.get()
+        assert row.to_session == ""
+        assert "FIRST" in row.payload
+        assert "SECOND" in row.payload
+
+    def test_a_later_plain_create_readdresses_a_parked_row_to_the_live_owner(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        first = json.loads(_call("handover", "create", "--park", body="FIRST", json_output=True))
+        second = json.loads(_call("handover", "create", body="SECOND", json_output=True))
+
+        assert second["handover_id"] == first["handover_id"]
+        assert second["updated_existing"] is True
+        assert SessionHandover.objects.get().to_session == "owner-X"
+
+
 class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
     """Directive #8 — ``handover create`` drives in-flight sub-agents through fast-push."""
 
