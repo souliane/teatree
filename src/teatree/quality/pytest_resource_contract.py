@@ -7,6 +7,7 @@ leases its xdist workers from one host-wide file-lock pool, so concurrent runs s
 the cores instead of each taking them all.
 """
 
+import errno
 import fcntl
 import os
 import sys
@@ -163,22 +164,37 @@ class WorkerSlotPool:
     def _shared_capacity(self) -> int:
         path = self.path / "capacity.lock"
         try:
-            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+            root_descriptor = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-                recorded = os.read(descriptor, 32).decode().strip()
-                total = max(self.capacity, int(recorded)) if recorded else self.capacity
-                if not recorded or total != int(recorded):
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    os.write(descriptor, f"{total}\n".encode())
-                    os.ftruncate(descriptor, len(f"{total}\n"))
-                self.capacity = total
-                return total
+                fcntl.flock(root_descriptor, fcntl.LOCK_EX)
+                try:
+                    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EPERM, errno.ELOOP}:
+                        raise
+                    path.unlink(missing_ok=True)
+                    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    try:
+                        recorded = int(os.read(descriptor, 32).decode().strip())
+                    except (OSError, UnicodeError, ValueError):
+                        recorded = None
+                    total = max(self.capacity, recorded or 0)
+                    if recorded != total:
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        encoded = f"{total}\n".encode()
+                        os.write(descriptor, encoded)
+                        os.ftruncate(descriptor, len(encoded))
+                    self.capacity = total
+                    return total
+                finally:
+                    os.close(descriptor)
             finally:
-                os.close(descriptor)
-        except (OSError, ValueError) as exc:
+                os.close(root_descriptor)
+        except OSError as exc:
             reason = "is unavailable"
-            raise PoolUnavailableError(reason, path) from exc
+            raise PoolUnavailableError(reason, self.path) from exc
 
     def _lock_free_slots(self, target: int, total: int) -> tuple[list[int], str]:
         descriptors: list[int] = []

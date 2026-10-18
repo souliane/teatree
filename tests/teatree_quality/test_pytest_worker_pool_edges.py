@@ -90,6 +90,32 @@ def test_registry_override_never_leaks_into_hermetic_tests(tmp_path: Path) -> No
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("capacity_state", ["corrupt", "unreadable"])
+def test_real_pytest_rebuilds_an_unusable_capacity_file(tmp_path: Path, capacity_state: str) -> None:
+    slot_dir = tmp_path / "pytest-worker-slots"
+    slot_dir.mkdir()
+    capacity_file = slot_dir / "capacity.lock"
+    capacity_file.write_text("corrupt" if capacity_state == "corrupt" else "3", encoding="utf-8")
+    if capacity_state == "unreadable":
+        capacity_file.chmod(0)
+    node = (
+        f"{REPO}/tests/teatree_quality/test_pytest_resource_contract.py"
+        "::test_auto_workers_are_parallel_but_bounded_on_a_healthy_box"
+    )
+    result = subprocess.run(
+        pytest_command("-n", "1", "-q", node),
+        cwd=REPO,
+        env=standalone_pytest_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capacity_file.read_text(encoding="utf-8").strip() == str(available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
+
+
 def test_worker_pool_docs_describe_current_behavior() -> None:
     blueprint = (REPO / "docs/blueprint/admission-governor.md").read_text(encoding="utf-8")
     pool_section = blueprint.split("**Shared pytest worker slots", 1)[1].split("\n\n", 1)[0]
