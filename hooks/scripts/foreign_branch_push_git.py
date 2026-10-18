@@ -77,7 +77,7 @@ def push_work_dir(tokens: list[str], cwd: str) -> tuple[str, str]:
     return str(landing), ""
 
 
-def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> GitProbe:
+def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S, neutral: bool = False) -> GitProbe:
     """Run a Git probe in the targeted repo, inside what is left of the hook budget; ``ok=False`` on failure."""
     affordable = remaining_timeout_s(timeout)
     if affordable is None:
@@ -90,6 +90,7 @@ def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> Git
             text=True,
             timeout=affordable,
             check=False,
+            env=({**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(work_dir).resolve().parent)} if neutral else None),
         )
     except subprocess.TimeoutExpired:
         return GitProbe(ok=False, out="", err=f"timed out after {affordable:g}s")
@@ -195,7 +196,7 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
     try:
         with tempfile.TemporaryDirectory(prefix="t3-git-probe-") as neutral_dir:
             probe = git_probe(
-                neutral_dir, "ls-remote", "--heads", "--", resolved.out, ref, timeout=_LS_REMOTE_TIMEOUT_S
+                neutral_dir, "ls-remote", "--heads", "--", resolved.out, ref, timeout=_LS_REMOTE_TIMEOUT_S, neutral=True
             )
     except OSError as exc:
         return GitProbe(ok=False, out="", err=f"could not create neutral git probe directory: {exc}")
@@ -295,7 +296,9 @@ def _fetch_live_authors(
     try:
         with tempfile.TemporaryDirectory(prefix="t3-git-fetch-") as neutral_dir:
             repo = str(Path(neutral_dir) / "probe.git")
-            initialized = git_probe(neutral_dir, "init", "--quiet", "--bare", f"--object-format={object_format}", repo)
+            initialized = git_probe(
+                neutral_dir, "init", "--quiet", "--bare", f"--object-format={object_format}", repo, neutral=True
+            )
             if not initialized.ok:
                 return LiveRange("", "", "`git init --bare` (the neutral fetch repository)", initialized)
             # Borrowing the checkout's objects keeps the fetch incremental, as it was inside the checkout.
@@ -313,6 +316,7 @@ def _fetch_live_authors(
                     url,
                     f"{_HEADS_PREFIX}{label}",
                     timeout=_LS_REMOTE_TIMEOUT_S,
+                    neutral=True,
                 )
                 still_live = remote_branch_oid(work_dir, remote, label)
                 if not fetched.ok or not still_live.ok or still_live.out != oid:
@@ -322,7 +326,7 @@ def _fetch_live_authors(
                         f"`git fetch {remote} {label}` (a stable live remote commit)",
                         fetched if not fetched.ok else still_live,
                     )
-            log = git_probe(repo, "log", "--format=%ae%n%an", f"{base_oid}..{branch_oid}")
+            log = git_probe(repo, "log", "--format=%ae%n%an", f"{base_oid}..{branch_oid}", neutral=True)
             if not log.ok:
                 return LiveRange("", "", f"`git log <live-{base_branch}>..<live-{branch}>`", log)
             result = LiveRange(base_branch, base_oid, "", authors=tuple(line for line in log.out.splitlines() if line))

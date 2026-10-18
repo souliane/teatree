@@ -4,6 +4,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -83,6 +84,29 @@ def test_file_remote_ignores_checkout_uploadpack(git_scene: tuple[Path, Path, st
     assert probe.ok
     assert probe.out == oid
     assert not marker.exists()
+
+
+def test_neutral_probe_ignores_checkout_config_when_tmpdir_is_inside_repo(
+    git_scene: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, oid = git_scene
+    temporary_root = work / "temporary"
+    temporary_root.mkdir()
+    nested = temporary_root / "control"
+    nested.mkdir()
+    _git(work, "config", "--local", "protocol.file.allow", "never")
+    _git(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    monkeypatch.setenv("TMPDIR", str(temporary_root))
+    monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+
+    assert _git(nested, "config", "--local", "protocol.file.allow") == "never"
+    with patch.object(tempfile, "tempdir", None):
+        probe = remote_branch_oid(str(work), "origin", "main")
+        live = live_remote_range(str(work), "origin", "main", oid)
+
+    assert probe.ok, probe.err
+    assert probe.out == oid
+    assert not live.failed, live.probe
 
 
 def test_ssh_remote_uses_system_command_and_ignores_checkout_command(

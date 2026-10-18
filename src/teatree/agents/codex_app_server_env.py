@@ -39,20 +39,17 @@ def codex_command() -> tuple[str, ...]:
 
 
 _DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS")
-_ROUTER_AMBIENT_KEYS = frozenset(
+_ROUTER_AMBIENT_KEYS = _PROCESS_ENV_KEYS | frozenset(
     {
-        "PATH",
         "HOME",
-        "TMPDIR",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "T3_CONFIG_DB",
-        "T3_CONTROL_DB_DIR",
-        "T3_OVERLAY_NAME",
-        "T3_REPO",
         "TEATREE_CLONE_DIR",
+        "T3_DATA_DIR",
+        "XDG_DATA_HOME",
+        "UV_TOOL_DIR",
+        "T3_HOOK_PYTHON",
+        "T3_HOOK_STATE_DIR",
+        "T3_SKILL_SEARCH_DIRS",
+        "TEATREE_TERM_REGISTRY",
     }
 )
 _ROUTER_DISPATCH_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV)

@@ -197,8 +197,8 @@ _GH_REJECTED_CREDENTIAL = (
 
 @pytest.mark.parametrize(
     "scenario",
-    ["task-token", "missing-token", "forge-unavailable", "rejected-token"],
-    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token"],
+    ["task-token", "missing-token", "forge-unavailable", "rejected-token", "rejected-list"],
+    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token", "rejected-list"],
 )
 def test_codex_push_approval_names_venue_fault_without_leaking_token(
     scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
@@ -211,19 +211,25 @@ def test_codex_push_approval_names_venue_fault_without_leaking_token(
     forge_failure = {
         "forge-unavailable": "HTTP 502: Bad Gateway",
         "rejected-token": _GH_REJECTED_CREDENTIAL,
+        "rejected-list": _GH_REJECTED_CREDENTIAL,
     }.get(scenario, "")
     _git(scene.work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
     _seed_config_db(home / "config.sqlite3", _GATE_ON)
     gh = tmp_path / "gh"
-    fail_line = f"printf '{forge_failure}\\n' >&2; exit 1\n" if forge_failure else ""
+    fail_line = f"printf '%s\\n{forge_failure}\\n' \"$GH_TOKEN\" >&2; exit 1\n" if forge_failure else ""
+    listing = (
+        fail_line
+        if scenario == "rejected-list"
+        else 'echo \'[{"number":7,"author":{"login":"us"},'
+        '"url":"https://github.com/example/repo/pull/7","isCrossRepository":false}]\''
+    )
     gh.write_text(
         "#!/bin/sh\n"
         f'[ "$GH_TOKEN" = "{sentinel}" ] || {{ printf \'{_GH_NO_CREDENTIAL}\\n\' >&2; exit 4; }}\n'
-        f"{fail_line}"
+        f"{fail_line if scenario != 'rejected-list' else ''}"
         'case "$*" in\n'
         "  'api user'*) echo '{\"login\":\"us\"}' ;;\n"
-        '  \'pr list\'*) echo \'[{"number":7,"author":{"login":"us"},'
-        '"url":"https://github.com/example/repo/pull/7","isCrossRepository":false}]\' ;;\n'
+        f"  'pr list'*) {listing} ;;\n"
         "  *) exit 1 ;;\n"
         "esac\n"
     )
@@ -280,10 +286,12 @@ def test_codex_push_approval_names_venue_fault_without_leaking_token(
         assert "needs_user_input` false" in reason
         assert "cut our OWN branch" not in reason
         assert "gh auth login" not in reason
+        assert "GH_TOKEN environment variable" not in reason
         if scenario == "missing-token":
             assert "this process holds no GH_TOKEN" in reason
         else:
             assert "GitHub rejected the GH_TOKEN" in reason
+            assert "<redacted>" in reason
     assert sentinel not in (reason or "")
     assert all(sentinel not in record.getMessage() for record in caplog.records)
 
