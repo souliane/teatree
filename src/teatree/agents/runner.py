@@ -22,26 +22,12 @@ from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
 
-from teatree.agents._runner_env import (
-    DispatchCredential,
-    _overlay_scope,
-    _provider_child_env,
-    agent_spawn_env,
-    with_routed_github_token,
-    with_test_worker_cap,
-)
+from teatree.agents._runner_env import DispatchCredential, _provider_child_env, agent_spawn_env
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
 from teatree.agents.compaction_guard import GuardedHarness
-from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
-from teatree.agents.harness_registry import (
-    HarnessFallbackError,
-    HarnessFallbackKind,
-    InvalidHarnessProviderError,
-    NoAvailableHarnessError,
-    UnknownHarnessError,
-)
+from teatree.agents.harness_dispatch import DispatchHarness
+from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
@@ -64,6 +50,15 @@ from teatree.agents.runner_outcomes import record_success as _record_success  # 
 from teatree.agents.runner_outcomes import resolve_dispatch_lane as _resolve_dispatch_lane
 from teatree.agents.runner_preparation import Preflight as _Preflight
 from teatree.agents.runner_preparation import PreparedRun as _PreparedRun
+from teatree.agents.runner_preparation import (
+    _active_agent_count,
+    _admission_park_or_child_env,
+    _capped_forge_env,
+    _ChildEnvDispatch,
+    _preflight,
+    _resolve_backend_or_failure,
+    _resolve_child_env_or_failure,
+)
 from teatree.agents.runner_preparation import prepare_run as _prepare_run_impl
 from teatree.agents.runner_preparation import restore_unconsumed_resume_thread as _restore_unconsumed_resume_thread
 from teatree.agents.runner_route_recording import NO_ROUTE_FALLBACK as _NO_ROUTE_FALLBACK
@@ -76,40 +71,37 @@ from teatree.agents.runner_route_recording import learn_route_failure as _learn_
 from teatree.agents.runner_route_recording import park_after_route_failure as _park_after_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_routing import (
-    AmbiguousSkillRouteError,
-    ConflictingHarnessRoutingError,
-    runtime_fallback_reason,
-)
+from teatree.agents.skill_routing import runtime_fallback_reason
 from teatree.agents.spawn_payload import AgentSpawnError
-from teatree.agents.usage_window import (
-    maybe_park_for_active_window,
-    park_on_timed_rejections,
-    park_task_on_all_exhausted,
-)
-from teatree.config import AgentHarnessProvider
-from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout, verify_task_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
-from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
-from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 logger = logging.getLogger(__name__)
 
 # ``LoopWatchdog`` / ``TaskUsage`` moved to ``runner_watchdog`` but stay part of
 # this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
 # ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
-__all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
+__all__ = [
+    "HarnessOutcome",
+    "LoopWatchdog",
+    "TaskUsage",
+    "_active_agent_count",
+    "_capped_forge_env",
+    "_provider_child_env",
+    "_resolve_backend_or_failure",
+    "_resolve_child_env_or_failure",
+    "run_agent",
+    "shutil",
+]
 
 # Lease duration the heartbeat renews to. The renewal runs as an asyncio task on
 # the SAME event loop the headless agent drives, so under CPU/event-loop
@@ -122,16 +114,6 @@ __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
 # heartbeat interval widens the slack to ~15 min of continuous starvation before a
 # false lapse, while a genuinely dead session's task still reclaims after the wider window.
 _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
-
-
-@dataclass(frozen=True, slots=True)
-class _ChildEnvDispatch:
-    lane: str = ""
-    phase: str = ""
-    route_candidate: bool = False
-
-
-_DEFAULT_CHILD_ENV_DISPATCH = _ChildEnvDispatch()
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,112 +442,6 @@ def _run_agent(
     )
     release_finished_thread(task)
     return attempt
-
-
-def _preflight(
-    task: Task,
-    *,
-    phase: str,
-    overlay_skill_metadata: SkillMetadata,
-) -> _Preflight | TaskAttempt:
-    """The refusals that must all pass before a turn can be billed, as one short-circuit."""
-    refusal = pre_harness_refusal(task, phase=phase)
-    if refusal is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
-        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
-
-    staged = staged_skills_or_refusal(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
-    if isinstance(staged, TaskAttempt):
-        return staged
-    stage_skills, skills = staged
-    dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
-    if isinstance(dispatch, TaskAttempt):
-        return dispatch
-
-    return _Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
-
-
-def _resolve_backend_or_failure(
-    task: Task, *, phase: str = "", skills: list[str] | None = None
-) -> DispatchHarness | TaskAttempt:
-    """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
-    try:
-        return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
-    except NoAvailableHarnessError as exc:
-        parked = park_on_timed_rejections(task, exc.rejected)
-        return parked or _record_failure(task, error=str(exc))  # no-usage: no candidate opened, so no turn billed
-    except (
-        NotImplementedError,
-        UnknownHarnessError,
-        InvalidHarnessProviderError,
-        CredentialError,
-        AmbiguousSkillRouteError,
-        ConflictingHarnessRoutingError,
-        InvalidAgentConfigError,
-    ) as exc:
-        return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
-
-
-def _admission_park_or_child_env(
-    task: Task,
-    harness: Harness,
-    provider: AgentHarnessProvider | None,
-    *,
-    context: _ChildEnvDispatch = _DEFAULT_CHILD_ENV_DISPATCH,
-) -> DispatchCredential | TaskAttempt:
-    """Directive #3 admission guard, then the child-env resolution — one early-return seam."""
-    admission_park = maybe_park_for_active_window(task, lane=context.lane)
-    if admission_park is not None:
-        _restore_unconsumed_resume_thread(harness)
-        return admission_park
-    return _resolve_child_env_or_failure(task, harness, provider, context=context)
-
-
-def _resolve_child_env_or_failure(
-    task: Task,
-    harness: Harness,
-    provider: AgentHarnessProvider | None,
-    *,
-    context: _ChildEnvDispatch = _DEFAULT_CHILD_ENV_DISPATCH,
-) -> DispatchCredential | TaskAttempt:
-    """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
-    if not harness.capabilities.spawns_cli_child:
-        return DispatchCredential(env=_capped_forge_env(task, None) if harness.capabilities.managed_lane else None)
-    # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
-    # the ``claude -p`` runner used.
-    if shutil.which("claude") is None:
-        if context.route_candidate:
-            message = "claude is not installed"
-            raise HarnessFallbackError(message, kind=HarnessFallbackKind.TRANSPORT)
-        return _record_failure(
-            task, error="claude is not installed"
-        )  # no-usage: the CLI is absent, so nothing was dispatched
-    try:
-        resolved = _provider_child_env(provider, scope=_overlay_scope(task))
-    except CredentialError as exc:
-        # #C2: every configured account drained (an ``AllTokensExhaustedError``) → quiesce the
-        # lane and auto-resume at the earliest reset rather than escalating to a human; any
-        # other credential gap (or flag-off) records the loud terminal FAILED as before.
-        if isinstance(exc, AllTokensExhaustedError):
-            parked = park_task_on_all_exhausted(task, resets_at=exc.earliest_reset, lane=context.lane)
-            if parked is not None:
-                return parked
-        if context.route_candidate:
-            kind = HarnessFallbackKind.QUOTA if isinstance(exc, AllTokensExhaustedError) else HarnessFallbackKind.AUTH
-            raise HarnessFallbackError(str(exc), kind=kind) from exc
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
-    return replace(resolved, env=_capped_forge_env(task, resolved.env))
-
-
-def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str]:
-    capped = with_test_worker_cap(env, active_agents=_active_agent_count())
-    return {**(with_routed_github_token(capped, overlay=_overlay_scope(task)) or {}), **dispatched_agent_env()}
-
-
-def _active_agent_count() -> int:
-    """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9)."""
-    return max(1, Task.objects.claimed_agent_count())
 
 
 def _renew_lease_closing_connection(task: Task) -> None:
