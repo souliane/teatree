@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
@@ -244,10 +245,14 @@ def test_only_a_file_change_that_ran_reaches_post_tool_use(
     assert sent == reported
 
 
-def test_post_tool_router_receives_the_task_token(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
+def test_post_tool_router_forwards_task_token_without_debug_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    worker_options: CodexAppServerOptions,
 ) -> None:
-    sentinel = "gh" + "p_" + "s" * 36
+    caplog.set_level(logging.DEBUG)
+    sentinel = "sentinel-task-token"
     for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     observed = tmp_path / "post-env"
@@ -273,6 +278,32 @@ def test_post_tool_router_receives_the_task_token(
         )
     )
 
+    assert observed.read_text().strip() == "yes"
+    assert all(sentinel not in record.getMessage() for record in caplog.records)
+
+
+def test_file_change_approval_forwards_the_task_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    observed = tmp_path / "file-change-env"
+    script = tmp_path / "file-change-router.sh"
+    script.write_text(
+        f'#!/bin/sh\n[ "$GH_TOKEN" = "sentinel-task-token" ] && echo yes > "{observed}" || echo no > "{observed}"\n'
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(worker_options, core=replace(worker_options.core, env={"GH_TOKEN": "sentinel-task-token"}))
+
+    decision, reason = asyncio.run(
+        approval_decision(
+            "item/fileChange/requestApproval",
+            {"cwd": str(tmp_path), "threadId": "thread-1"},
+            options,
+            [{"path": "example.txt", "kind": {"type": "add"}}],
+        )
+    )
+
+    assert (decision, reason) == ("accept", None)
     assert observed.read_text().strip() == "yes"
 
 
