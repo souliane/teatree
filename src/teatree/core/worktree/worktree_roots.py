@@ -14,12 +14,14 @@ DRAINED by the reaper rather than left to accumulate — and, once drained, neve
 written to again, collapsing the split without a manual migration.
 """
 
+import os
 from enum import StrEnum
 from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout, wrong_venue_reason
+from teatree.mount_identity import mount_spellings, read_mount_table
 from teatree.utils.git_run import git_env_without_overrides, run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
@@ -153,12 +155,29 @@ def worktrees_outside_the_canonical_root() -> list[Worktree]:
     The namespace-split signal `t3 doctor` reports: each of these is invisible to
     a pass that scans only the canonical root.
     """
-    canonical = canonical_worktree_root().expanduser()
+    canonical = Path(os.path.normpath(canonical_worktree_root().expanduser()))
     outside: list[Worktree] = []
+    table: str | None = None
+    canonical_spellings: list[str] = []
     for worktree in Worktree.objects.all():
         path = worktree.worktree_path
-        if path and not Path(path).expanduser().is_relative_to(canonical):
-            outside.append(worktree)
+        if not path:
+            continue
+        checkout = Path(os.path.normpath(Path(path).expanduser()))
+        if checkout.is_relative_to(canonical):
+            continue
+        if table is None:
+            table = read_mount_table()
+            canonical_spellings = mount_spellings(canonical, mountinfo=table)
+        if any(Path(alias).is_relative_to(canonical) for alias in mount_spellings(checkout, mountinfo=table)):
+            continue
+        if any(
+            str(checkout) in mount_spellings(canonical / checkout.relative_to(root), mountinfo=table)
+            for root in (Path(spelling) for spelling in canonical_spellings)
+            if checkout.is_relative_to(root)
+        ):
+            continue
+        outside.append(worktree)
     return outside
 
 

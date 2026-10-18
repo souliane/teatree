@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+from teatree import mount_identity
 from teatree.mount_identity import physical_location
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 _CHECKOUT = Path("/nonexistent-t3/mnt/ws/ticket/repo")
 _BOOT = "11111111-2222-3333-4444-555555555555\n"
@@ -66,3 +68,46 @@ def test_this_process_can_locate_a_real_directory(tmp_path: Path) -> None:
 
     assert location is not None
     assert child == f"{location.rstrip('/')}/absent/child"
+
+
+def test_a_bind_alias_is_a_spelling_of_the_directory_in_both_directions(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    alias = "/nonexistent-t3/mnt/T1/repo"
+    with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:2", "/ws", "/nonexistent-t3/mnt")):
+        assert set(mount_identity.mount_spellings(real)) == {str(real), alias}
+        assert set(mount_identity.mount_spellings(alias)) == {str(real), alias}
+
+
+def test_a_spelling_shadowed_by_a_deeper_mount_is_not_offered(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    with patched_mount_table(
+        ("259:2", "/ws", str(tmp_path / "mnt")),
+        ("259:2", "/ws", "/nonexistent-t3/mnt"),
+        ("259:3", "/other", "/nonexistent-t3/mnt/T1"),
+    ):
+        assert mount_identity.mount_spellings(real) == [str(real)]
+
+
+def test_an_alias_with_a_symlink_prefix_is_not_offered(tmp_path: Path) -> None:
+    real_root = tmp_path / "mnt"
+    (real_root / "T1" / "repo").mkdir(parents=True)
+    redirect = tmp_path / "redirect"
+    redirect.symlink_to(tmp_path / "elsewhere")
+    with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", str(redirect))):
+        assert mount_identity.mount_spellings(real_root / "T1" / "repo") == [str(real_root / "T1" / "repo")]
+
+
+def test_the_same_root_on_another_device_is_not_a_spelling(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:3", "/ws", "/nonexistent-t3/mnt")):
+        assert mount_identity.mount_spellings(real) == [str(real)]
+
+
+def test_an_unreadable_mount_table_offers_no_spelling(tmp_path: Path) -> None:
+    with missing_mount_table():
+        assert mount_identity.mount_spellings(tmp_path) == []
+    assert mount_identity.mount_spellings(tmp_path, mountinfo="") == []
+    assert mount_identity.mount_spellings(tmp_path, mountinfo="malformed\n") == []

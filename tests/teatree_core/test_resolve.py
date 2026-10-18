@@ -1,5 +1,6 @@
 """Tests for teatree.core.intake.resolve — worktree resolution from CWD."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.ticket_workspace import TicketWorkspaceDivergenceError
 from tests._git_repo import make_git_repo, run_git
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 
 class TestParseEnvFile:
@@ -138,6 +140,25 @@ class TestFindEnvCache:
 
 
 class TestMatchWorktreeByPath(TestCase):
+    def test_a_row_recorded_under_a_mount_alias_is_found_from_either_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_root = Path(directory) / "mnt"
+            real = real_root / "T1" / "repo"
+            real.mkdir(parents=True)
+            alias = "/nonexistent-t3/workspace/T1/repo"
+            assert not Path(alias).exists()
+            ticket = Ticket.objects.create()
+            row = Worktree.objects.create(
+                ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": alias}
+            )
+            with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", "/nonexistent-t3/workspace")):
+                assert match_worktree_by_path(str(real)) == row
+                row.extra["worktree_path"] = str(real)
+                row.save(update_fields=["extra"])
+                assert match_worktree_by_path(alias) == row
+            with missing_mount_table():
+                assert match_worktree_by_path(alias) is None
+
     def test_exact_match(self) -> None:
         ticket = Ticket.objects.create()
         wt = Worktree.objects.create(

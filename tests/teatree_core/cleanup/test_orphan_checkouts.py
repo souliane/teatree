@@ -11,10 +11,29 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.cleanup.orphan_checkouts import discover_orphan_checkouts, orphan_has_unique_work
+from teatree.core.cleanup.orphan_checkouts import (
+    discover_orphan_checkouts,
+    orphan_checkouts_for_clone,
+    orphan_has_unique_work,
+)
 from teatree.utils import git
+from tests._mount_table import missing_mount_table, patched_mount_table
 from tests.teatree_core.cleanup._shared import _run_git
 from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
+
+
+class TestAnAliasTrackedCheckoutIsNotAnOrphan(OrphanWorktreeFixture):
+    def test_a_row_recorded_under_a_mount_alias_tracks_the_checkout(self) -> None:
+        checkout = self._add_orphan("T1")
+        alias = "/nonexistent-t3/workspace/T1/myrepo"
+        tracked = [str(self.repo_main), alias]
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.workspace)),
+            ("259:2", "/ws", "/nonexistent-t3/workspace"),
+        ):
+            assert orphan_checkouts_for_clone(str(self.repo_main), tracked) == []
+        with missing_mount_table():
+            assert [row.path for row in orphan_checkouts_for_clone(str(self.repo_main), tracked)] == [str(checkout)]
 
 
 class TestDiscoverOrphanCheckoutsReportsAnUnreadableClone(OrphanWorktreeFixture):

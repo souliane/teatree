@@ -37,14 +37,53 @@ def physical_location(path: Path, *, mountinfo: str | None = None, boot_id: str 
     return f"{device}@{boot.strip()}:{inside}" if boot else None
 
 
-def _covering_mount(table: str, target: str) -> tuple[str, str, str] | None:
-    """The deepest mount holding *target*; of mounts stacked on one point, the last listed is on top."""
-    covering: tuple[str, str, str] | None = None
+def read_mount_table() -> str:
+    return _read(_MOUNTINFO) or ""
+
+
+def mount_spellings(path: str | Path, *, mountinfo: str | None = None) -> list[str]:
+    table = mountinfo if mountinfo is not None else read_mount_table()
+    mounts = _mounts(table)
+    location = _locate(mounts, path)
+    if location is None:
+        return []
+    device, inside = location
+    spellings: list[str] = []
+    for other_device, root, point in mounts:
+        if other_device != device or not _holds(root, inside):
+            continue
+        spelling = os.path.normpath(str(PurePosixPath(point) / os.path.relpath(inside, root)))
+        if _locate(mounts, spelling) == location:
+            spellings.append(spelling)
+    return list(dict.fromkeys(spellings))
+
+
+def _locate(mounts: list[tuple[str, str, str]], path: str | Path) -> tuple[str, str] | None:
+    target = os.path.realpath(path)
+    mount = _covering_mounts(mounts, target)
+    if mount is None:
+        return None
+    device, root, point = mount
+    return device, os.path.normpath(str(PurePosixPath(root) / os.path.relpath(target, point)))
+
+
+def _mounts(table: str) -> list[tuple[str, str, str]]:
+    mounts: list[tuple[str, str, str]] = []
     for line in table.splitlines():
         fields = line.split()
-        if len(fields) < _MOUNT_POINT_FIELDS:
-            continue
-        device, root, point = fields[2], _unescape(fields[3]), _unescape(fields[4])
+        if len(fields) >= _MOUNT_POINT_FIELDS:
+            mounts.append((fields[2], _unescape(fields[3]), _unescape(fields[4])))
+    return mounts
+
+
+def _covering_mount(table: str, target: str) -> tuple[str, str, str] | None:
+    """The deepest mount holding *target*; of mounts stacked on one point, the last listed is on top."""
+    return _covering_mounts(_mounts(table), target)
+
+
+def _covering_mounts(mounts: list[tuple[str, str, str]], target: str) -> tuple[str, str, str] | None:
+    covering: tuple[str, str, str] | None = None
+    for device, root, point in mounts:
         if _holds(point, target) and (covering is None or len(point) >= len(covering[2])):
             covering = (device, root, point)
     return covering
@@ -65,4 +104,4 @@ def _read(path: Path) -> str | None:
         return None
 
 
-__all__ = ["physical_location"]
+__all__ = ["mount_spellings", "physical_location", "read_mount_table"]

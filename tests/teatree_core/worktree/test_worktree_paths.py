@@ -6,6 +6,7 @@ from pathlib import Path
 from django.test import TestCase
 
 from teatree.core.worktree.worktree_paths import _candidate_paths, paths_match, ticket_dir_for, worktree_dir_for
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 
 class TestCanonicalLayout(TestCase):
@@ -54,12 +55,34 @@ class TestPathsMatch(TestCase):
             link.symlink_to(target)
             assert paths_match(str(link), str(target)) is True
 
+    def test_a_recorded_spelling_absent_here_matches_its_mount_alias_both_ways(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_root = Path(directory) / "mnt"
+            (real_root / "T1" / "repo").mkdir(parents=True)
+            sibling = real_root / "T2" / "repo"
+            sibling.mkdir(parents=True)
+            alias = "/nonexistent-t3/workspace/T1/repo"
+            assert not Path(alias).exists()
+            with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", "/nonexistent-t3/workspace")):
+                assert paths_match(alias, real_root / "T1" / "repo")
+                assert paths_match(real_root / "T1" / "repo", alias)
+                assert not paths_match(alias, sibling)
+
+    def test_without_a_readable_mount_table_the_two_spellings_stay_distinct(self) -> None:
+        with missing_mount_table():
+            assert not paths_match("/nonexistent-t3/workspace/T1/repo", "/nonexistent-t3/mnt/T1/repo")
+
 
 class TestCandidatePaths(TestCase):
     """``_candidate_paths`` builds the variant set ``paths_match`` and the DB matcher share."""
 
     def test_includes_the_literal_path(self) -> None:
         assert "/ws/a/repo" in _candidate_paths("/ws/a/repo")
+
+    def test_one_mount_spelling_keeps_the_existing_candidate_set(self) -> None:
+        path = "/nonexistent-t3/workspace/T1/repo"
+        with patched_mount_table(("259:2", "/ws", "/nonexistent-t3/workspace")):
+            assert _candidate_paths(path) == [path]
 
     def test_private_prefix_stripped_variant(self) -> None:
         out = _candidate_paths("/private/var/folders/x")
