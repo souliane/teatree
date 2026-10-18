@@ -1,5 +1,6 @@
 """Advance CI eval heal sessions, fixing confirmed behavioral reds within budget."""
 
+import datetime as dt
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
+from django.utils import timezone
 
 from teatree.backends.github.ci_eval_client import (
     DEFAULT_CI_EVAL_REPO,
@@ -39,6 +41,8 @@ EscalateFn = Callable[["CiEvalHealSession"], None]
 
 #: The outcome note for an advancer that lost its step to a rival holding the same row.
 _SUPERSEDED_NOTE = "superseded by a rival advancer"
+_HELD_TIMEOUT = dt.timedelta(hours=1)
+_ARTIFACT_TIMEOUT = dt.timedelta(hours=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +176,7 @@ def _fire_workflow(session: "CiEvalHealSession", *, client: GhCiEvalClient) -> b
             EVAL_CI_HEAL_WORKFLOW,
             ref=session.pr_ref,
             inputs={
-                "scenarios": ",".join(session.red_scenarios),
+                "scenarios": "" if session.needs_full_rerun else ",".join(session.red_scenarios),
                 "credential": _DISPATCH_CREDENTIAL,
                 "pr_ref": session.pr_ref,
             },
@@ -198,6 +202,9 @@ def _dispatch_ci(
     target, which is why that one still records only after its push.
     """
     if not reserve_met():
+        if timezone.now() - session.updated_at >= _HELD_TIMEOUT:
+            to_state = _halt(session, escalate=escalate, reason="eval reserve unavailable for twelve 5-minute ticks")
+            return AdvanceOutcome(session.pr_ref, "pending", to_state, note="reserve hold timed out")
         return AdvanceOutcome(session.pr_ref, "pending", session.state, note="held: no eval account meets the reserve")
     head_sha = client.resolve_head_sha(session.pr_ref)
     claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))
@@ -320,13 +327,14 @@ def _retrigger(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate
 def _triage_result(
     session: "CiEvalHealSession",
     *,
-    reds: list[str],
+    payload: _RunPayload,
     client: GhCiEvalClient,
     escalate: EscalateFn,
     fixer: CiEvalHealFixer,
 ) -> AdvanceOutcome:
     """Record the run's red set under the ownership CAS, then resolve the triage it opens."""
-    triaging = _advance_owned(session, lambda owned: owned.receive_result(red_scenarios=reds))
+    reds = list(payload.reds)
+    triaging = _advance_owned(session, lambda owned: owned.receive_result(red_scenarios=reds, parked=payload.parked))
     if triaging is None:
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note=_SUPERSEDED_NOTE)
     to_state = _resolve_triage(triaging, client=client, escalate=escalate, fixer=fixer)
@@ -352,12 +360,17 @@ def _resolve_success(
 ) -> AdvanceOutcome:
     """A ``success`` conclusion greens only on a readable payload no leg parked — a parked leg ran nothing."""
     if payload is None:
+        if session.artifact_missing_since is None:
+            _advance_owned(session, lambda owned: owned.note_missing_artifact())
+            return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note="awaiting readable eval artifact")
+        if timezone.now() - session.artifact_missing_since < _ARTIFACT_TIMEOUT:
+            return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note="awaiting readable eval artifact")
         reason = "CI run concluded 'success' but its eval-heal artifact is unreadable; a green needs the payload"
         to_state = _halt(session, escalate=escalate, reason=reason)
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="unreadable-payload halt")
     if payload.parked:
         return _park(session)
-    return _triage_result(session, reds=[], client=client, escalate=escalate, fixer=fixer)
+    return _triage_result(session, payload=payload, client=client, escalate=escalate, fixer=fixer)
 
 
 def _observe_ci(
@@ -376,7 +389,7 @@ def _observe_ci(
     if conclusion == "success":
         return _resolve_success(session, payload=payload, client=client, escalate=escalate, fixer=fixer)
     if payload is not None and payload.reds:
-        return _triage_result(session, reds=list(payload.reds), client=client, escalate=escalate, fixer=fixer)
+        return _triage_result(session, payload=payload, client=client, escalate=escalate, fixer=fixer)
     if payload is not None and payload.parked:
         return _park(session)
     # Non-success with NO confirmable behavioral red — an infra failure (transport,

@@ -22,6 +22,7 @@ import pytest
 import typer
 
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, API_BACKEND
 from teatree.eval.models import EvalRun, EvalSpec
 
@@ -59,6 +60,85 @@ class _StubRunner:
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return _run(spec, empty=self._empty)
+
+
+class _LimitRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        raise UsageLimitReachedError
+
+
+class _LimitAfterRedRunner(_LimitRunner):
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        if self.calls == 1:
+            return dataclasses.replace(_run(spec, empty=False), is_error=True)
+        raise UsageLimitReachedError
+
+
+def test_pass_at_k_usage_limit_parks_with_a_summary(tmp_path: Path) -> None:
+    runner = _LimitRunner()
+    summary = tmp_path / "summary.md"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_pass_at_k_lane(
+            [_spec("one"), _spec("two")],
+            backend=API_BACKEND,
+            max_turns=None,
+            trials=2,
+            require="any",
+            output_format="text",
+            summary_md=summary,
+        )
+    assert exc.value.exit_code == 75
+    assert runner.calls == 1
+    assert "PARKED" in summary.read_text()
+
+
+def test_matrix_usage_limit_parks_with_a_dashboard(tmp_path: Path) -> None:
+    runner = _LimitRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("one"), _spec("two")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=1,
+            require="any",
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == 75
+    assert runner.calls == 1
+    assert "PARKED" in dashboard.read_text()
+
+
+def test_matrix_keeps_a_measured_red_when_a_later_cell_hits_the_limit(tmp_path: Path) -> None:
+    runner = _LimitAfterRedRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("red"), _spec("unmeasured"), _spec("later")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=1,
+            require="any",
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
+    assert "failed before the usage limit" in dashboard.read_text()
 
 
 @dataclasses.dataclass

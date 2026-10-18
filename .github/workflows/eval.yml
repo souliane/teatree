@@ -428,8 +428,8 @@ jobs:
       # window. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per token
       # for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
       # freshest is exported — masked — into $GITHUB_ENV, which the eval step below reads.
-      # BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing single
-      # CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the credential
+      # With EVAL_OAUTH_TOKENS unset/empty it probes the existing single
+      # CLAUDE_CODE_OAUTH_TOKEN against the reserve. This step OWNS the credential
       # decision, so it also exports T3_AGENT_HARNESS_PROVIDER. Each leg re-probes: with no
       # account keeping the eval reserve free it exits 75 and parked=true, and the leg's
       # eval step is skipped. There is no metered fallback on this lane. Skipped
@@ -440,6 +440,7 @@ jobs:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_SWEEP_WITHIN_HOURS: ${{ github.event_name == 'schedule' && '24' || '' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Restore passing eval verdicts for scheduled single-trial legs
         continue-on-error: true

@@ -15,6 +15,7 @@ _PR = _WORKFLOWS / "eval-pr.yml"
 _PR_REUSABLE = _WORKFLOWS / "eval-pr-reusable.yml"
 _NIGHTLY = _WORKFLOWS / "eval-nightly.yml"
 _WEEKLY = _WORKFLOWS / "eval.yml"
+_WEEKLY_REUSABLE = _WORKFLOWS / "eval-weekly-reusable.yml"
 _CACHE_ACTION = _WORKFLOWS.parent / "actions" / "eval-verdict-cache" / "action.yml"
 
 
@@ -226,3 +227,35 @@ class TestWeeklyCatalogUntouched:
         assert 'cron: "0 6 * * *"' in text
         assert 'EVAL_SWEEP_WITHIN_HOURS: "24"' in text
         assert "--days 7" in text
+
+
+def test_scheduled_sweep_window_reaches_each_credential_selector() -> None:
+    text = _WEEKLY.read_text(encoding="utf-8")
+    sections = text.split("- name: Select the freshest eval OAuth account")
+    assert len(sections) == 2
+    assert "EVAL_SWEEP_WITHIN_HOURS" in sections[-1].split("- name:", 1)[0]
+
+
+def test_nightly_ledger_steps_are_main_only_and_retries_skip_passed_debt() -> None:
+    text = _NIGHTLY.read_text(encoding="utf-8")
+    for name in (
+        "Harvest the owed-scenario ledger",
+        "Upload the owed-scenario ledger",
+        "Settle the owed-scenario ledger",
+        "Upload the settled owed-scenario ledger",
+    ):
+        section = text.split(f"- name: {name}", 1)[1].split("\n      -", 1)[0]
+        assert "github.ref == 'refs/heads/main'" in section
+    assert 'grep -Fxq -- "$name" "$PASSED"' in text
+    assert '--attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"' in text
+
+
+def test_reusable_parked_lanes_keep_durable_owed_artifacts() -> None:
+    pr = _PR_REUSABLE.read_text(encoding="utf-8")
+    assert "t3 eval owed record" in pr
+    assert "name: eval-owed" in pr
+    weekly = _WEEKLY_REUSABLE.read_text(encoding="utf-8")
+    assert 'scripts/eval/select_oauth.py || [ "$?" -eq 75 ]' in weekly
+    assert "t3 eval owed collect" in weekly
+    assert "t3 eval owed settle" in weekly
+    assert "name: eval-owed-ledger" in weekly

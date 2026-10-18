@@ -3202,12 +3202,20 @@ Usage: t3 eval owed collect [OPTIONS]
  its harvest.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --repo        TEXT  OWNER/NAME of the repository whose artifacts hold the │
-│                        debt.                                                 │
-│                        [required]                                            │
-│ *  --out         PATH  Where to write the harvested ledger. [required]       │
-│    --now         TEXT  Override 'now' (ISO-8601); for testing.               │
-│    --help              Show this message and exit.                           │
+│ *  --repo                       TEXT                  OWNER/NAME of the      │
+│                                                       repository whose       │
+│                                                       artifacts hold the     │
+│                                                       debt.                  │
+│                                                       [required]             │
+│ *  --out                        PATH                  Where to write the     │
+│                                                       harvested ledger.      │
+│                                                       [required]             │
+│    --now                        TEXT                  Override 'now'         │
+│                                                       (ISO-8601); for        │
+│                                                       testing.               │
+│    --first-lookback-days        INTEGER RANGE [x>=1]  [default: 1]           │
+│    --help                                             Show this message and  │
+│                                                       exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3241,13 +3249,17 @@ Usage: t3 eval owed settle [OPTIONS]
  defines.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --out                  PATH  The owed-ledger JSON file, updated in place. │
-│                                 [required]                                   │
-│ *  --passed-file          PATH  Scenario names that passed, one per line.    │
-│                                 [required]                                   │
-│    --scenarios-dir        PATH  Read the catalog from this scenario          │
-│                                 directory (default: the discovered catalog). │
-│    --help                       Show this message and exit.                  │
+│ *  --out                   PATH  The owed-ledger JSON file, updated in       │
+│                                  place.                                      │
+│                                  [required]                                  │
+│    --passed-file           PATH  Scenario names that passed, one per line.   │
+│    --attempted-file        PATH  Scenario names attempted tonight.           │
+│    --scenarios-dir         PATH  Read the catalog from this scenario         │
+│                                  directory (default: the discovered          │
+│                                  catalog).                                   │
+│    --all-covered                 Clear every owed name after a complete      │
+│                                  green suite.                                │
+│    --help                        Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

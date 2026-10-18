@@ -59,7 +59,7 @@ from teatree.core.models.anthropic_token_usage import (
     fingerprint_token,
 )
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.credential_config import LIST_SETTING, TokenKind, reading_from
+from teatree.credential_config import LIST_SETTING, AllTokensExhaustedError, PassPathSelector, TokenKind, reading_from
 from teatree.llm.rate_limits import (
     MeteredKeyReader,
     MeteredKeySnapshot,
@@ -136,7 +136,13 @@ class TokenReport:
         ad_hoc = [self._ad_hoc_row(index, token, now) for index, token in enumerate(self._ad_hoc_tokens, start=1)]
         return sorted(self._pass_rows(now), key=_routing_preference) + ad_hoc
 
-    def eval_reserve_met(self, reserve: WindowReserve, *, accounts: tuple[str, ...] | None = None) -> bool:
+    def eval_reserve_met(
+        self,
+        reserve: WindowReserve,
+        *,
+        accounts: tuple[str, ...] | None = None,
+        rows: list[TokenAccountRow] | None = None,
+    ) -> bool:
         now = timezone.now()
         allowed = set(accounts) if accounts is not None else None
         if allowed is not None and not allowed:
@@ -155,7 +161,7 @@ class TokenReport:
                 row.weekly_reset,
                 now,
             )
-            for row in self.rows()
+            for row in (self.rows() if rows is None else rows)
         )
 
     def render(self) -> str:
@@ -314,12 +320,35 @@ def _band(reported: float | None, shipped: float) -> float:
 
 
 def cached_local_eval_reserve_met() -> bool:
-    return TokenReport(from_cache=True).eval_reserve_met(WindowReserve.from_environment(os.environ))
+    rows = _eval_reserve_rows()
+    try:
+        selected = PassPathSelector().select(TokenKind.OAUTH)
+    except AllTokensExhaustedError:
+        return False
+    return TokenReport(from_cache=True).eval_reserve_met(
+        WindowReserve.from_environment(os.environ), accounts=(selected,) if selected else (), rows=rows
+    )
 
 
 def cached_ci_eval_reserve_met() -> bool:
     accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
-    return TokenReport(from_cache=True).eval_reserve_met(WindowReserve.from_environment(os.environ), accounts=accounts)
+    if not accounts:
+        return False
+    return TokenReport(from_cache=True).eval_reserve_met(
+        WindowReserve.from_environment(os.environ), accounts=accounts, rows=_eval_reserve_rows()
+    )
+
+
+def _eval_reserve_rows() -> list[TokenAccountRow]:
+    cached = TokenReport(from_cache=True).rows()
+    now = timezone.now()
+    if any(
+        row.kind is TokenKind.OAUTH
+        and (not row.status.is_measured or row.checked_at is None or now - row.checked_at > HEALTH_TTL)
+        for row in cached
+    ):
+        return TokenReport().rows()
+    return cached
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

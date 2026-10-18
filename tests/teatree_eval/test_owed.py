@@ -78,6 +78,12 @@ class TestSettled:
         settled, _ = _ledger(_owed("alpha"), harvested_through=NOW).settled(["alpha"], known={"alpha"})
         assert settled == OwedLedger(harvested_through=NOW)
 
+    def test_a_confirmed_red_moves_behind_newer_debt_after_it_was_attempted(self) -> None:
+        ledger = _ledger(_owed("old_red", since=NOW - 2 * DAY), _owed("new_park", since=NOW - DAY))
+        settled, _ = ledger.settled([], known={"old_red", "new_park"}, attempted=["old_red"], now=NOW)
+        assert settled.next_batch(1, {"old_red", "new_park"}) == ("new_park",)
+        assert OwedLedger.from_json(settled.to_json()).next_batch(1, {"old_red", "new_park"}) == ("new_park",)
+
 
 class TestNextBatch:
     def test_oldest_first_then_name_capped_and_catalog_known_only(self) -> None:
@@ -95,6 +101,12 @@ class TestNextBatch:
     def test_a_cap_below_one_raises(self, cap: int) -> None:
         with pytest.raises(ValueError, match="cap"):
             _ledger(_owed("alpha")).next_batch(cap, {"alpha"})
+
+    def test_older_repeated_reds_do_not_starve_new_debt(self) -> None:
+        reds = tuple(_owed(f"red_{index}", since=NOW - 2 * DAY) for index in range(14))
+        ledger = _ledger(*reds, _owed("new_park", since=NOW - DAY))
+        settled, _ = ledger.settled([], known=ledger.names, attempted=[row.name for row in reds], now=NOW)
+        assert "new_park" in settled.next_batch(14, ledger.names)
 
 
 class TestIsParked:
@@ -425,6 +437,13 @@ class TestPrOwed:
         with pytest.raises(TruncatedListingError, match=PR_OWED_ARTIFACT):
             harvest.pr_owed([(42, "a" * 40)])
 
+    def test_old_artifact_page_ends_the_relevant_harvest_window(self) -> None:
+        old = NOW - dt.timedelta(days=100)
+        page = _listing([_artifact(1000 + index, created=old, head_sha="b" * 40) for index in range(PAGE_SIZE)])
+        harvest, gh, _ = _harvest({_artifacts_url(PR_OWED_ARTIFACT, 1): page})
+        assert harvest.pr_owed([(42, "a" * 40)], since=NOW) == OwedLedger()
+        assert _artifacts_url(PR_OWED_ARTIFACT, 2) not in gh.calls
+
 
 class TestCollect:
     def test_first_harvest_starts_one_day_back_and_says_so(self) -> None:
@@ -436,6 +455,18 @@ class TestCollect:
         assert harvest.collect(NOW) == OwedLedger(harvested_through=NOW)
         assert any("first harvest" in message for message in warnings)
         assert any(_iso(NOW - DAY).replace("Z", "+00:00") in message for message in warnings)
+
+    def test_a_weekly_first_harvest_finds_debt_from_a_pr_merged_days_ago(self) -> None:
+        head = "a" * 40
+        routes = {
+            _artifacts_url(LEDGER_ARTIFACT): _listing([]),
+            _pulls_url(): json.dumps([_pull(10, head, merged=NOW - 4 * DAY)]).encode(),
+            _artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(7, created=NOW - 5 * DAY, head_sha=head)]),
+            _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("old_parked")).to_json()),
+        }
+        gh = FakeGh(routes)
+        harvest = OwedHarvest(gh=gh, repo=REPO, warn=lambda _message: None, first_harvest_lookback=7 * DAY)
+        assert harvest.collect(NOW).names == ("old_parked",)
 
     def test_merges_the_previous_ledger_with_prs_merged_since_its_mark(self) -> None:
         mark = NOW - dt.timedelta(hours=20)

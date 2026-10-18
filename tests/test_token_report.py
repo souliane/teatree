@@ -22,6 +22,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.account_headroom import WindowReserve
+from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
@@ -236,7 +237,12 @@ class TokenReportRowsTest(TestCase):
 
 
 def _stored(
-    pass_path: str, *, org: str, u7d: float = 0.1, status_7d: str = "allowed", now: dt.datetime | None = None
+    pass_path: str,
+    *,
+    org: str,
+    u7d: float = 0.1,
+    status_7d: str = "allowed",
+    now: dt.datetime | None = None,
 ) -> AnthropicTokenUsage:
     return AnthropicTokenUsage.objects.record(
         pass_path,
@@ -300,6 +306,20 @@ class CachedEvalReserveGateTest(TestCase):
     def test_the_ci_gate_reads_only_the_allowlisted_pool(self) -> None:
         ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
         assert cached_ci_eval_reserve_met() is True
+
+    def test_stale_local_row_is_refreshed_before_the_reserve_decision(self) -> None:
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            assert cached_local_eval_reserve_met() is True
+        assert reader.calls == [("TOK-live", True)]
+
+    def test_local_reserve_checks_the_account_the_selector_will_reuse(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/sticky"])
+        _stored("anthropic/oauth/sticky", org="org-sticky", u7d=0.75)
+        AnthropicActivePick.objects.set_pick(TokenKind.OAUTH.value, "", "anthropic/oauth/sticky")
+        assert cached_local_eval_reserve_met() is False
 
 
 class DefaultPathNeverRendersTheCacheTest(TestCase):

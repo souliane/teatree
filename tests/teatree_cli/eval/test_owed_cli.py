@@ -82,12 +82,12 @@ class TestRecordAndOutputs:
         assert _record(ledger, _names_file(tmp_path, "tail_one"), "deferred").exit_code == 0
         assert _owed("outputs", str(ledger)).stdout == "parked=false\nowed=tail_one\n"
 
-    def test_nothing_to_record_writes_no_ledger(self, tmp_path: Path) -> None:
+    def test_nothing_to_record_writes_an_empty_artifact(self, tmp_path: Path) -> None:
         ledger = tmp_path / "eval-owed.json"
         result = _record(ledger, _names_file(tmp_path, "", filename="empty.txt"), "limit")
         assert result.exit_code == 0, result.output
         assert "nothing owed (limit)" in result.output
-        assert not ledger.exists()
+        assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")) == OwedLedger()
 
     def test_a_second_record_adds_to_the_ledger(self, tmp_path: Path) -> None:
         ledger = tmp_path / "eval-owed.json"
@@ -179,6 +179,12 @@ class TestNext:
 
 
 class TestSettle:
+    def test_a_complete_green_benchmark_clears_the_reusable_ledger(self, tmp_path: Path) -> None:
+        ledger = _seeded_ledger(tmp_path)
+        result = _owed("settle", "--out", str(ledger), "--all-covered")
+        assert result.exit_code == 0, result.output
+        assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")).names == ()
+
     def test_clears_passes_keeps_failures_and_drops_catalog_unknown(self, tmp_path: Path) -> None:
         ledger = _seeded_ledger(tmp_path)
         scenarios = _scenarios_dir(tmp_path, "alpha", "beta")

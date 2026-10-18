@@ -22,14 +22,12 @@ below leaves the eval exactly where an unexported provider would.
 
 *   ``EVAL_CREDENTIAL`` is not ``subscription_oauth`` (e.g. an ``api_key`` run) → export
     the provider and stop; there is no OAuth account to select.
-*   ``EVAL_OAUTH_TOKENS`` unset/empty → BACKWARD-SAFE passthrough: export the existing
-    single ``CLAUDE_CODE_OAUTH_TOKEN`` secret unchanged, so behaviour is exactly as
-    before this step existed.
+*   ``EVAL_OAUTH_TOKENS`` unset/empty → probe the existing single
+    ``CLAUDE_CODE_OAUTH_TOKEN`` against the same reserve; park with exit 75 if low.
 *   A freshest account is found → export it as ``CLAUDE_CODE_OAUTH_TOKEN``.
-*   EVERY candidate is exhausted/unreachable → with ``EVAL_API_KEY_FALLBACK`` truthy
+*   EVERY candidate is exhausted/unreachable/below reserve → with ``EVAL_API_KEY_FALLBACK`` truthy
     (opt-in, DEFAULT OFF) flip the provider to ``api_key`` so the eval rides the metered
-    ``ANTHROPIC_API_KEY`` instead; otherwise exit non-zero (fail loud), since a run on a
-    throttled account produces garbage $0.00 shards — worse than a red pre-check.
+    ``ANTHROPIC_API_KEY`` instead; otherwise exit 75 and mark the run parked.
 
 SECRET HYGIENE. A token value is NEVER printed as a plain log line. The winning token
 is written straight to the ``$GITHUB_ENV`` file and registered with GitHub's

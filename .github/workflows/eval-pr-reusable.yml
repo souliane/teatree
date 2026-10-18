@@ -425,6 +425,13 @@ jobs:
           else
             echo "parked=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Record owed scenarios
+        if: always()
+        run: |
+          touch "$RUNNER_TEMP/eval-owed-limit.txt"
+          uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed.json" --reason limit \
+            --source "pr#${{ github.event.pull_request.number }}@${{ github.event.pull_request.head.sha }}" \
+            --names-file "$RUNNER_TEMP/eval-owed-limit.txt"
       - name: Record and save eval verdicts
         continue-on-error: true
         if: success() && steps.verdict-cache-availability.outputs.enabled == 'true'
@@ -460,6 +467,15 @@ jobs:
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/eval-transcripts-*.html"
           "$RUNNER_TEMP/eval-run-pr.log"
+          "$RUNNER_TEMP/eval-owed.json"
+      - name: Upload the owed scenarios
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed
+          path: ${{ runner.temp }}/eval-owed.json
+          if-no-files-found: error
+          retention-days: 90
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
       # red run still publishes it. The path is a GLOB: the loop renders ONE report

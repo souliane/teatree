@@ -220,8 +220,8 @@ jobs:
       # eval runs. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per
       # token for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
       # freshest is exported — masked — into $GITHUB_ENV, which the eval step below
-      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
-      # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
+      # reads. With EVAL_OAUTH_TOKENS unset/empty it probes the existing single
+      # CLAUDE_CODE_OAUTH_TOKEN against the reserve. This step OWNS the
       # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER). An account is
       # eligible only while both usage windows keep the eval reserve free
       # (EVAL_RESERVE_5H_FREE / EVAL_RESERVE_7D_FREE, default 40% / 30%); an unreadable
@@ -437,14 +437,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       # The owed names (no transcript content), kept long enough for the nightly harvest.
-      # No file means nothing is owed, which is the common case, so it uploads nothing.
+      # An empty ledger marks a completed eval run with no debt.
       - name: Upload the owed scenarios
         if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-owed
           path: ${{ runner.temp }}/eval-owed.json
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 90
 
   # EVAL-GATE: the single always-reporting merge gate. A conditionally-skipped job

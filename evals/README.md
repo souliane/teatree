@@ -658,9 +658,10 @@ lane may fall back to the metered key (`EVAL_API_KEY_FALLBACK`). A subscription
 5h/7d limit hit mid-run is never retried or waited out: the rest of the suite is
 skipped without calling the model, no escalation trial runs, and `t3 eval run`
 exits 75 unless something it measured failed — a confirmed red still reds. On the
-box, the `eval_local` loop and the dream pass's eval promotion read the cached
-token rows and do nothing until one of the factory's configured accounts meets the
-reserve; the heal loop dispatches only while an allowlisted CI-pool account does.
+box, the `eval_local` loop and the dream pass's eval promotion refresh stale
+token rows and check the account the sticky selector will use. The heal loop
+refreshes stale rows and dispatches only while an allowlisted CI-pool account
+meets the reserve; a hold over twelve ticks escalates.
 
 The eval lane and the dispatch lane now share ONE knob, so a deployment that
 pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend

@@ -25,6 +25,7 @@ PR_OWED_ARTIFACT = "eval-owed"
 PAGE_SIZE = 100
 MAX_LISTING_PAGES = 20
 FIRST_HARVEST_LOOKBACK = dt.timedelta(days=1)
+PR_ARTIFACT_LOOKBACK = dt.timedelta(days=90)
 
 type GhRunner = Callable[[Sequence[str]], bytes]
 
@@ -121,9 +122,18 @@ class OwedScenario:
     reason: OwedReason
     source: str
     since: dt.datetime
+    last_attempted: dt.datetime | None = None
 
     def to_payload(self) -> dict[str, str]:
-        return {"name": self.name, "reason": self.reason.value, "source": self.source, "since": self.since.isoformat()}
+        payload = {
+            "name": self.name,
+            "reason": self.reason.value,
+            "source": self.source,
+            "since": self.since.isoformat(),
+        }
+        if self.last_attempted is not None:
+            payload["last_attempted"] = self.last_attempted.isoformat()
+        return payload
 
     @classmethod
     def from_fields(cls, fields: _Fields) -> Self:
@@ -136,6 +146,7 @@ class OwedScenario:
             reason=OwedReason(reason),
             source=fields.text("source"),
             since=fields.moment("since"),
+            last_attempted=fields.optional_moment("last_attempted") if "last_attempted" in fields.raw else None,
         )
 
 
@@ -163,17 +174,40 @@ class OwedLedger:
         for entry in other.scenarios:
             held = by_name.get(entry.name)
             if held is None or entry.since < held.since:
-                by_name[entry.name] = entry
+                by_name[entry.name] = replace(
+                    entry,
+                    last_attempted=max(
+                        (mark for mark in (entry.last_attempted, held.last_attempted if held else None) if mark),
+                        default=None,
+                    ),
+                )
+            elif held is not None and entry.last_attempted is not None:
+                by_name[entry.name] = replace(
+                    held, last_attempted=max(mark for mark in (held.last_attempted, entry.last_attempted) if mark)
+                )
         marks = [mark for mark in (self.harvested_through, other.harvested_through) if mark is not None]
         return OwedLedger(
             scenarios=tuple(sorted(by_name.values(), key=lambda entry: entry.name)),
             harvested_through=max(marks, default=None),
         )
 
-    def settled(self, passed: Iterable[str], known: Collection[str]) -> tuple["OwedLedger", tuple[str, ...]]:
+    def settled(
+        self,
+        passed: Iterable[str],
+        known: Collection[str],
+        *,
+        attempted: Iterable[str] = (),
+        now: dt.datetime | None = None,
+    ) -> tuple["OwedLedger", tuple[str, ...]]:
         cleared = frozenset(passed)
+        tried = frozenset(attempted)
         dropped = tuple(name for name in self.names if name not in known)
-        kept = tuple(entry for entry in self.scenarios if entry.name not in cleared and entry.name in known)
+        attempted_at = now or dt.datetime.now(dt.UTC)
+        kept = tuple(
+            replace(entry, last_attempted=attempted_at) if entry.name in tried else entry
+            for entry in self.scenarios
+            if entry.name not in cleared and entry.name in known
+        )
         return replace(self, scenarios=kept), dropped
 
     def next_batch(self, cap: int, known: Collection[str]) -> tuple[str, ...]:
@@ -182,7 +216,7 @@ class OwedLedger:
             raise ValueError(msg)
         runnable = sorted(
             (entry for entry in self.scenarios if entry.name in known),
-            key=lambda entry: (entry.since, entry.name),
+            key=lambda entry: (entry.last_attempted or entry.since, entry.since, entry.name),
         )
         return tuple(entry.name for entry in runnable[:cap])
 
@@ -251,6 +285,7 @@ class OwedHarvest:
     gh: GhRunner
     repo: str
     warn: Callable[[str], None]
+    first_harvest_lookback: dt.timedelta = FIRST_HARVEST_LOOKBACK
 
     def previous_ledger(self) -> OwedLedger | None:
         live = [artifact for artifact in self._artifacts(LEDGER_ARTIFACT, done=_any_live) if not artifact.expired]
@@ -273,12 +308,14 @@ class OwedHarvest:
         listing = "closed pull requests"
         raise TruncatedListingError(listing)
 
-    def pr_owed(self, heads: Sequence[tuple[int, str]]) -> OwedLedger:
+    def pr_owed(self, heads: Sequence[tuple[int, str]], *, since: dt.datetime | None = None) -> OwedLedger:
         if not heads:
             return OwedLedger()
         wanted = {sha for _, sha in heads}
         artifacts = self._artifacts(
-            PR_OWED_ARTIFACT, done=lambda seen: wanted <= {artifact.head_sha for artifact in seen}
+            PR_OWED_ARTIFACT,
+            done=lambda seen: wanted <= {artifact.head_sha for artifact in seen},
+            older_than=None if since is None else since - PR_ARTIFACT_LOOKBACK,
         )
         owed = OwedLedger()
         for number, sha in heads:
@@ -301,19 +338,21 @@ class OwedHarvest:
             previous = OwedLedger()
             self.warn(
                 f"::notice::no live {LEDGER_ARTIFACT} artifact: first harvest, reading PRs merged since "
-                f"{(now - FIRST_HARVEST_LOOKBACK).isoformat()}"
+                f"{(now - self.first_harvest_lookback).isoformat()}"
             )
-        since = previous.harvested_through or now - FIRST_HARVEST_LOOKBACK
-        harvested = previous.merged(self.pr_owed(self.merged_pr_heads(since)))
+        since = previous.harvested_through or now - self.first_harvest_lookback
+        harvested = previous.merged(self.pr_owed(self.merged_pr_heads(since), since=since))
         return replace(harvested, harvested_through=now)
 
-    def _artifacts(self, name: str, *, done: Callable[[list[_Artifact]], bool]) -> list[_Artifact]:
+    def _artifacts(
+        self, name: str, *, done: Callable[[list[_Artifact]], bool], older_than: dt.datetime | None = None
+    ) -> list[_Artifact]:
         seen: list[_Artifact] = []
         for page in range(1, MAX_LISTING_PAGES + 1):
             endpoint = f"repos/{self.repo}/actions/artifacts?name={name}&per_page={PAGE_SIZE}&page={page}"
             batch = [_Artifact.from_fields(_Fields.of(row, endpoint)) for row in self._rows(endpoint, key="artifacts")]
             seen.extend(batch)
-            if len(batch) < PAGE_SIZE or done(seen):
+            if len(batch) < PAGE_SIZE or done(seen) or (older_than is not None and batch[-1].created_at < older_than):
                 return seen
         listing = f"{name} artifacts"
         raise TruncatedListingError(listing)

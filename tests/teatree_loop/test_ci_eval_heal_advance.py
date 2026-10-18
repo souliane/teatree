@@ -1,11 +1,13 @@
 """CI eval heal advancer: confirmed reds fix within budget and never self-green."""
 
+import datetime as dt
 import json
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import CiEvalHealSession, DeferredQuestion, Loop, Mode, ModeOverride
 from teatree.loop.ci_eval_heal_advance import (
@@ -332,13 +334,23 @@ class TestArmedFixerDispatch(TestCase):
         assert session.fix_attempts == 1
         assert session.last_fix_paths == ["src/teatree/skills/t3-rules/SKILL.md"]
         assert session.head_sha == "f" * 40
-        # The re-trigger re-runs only the reds on the fixed branch.
+        # With no parked legs, the fixed branch re-runs only its reds.
         assert client.triggered
         assert client.triggered[-1]["inputs"] == {
             "scenarios": "rules_under_load",
             "credential": "subscription_oauth",
             "pr_ref": "3201-feat-x",
         }
+
+    def test_a_mixed_red_and_parked_run_rechecks_the_full_suite_after_fix(self) -> None:
+        _govern(admits=True)
+        session = _awaiting(head_sha="a" * 40)
+        client = _FakeClient(runs=[_completed("failure")], artifact=_parked(reds=["rules_under_load"]))
+        fixer = _FakeFixer(changed_paths=("src/teatree/skills/t3-rules/SKILL.md",), head_sha="f" * 40)
+        advance_session(session, client=client, escalate=_never, fixer=fixer)
+        session.refresh_from_db()
+        assert session.needs_full_rerun is True
+        assert client.triggered[-1]["inputs"] == _dispatch_inputs(scenarios="")
 
     def test_no_change_proposal_halts_never_green(self) -> None:
         _govern(admits=True)
@@ -640,7 +652,7 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         assert session.state == CiEvalHealSession.State.HALTED
         assert session.red_scenarios == ["rules_under_load"]
 
-    def test_a_success_without_a_readable_payload_halts_never_green(self) -> None:
+    def test_a_success_without_a_readable_payload_waits_never_green(self) -> None:
         session = _awaiting(head_sha="a" * 40)
         client = _FakeClient(runs=[_completed("success")])
         escalated: list[int] = []
@@ -648,9 +660,8 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
 
         session.refresh_from_db()
-        assert session.state == CiEvalHealSession.State.HALTED
-        assert "unreadable" in session.halt_reason
-        assert escalated == [session.pk]
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert escalated == []
 
     def test_a_success_whose_artifact_cannot_be_downloaded_halts_never_green(self) -> None:
         session = _awaiting(head_sha="a" * 40)
@@ -658,6 +669,17 @@ class TestParkOnTheSubscriptionReserve(TestCase):
 
         advance_session(session, client=client, escalate=_noop)
 
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+
+    def test_an_unreadable_artifact_eventually_halts(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        CiEvalHealSession.objects.filter(pk=session.pk).update(
+            artifact_missing_since=timezone.now() - dt.timedelta(hours=2)
+        )
+        session.refresh_from_db()
+        client = _FakeClient(runs=[_completed("success")], download_error=FileNotFoundError("no artifact"))
+        advance_session(session, client=client, escalate=_noop)
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.HALTED
 
@@ -674,6 +696,18 @@ class TestReserveGatesThePendingDispatch(TestCase):
         assert session.state == CiEvalHealSession.State.PENDING
         assert session.fix_attempts == 0
         assert "reserve" in outcome.note
+
+    def test_a_reserve_hold_past_twelve_ticks_escalates(self) -> None:
+        session = _session()
+        CiEvalHealSession.objects.filter(pk=session.pk).update(updated_at=timezone.now() - dt.timedelta(minutes=65))
+        session.refresh_from_db()
+        escalated: list[int] = []
+        outcome = advance_session(
+            session, client=_FakeClient(), escalate=lambda s: escalated.append(s.pk), reserve_met=_reserve_short
+        )
+        session.refresh_from_db()
+        assert outcome.to_state == CiEvalHealSession.State.HALTED
+        assert escalated == [session.pk]
 
     def test_the_pass_forwards_the_reserve_probe(self) -> None:
         session = _session()
