@@ -9,7 +9,7 @@ the loop's tick, not in the user's next session.
 
 The runner is pure orchestration over an injectable :class:`SmokeStep`
 list — production wiring runs ``t3 <overlay> workspace ticket /
-worktree provision / start / ready / teardown / workspace clean-all``
+worktree provision / start / ready / teardown``
 and friends; tests inject in-memory fakes. Each step has a per-step
 time budget (default 60s); exceeding it categorises the run as
 :attr:`SmokeOutcomeKind.TIMEOUT` so the failure DM names the hung step.
@@ -263,15 +263,15 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
     """Canonical overlay provision-smoke sequence (#1308 § "Smoke shape").
 
     Order matters — provision must precede start, start precedes ready,
-    ready precedes teardown, teardown precedes the clean-all sweep.
+    and ready precedes teardown.
     Steps are pure data; the runner consumes them. The ``overlay`` short
     name (e.g. the value the CLI sees after ``t3 <overlay>``) is required
     so the generated commands target the right overlay sub-app; the
     ``variant`` flag is only emitted when non-empty, since some overlays
     do not segment their tenants by variant.
 
-    Every step but the creating one and the workspace-wide sweep targets the
-    new worktree explicitly by ``--path``, since none of them runs with that
+    Every step but the creating one targets the new worktree explicitly by
+    ``--path``, since none of them runs with that
     worktree as its CWD; the path is :data:`WORKTREE_PATH_PLACEHOLDER` here and
     is bound by :func:`run_smoke`.
     """
@@ -281,7 +281,7 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
     unset_overlay = frozenset({OVERLAY_ENV_VAR})
     at_worktree = ("--path", WORKTREE_PATH_PLACEHOLDER)
     return [
-        SmokeStep(name="workspace_ticket", command=ticket_command),
+        SmokeStep(name="workspace_ticket", command=ticket_command, timeout_seconds=180),
         SmokeStep(name="env_show", command=("t3", overlay, "env", "show", *at_worktree)),
         SmokeStep(name="worktree_provision", command=("t3", overlay, "worktree", "provision", *at_worktree)),
         SmokeStep(
@@ -309,7 +309,6 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
             env_unset=unset_overlay,
         ),
         SmokeStep(name="worktree_teardown", command=("t3", overlay, "worktree", "teardown", *at_worktree)),
-        SmokeStep(name="workspace_clean_all", command=("t3", overlay, "workspace", "clean-all")),
     ]
 
 

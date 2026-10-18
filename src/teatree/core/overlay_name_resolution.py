@@ -86,3 +86,18 @@ def resolve_overlay_name(name: str) -> str | None:
         return None
     known = set(OverlayConfigResolver.all_names())
     return name if name in known else None
+
+
+def registered_overlay_name(spelling: str) -> str | None:
+    from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: matches resolve_overlay_name's loader cycle
+    from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred: avoids the loader cycle
+
+    if exact := resolve_overlay_name(spelling):
+        return exact
+    if not spelling:
+        return None
+    canonical = OverlayEntry.canonical_overlay_name(spelling)
+    for name in OverlayConfigResolver.all_names():
+        if OverlayEntry.canonical_overlay_name(name) == canonical:
+            return name
+    return None

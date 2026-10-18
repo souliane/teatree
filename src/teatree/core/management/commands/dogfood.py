@@ -12,7 +12,7 @@ Subcommands:
 * ``overlay-provision-smoke`` — run the smoke against ``--overlay`` and
     exit 0 on PASS, non-zero with a categorised failure
     (``provision_failed`` / ``start_failed`` / ``ready_failed`` /
-    ``teardown_failed`` / ``clean_failed`` / ``overlay_resolution_failed``
+    ``teardown_failed`` / ``overlay_resolution_failed``
     / ``timeout``). DMs the user with the failing command + stderr on any
     non-PASS outcome.
 
@@ -36,6 +36,7 @@ would silently report success to cron/CI/the loop. ``SystemExit`` propagates.
 """
 
 import logging
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -46,7 +47,8 @@ from teatree.config import OverlayEntry
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.overlay_loader import get_overlay, resolve_overlay_name
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_name_resolution import registered_overlay_name
 from teatree.loop.dogfood_smoke import (
     SmokeOutcomeKind,
     WorktreePathResolver,
@@ -56,6 +58,8 @@ from teatree.loop.dogfood_smoke import (
     run_smoke,
     run_t3_command,
 )
+
+DEFAULT_FIXTURE_TICKET_URL = "https://github.com/souliane/teatree/issues/1308"
 
 
 def _dm_failure_body(report_summary_text: str, *, failing_step: str, command_str: str, stderr: str) -> str:
@@ -130,8 +134,8 @@ class Command(TyperCommand):
         ] = "",
         fixture_ticket_url: Annotated[
             str,
-            typer.Option(help="Fixture ticket URL the smoke binds against."),
-        ] = "https://github.com/souliane/teatree/issues/1308",
+            typer.Option(help="Fixture ticket URL (empty: overlay declaration, then core fixture)."),
+        ] = "",
         variant: Annotated[
             str,
             typer.Option(help="Overlay tenant variant the smoke provisions (empty = overlay's default)."),
@@ -163,13 +167,14 @@ class Command(TyperCommand):
 
         # get_overlay() needs the dispatchable Ticket.overlay form (t3-teatree);
         # the shelled ``t3 <overlay> ...`` steps below need the CLI sub-app's short form (teatree).
-        dispatch_overlay = resolve_overlay_name(target_overlay) or target_overlay
+        dispatch_overlay = registered_overlay_name(target_overlay) or target_overlay
         cli_overlay = OverlayEntry.canonical_overlay_name(dispatch_overlay)
 
+        resolved_fixture_url = _resolve_fixture_url(dispatch_overlay, fixture_ticket_url)
         smoke_variant, uncovered = _resolve_smoke_variant(dispatch_overlay, variant)
         steps = default_steps(
             overlay=cli_overlay,
-            fixture_ticket_url=fixture_ticket_url,
+            fixture_ticket_url=resolved_fixture_url,
             variant=smoke_variant,
         )
         if dry_run:
@@ -185,7 +190,7 @@ class Command(TyperCommand):
             runner=run_t3_command,
             uncovered=uncovered,
             resolve_worktree_path=_worktree_path_resolver(
-                issue_url=fixture_ticket_url,
+                issue_url=resolved_fixture_url,
                 overlay=dispatch_overlay,
             ),
         )
@@ -213,6 +218,16 @@ class Command(TyperCommand):
 
 #: Named in the smoke summary when the run could not exercise the DSLR alias path.
 ALIAS_VARIANT_UNCOVERED = "dslr-alias-variant"
+
+
+def _resolve_fixture_url(overlay_name: str, explicit: str) -> str:
+    if explicit:
+        return explicit
+    try:
+        overlay = get_overlay(overlay_name)
+    except ImproperlyConfigured:
+        return DEFAULT_FIXTURE_TICKET_URL
+    return overlay.config.dogfood_smoke_fixture_url or DEFAULT_FIXTURE_TICKET_URL
 
 
 def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[str]]:
@@ -249,10 +264,24 @@ def _worktree_path_resolver(*, issue_url: str, overlay: str) -> WorktreePathReso
     ``Ticket.overlay`` stores; '' when no row or no materialised checkout exists,
     which :func:`run_smoke` turns into a categorised failure.
     """
+    existing_ticket = Ticket.objects.filter(issue_url=issue_url).first()
+    preexisting_paths = (
+        {
+            Path(worktree.worktree_path).resolve()
+            for worktree in existing_ticket.worktrees.all()
+            if worktree.worktree_path and Path(worktree.worktree_path).is_dir()
+        }
+        if existing_ticket is not None
+        else set()
+    )
 
     def resolve() -> str:
         ticket = Ticket.objects.filter(issue_url=issue_url, overlay=overlay).order_by("-pk").first()
-        return dispatch_worktree_path(ticket) if ticket is not None else ""
+        path = dispatch_worktree_path(ticket) if ticket is not None else ""
+        if path and Path(path).resolve() in preexisting_paths:
+            message = f"fixture checkout pre-existed: {path}"
+            raise ValueError(message)
+        return path
 
     return resolve
 

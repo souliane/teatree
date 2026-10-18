@@ -17,6 +17,9 @@ code. django-typer swallows a ``typer.Exit`` into a returned value (exit
 here would regress to a silent exit 0.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,12 +27,36 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 
+from teatree.core import overlay_loader
 from teatree.core.management.commands.dogfood import _worktree_path_resolver
+from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.loop.dogfood_smoke import SmokeOutcomeKind, SmokeReport, SmokeStep, StepResult
+from teatree.types import ProvisionStep
 from tests.factories import TicketFactory, WorktreeFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+OWN_FIXTURE_URL = "https://example.test/issues/fixture-acme"
+CORE_FIXTURE_URL = "https://github.com/souliane/teatree/issues/1308"
+
+
+class _AcmeOverlay(OverlayBase):
+    config = OverlayConfig(dogfood_smoke_fixture_url=OWN_FIXTURE_URL)
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: object) -> list[ProvisionStep]:
+        del worktree
+        return []
+
+
+@contextmanager
+def _registered_acme() -> Generator[None]:
+    overlays = {**overlay_loader._discover_overlays(), "t3-acme": _AcmeOverlay()}
+    with patch.object(overlay_loader, "_discover_overlays", lru_cache(maxsize=1)(lambda: overlays)):
+        yield
 
 
 def _call_smoke(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[str, int]:
@@ -56,7 +83,7 @@ def _parse_args(args: tuple[str, ...]) -> dict[str, object]:
     """Tiny arg parser for the test harness — covers the flags we exercise."""
     kwargs: dict[str, object] = {
         "overlay": "teatree",
-        "fixture_ticket_url": "https://github.com/souliane/teatree/issues/1308",
+        "fixture_ticket_url": "",
         "variant": "",
         "dry_run": False,
         "notify_on_failure": True,
@@ -72,10 +99,36 @@ def _parse_args(args: tuple[str, ...]) -> dict[str, object]:
             kwargs["overlay"] = ""
         elif arg.startswith("--overlay="):
             kwargs["overlay"] = arg.removeprefix("--overlay=")
+        elif arg.startswith("--fixture-ticket-url="):
+            kwargs["fixture_ticket_url"] = arg.removeprefix("--fixture-ticket-url=")
     return kwargs
 
 
 class TestDryRun:
+    def test_overlay_fixture_is_used_when_no_flag_is_given(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with _registered_acme():
+            out, code = _call_smoke(capsys, "--overlay=acme", "--dry-run")
+        assert code == 0
+        assert f"workspace ticket {OWN_FIXTURE_URL}" in out
+
+    def test_default_fixture_is_used_without_an_overlay_declaration(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out, code = _call_smoke(capsys, "--overlay=t3-teatree", "--dry-run")
+        assert code == 0
+        assert f"workspace ticket {CORE_FIXTURE_URL}" in out
+
+    def test_explicit_fixture_wins_even_when_it_equals_the_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with _registered_acme():
+            out, code = _call_smoke(capsys, "--overlay=acme", f"--fixture-ticket-url={CORE_FIXTURE_URL}", "--dry-run")
+        assert code == 0
+        assert f"workspace ticket {CORE_FIXTURE_URL}" in out
+        assert OWN_FIXTURE_URL not in out
+
+    def test_unloadable_overlay_binds_the_core_fixture(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out, code = _call_smoke(capsys, "--overlay=ghost", "--dry-run")
+        assert code == 0
+        assert f"workspace ticket {CORE_FIXTURE_URL}" in out
+        assert "not loadable" in out
+
     def test_dry_run_lists_steps_without_executing(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("teatree.core.management.commands.dogfood.run_smoke") as mock_run:
             out, code = _call_smoke(capsys, "--dry-run")
@@ -411,6 +464,63 @@ class TestOverlayResolution:
         assert code == 0
         assert "not loadable" not in out
 
+    def test_cli_short_name_is_resolved_before_the_variant_lookup(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out, code = _call_smoke(capsys, "--overlay=teatree", "--dry-run")
+        assert code == 0
+        assert "not loadable" not in out
+
+
+class TestOverlayFixtureExecution:
+    def test_each_path_step_targets_the_checkout_owned_by_the_running_overlay(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        core_path = tmp_path / "core"
+        core_path.mkdir()
+        core_ticket = TicketFactory(issue_url=CORE_FIXTURE_URL, overlay="t3-teatree")
+        WorktreeFactory(ticket=core_ticket, overlay="t3-teatree", extra={"worktree_path": str(core_path)})
+        own_path = tmp_path / "acme"
+        own_path.mkdir()
+        commands: list[tuple[str, ...]] = []
+
+        def run(step: SmokeStep) -> StepResult:
+            commands.append(step.command)
+            if step.name == "workspace_ticket":
+                ticket = TicketFactory(issue_url=OWN_FIXTURE_URL, overlay="t3-acme")
+                WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(own_path)})
+            return StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+
+        with _registered_acme(), patch("teatree.core.management.commands.dogfood.run_t3_command", side_effect=run):
+            out, code = _call_smoke(capsys, "--overlay=acme", "--no-notify-on-failure")
+
+        assert code == 0
+        assert "PASS" in out
+        assert commands[0] == ("t3", "acme", "workspace", "ticket", OWN_FIXTURE_URL)
+        assert len(commands) == 8
+        assert all(command[-2:] == ("--path", str(own_path)) for command in commands[1:])
+
+    def test_preexisting_fixture_checkout_is_never_torn_down(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        own_path = tmp_path / "existing"
+        own_path.mkdir()
+        ticket = TicketFactory(issue_url=OWN_FIXTURE_URL, overlay="t3-acme")
+        WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(own_path)})
+        commands: list[tuple[str, ...]] = []
+
+        def run(step: SmokeStep) -> StepResult:
+            commands.append(step.command)
+            return StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+
+        with _registered_acme(), patch("teatree.core.management.commands.dogfood.run_t3_command", side_effect=run):
+            out, code = _call_smoke(
+                capsys, "--overlay=t3-acme", f"--fixture-ticket-url={OWN_FIXTURE_URL}", "--no-notify-on-failure"
+            )
+
+        assert code == 11
+        assert "fixture checkout pre-existed" in out
+        assert not any(command[2:4] == ("worktree", "teardown") for command in commands)
+        assert own_path.is_dir()
+
 
 class TestFailingStepCommandLookup:
     """Cover the ``command_str`` lookup loop inside the smoke command (#1308)."""
@@ -476,10 +586,9 @@ class TestWorktreePathResolver:
     URL = "https://github.com/souliane/teatree/issues/1308"
 
     def test_resolver_yields_the_materialised_worktree_path(self, tmp_path: Path) -> None:
+        resolve = _worktree_path_resolver(issue_url=self.URL, overlay="t3-teatree")
         ticket = TicketFactory(issue_url=self.URL, overlay="t3-teatree")
         WorktreeFactory(ticket=ticket, overlay="t3-teatree", extra={"worktree_path": str(tmp_path)})
-
-        resolve = _worktree_path_resolver(issue_url=self.URL, overlay="t3-teatree")
 
         assert resolve() == str(tmp_path)
 

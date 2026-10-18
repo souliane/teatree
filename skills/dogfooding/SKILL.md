@@ -281,7 +281,7 @@ Verify against the source before quoting in a bug report — these can drift.
 - **`overlay_resolution_failed` at a `*_env_unset` step** — this class. Those steps run the workspace verbs with `T3_OVERLAY_NAME` removed from the child env; a bare `get_overlay()` raises `Multiple overlays found` on a multi-overlay install. Its `*_env_set` twin pins the var, so the two together tell you which resolution route regressed.
 - **`; uncovered: dslr-alias-variant (...)` on a PASS** — the run could not exercise the variant→tenant alias path, because the overlay declares no variant whose canonical tenant differs from its own name. Not a failure; a named coverage gap. Fix it by listing the alias variant (the LEFT side of the overlay's alias map) in the overlay's `known_variants`, or pass `--variant <alias>` explicitly.
 - An identity-mapped variant is the trap this guards: the smoke passes green while a non-identity alias bug ships.
-- **`provision_failed at env_show: worktree path unresolved: ...`** — every step after `workspace_ticket` targets the new worktree by `--path`, resolved from the `Ticket` row that step created. This verdict means the row carries no materialised checkout, so the smoke stopped rather than shelling the step out pathless and blaming your CWD.
+- **`provision_failed at env_show: worktree path unresolved: ...`** — every step after `workspace_ticket` targets the new worktree by `--path`, resolved from the fixture's `Ticket` row. A missing checkout, one owned by another overlay, or one that pre-existed this run stops the smoke before teardown. Give each overlay its own `OverlayConfig.dogfood_smoke_fixture_url`.
 
 ## Rules
 

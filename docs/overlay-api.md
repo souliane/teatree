@@ -57,6 +57,7 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `workspace_repos` | `[]` | Repo paths relative to `workspace_dir` (supports nested paths) |
 | `protected_branches` | `[]` | Branch names that should never be deleted during cleanup |
 | `dev_env_url` | `""` | Development environment base URL |
+| `dogfood_smoke_fixture_url` | `""` | Fixture issue URL for this overlay's provision smoke; empty uses the core fixture, and an explicit `--fixture-ticket-url` wins |
 
 ### Secret getters
 
