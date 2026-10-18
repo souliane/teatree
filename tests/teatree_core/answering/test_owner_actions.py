@@ -115,6 +115,20 @@ class TestCheckoutAttestation(TestCase):
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             assert claim_task_checkout_or_park(self.task) is None
 
+    def test_acceptance_retires_other_pending_cards_for_the_same_checkout(self) -> None:
+        first = self._park_on_a_foreign_edit()
+        later = TaskFactory(ticket=self.task.ticket, phase="retro")
+        other = ask_owner_to_attest(
+            later, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+        assert other is not None
+        assert other.pk != first.pk
+        self._answer(first, "Accept")
+
+        assert self._carry_out() == [f"carried out {first.pk}"]
+        other.refresh_from_db()
+        assert not other.is_pending
+
     def test_decline_keeps_the_task_parked_and_attests_nothing(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Decline")

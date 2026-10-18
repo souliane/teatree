@@ -94,7 +94,7 @@ class SelfReview:
         if ticket.state not in {Ticket.State.TESTED, Ticket.State.SELF_REVIEWED}:
             msg = f"ticket {ticket.pk} is {ticket.state}; a HOLD is reworked only at tested or self_reviewed"
             raise SelfReviewReworkRefusedError(msg, hint="Let the ticket reach its self-review first.")
-        if pr := PullRequest.objects.first_live_url(ticket=ticket):
+        if pr := PullRequest.objects.live().filter(ticket=ticket).values_list("url", flat=True).first():
             msg = f"ticket {ticket.pk} has an open pull request ({pr})"
             raise SelfReviewReworkRefusedError(msg, hint=OPEN_PR_HINT)
         review = cls.open_hold_for(ticket)

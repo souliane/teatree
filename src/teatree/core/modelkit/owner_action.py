@@ -16,6 +16,7 @@ class ActionRequest(TypedDict):
     binding: str
     note: NotRequired[str]
     host_evidence: NotRequired[bool]
+    task_id: NotRequired[int]
 
 
 MARKER_PREFIX = "owner-action:"
@@ -25,6 +26,8 @@ def action_marker(action: ActionRequest) -> str:
     parts = [action["kind"], action["target"], action["binding"]]
     if "host_evidence" in action:
         parts.append(f"host_evidence:{action['host_evidence']}")
+    if "task_id" in action:
+        parts.append(f"task:{action['task_id']}")
     identity = "\0".join(parts)
     digest = hashlib.sha256(identity.encode()).hexdigest()[:40]
     return f"{MARKER_PREFIX}{action['kind']}:{digest}"
@@ -43,6 +46,8 @@ def read_action(evidence: object) -> ActionRequest | None:
         return None
     if "note" in action and not isinstance(action["note"], str):
         return None
-    if "host_evidence" in action and not isinstance(action["host_evidence"], bool):
+    if ("host_evidence" in action and not isinstance(action["host_evidence"], bool)) or (
+        "task_id" in action and (type(action["task_id"]) is not int or action["task_id"] < 1)
+    ):
         return None
     return action

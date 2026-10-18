@@ -188,12 +188,6 @@ class PullRequestQuerySet(models.QuerySet):
         """
         return self.exclude(state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED))
 
-    def first_live_url(self, *, ticket: "Ticket", repo: str = "") -> str:
-        rows = self.live().filter(ticket=ticket)
-        if repo:
-            rows = rows.filter(repo__iexact=repo)
-        return rows.order_by("pk").values_list("url", flat=True).first() or ""
-
     def reconcile_forge_states(self, *, read_state: "Callable[[str], str]") -> int:
         """Settle every live row in this queryset against *read_state*; return the count moved.
 

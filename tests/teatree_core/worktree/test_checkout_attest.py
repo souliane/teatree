@@ -12,19 +12,18 @@ from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.phase_tools import tools_for_phase
-from teatree.core.modelkit.phases import KNOWN_PHASES
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, KNOWN_PHASES
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, PullRequest, Task
 from teatree.core.owner_question_message import render_text
 from teatree.core.worktree.checkout_attest import (
-    _STEPS,
     AttestRefusedError,
     CheckoutAttestation,
     ask_owner_to_attest,
     attest_card,
     read_attestation,
 )
+from teatree.core.worktree.checkout_fence import writes_checkout
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
@@ -59,6 +58,65 @@ class TestCheckoutAttestCard(TestCase):
         assert f"Should the coding step of <{ISSUE_URL}|Fix the login page>" in text
         assert "It will write the change;" in text
         assert f"it may hold up <{pull_request.url}|this pull request> while open" in text
+
+    def test_folder_name_checkout_links_its_live_pull_request(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        pull_request = PullRequestFactory(ticket=ticket)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        worktree = WorktreeFactory(ticket=ticket, repo_path="teatree")
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+
+        row = ask_owner_to_attest(task, attestation)
+
+        assert row is not None
+        assert pull_request.url in render_text(row)
+
+    def test_checkout_branch_pr_wins_over_older_live_pr(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        older = PullRequestFactory(ticket=ticket)
+        selected = PullRequestFactory(ticket=ticket)
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        ticket.extra = {"pr_url_by_branch": {worktree.branch: selected.url}}
+        ticket.save(update_fields=["extra"])
+
+        row = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+
+        assert row is not None
+        assert selected.url in render_text(row)
+        assert older.url not in render_text(row)
+
+    def test_folder_name_uses_its_branch_index_before_a_pr_row_exists(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket, repo_path="teatree")
+        url = "https://github.com/souliane/teatree/pull/33"
+        ticket.extra = {"pr_url_by_branch": {worktree.branch: url}}
+        ticket.save(update_fields=["extra"])
+
+        row = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+
+        assert row is not None
+        assert url in render_text(row)
+
+    def test_closed_branch_pr_is_not_resurrected_from_the_index(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        closed = PullRequestFactory(ticket=ticket, state=PullRequest.State.CLOSED)
+        ticket.extra = {"pr_url_by_branch": {worktree.branch: closed.url}}
+        ticket.save(update_fields=["extra"])
+
+        row = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+
+        assert row is not None
+        assert closed.url not in render_text(row)
 
     def test_card_without_an_open_pull_request_says_it_blocks_none(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -97,8 +155,9 @@ class TestCheckoutAttestCard(TestCase):
             True: "The step resumes on the folder as it is; changes the factory did not make become part of its work.",
         }
         declines = {
-            True: "The step stays stuck until the folder changes; the pull request may wait while open.",
-            False: "The step stays stuck until the folder changes; "
+            True: "The step stays parked until the folder changes or the factory can check it safely; "
+            "the pull request may wait while open.",
+            False: "The step stays parked until the folder changes or the factory can check it safely; "
             "no pull request for this folder was open when asked.",
         }
         for host_evidence, with_pull_request in product((False, True), repeat=2):
@@ -152,8 +211,15 @@ class TestCheckoutAttestCard(TestCase):
                 assert len(_shown_lines(text)) <= 5
 
     def test_every_write_capable_phase_has_step_wording(self) -> None:
-        write_capable = {phase for phase in KNOWN_PHASES if {"write_file", "edit_file"} & tools_for_phase(phase)}
-        assert write_capable <= set(_STEPS)
+        assert ARCHITECTURAL_REVIEW_PHASE in KNOWN_PHASES
+        for phase in KNOWN_PHASES:
+            task = TaskFactory(phase=phase)
+            if writes_checkout(task):
+                worktree = WorktreeFactory(ticket=task.ticket)
+                question, _card = attest_card(
+                    task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+                )
+                assert "Should the next step" not in question, phase
 
     def test_pull_request_lookup_failure_returns_no_card(self) -> None:
         task = TaskFactory()
@@ -170,10 +236,13 @@ class TestCheckoutAttestCard(TestCase):
         ticket = TicketFactory(short_description="Fix the login page")
         worktree = WorktreeFactory(ticket=ticket)
         attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-        first = ask_owner_to_attest(TaskFactory(ticket=ticket, phase="coding"), attestation)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        first = ask_owner_to_attest(task, attestation)
         assert first is not None
 
-        second = ask_owner_to_attest(TaskFactory(ticket=ticket, phase="debugging"), attestation)
+        task.phase = "debugging"
+        task.save(update_fields=["phase"])
+        second = ask_owner_to_attest(task, attestation)
 
         assert second is not None
         assert second.pk != first.pk
@@ -181,6 +250,24 @@ class TestCheckoutAttestCard(TestCase):
         assert not first.is_pending
         assert "debugging step" in second.question
         assert "coding step" not in second.question
+
+    def test_two_waiting_steps_do_not_repeatedly_replace_each_other(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        coding = TaskFactory(ticket=ticket, phase="coding")
+        retro = TaskFactory(ticket=ticket, phase="retro")
+
+        first = ask_owner_to_attest(coding, attestation)
+        second = ask_owner_to_attest(retro, attestation)
+        repeated = ask_owner_to_attest(coding, attestation)
+
+        assert first is not None
+        assert second is not None
+        assert repeated is not None
+        assert repeated.pk == first.pk
+        assert first.pk != second.pk
+        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 2
 
     def test_an_unchanged_reask_keeps_one_pending_card(self) -> None:
         task = TaskFactory()
@@ -213,6 +300,23 @@ class TestCheckoutAttestCard(TestCase):
         first.refresh_from_db()
         assert not first.is_pending
         assert "no pull request for this folder was open when asked" in render_text(second)
+
+    def test_changed_commit_count_names_a_changed_card_as_the_stale_reason(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        original = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert original is not None
+
+        updated = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 2, 1), host_evidence=False)
+        )
+
+        assert updated is not None
+        assert updated.pk != original.pk
+        original.refresh_from_db()
+        assert original.dismissed_reason == "The checkout card changed since this question was asked"
 
     def test_the_card_links_only_a_pull_request_in_its_checkout_repo(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -299,6 +403,15 @@ class TestCheckoutAttestCard(TestCase):
         _row, text = _ask(TaskFactory(ticket=ticket))
 
         assert f"<{ISSUE_URL}|Readable owner cards>" in text
+
+    def test_unlinked_eighty_character_seed_still_records_a_card(self) -> None:
+        full = "The issue title is longer than the eighty character seed and should remain readable in cards"
+        ticket = TicketFactory(issue_url="", short_description=full[:80], extra={"issue_title": full})
+
+        row, text = _ask(TaskFactory(ticket=ticket))
+
+        assert row.is_pending
+        assert "Should the" in text
 
     def test_long_legacy_title_keeps_the_card_answerable(self) -> None:
         ticket = TicketFactory(

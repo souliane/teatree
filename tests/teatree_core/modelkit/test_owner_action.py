@@ -12,6 +12,10 @@ def test_marker_qualifies_kind_target_and_binding() -> None:
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.VOID, target="17", binding="digest"))
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="18", binding="digest"))
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="other"))
+    assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=4))
+    assert action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=4)) != (
+        action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=5))
+    )
 
 
 def test_action_reader_refuses_malformed_payloads() -> None:
@@ -19,3 +23,4 @@ def test_action_reader_refuses_malformed_payloads() -> None:
     assert read_action({"action": {"kind": "attest", "target": "", "binding": "digest"}}) is None
     assert read_action({"action": {"kind": "unknown", "target": "17", "binding": "digest"}}) is None
     assert read_action({"action": "attest"}) is None
+    assert read_action({"action": {"kind": "attest", "target": "17", "binding": "digest", "task_id": True}}) is None

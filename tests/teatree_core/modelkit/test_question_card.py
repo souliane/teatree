@@ -36,7 +36,25 @@ def test_seeded_eighty_character_prefix_uses_the_full_title() -> None:
     full = "The issue title is longer than the eighty character seed and should remain readable in cards"
     short = full[:80]
 
-    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") != short
+    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") == (
+        "The issue title is longer than the eighty character seed and should remain..."
+    )
+
+
+def test_whole_short_prefix_wins_over_the_longer_issue_title() -> None:
+    assert (
+        safe_ticket_card_title(
+            "Fix the login page", {"issue_title": "Fix the login page crash on Safari"}, "this ticket"
+        )
+        == "Fix the login page"
+    )
+
+
+def test_unrelated_ellipsis_short_wins_over_the_imported_title() -> None:
+    assert (
+        safe_ticket_card_title("Investigate the hang...", {"issue_title": "Old imported title"}, "this ticket")
+        == "Investigate the hang..."
+    )
 
 
 SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"

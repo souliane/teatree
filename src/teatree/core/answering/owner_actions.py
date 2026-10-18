@@ -67,6 +67,14 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
     def write() -> str:
         attestation = read()
         attestation.record()
+        other_cards = (
+            DeferredQuestion.owner_pending()
+            .select_for_update()
+            .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
+            .exclude(pk=row.pk)
+        )
+        for other in other_cards:
+            other.mark_stale("The checkout was accepted through another card", resolver_id="owner_actions")
         for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
             latest = parked.attempts.order_by("-pk").values("result").first()
             result = latest["result"] if latest is not None else {}

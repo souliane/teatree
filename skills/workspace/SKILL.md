@@ -113,8 +113,10 @@ names the waiting step and what it will do, links any open pull request in the
 checkout's repo that it may hold up while open or says none was open when asked;
 design-review and wrap-up cards link it without claiming those steps hold it up,
 gives the commit and uncommitted-file counts and whether nothing was found running,
-and says what Accept and Decline each do. A re-ask replaces a pending card when
-its step or pull-request wording changes.
+and says what Accept and Decline each do. A re-ask replaces a pending card for
+the same task when its step, pull-request wording, or other displayed evidence
+changes. Different parked tasks keep their own cards; accepting one retires the
+others for that checkout.
 Accepting rechecks the checkout and releases the parked task; declining leaves it
 parked. The terminal command remains available for an owner with host access.
 Only the owner's Slack button tap can approve or decline the action card.

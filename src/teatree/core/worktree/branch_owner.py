@@ -24,7 +24,7 @@ def ticket_owning_pr_branch(branch: str, *, slug: str) -> Ticket | None:
 def _owns(row: Worktree, *, branch: str, slug: str) -> bool:
     issue_url = row.ticket.issue_url
     return (
-        _row_slug(row).casefold() == slug.casefold()
+        worktree_repo_slug(row).casefold() == slug.casefold()
         and row.ticket.role == Ticket.Role.AUTHOR
         and row.ticket.state not in Ticket.marker_release_states()
         and not is_synthetic_ticket_url(issue_url)
@@ -32,7 +32,7 @@ def _owns(row: Worktree, *, branch: str, slug: str) -> bool:
     )
 
 
-def _row_slug(row: Worktree) -> str:
+def worktree_repo_slug(row: Worktree) -> str:
     """``repo_path`` is a slug or the clone directory's arbitrary leaf, so the leaf is read from origin."""
     if "/" in row.repo_path:
         return row.repo_path
