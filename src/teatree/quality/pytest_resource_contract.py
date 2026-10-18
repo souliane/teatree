@@ -15,8 +15,11 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+from teatree.utils.hook_registry import loop_registry_dir
+
 TOTAL_TEST_WORKERS_PER_CORE = 1
 INHERITED_LEASE_ENV = "TEATREE_PYTEST_WORKER_LEASE"
+POOL_ROOT_ENV = "TEATREE_PYTEST_WORKER_POOL_ROOT"
 
 _LOCAL_MAX_WORKERS = 4
 _PARENT_RESERVE_MIB = 512
@@ -72,6 +75,7 @@ class PoolUnavailableError(RuntimeError):
 class SlotLease:
     def __init__(self, descriptors: list[int]) -> None:
         self._descriptors = descriptors
+        self._inherited_marker: str | None = None
 
     @property
     def workers(self) -> int:
@@ -82,6 +86,11 @@ class SlotLease:
         for descriptor in self._descriptors:
             os.close(descriptor)
         self._descriptors.clear()
+        if self._inherited_marker and os.environ.get(INHERITED_LEASE_ENV) == self._inherited_marker:
+            os.environ.pop(INHERITED_LEASE_ENV, None)
+
+    def mark_inherited(self, marker: str) -> None:
+        self._inherited_marker = marker
 
     def __enter__(self) -> Self:
         return self
@@ -98,65 +107,121 @@ class WorkerSlotPool:
         self.capacity = max(1, capacity)
 
     def session_lease(self, requested: int) -> SlotLease:
-        if os.environ.get(INHERITED_LEASE_ENV):
+        if self._inherits_live_lease():
             return SlotLease([])
         lease = self.acquire(requested)
-        os.environ[INHERITED_LEASE_ENV] = str(self.path)
+        marker = f"{self.path}:{os.getpid()}"
+        os.environ[INHERITED_LEASE_ENV] = marker
+        lease.mark_inherited(marker)
         return lease
 
+    def _inherits_live_lease(self) -> bool:
+        marker = os.environ.get(INHERITED_LEASE_ENV, "")
+        path, separator, pid = marker.rpartition(":")
+        if not separator or path != str(self.path) or not pid.isdecimal():
+            return False
+        for slot in self.path.glob("slot-*.lock"):
+            try:
+                descriptor = os.open(slot, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                try:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        if os.read(descriptor, 32).decode().strip() == pid:
+                            return True
+                finally:
+                    os.close(descriptor)
+            except OSError:
+                continue
+        return False
+
     def acquire(self, requested: int, *, poll_interval: float = 1.0) -> SlotLease:
-        if not self.path.parent.is_dir():
-            reason = "root is missing"
-            raise PoolUnavailableError(reason, self.path.parent)
         try:
-            self.path.mkdir(exist_ok=True)
+            self.path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             reason = "is unavailable"
             raise PoolUnavailableError(reason, self.path) from exc
-        target = max(1, min(requested, self.capacity))
         reported = False
-        while not (descriptors := self._lock_free_slots(target)):
+        while True:
+            total = self._shared_capacity()
+            target = max(1, min(requested, total))
+            descriptors, holder = self._lock_free_slots(target, total)
+            if descriptors:
+                break
             if not reported:
                 sys.stderr.write(
-                    f"pytest worker pool at {self.path} has no free slots ({self.capacity} total); waiting\n"
+                    f"pytest worker pool at {self.path} has no free slots "
+                    f"(capacity {total}); holder pid {holder or 'unknown'}; waiting\n"
                 )
                 sys.stderr.flush()
                 reported = True
             time.sleep(poll_interval)
         if len(descriptors) < requested:
-            sys.stderr.write(
-                f"pytest worker pool at {self.path}: running {len(descriptors)} of {requested} requested workers\n"
-            )
+            sys.stderr.write(f"pytest worker pool at {self.path}: granted {len(descriptors)} of {requested}\n")
         return SlotLease(descriptors)
 
-    def _lock_free_slots(self, target: int) -> list[int]:
-        descriptors: list[int] = []
+    def _shared_capacity(self) -> int:
+        path = self.path / "capacity.lock"
         try:
-            for slot in range(self.capacity):
-                descriptor = os.open(
-                    self.path / f"slot-{slot:04d}.lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
-                )
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                recorded = os.read(descriptor, 32).decode().strip()
+                total = max(self.capacity, int(recorded)) if recorded else self.capacity
+                if not recorded or total != int(recorded):
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    os.write(descriptor, f"{total}\n".encode())
+                    os.ftruncate(descriptor, len(f"{total}\n"))
+                self.capacity = total
+                return total
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError) as exc:
+            reason = "is unavailable"
+            raise PoolUnavailableError(reason, path) from exc
+
+    def _lock_free_slots(self, target: int, total: int) -> tuple[list[int], str]:
+        descriptors: list[int] = []
+        holder = ""
+        slot_path = self.path
+        try:
+            for slot in range(total):
+                slot_path = self.path / f"slot-{slot:04d}.lock"
+                descriptor = os.open(slot_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
                 try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    os.close(descriptor)
-                    continue
-                descriptors.append(descriptor)
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        if not holder:
+                            holder = os.read(descriptor, 32).decode().strip()
+                        continue
+                    os.ftruncate(descriptor, 0)
+                    os.write(descriptor, str(os.getpid()).encode())
+                    descriptors.append(descriptor)
+                finally:
+                    if descriptor not in descriptors:
+                        os.close(descriptor)
                 if len(descriptors) == target:
                     break
         except OSError as exc:
             SlotLease(descriptors).release()
             reason = "is unreadable"
-            raise PoolUnavailableError(reason, self.path) from exc
-        return descriptors
+            raise PoolUnavailableError(reason, slot_path) from exc
+        return descriptors, holder
+
+
+def worker_pool_root() -> Path:
+    return Path(os.environ.get(POOL_ROOT_ENV) or loop_registry_dir())
 
 
 __all__ = [
     "INHERITED_LEASE_ENV",
+    "POOL_ROOT_ENV",
     "TOTAL_TEST_WORKERS_PER_CORE",
     "PoolUnavailableError",
     "SlotLease",
     "WorkerSlotPool",
     "bounded_auto_workers",
     "whole_tree_refusal",
+    "worker_pool_root",
 ]

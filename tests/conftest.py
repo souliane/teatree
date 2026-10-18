@@ -46,10 +46,10 @@ from teatree.quality.pytest_resource_contract import (
     WorkerSlotPool,
     bounded_auto_workers,
     whole_tree_refusal,
+    worker_pool_root,
 )
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
-from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.work_tree import reset_cwd_cache
@@ -175,11 +175,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         raise pytest.UsageError(refusal)
     distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
     tx = parse_tx_spec_config(config) if distributed else []
-    pool = WorkerSlotPool(loop_registry_dir(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
+    if not distributed:
+        return
+    pool = WorkerSlotPool(worker_pool_root(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
         lease = pool.session_lease(max(1, len(tx)))
     except PoolUnavailableError as exc:
-        msg = f"{exc}; create it, or set T3_LOOP_REGISTRY_DIR to a directory every pytest on this host shares"
+        msg = f"{exc}; set TEATREE_PYTEST_WORKER_POOL_ROOT to a directory every pytest on this host shares"
         raise pytest.UsageError(msg) from exc
     config.stash[_WORKER_SLOT_LEASE] = lease
     if tx:
