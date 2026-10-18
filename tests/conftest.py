@@ -174,20 +174,19 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if refusal:
         raise pytest.UsageError(refusal)
     distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
-    tx = parse_tx_spec_config(config) if distributed else []
     if not distributed:
         return
+    tx = parse_tx_spec_config(config)
     pool = WorkerSlotPool(worker_pool_root(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
     try:
-        lease = pool.session_lease(max(1, len(tx)))
+        lease = pool.session_lease(len(tx))
     except PoolUnavailableError as exc:
         msg = f"{exc}; set TEATREE_PYTEST_WORKER_POOL_ROOT to a directory every pytest on this host shares"
         raise pytest.UsageError(msg) from exc
     config.stash[_WORKER_SLOT_LEASE] = lease
-    if tx:
-        config.option.tx = tx[: lease.workers]
-        if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
-            config.option.numprocesses = lease.workers
+    config.option.tx = tx[: lease.workers]
+    if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
+        config.option.numprocesses = lease.workers
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

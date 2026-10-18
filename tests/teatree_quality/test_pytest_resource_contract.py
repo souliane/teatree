@@ -172,7 +172,7 @@ def test_missing_shared_root_is_created(tmp_path: Path) -> None:
 
 
 def test_outer_session_lease_is_inherited_by_its_descendants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(INHERITED_LEASE_ENV)
+    monkeypatch.delenv(INHERITED_LEASE_ENV, raising=False)
     pool = WorkerSlotPool(tmp_path, capacity=2)
     with pool.session_lease(5) as outer:
         assert outer.workers == 2
@@ -412,7 +412,8 @@ class TestRealPytestRunsDrawFromOneBoxPool:
     @pytest.mark.parametrize("worker_request", ["explicit-n", "env-override-auto"])
     def test_a_request_above_the_free_slots_is_clamped(self, real_pytest_root: Path, worker_request: str) -> None:
         tmp_path = real_pytest_root
-        with WorkerSlotPool(tmp_path, capacity=_REAL_CAPACITY).acquire(_REAL_CAPACITY - 2):
+        capacity = max(4, _REAL_CAPACITY)
+        with WorkerSlotPool(tmp_path, capacity=capacity).acquire(capacity - 2):
             args = ("-n", "4" if worker_request == "explicit-n" else "auto")
             run, stdout, stderr, pids = launch_pytest(
                 tmp_path,
@@ -424,6 +425,7 @@ class TestRealPytestRunsDrawFromOneBoxPool:
             try:
                 assert run.wait(timeout=120) == 0, stderr.read_text(encoding="utf-8")
                 assert "granted 2 of 4" in stderr.read_text(encoding="utf-8")
+                assert "; waiting" not in stderr.read_text(encoding="utf-8")
                 assert created_workers(stdout.read_text(encoding="utf-8")) == 2
                 assert len(worker_pids(pids)) == 2
             finally:
