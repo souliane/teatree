@@ -1,7 +1,16 @@
 """Branch coverage for the web_reads free functions: the paged user lookup (#3507) and the user-group lookup."""
 
-from teatree.backends.slack.web_reads import _MAX_USER_PAGES, resolve_user_id, resolve_usergroup_id
-from teatree.types import RawAPIDict
+import pytest
+
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
+from teatree.backends.slack.dm_history import read_thread_replies
+from teatree.backends.slack.web_reads import (
+    _MAX_USER_PAGES,
+    read_channel_history_or_refuse,
+    resolve_user_id,
+    resolve_usergroup_id,
+)
+from teatree.types import ChannelReadRefusedError, RawAPIDict
 
 
 def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDict:
@@ -98,3 +107,34 @@ class TestResolveUsergroupId:
             return _usergroups(["nope", {"handle": "reviewers", "id": 7}])
 
         assert resolve_usergroup_id(get=get, handle="reviewers") == ""
+
+
+@pytest.mark.parametrize("read_kind", ["history", "thread"])
+@pytest.mark.parametrize(
+    ("error_code", "expected_attempts"), [("not_in_channel", 2), ("channel_not_found", 2), ("is_archived", 1)]
+)
+def test_history_and_thread_share_membership_retry_decisions(
+    read_kind: str, error_code: str, expected_attempts: int
+) -> None:
+    tokens: list[str] = []
+    first_token = "xoxb-bot" if read_kind == "history" else ""
+
+    def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert method == ("conversations.history" if read_kind == "history" else "conversations.replies")
+        assert params["channel"] == "D1"
+        tokens.append(token)
+        if token == first_token:
+            return {"ok": False, "error": error_code}
+        return {"ok": True, "messages": [{"ts": "1.0"}]}
+
+    def read() -> list[RawAPIDict]:
+        if read_kind == "history":
+            return read_channel_history_or_refuse(get=get, channel="D1", token=first_token, user_token="xoxp-user")
+        return read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user")
+
+    if expected_attempts == 2:
+        assert read() == [{"ts": "1.0", "channel": "D1"}]
+    else:
+        with pytest.raises((SlackReadRefusedError, ChannelReadRefusedError)):
+            read()
+    assert tokens == ([first_token, "xoxp-user"] if expected_attempts == 2 else [first_token])

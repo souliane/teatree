@@ -13,6 +13,7 @@ import pytest
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.routing import OwnerDmOnlyError
 from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse
 from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 
@@ -26,6 +27,117 @@ def _getter(response: RawAPIDict):
 
 
 _REFUSALS = ("not_in_channel", "channel_not_found", "is_archived")
+
+
+class _TokenedHttp:
+    def __init__(self, by_token: dict[str, RawAPIDict]) -> None:
+        self.by_token = by_token
+        self.history_tokens: list[str] = []
+
+    def get(self, method: str, *, token: str, params: dict[str, str | int]) -> RawAPIDict:
+        if method == "auth.test":
+            return {"ok": False, "error": "unknown"}
+        assert method == "conversations.history"
+        assert params["channel"] in {"D1", "C1"}
+        self.history_tokens.append(token)
+        return self.by_token[token]
+
+
+def _backend(fake: _TokenedHttp, *, user_token: str | None = None, owner_dm_only: bool = False) -> SlackBotBackend:
+    with patch("teatree.backends.slack.bot.SlackHttpClient", return_value=fake):
+        return SlackBotBackend(
+            bot_token="xoxb-bot",
+            user_token="xoxp-user" if user_token is None else user_token,
+            user_id="UOWNER",
+            dm_channel_id="DOWNER",
+            owner_dm_only=owner_dm_only,
+        )
+
+
+@pytest.mark.parametrize("error_code", ["not_in_channel", "channel_not_found"])
+def test_dm_history_retries_the_user_token_after_a_bot_membership_refusal(error_code: str) -> None:
+    fake = _TokenedHttp(
+        {
+            "xoxb-bot": {"ok": False, "error": error_code},
+            "xoxp-user": {"ok": True, "messages": [{"ts": "1.0", "text": "hello"}]},
+        }
+    )
+
+    messages = _backend(fake).fetch_channel_history_or_refuse(channel="D1")
+
+    assert messages == [{"ts": "1.0", "text": "hello", "channel": "D1"}]
+    assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
+
+
+def test_both_history_tokens_refused_keeps_the_bot_error_as_context() -> None:
+    fake = _TokenedHttp(
+        {
+            "xoxb-bot": {"ok": False, "error": "not_in_channel"},
+            "xoxp-user": {"ok": False, "error": "channel_not_found"},
+        }
+    )
+
+    with pytest.raises(ChannelReadRefusedError) as refused:
+        _backend(fake).fetch_channel_history_or_refuse(channel="D1")
+
+    assert refused.value.error_code == "channel_not_found"
+    assert isinstance(refused.value.__context__, ChannelReadRefusedError)
+    assert refused.value.__context__.error_code == "not_in_channel"
+    assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_error"),
+    [("is_archived", ChannelReadRefusedError), ("invalid_auth", ScannerError)],
+)
+def test_other_history_refusals_do_not_retry(error_code: str, expected_error: type[Exception]) -> None:
+    fake = _TokenedHttp({"xoxb-bot": {"ok": False, "error": error_code}})
+
+    with pytest.raises(expected_error):
+        _backend(fake).fetch_channel_history_or_refuse(channel="D1")
+
+    assert fake.history_tokens == ["xoxb-bot"]
+
+
+def test_history_does_not_retry_without_a_user_token() -> None:
+    fake = _TokenedHttp({"xoxb-bot": {"ok": False, "error": "channel_not_found"}})
+
+    with pytest.raises(ChannelReadRefusedError):
+        _backend(fake, user_token="").fetch_channel_history_or_refuse(channel="D1")
+
+    assert fake.history_tokens == ["xoxb-bot"]
+
+
+def test_readable_dm_and_non_dm_keep_their_first_token() -> None:
+    fake = _TokenedHttp(
+        {
+            "xoxb-bot": {"ok": True, "messages": [{"ts": "1.0"}]},
+            "xoxp-user": {"ok": True, "messages": [{"ts": "2.0"}]},
+        }
+    )
+    backend = _backend(fake)
+
+    assert backend.fetch_channel_history_or_refuse(channel="D1") == [{"ts": "1.0", "channel": "D1"}]
+    assert backend.fetch_channel_history_or_refuse(channel="C1") == [{"ts": "2.0", "channel": "C1"}]
+    assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
+
+
+def test_non_dm_user_token_refusal_is_not_retried() -> None:
+    fake = _TokenedHttp({"xoxp-user": {"ok": False, "error": "not_in_channel"}})
+
+    with pytest.raises(ChannelReadRefusedError):
+        _backend(fake).fetch_channel_history_or_refuse(channel="C1")
+
+    assert fake.history_tokens == ["xoxp-user"]
+
+
+def test_owner_dm_guard_refuses_before_any_history_call() -> None:
+    fake = _TokenedHttp({})
+
+    with pytest.raises(OwnerDmOnlyError):
+        _backend(fake, owner_dm_only=True).fetch_channel_history_or_refuse(channel="D1")
+
+    assert fake.history_tokens == []
 
 
 @pytest.mark.parametrize("error_code", _REFUSALS)

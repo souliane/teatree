@@ -4,14 +4,15 @@ The channel-history poll, user-id lookup, and message-reactions read — each a
 ``conversations.*`` / ``users.*`` / ``reactions.get`` call plus its response
 parsing — factored into free functions taking the backend's ``get`` callable
 (the same seam ``dm_history`` uses) so ``bot.py`` stays under the module-health
-LOC cap. The token-selection policy stays on the backend: it resolves the token
-and passes it in, keeping these functions free of the Connect-membership concern.
+LOC cap. The backend selects the first token; a bot membership refusal can
+retry with its configured user token. Connect routing stays on the backend.
 """
 
 import re
+from collections.abc import Callable
 from typing import Protocol, cast
 
-from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES
+from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES, SlackReadRefusedError
 from teatree.backends.slack.pagination import next_cursor
 from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 
@@ -19,20 +20,33 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
+_BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
 class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
 
 
-def read_channel_history_or_refuse(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
-    """Like :func:`read_channel_history` but RAISES on a channel-scoped refusal.
+def read_with_user_token_fallback(
+    read: Callable[[str], list[RawAPIDict]], *, token: str, user_token: str
+) -> list[RawAPIDict]:
+    try:
+        return read(token)
+    except (SlackReadRefusedError, ChannelReadRefusedError) as refused:
+        if not user_token or token == user_token or refused.error_code not in _BOT_NOT_A_MEMBER:
+            raise
+        return read(user_token)
 
-    The seam for interactive, single-channel callers (the MCP Slack group). The
-    scanner keeps the swallowing variant; nobody has to choose between a resilient
-    poll loop and an honest answer.
-    """
-    return _read_channel_history(get=get, channel=channel, token=token, limit=limit, refuse=True)
+
+def read_channel_history_or_refuse(
+    *, get: Getter, channel: str, token: str, user_token: str = "", limit: int = 50
+) -> list[RawAPIDict]:
+    """Read one channel, retrying a bot membership refusal as the user when possible."""
+    return read_with_user_token_fallback(
+        lambda auth: _read_channel_history(get=get, channel=channel, token=auth, limit=limit, refuse=True),
+        token=token,
+        user_token=user_token,
+    )
 
 
 def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:

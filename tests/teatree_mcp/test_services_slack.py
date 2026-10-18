@@ -19,6 +19,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.mcp import services_slack
 from teatree.types import ChannelReadRefusedError, RawAPIDict
 
@@ -93,3 +94,28 @@ def test_a_readable_channel_still_answers() -> None:
         result = asyncio.run(_server().call_tool("slack_channel_history", {"channel": "#dev"}))
 
     assert result.structured_content == {"result": messages}
+
+
+def test_history_fallback_reaches_the_mcp_caller() -> None:
+    class _Http:
+        def __init__(self) -> None:
+            self.history_tokens: list[str] = []
+
+        def get(self, method: str, *, token: str, params: dict[str, str | int]) -> RawAPIDict:
+            if method == "auth.test":
+                return {"ok": False, "error": "unknown"}
+            assert method == "conversations.history"
+            assert params["channel"] == "D1"
+            self.history_tokens.append(token)
+            if token == "xoxb-bot":
+                return {"ok": False, "error": "channel_not_found"}
+            return {"ok": True, "messages": [{"ts": "1.0", "text": "hello"}]}
+
+    fake = _Http()
+    with patch("teatree.backends.slack.bot.SlackHttpClient", return_value=fake):
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+    with patch.object(services_slack, "_client", return_value=backend):
+        result = asyncio.run(_server().call_tool("slack_channel_history", {"channel": "D1"}))
+
+    assert result.structured_content == {"result": [{"ts": "1.0", "text": "hello", "channel": "D1"}]}
+    assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
