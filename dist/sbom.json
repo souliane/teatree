@@ -287,7 +287,7 @@
     },
     {
       "bom-ref": "requirements-L69",
-      "description": "requirements line 69: django-stubs-ext==6.1.1",
+      "description": "requirements line 69: django-stubs-ext==6.1.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -296,9 +296,9 @@
         }
       ],
       "name": "django-stubs-ext",
-      "purl": "pkg:pypi/django-stubs-ext@6.1.1",
+      "purl": "pkg:pypi/django-stubs-ext@6.1.2",
       "type": "library",
-      "version": "6.1.1"
+      "version": "6.1.2"
     },
     {
       "bom-ref": "requirements-L73",
@@ -392,7 +392,7 @@
     },
     {
       "bom-ref": "requirements-L85",
-      "description": "requirements line 85: griffelib==2.3.0",
+      "description": "requirements line 85: griffelib==2.3.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -401,9 +401,9 @@
         }
       ],
       "name": "griffelib",
-      "purl": "pkg:pypi/griffelib@2.3.0",
+      "purl": "pkg:pypi/griffelib@2.3.2",
       "type": "library",
-      "version": "2.3.0"
+      "version": "2.3.2"
     },
     {
       "bom-ref": "requirements-L87",
@@ -647,7 +647,7 @@
     },
     {
       "bom-ref": "requirements-L138",
-      "description": "requirements line 138: openai==3.26.0",
+      "description": "requirements line 138: openai==3.28.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -656,9 +656,9 @@
         }
       ],
       "name": "openai",
-      "purl": "pkg:pypi/openai@3.26.0",
+      "purl": "pkg:pypi/openai@3.28.0",
       "type": "library",
-      "version": "3.26.0"
+      "version": "3.28.0"
     },
     {
       "bom-ref": "requirements-L140",
@@ -842,7 +842,7 @@
     },
     {
       "bom-ref": "requirements-L177",
-      "description": "requirements line 177: pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'",
+      "description": "requirements line 177: pycparser==3.11 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -851,13 +851,13 @@
         }
       ],
       "name": "pycparser",
-      "purl": "pkg:pypi/pycparser@3.0",
+      "purl": "pkg:pypi/pycparser@3.11",
       "type": "library",
-      "version": "3.0"
+      "version": "3.11"
     },
     {
       "bom-ref": "requirements-L179",
-      "description": "requirements line 179: pydantic==2.13.5",
+      "description": "requirements line 179: pydantic==2.14.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -866,9 +866,9 @@
         }
       ],
       "name": "pydantic",
-      "purl": "pkg:pypi/pydantic@2.13.5",
+      "purl": "pkg:pypi/pydantic@2.14.0",
       "type": "library",
-      "version": "2.13.5"
+      "version": "2.14.0"
     },
     {
       "bom-ref": "requirements-L189",
@@ -887,7 +887,7 @@
     },
     {
       "bom-ref": "requirements-L191",
-      "description": "requirements line 191: pydantic-core==2.46.5",
+      "description": "requirements line 191: pydantic-core==2.50.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -896,9 +896,9 @@
         }
       ],
       "name": "pydantic-core",
-      "purl": "pkg:pypi/pydantic-core@2.46.5",
+      "purl": "pkg:pypi/pydantic-core@2.50.0",
       "type": "library",
-      "version": "2.46.5"
+      "version": "2.50.0"
     },
     {
       "bom-ref": "requirements-L193",
@@ -1112,7 +1112,7 @@
     },
     {
       "bom-ref": "requirements-L228",
-      "description": "requirements line 228: rpds-py==2026.6.3",
+      "description": "requirements line 228: rpds-py==2026.9.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1121,9 +1121,9 @@
         }
       ],
       "name": "rpds-py",
-      "purl": "pkg:pypi/rpds-py@2026.6.3",
+      "purl": "pkg:pypi/rpds-py@2026.9.1",
       "type": "library",
-      "version": "2026.6.3"
+      "version": "2026.9.1"
     },
     {
       "bom-ref": "requirements-L232",
