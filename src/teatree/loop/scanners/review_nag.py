@@ -3,7 +3,7 @@
 The user posts MRs to the review channel; the bot tracks each in a
 ``ReviewRequestPost`` row. This scanner walks the open rows each tick and, when
 an MR has had **no activity for its current re-ask interval** — no thread reply,
-no reaction — and is still live-open, non-draft, unapproved and unpaused, posts
+no qualifying reaction — and is still live-open, non-draft, unapproved and unpaused, posts
 exactly ONE thread reply: the configured re-ask mention + `` :pray:`` on
 ``(channel, thread_ts)``. The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
@@ -21,9 +21,10 @@ owner question (``ask_mr_state``) instead of nagging again.
 
 Activity is read LIVE via ``conversations.replies`` (``fetch_thread_replies``,
 the same messaging backend the nag posts with):
-``last_activity = max(post_ts, latest reply ts, reaction-present ⇒ now)``.
-Slack exposes no per-reaction timestamp, so a reaction on any thread message
-counts as fresh engagement and suppresses the nag.
+``last_activity = max(post_ts, latest reply ts, reaction not proven requester-only ⇒ now)``.
+Slack exposes no per-reaction timestamp. A reaction counts unless its users are
+provably only the requester; unreadable users and an unresolved requester id
+still count as activity.
 
 Merged/closed safety: a MERGED MR routes through ``react_merge_on_post`` so the
 ``:merge:`` reaction still lands; a CLOSED MR is marked done.
@@ -66,6 +67,7 @@ from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.review_nag_activity import thread_activity
 from teatree.loop.scanners.review_nag_mention import reask_mention
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
@@ -96,13 +98,6 @@ def default_repo_owner(_slug: str) -> RepoOwner:
     return RepoOwner.ENGINEERING
 
 
-def _epoch(ts: str) -> float:
-    try:
-        return float(ts)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 @dataclass(slots=True)
 class ReviewNagScanner:
     """Walk ``ReviewRequestPost`` rows and re-ask for review on a widening schedule.
@@ -119,6 +114,7 @@ class ReviewNagScanner:
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
     identities: tuple[str, ...] = field(default_factory=tuple)
+    requester_slack_id: str = ""
     now: dt.datetime | None = None
     thresholds: TriageThresholds = DEFAULT_THRESHOLDS
     repo_owner: Callable[[str], RepoOwner] = default_repo_owner
@@ -191,31 +187,19 @@ class ReviewNagScanner:
         ref = pr_ref_from_url(post.mr_url)
         return self.repo_owner(ref.slug if ref is not None else "")
 
-    @staticmethod
     def _last_activity(
+        self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
     ) -> dt.datetime | None:
-        """``max(post_ts, latest reply ts, reaction-present ⇒ now)``; ``None`` on read failure."""
+        """Return last review activity, or ``None`` when the thread read fails."""
         try:
             replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
         except Exception as exc:  # noqa: BLE001 — a thread read must never crash a tick.
             logger.warning("review_nag: thread read failed for %s: %s", post.mr_url, exc)
             return None
-        epochs = [_epoch(post.slack_thread_ts)]
-        for msg in replies:
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("reactions"):
-                return right_now  # a reaction is fresh engagement; Slack carries no reaction ts
-            ts = msg.get("ts")
-            if isinstance(ts, str):
-                epochs.append(_epoch(ts))
-        latest = max((e for e in epochs if e > 0.0), default=0.0)
-        if latest <= 0.0:
-            return post.created_at
-        return dt.datetime.fromtimestamp(latest, tz=dt.UTC)
+        return thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id)
 
     def _mr_not_naggable(
         self,

@@ -1,7 +1,7 @@
 """Tests for the ReviewNagScanner — the 2-day re-ask (#1084 follow-up).
 
 The scanner walks ``ReviewRequestPost`` rows and, when an MR has had no thread
-activity (reply or reaction) for 2 days and is still live-open, non-draft, and
+activity (reply or qualifying reaction) for 2 days and is still live-open, non-draft, and
 unapproved, posts exactly ONE thread reply: the configured re-ask mention + `` :pray:``.
 ``last_nag_at`` enforces no double-ping within the 2-day window.
 """
@@ -231,6 +231,48 @@ def _attribute(post: ReviewRequestPost, overlay: str | None) -> ReviewRequestPos
 
 
 class TestActivityGate(_PermittingPostureMixin, TestCase):
+    def test_requester_only_reaction_does_not_suppress_the_ping(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(
+            thread_replies=[
+                {"ts": "ts.1", "reactions": [{"name": "white_check_mark", "users": ["UOWNER"], "count": 1}]},
+            ],
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert [post["thread_ts"] for post in slack.posts] == ["ts.1"]
+
+    def test_colleague_reaction_still_suppresses_the_ping(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(
+            thread_replies=[
+                {
+                    "ts": "ts.1",
+                    "reactions": [{"name": "eyes", "users": ["UOWNER", "UPEER"], "count": 2}],
+                },
+            ],
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert slack.posts == []
+        assert signals == []
+
+    def test_the_nag_builder_resolves_the_requester_at_its_overlay(self) -> None:
+        backend = OverlayBackends(name="t3-test", hosts=(FakeHost(),), messaging=FakeSlack())
+        with (
+            patch("teatree.loop.domain_jobs.egress_forbidden", return_value=False),
+            patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", return_value="UOWNER") as resolve,
+        ):
+            jobs = _followup_jobs_for_overlay(backend)
+
+        nags = [job.scanner for job in jobs if isinstance(job.scanner, ReviewNagScanner)]
+        assert len(nags) == 1
+        assert nags[0].requester_slack_id == "UOWNER"
+        resolve.assert_called_once_with("t3-test")
+
     def test_idle_over_two_days_re_asks_on_thread(self) -> None:
         post = _seed(days_old=3.0)
         slack = FakeSlack()
@@ -604,6 +646,16 @@ class TestUnreadableMrStateFailsClosed(_PermittingPostureMixin, TestCase):
 
 class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
     """A request the owner reacted "hold" on is theirs to release, not ours to escalate."""
+
+    def test_the_requesters_own_pause_reaction_still_holds_the_nag(self) -> None:
+        _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}], root_reactions=[pause])
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
 
     def test_a_paused_request_is_not_nagged(self) -> None:
         post = _seed(days_old=10.0)

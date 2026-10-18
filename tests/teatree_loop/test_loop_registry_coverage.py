@@ -160,7 +160,7 @@ class TestSingleOverlayMessagingParity:
         backend.messaging = messaging
         shared = _messaging_scanner_types(single_overlay_messaging_jobs(messaging))
         per_overlay = _messaging_scanner_types(
-            _messaging_jobs_for_backend(backend, "", include_review_nag=False),
+            _messaging_jobs_for_backend(backend, ""),
         )
         assert shared == per_overlay, (shared, per_overlay)
         assert AskUserQuestionReplyScanner in shared

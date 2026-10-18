@@ -342,6 +342,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=owner_identities,
+                        requester_slack_id=_user_slack_id_for_overlay(tag),
                         repo_owner=_repo_owner_resolver(backend),
                         overlay_name=tag,
                     ),
@@ -378,7 +379,7 @@ def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """Inbound Slack scanners (mentions/review-intent/red-card), sans review-nag."""
     if backend.messaging is None:
         return []
-    return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
+    return _messaging_jobs_for_backend(backend, backend.name)
 
 
 type _OverlayDomainBuilder = Callable[[OverlayBackends], list[_ScannerJob]]
@@ -493,22 +494,9 @@ def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJ
 def _messaging_jobs_for_backend(
     backend: OverlayBackends,
     tag: str,
-    *,
-    include_review_nag: bool = True,
 ) -> list[_ScannerJob]:
     """Per-overlay Slack scanners that need a resolved messaging backend."""
     messaging = backend.messaging
     if messaging is None:
         return []
-    jobs = _inbound_messaging_jobs(messaging, tag)
-    if include_review_nag:
-        owner_identities = _user_identity_aliases_for_overlay(tag)
-        nag = ReviewNagScanner(
-            messaging=messaging,
-            host=backend.host,
-            identities=owner_identities,
-            repo_owner=_repo_owner_resolver(backend),
-            overlay_name=tag,
-        )
-        jobs.append(_ScannerJob(scanner=nag, overlay=tag))
-    return jobs
+    return _inbound_messaging_jobs(messaging, tag)
