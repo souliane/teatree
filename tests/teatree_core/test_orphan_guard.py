@@ -1,8 +1,12 @@
+import sqlite3
 import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
 
 from teatree.core.forge_pr_probe import PrProbe
@@ -401,6 +405,103 @@ class TestFindOrphansInWorkspace(TestCase):
             repo_path=repo_path,
             branch=branch,
         )
+
+    def _seed_clones(self, count: int) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch("teatree.core.gates.orphan_guard.clone_root", return_value=root))
+        for index in range(count):
+            repo = root / f"repo-{index}"
+            (repo / ".git").mkdir(parents=True)
+            self._make_worktree(repo.name, f"branch-{index}")
+
+    def test_classifies_three_distinct_branches_at_once(self) -> None:
+        self._seed_clones(3)
+        barrier = threading.Barrier(3, timeout=5)
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            barrier.wait()
+            return BranchReport(repo=repo, branch=branch, status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
+
+        with patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify):
+            reports = find_orphans_in_workspace()
+
+        assert [report.branch for report in reports] == ["branch-0", "branch-1", "branch-2"]
+
+    def test_never_classifies_more_than_eight_at_once(self) -> None:
+        self._seed_clones(16)
+        barrier = threading.Barrier(8, timeout=5)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                barrier.wait()
+                time.sleep(0.2)
+                return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0)
+            finally:
+                with lock:
+                    active -= 1
+
+        with patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify):
+            assert find_orphans_in_workspace() == []
+
+        assert peak == 8
+
+    def test_reports_follow_row_order_when_workers_finish_out_of_order(self) -> None:
+        self._seed_clones(3)
+        barrier = threading.Barrier(3, timeout=5)
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            barrier.wait()
+            time.sleep(0.05 * (2 - int(branch[-1])))
+            return BranchReport(repo=repo, branch=branch, status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
+
+        with patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify):
+            reports = find_orphans_in_workspace()
+
+        assert [report.branch for report in reports] == ["branch-0", "branch-1", "branch-2"]
+
+    def test_first_failing_row_propagates_even_when_a_later_row_fails_first(self) -> None:
+        self._seed_clones(3)
+        barrier = threading.Barrier(3, timeout=5)
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            barrier.wait()
+            if branch == "branch-0":
+                time.sleep(0.1)
+            if branch in {"branch-0", "branch-2"}:
+                raise CommandFailedError(cmd=["git"], returncode=1, stdout="", stderr=branch)
+            return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0)
+
+        with (
+            patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify),
+            pytest.raises(CommandFailedError) as error,
+        ):
+            find_orphans_in_workspace()
+
+        assert error.value.stderr == "branch-0"
+
+    def test_each_worker_closes_its_db_connection(self) -> None:
+        self._seed_clones(3)
+        raw_connections: list[sqlite3.Connection] = []
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            connection.ensure_connection()
+            raw_connections.append(connection.connection)
+            return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0)
+
+        with patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify):
+            assert find_orphans_in_workspace() == []
+
+        assert len(raw_connections) == 3
+        for raw_connection in raw_connections:
+            with pytest.raises(sqlite3.ProgrammingError):
+                raw_connection.execute("SELECT 1")
 
     @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")

@@ -1,6 +1,7 @@
 """Tests for ``teatree.core.worktree.readiness`` — runtime readiness probes."""
 
 import http.server
+import inspect
 import re
 import socket
 import sqlite3
@@ -30,6 +31,11 @@ from teatree.core.worktree.readiness import (
 )
 
 _GATE_TIMEOUT_SECONDS = 30.0
+
+
+def test_probe_pool_default_uses_shared_eight_worker_ceiling() -> None:
+    assert readiness.PROBE_WORKERS == 8
+    assert inspect.signature(run_probes).parameters["max_workers"].default is readiness.PROBE_WORKERS
 
 
 def _free_port() -> int:

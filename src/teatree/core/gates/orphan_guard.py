@@ -22,6 +22,7 @@ points that keep the no-orphan invariant:
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -34,9 +35,11 @@ from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base, pr_from_branch_would_be_empty
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.readiness import PROBE_WORKERS
 from teatree.utils import git
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
+from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +192,13 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
     return BranchReport(repo=repo, branch=branch, status=_orphan_status_on_origin(repo, branch), ahead_count=ahead)
 
 
+def _classify_closing_connections(key: tuple[str, str]) -> BranchReport:
+    try:
+        return classify_branch(*key)
+    finally:
+        close_thread_db_connections()
+
+
 def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchReport]:
     """Return orphan branches across all tracked worktrees in the workspace.
 
@@ -206,26 +216,23 @@ def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchRep
     caller like ``warn_orphans`` narrows to ``Worktree.objects.active()``
     (#15). Do not flip the default to satisfy a hot path; narrow at the
     caller instead.
+
+    Distinct branches classify on at most eight workers; reports and errors
+    remain in Worktree row order.
     """
     workspace = clone_root()
-    reports: list[BranchReport] = []
-    seen: set[tuple[str, str]] = set()
+    keys: list[tuple[str, str]] = []
     for wt in rows if rows is not None else Worktree.objects.all():
         repo_main = resolve_clone_path(workspace, wt)
         if repo_main is None or not repo_main.is_dir():
             continue
-        key = (str(repo_main), wt.branch)
-        if key in seen:
-            continue
-        seen.add(key)
-        report = classify_branch(str(repo_main), wt.branch)
-        if report.status is BranchStatus.BRANCH_MISSING:
-            logger.warning(
-                "orphan scan: branch missing for %s@%s — skipping",
-                repo_main,
-                wt.branch,
-            )
-            continue
-        if report.is_orphan:
-            reports.append(report)
+        keys.append((str(repo_main), wt.branch))
+    reports: list[BranchReport] = []
+    with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as pool:
+        for report in pool.map(_classify_closing_connections, dict.fromkeys(keys)):
+            if report.status is BranchStatus.BRANCH_MISSING:
+                logger.warning("orphan scan: branch missing for %s@%s — skipping", report.repo, report.branch)
+                continue
+            if report.is_orphan:
+                reports.append(report)
     return reports

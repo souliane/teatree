@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 _BACKOFF_BASE_SECONDS = 0.5
 _SLEEP: SleepFn = time.sleep
+PROBE_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +137,7 @@ def _check_closing_connections(probe: "Probe") -> ProbeResult:
         close_thread_db_connections()
 
 
-def run_probes(probes: "Iterable[Probe]", *, max_workers: int = 8) -> list[ProbeResult]:
+def run_probes(probes: "Iterable[Probe]", *, max_workers: int = PROBE_WORKERS) -> list[ProbeResult]:
     """Run probes concurrently. Result order matches input order."""
     probes_list = list(probes)
     if not probes_list:
