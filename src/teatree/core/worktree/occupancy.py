@@ -70,7 +70,7 @@ from teatree.core.models.worktree_occupancy import (
     terminal_holder_task_pk,
     terminal_task_pk,
 )
-from teatree.core.worktree.cancel_processes import wait_for_owned_checkout_processes
+from teatree.core.worktree.cancel_processes import finish_owned_checkout_processes
 from teatree.core.worktree.checkout_fence import writes_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.survivor_notice import page_surviving_checkout
@@ -101,7 +101,7 @@ logger = logging.getLogger(__name__)
 def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait: bool = True) -> CheckoutExit:
     """Wait for the run's own processes, then say whether its checkout may be released and what it attests."""
     path = Path(worktree.worktree_path)
-    if wait and wait_for_owned_checkout_processes(path):
+    if wait and finish_owned_checkout_processes(path):
         return _defer_checkout_exit(task, worktree, attest=attest, cause="own_processes")
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(path):

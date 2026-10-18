@@ -217,30 +217,6 @@ class TestSourceSelection:
         assert table.gaps
 
 
-def _table_with_one_mute_pid(tmp_path: Path, status: str, *, name: str, uid_offset: int = 0) -> ProcessTable:
-    host = _proc_with(tmp_path / "host-proc", {"1": tmp_path / "elsewhere"})
-    pid = host / "2"
-    pid.mkdir()
-    (pid / "comm").write_text(f"{name}\n", encoding="utf-8")
-    (pid / "status").write_text(status, encoding="utf-8")
-    hidden = pid / "fd" / "0"
-    hidden.parent.mkdir()
-    hidden.symlink_to(tmp_path / "unknown")
-    readlink = Path.readlink
-
-    def _readlink(path: Path) -> Path:
-        if path == hidden:
-            raise PermissionError
-        return readlink(path)
-
-    with (
-        patch.object(process_table, "_HOST_PROC_ROOT", host),
-        patch.object(Path, "readlink", _readlink),
-        patch.object(process_table.os, "geteuid", return_value=pid.stat().st_uid + uid_offset),
-    ):
-        return read_process_table()
-
-
 class TestPartialVisibility:
     def test_unreadable_status_keeps_the_gap_strict(self, tmp_path: Path) -> None:
         hidden_status = tmp_path / "host-proc" / "21" / "status"
@@ -272,22 +248,22 @@ class TestPartialVisibility:
     @pytest.mark.parametrize(
         ("name", "state", "threads", "expected_refusal"),
         [
-            ("python", "S", "1", "pid 2 (python) is unreadable by this uid"),
+            ("python", "S", "1", "pid 21 (python) is unreadable by this uid"),
             ("ssh-agent", "S", "1", ""),
             ("python", "Z", "1", ""),
-            ("python", "Z", "2", "pid 2 (python) is unreadable by this uid"),
+            ("python", "Z", "2", "pid 21 (python) is unreadable by this uid"),
         ],
     )
     def test_eviction_only_tolerates_known_unreadable_processes(
         self, tmp_path: Path, name: str, state: str, threads: str, expected_refusal: str
     ) -> None:
-        table = _table_with_one_mute_pid(tmp_path, f"State:\t{state}\nThreads:\t{threads}\n", name=name)
+        table = table_with_unreadable_pid(tmp_path, status=f"State:\t{state}\nThreads:\t{threads}\n", name=name)
 
         assert table.refuse_reason() == ""
         assert table.eviction_refuse_reason() == expected_refusal
 
     def test_eviction_tolerates_an_unreadable_process_of_another_user(self, tmp_path: Path) -> None:
-        table = _table_with_one_mute_pid(tmp_path, "State:\tS\nThreads:\t1\n", name="python", uid_offset=1)
+        table = table_with_unreadable_pid(tmp_path, name="python", uid_offset=1)
 
         assert table.eviction_refuse_reason() == ""
 

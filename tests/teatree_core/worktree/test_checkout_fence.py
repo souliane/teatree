@@ -478,7 +478,7 @@ class CheckoutFenceTests(TestCase):
 
         with (
             patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=settled) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=settled) as wait,
             patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
@@ -604,7 +604,7 @@ class CheckoutFenceTests(TestCase):
             return ()
 
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=settled) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=settled) as wait,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):
@@ -617,7 +617,7 @@ class CheckoutFenceTests(TestCase):
         verify_task_checkout(self.task, str(self.checkout))
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", return_value=()) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", return_value=()) as wait,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):

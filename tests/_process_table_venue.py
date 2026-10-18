@@ -85,12 +85,21 @@ def nested_venue(root: Path, *, host_nspid: str = "NSpid:\t41\t7\n") -> Generato
         yield
 
 
-def table_with_unreadable_pid(tmp_path: Path, *, nspid: str) -> ProcessTable:
+def table_with_unreadable_pid(
+    tmp_path: Path,
+    *,
+    nspid: str = "",
+    name: str = "claude",
+    status: str | None = None,
+    uid_offset: int = 0,
+) -> ProcessTable:
     host = usable_process_table(tmp_path / "host-proc", working_in=tmp_path / "elsewhere")
     blind = host / "21"
     blind.mkdir()
-    (blind / "comm").write_text("claude\n", encoding="utf-8")
-    (blind / "status").write_text(f"State:\tS\nThreads:\t1\n{nspid}", encoding="utf-8")
+    (blind / "comm").write_text(f"{name}\n", encoding="utf-8")
+    (blind / "status").write_text(
+        status if status is not None else f"State:\tS\nThreads:\t1\n{nspid}", encoding="utf-8"
+    )
     hidden = blind / "fd" / "0"
     hidden.parent.mkdir()
     hidden.symlink_to(tmp_path / "unknown")
@@ -104,7 +113,7 @@ def table_with_unreadable_pid(tmp_path: Path, *, nspid: str) -> ProcessTable:
     with (
         pinned_process_table(venue=tmp_path / "absent", host=host),
         patch.object(Path, "readlink", gated_readlink),
-        patch.object(process_table.os, "geteuid", return_value=blind.stat().st_uid),
+        patch.object(process_table.os, "geteuid", return_value=blind.stat().st_uid + uid_offset),
         patch.dict(os.environ, {"TEATREE_HOST_OS": "Linux"}),
     ):
         return process_table.read_process_table(exclude_ancestors=True)

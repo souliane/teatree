@@ -46,6 +46,14 @@ class CheckoutCustodyTests(TestCase):
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         assert Custody.from_extra(self.worktree.get_extra()) is None
 
+    def test_reacquired_heartbeat_tenure_does_not_inherit_nested_namespace(self) -> None:
+        acquire(self.worktree, holder="task:1", tenure=TenureOptions(namespace="pid:[42]"))
+        release(self.worktree, holder="task:1")
+        acquire(self.worktree, holder="task:1", tenure=TenureOptions(renewal=True))
+        release(self.worktree, holder="task:1")
+        acquire(self.worktree, holder="task:2")
+        assert not self.custody().prior_tenures_nested
+
     def test_renewal_keeps_one_tenure(self) -> None:
         acquire(self.worktree, holder="task:1")
         acquire(self.worktree, holder="task:1", tenure=TenureOptions(renewal=True))

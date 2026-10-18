@@ -276,7 +276,7 @@ class MidRunCheckoutTests(TestCase):
         assert "attested_state" not in row.get_extra()
 
     def test_own_process_survivor_records_its_deferral_cause(self) -> None:
-        with patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", return_value=[object()]):
+        with patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", return_value=[object()]):
             self.run_to(lambda task: task.complete())
         row = Worktree.objects.get(pk=self.worktree.pk)
         assert row.get_extra()["deferred_exit"]["cause"] == "own_processes"

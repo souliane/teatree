@@ -33,6 +33,10 @@ class CheckoutProcess:
     def stoppable(self) -> bool:
         return self.descendant and self.writer and not self.shared_server
 
+    @property
+    def stoppable_on_exit(self) -> bool:
+        return (self.descendant or self.marker) and not self.shared_server
+
 
 @dataclass(frozen=True, slots=True)
 class StopResult:
@@ -135,6 +139,29 @@ def wait_for_owned_checkout_processes(
     return owned_checkout_processes(checkout)
 
 
+def finish_owned_checkout_processes(
+    checkout: Path, *, beat_seconds: float = OWN_PROCESS_BEAT_SECONDS
+) -> tuple[CheckoutProcess, ...]:
+    survivors = wait_for_owned_checkout_processes(checkout, beat_seconds=beat_seconds)
+    if not survivors:
+        return ()
+    for process in survivors:
+        if process.stoppable_on_exit:
+            _stop_if(process.pid, lambda process=process: process in owned_checkout_processes(checkout))
+    if not any(process.stoppable_on_exit for process in survivors):
+        return survivors
+    time.sleep(beat_seconds)
+    survivors = owned_checkout_processes(checkout)
+    for process in survivors:
+        if process.stoppable_on_exit:
+            _stop_if(
+                process.pid,
+                lambda process=process: process in owned_checkout_processes(checkout),
+                stop_signal=signal.SIGKILL,
+            )
+    return wait_for_owned_checkout_processes(checkout, beat_seconds=beat_seconds)
+
+
 def _syscall(number: int, *args: int | None) -> int:
     if sys.platform != "linux":
         raise OSError(errno.ENOSYS, "pidfd needs Linux")
@@ -145,15 +172,15 @@ def _syscall(number: int, *args: int | None) -> int:
     return result
 
 
-def _stop_if(pid: int, still_stoppable: Callable[[], bool]) -> bool:
-    """SIGTERM *pid* through a pidfd, re-checked after opening, so a reused pid is never hit."""
+def _stop_if(pid: int, still_stoppable: Callable[[], bool], *, stop_signal: signal.Signals = signal.SIGTERM) -> bool:
+    """Signal *pid* through a pidfd after re-checking its identity."""
     try:
         descriptor = _syscall(_PIDFD_OPEN, pid, 0)
     except OSError:
         return False
     try:
         if still_stoppable():
-            _syscall(_PIDFD_SEND_SIGNAL, descriptor, signal.SIGTERM, None, 0)
+            _syscall(_PIDFD_SEND_SIGNAL, descriptor, stop_signal, None, 0)
             return True
     except OSError:
         pass
