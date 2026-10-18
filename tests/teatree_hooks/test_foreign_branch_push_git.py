@@ -17,6 +17,7 @@ import hooks.scripts.foreign_branch_push_git as git_probes
 from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun, _venue_fault
 from hooks.scripts.foreign_branch_push_git import GitProbe, live_remote_range, remote_branch_oid
+from hooks.scripts.foreign_branch_push_text import credential_fault_refusal
 from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS
 
 
@@ -216,6 +217,56 @@ def test_venue_fault_requires_a_github_remote(
     assert with_token is not None
     assert "GitHub rejected the GH_TOKEN" in with_token
     assert "sentinel-task-token" not in with_token
+
+
+def test_routed_ls_remote_credential_refusal_names_venue_fault(
+    git_scene: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, _ = git_scene
+    _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
+    monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
+    monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
+
+    with patch("hooks.scripts.foreign_branch_push_gate.remote_branch_oid", return_value=failed):
+        reason = _branch_refusal(spec, "main", _ForgeRun())
+
+    assert reason is not None
+    assert "Venue fault" in reason
+    assert "GitHub rejected the GH_TOKEN" in reason
+
+
+def test_unrouted_ls_remote_credential_refusal_keeps_general_refusal(
+    git_scene: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, _ = git_scene
+    _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
+    monkeypatch.delenv(CODEX_ROUTER_ENV, raising=False)
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
+
+    with patch("hooks.scripts.foreign_branch_push_gate.remote_branch_oid", return_value=failed):
+        reason = _branch_refusal(spec, "main", _ForgeRun())
+
+    assert reason is not None
+    assert "Ownership could not be established" in reason
+    assert "Venue fault" not in reason
+
+
+def test_venue_fault_strips_gh_login_guidance() -> None:
+    failed = GitProbe(
+        ok=False,
+        out="",
+        code=1,
+        err="HTTP 401: Bad credentials; Try authenticating with:  gh auth login -h github.com",
+        credential_refused=True,
+    )
+
+    reason = credential_fault_refusal("origin", "main", failed, token_held=True, force=False)
+
+    assert "HTTP 401" in reason
+    assert "gh auth login" not in reason
 
 
 def test_active_task_token_is_scrubbed_from_probe_output(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -196,22 +197,22 @@ _GH_REJECTED_CREDENTIAL = (
 
 @pytest.mark.parametrize(
     "scenario",
-    ["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
-    ids=["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
+    ["task-token", "missing-token", "forge-unavailable", "rejected-token"],
+    ids=["task-token", "missing-token", "forge-unavailable", "rejected-token"],
 )
-def test_codex_push_approval_keeps_task_token_out_of_debug_logs(
+def test_codex_push_approval_names_venue_fault_without_leaking_token(
     scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
 ) -> None:
     caplog.set_level(logging.DEBUG)
     sentinel = "sentinel-task-token"
     home = tmp_path / "router-home"
     home.mkdir()
-    routed = scenario != "unrouted-task"
+    routed = scenario != "missing-token"
     forge_failure = {
         "forge-unavailable": "HTTP 502: Bad Gateway",
         "rejected-token": _GH_REJECTED_CREDENTIAL,
     }.get(scenario, "")
-    _git(scene.work, "remote", "set-url", "origin", str(scene.origin))
+    _git(scene.work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
     _seed_config_db(home / "config.sqlite3", _GATE_ON)
     gh = tmp_path / "gh"
     fail_line = f"printf '{forge_failure}\\n' >&2; exit 1\n" if forge_failure else ""
@@ -227,6 +228,19 @@ def test_codex_push_approval_keeps_task_token_out_of_debug_logs(
         "esac\n"
     )
     gh.chmod(0o755)
+    git = tmp_path / "git"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    git.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        "  *' ls-remote '*)\n"
+        "    for ref do :; done\n"
+        f'    exec {shlex.quote(real_git)} ls-remote --heads {shlex.quote(str(scene.origin))} "$ref" ;;\n'
+        "esac\n"
+        f'exec {shlex.quote(real_git)} "$@"\n'
+    )
+    git.chmod(0o755)
     for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
@@ -261,46 +275,74 @@ def test_codex_push_approval_keeps_task_token_out_of_debug_logs(
     else:
         assert decision == "decline"
         assert reason is not None
-        assert "Ownership could not be established" in reason
-        assert "Venue fault" not in reason
+        assert "Venue fault" in reason
+        assert "push_ownership_venue_fault` true" in reason
+        assert "needs_user_input` false" in reason
+        assert "cut our OWN branch" not in reason
+        assert "gh auth login" not in reason
+        if scenario == "missing-token":
+            assert "this process holds no GH_TOKEN" in reason
+        else:
+            assert "GitHub rejected the GH_TOKEN" in reason
     assert sentinel not in (reason or "")
     assert all(sentinel not in record.getMessage() for record in caplog.records)
 
 
 def test_hook_router_imports_from_a_worktree_with_canonical_data_home(tmp_path: Path) -> None:
     source = tmp_path / "source"
-    git = shutil.which("git")
-    assert git is not None
+    source.mkdir()
+    (source / ".git").write_text("gitdir: ../gitdir\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", "import hooks.scripts.hook_router"],
+        cwd=source,
+        env={
+            **os.environ,
+            "XDG_DATA_HOME": str(Path.home() / ".local" / "share"),
+            "PYTHONPATH": os.pathsep.join((str(_REPO_ROOT / "src"), str(_REPO_ROOT))),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_git_probe_runs_from_a_worktree_with_canonical_data_home(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    gitdir = tmp_path / "gitdir"
+    git_executable = shutil.which("git")
+    assert git_executable is not None
     subprocess.run(
-        [git, "-C", str(_REPO_ROOT), "worktree", "add", "--detach", str(source), "HEAD"],
+        [git_executable, "init", "-q", "--separate-git-dir", str(gitdir), str(source)],
         check=True,
         capture_output=True,
         text=True,
     )
-    try:
-        assert (source / ".git").is_file()
-        for relative in ("hooks/scripts/foreign_branch_push_gate.py", "hooks/scripts/foreign_branch_push_git.py"):
-            shutil.copy2(_REPO_ROOT / relative, source / relative)
-        result = subprocess.run(
-            [sys.executable, "-c", "import hooks.scripts.hook_router"],
-            cwd=source,
-            env={
-                **os.environ,
-                "XDG_DATA_HOME": str(Path.home() / ".local" / "share"),
-                "PYTHONPATH": os.pathsep.join((str(source / "src"), str(source))),
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-    finally:
-        subprocess.run(
-            [git, "-C", str(_REPO_ROOT), "worktree", "remove", "--force", str(source)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+    assert (source / ".git").is_file()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from hooks.scripts.foreign_branch_push_git import bounded, git_probe; "
+                "assert git_probe('.', 'rev-parse', '--git-dir').ok; "
+                "assert 'sentinel-task-token' not in bounded('sentinel-task-token')"
+            ),
+        ],
+        cwd=source,
+        env={
+            **os.environ,
+            "XDG_DATA_HOME": str(Path.home() / ".local" / "share"),
+            "GH_TOKEN": "sentinel-task-token",
+            "PYTHONPATH": os.pathsep.join((str(_REPO_ROOT / "src"), str(_REPO_ROOT))),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
 
     assert result.returncode == 0, result.stderr
 

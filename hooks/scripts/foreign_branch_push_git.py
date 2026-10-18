@@ -36,6 +36,7 @@ _REMOTE_AUTH_REFUSED: Final[re.Pattern[str]] = re.compile(
 )
 # A refusal is read in a terminal, so git's output — stderr and stdout alike — is truncated past this, not dropped.
 _MAX_QUOTED_CHARS: Final[int] = 400
+_MIN_ACTIVE_TOKEN_LENGTH: Final[int] = 8
 # `git config --get` exits 1 for a key nobody set, which is an ANSWER and not a failure.
 _CONFIG_KEY_UNSET: Final[int] = 1
 # `push.default` values that write every same-named branch, or none, but never one named.
@@ -126,9 +127,20 @@ def bounded(text: str) -> str:
 
 
 def _without_active_tokens(text: str) -> str:
-    with teatree_src_on_path():
-        from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
-
+    active = tuple(
+        value
+        for key in ("GH_TOKEN", "GITHUB_TOKEN")
+        if len(value := os.environ.get(key, "")) >= _MIN_ACTIVE_TOKEN_LENGTH and value in text
+    )
+    if not active:
+        return text
+    try:
+        with teatree_src_on_path():
+            from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
+    except (ImportError, RuntimeError):
+        for value in active:
+            text = text.replace(value, "<redacted>")
+        return text
     return scrub_active_tokens(text, os.environ)
 
 
@@ -276,15 +288,10 @@ def _fetch_live_authors(
     local = git_probe(work_dir, "rev-parse", "--show-object-format", "--path-format=absolute", "--git-path", "objects")
     object_format, _, objects = local.out.partition("\n")
     shallow = git_probe(work_dir, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
-    if not local.ok or not objects or not shallow.ok:
-        return LiveRange(
-            "",
-            "",
-            "`git rev-parse --git-path objects` (the checkout's object store)"
-            if not local.ok or not objects
-            else "`git rev-parse --git-path shallow` (the checkout's shallow boundary)",
-            local if not local.ok or not objects else shallow,
-        )
+    if not local.ok or not objects:
+        return LiveRange("", "", "`git rev-parse --git-path objects` (the checkout's object store)", local)
+    if not shallow.ok:
+        return LiveRange("", "", "`git rev-parse --git-path shallow` (the checkout's shallow boundary)", shallow)
     try:
         with tempfile.TemporaryDirectory(prefix="t3-git-fetch-") as neutral_dir:
             repo = str(Path(neutral_dir) / "probe.git")
@@ -309,14 +316,19 @@ def _fetch_live_authors(
                 )
                 still_live = remote_branch_oid(work_dir, remote, label)
                 if not fetched.ok or not still_live.ok or still_live.out != oid:
-                    failed = f"`git fetch {remote} {label}` (a stable live remote commit)"
-                    return LiveRange("", "", failed, fetched if not fetched.ok else still_live)
+                    return LiveRange(
+                        "",
+                        "",
+                        f"`git fetch {remote} {label}` (a stable live remote commit)",
+                        fetched if not fetched.ok else still_live,
+                    )
             log = git_probe(repo, "log", "--format=%ae%n%an", f"{base_oid}..{branch_oid}")
             if not log.ok:
                 return LiveRange("", "", f"`git log <live-{base_branch}>..<live-{branch}>`", log)
-            return LiveRange(base_branch, base_oid, "", authors=tuple(line for line in log.out.splitlines() if line))
+            result = LiveRange(base_branch, base_oid, "", authors=tuple(line for line in log.out.splitlines() if line))
     except OSError as exc:
-        return LiveRange("", "", "the neutral fetch repository", GitProbe(ok=False, out="", err=str(exc)))
+        result = LiveRange("", "", "the neutral fetch repository", GitProbe(ok=False, out="", err=str(exc)))
+    return result
 
 
 @dataclass(frozen=True, slots=True)
