@@ -18,7 +18,9 @@ unreachable forge instead of on the commit authorship this file is about.
 
 import asyncio
 import json
+import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -197,10 +199,11 @@ _GH_REJECTED_CREDENTIAL = (
     ["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
     ids=["task-token", "unrouted-task", "forge-unavailable", "rejected-token"],
 )
-def test_codex_push_approval_reaches_the_gate_with_the_task_token(
+def test_codex_push_approval_keeps_task_token_out_of_debug_logs(
     scene: _Scene, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
 ) -> None:
-    sentinel = "gh" + "p_" + "s" * 36
+    caplog.set_level(logging.DEBUG)
+    sentinel = "sentinel-task-token"
     home = tmp_path / "router-home"
     home.mkdir()
     routed = scenario != "unrouted-task"
@@ -258,16 +261,48 @@ def test_codex_push_approval_reaches_the_gate_with_the_task_token(
     else:
         assert decision == "decline"
         assert reason is not None
-        assert "Venue fault" in reason
-        assert "push_ownership_venue_fault` true" in reason
-        assert "Only coding and debugging phases act on that field" in reason
-        assert "cut our OWN branch" not in reason
-        assert "gh auth login" not in reason
-        assert "GH_TOKEN environment variable" not in reason
-        held = "this process holds no GH_TOKEN" if scenario == "unrouted-task" else "GitHub rejected the GH_TOKEN"
-        assert held in reason
+        assert "Ownership could not be established" in reason
+        assert "Venue fault" not in reason
     assert sentinel not in (reason or "")
-    assert sentinel not in caplog.text
+    assert all(sentinel not in record.getMessage() for record in caplog.records)
+
+
+def test_hook_router_imports_from_a_worktree_with_canonical_data_home(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run(
+        [git, "-C", str(_REPO_ROOT), "worktree", "add", "--detach", str(source), "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        assert (source / ".git").is_file()
+        for relative in ("hooks/scripts/foreign_branch_push_gate.py", "hooks/scripts/foreign_branch_push_git.py"):
+            shutil.copy2(_REPO_ROOT / relative, source / relative)
+        result = subprocess.run(
+            [sys.executable, "-c", "import hooks.scripts.hook_router"],
+            cwd=source,
+            env={
+                **os.environ,
+                "XDG_DATA_HOME": str(Path.home() / ".local" / "share"),
+                "PYTHONPATH": os.pathsep.join((str(source / "src"), str(source))),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    finally:
+        subprocess.run(
+            [git, "-C", str(_REPO_ROOT), "worktree", "remove", "--force", str(source)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode == 0, result.stderr
 
 
 _INCIDENT = "cd {work}\ngit push --force origin theirs"

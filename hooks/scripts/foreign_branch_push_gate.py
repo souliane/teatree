@@ -69,10 +69,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit
 
 from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_git import (
     GitProbe,
+    _remote_url,
     config_value,
     git_probe,
     live_remote_range,
@@ -95,9 +97,6 @@ from hooks.scripts.foreign_branch_push_text import (
 )
 from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
-
-with teatree_src_on_path():
-    from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS
 
 if TYPE_CHECKING:
     from teatree.hooks.foreign_mr_cli import OpenMr
@@ -242,7 +241,22 @@ def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_Forg
 
 def _venue_fault(spec: PushSpec, branch: str, failed: GitProbe | None) -> str | None:
     """The venue-fault refusal when a dispatched Codex router's GitHub credential was refused, else ``None``."""
-    if failed is None or not failed.credential_refused or not os.environ.get(CODEX_ROUTER_ENV):
+    if failed is None or not failed.credential_refused:
+        return None
+    remote = _remote_url(spec.work_dir, spec.remote)
+    if not remote.ok:
+        return None
+    url = remote.out
+    host = urlsplit(url).hostname if "://" in url else url.partition(":")[0].rsplit("@", 1)[-1]
+    if (host or "").lower() != "github.com":
+        return None
+    with teatree_src_on_path():
+        from teatree.forge_credentials import (  # noqa: PLC0415 -- cold-hook import
+            CODEX_ROUTER_ENV,
+            FORGE_TOKEN_ENV_KEYS,
+        )
+
+    if not os.environ.get(CODEX_ROUTER_ENV):
         return None
     token_held = any(os.environ.get(key) for key in FORGE_TOKEN_ENV_KEYS)
     return credential_fault_refusal(spec.remote, branch, failed, token_held=token_held, force=spec.force)

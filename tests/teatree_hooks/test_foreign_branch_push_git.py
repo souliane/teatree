@@ -15,8 +15,8 @@ import pytest
 
 import hooks.scripts.foreign_branch_push_git as git_probes
 from hooks.scripts.foreign_branch_push_argv import PushSpec
-from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun
-from hooks.scripts.foreign_branch_push_git import live_remote_range, remote_branch_oid
+from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun, _venue_fault
+from hooks.scripts.foreign_branch_push_git import GitProbe, live_remote_range, remote_branch_oid
 from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS
 
 
@@ -139,7 +139,7 @@ def test_url_scoped_system_helper_is_consulted_without_checkout_helper(
     ["", "username=sentinel\\npassword=sentinel\\n"],
     ids=["no-credential", "rejected-credential"],
 )
-def test_a_remote_refusing_the_credential_is_a_venue_fault_only_under_the_codex_router(
+def test_non_github_credential_refusal_keeps_general_gate_refusal(
     git_scene: tuple[Path, Path, str],
     challenge_url: str,
     tmp_path: Path,
@@ -169,9 +169,8 @@ def test_a_remote_refusing_the_credential_is_a_venue_fault_only_under_the_codex_
     assert "Ownership could not be established" in plain
     assert "Venue fault" not in plain
     assert routed is not None
-    assert "Venue fault" in routed
-    assert "this process holds no GH_TOKEN" in routed
-    assert "cut our OWN branch" not in routed
+    assert "Ownership could not be established" in routed
+    assert "Venue fault" not in routed
 
 
 def test_an_unreachable_remote_is_not_a_credential_refusal(git_scene: tuple[Path, Path, str], tmp_path: Path) -> None:
@@ -182,6 +181,72 @@ def test_an_unreachable_remote_is_not_a_credential_refusal(git_scene: tuple[Path
 
     assert not probe.ok
     assert not probe.credential_refused
+
+
+def test_slash_named_remote_resolves_its_configured_url(git_scene: tuple[Path, Path, str]) -> None:
+    work, remote, oid = git_scene
+    _git(work, "remote", "add", "up/stream", str(remote))
+
+    probe = remote_branch_oid(str(work), "up/stream", "main")
+
+    assert probe.ok
+    assert probe.out == oid
+
+
+def test_venue_fault_requires_a_github_remote(
+    git_scene: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _, _ = git_scene
+    failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
+    for key in FORGE_TOKEN_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    _git(work, "remote", "set-url", "origin", "https://gitlab.com/example/repo.git")
+
+    assert _venue_fault(spec, "main", failed) is None
+
+    _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
+    without_token = _venue_fault(spec, "main", failed)
+    assert without_token is not None
+    assert "this process holds no GH_TOKEN" in without_token
+
+    monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
+    with_token = _venue_fault(spec, "main", failed)
+    assert with_token is not None
+    assert "GitHub rejected the GH_TOKEN" in with_token
+    assert "sentinel-task-token" not in with_token
+
+
+def test_active_task_token_is_scrubbed_from_probe_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
+
+    result = git_probes.bounded("probe says sentinel-task-token was rejected")
+
+    assert "sentinel-task-token" not in result
+    assert "<redacted>" in result
+
+
+def test_shallow_checkout_reads_live_branch_author(tmp_path: Path, git_scene: tuple[Path, Path, str]) -> None:
+    work, remote, _ = git_scene
+    _git(work, "checkout", "-qb", "feature")
+    (work / "feature").write_text("feature", encoding="utf-8")
+    _git(work, "add", "feature")
+    _git(work, "-c", "user.name=Feature", "-c", "user.email=feature@example.test", "commit", "-qm", "feature")
+    (work / "feature").write_text("feature again", encoding="utf-8")
+    _git(work, "add", "feature")
+    _git(work, "-c", "user.name=Feature", "-c", "user.email=feature@example.test", "commit", "-qm", "feature again")
+    _git(work, "push", "-q", "origin", "feature")
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth=1", "--no-single-branch", remote.as_uri(), str(shallow))
+    _git(shallow, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    branch_oid = remote_branch_oid(str(shallow), "origin", "feature")
+    assert branch_oid.ok
+
+    live = live_remote_range(str(shallow), "origin", "feature", branch_oid.out)
+
+    assert not live.failed
+    assert "feature@example.test" in live.authors
 
 
 def test_probe_argv_uses_remote_url_and_neutral_directory(tmp_path: Path) -> None:

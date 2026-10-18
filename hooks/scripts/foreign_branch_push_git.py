@@ -14,6 +14,7 @@ Every mutation of untrusted text here operates on ALREADY-REDACTED text: both
 import os
 import re
 import shlex
+import shutil
 import subprocess  # noqa: S404 -- hook code legitimately shells out to Git.
 import tempfile
 from dataclasses import dataclass, replace
@@ -215,13 +216,14 @@ def remote_branch_oid(work_dir: str, remote: str, branch: str) -> GitProbe:
 
 def _remote_url(work_dir: str, remote: str) -> GitProbe:
     """The location git contacts for *remote* — a name's first URL, a relative path anchored at the repo root."""
+    if not remote or remote.startswith("-"):
+        return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")
     url = remote
-    if ":" not in remote and "/" not in remote:
-        configured = git_probe(work_dir, "remote", "get-url", remote)
-        if configured.ok:
-            url = configured.out
-        elif configured.code != _REMOTE_NOT_CONFIGURED:
-            return configured
+    configured = git_probe(work_dir, "remote", "get-url", remote)
+    if configured.ok:
+        url = configured.out
+    elif configured.code != _REMOTE_NOT_CONFIGURED:
+        return configured
     if not url or url.startswith("-"):
         return GitProbe(ok=False, out="", err="the remote URL is empty or starts with a dash, so it was not probed")
     if not Path(url).is_absolute() and ":" not in url:
@@ -273,8 +275,16 @@ def _fetch_live_authors(
     branch, branch_oid = branch_ref
     local = git_probe(work_dir, "rev-parse", "--show-object-format", "--path-format=absolute", "--git-path", "objects")
     object_format, _, objects = local.out.partition("\n")
-    if not local.ok or not objects:
-        return LiveRange("", "", "`git rev-parse --git-path objects` (the checkout's object store)", local)
+    shallow = git_probe(work_dir, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+    if not local.ok or not objects or not shallow.ok:
+        return LiveRange(
+            "",
+            "",
+            "`git rev-parse --git-path objects` (the checkout's object store)"
+            if not local.ok or not objects
+            else "`git rev-parse --git-path shallow` (the checkout's shallow boundary)",
+            local if not local.ok or not objects else shallow,
+        )
     try:
         with tempfile.TemporaryDirectory(prefix="t3-git-fetch-") as neutral_dir:
             repo = str(Path(neutral_dir) / "probe.git")
@@ -283,6 +293,8 @@ def _fetch_live_authors(
                 return LiveRange("", "", "`git init --bare` (the neutral fetch repository)", initialized)
             # Borrowing the checkout's objects keeps the fetch incremental, as it was inside the checkout.
             (Path(repo) / "objects" / "info" / "alternates").write_text(f"{objects}\n", encoding="utf-8")
+            if Path(shallow.out).is_file():
+                shutil.copyfile(shallow.out, Path(repo) / "shallow")
             for oid, label in ((base_oid, base_branch), (branch_oid, branch)):
                 fetched = git_probe(
                     repo,
