@@ -1162,6 +1162,9 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   t3 dashboard --port 9111  # the published mapping follows the flag
   ```
 
+  A running forwarder is reused only while its `teatree.admin-container` label names
+  the current admin container; one left by a recreated admin is removed and restarted.
+
   Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
   dashboard local; the forwarder's own listener binds every interface because a
   published mapping delivers to a container's interface and never to its loopback.
