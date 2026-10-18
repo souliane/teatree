@@ -114,9 +114,9 @@ def _options(attestation: CheckoutAttestation, *, blocks_pull_request: bool) -> 
         "edits the factory did not make, even unfinished ones, become part of its work."
     )
     decline = (
-        "The step stays stuck until the folder changes, and its pull request keeps waiting."
+        "The step stays stuck until the folder changes; the pull request may wait while open."
         if blocks_pull_request
-        else "The step stays stuck until the folder changes; no pull request waits on it."
+        else "The step stays stuck until the folder changes; no pull request was open when asked."
     )
     return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
@@ -126,8 +126,12 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
     title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
     subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else title
     step, work = _STEPS.get(normalize_phase(task.phase), _NEXT_STEP)
-    pull_request = PullRequest.objects.live().filter(ticket=ticket).order_by("pk").values_list("url", flat=True).first()
-    waits = f"<{pull_request}|its pull request> waits on it" if pull_request else "it blocks no pull request"
+    pull_request = PullRequest.objects.first_live_url(ticket=ticket, repo=attestation.worktree.repo_path)
+    waits = (
+        f"it may hold up <{pull_request}|this pull request> while open"
+        if pull_request
+        else "no pull request was open when asked"
+    )
     state = attestation.state
     process_fact = (
         "Nothing is running in the checkout."
@@ -136,16 +140,14 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
     )
     holdings = f"{counted(state.commits_ahead, 'commit')} and {counted(state.uncommitted, 'uncommitted file')}"
     doubt = (
-        f"nothing is running in its folder, but the folder changed since its last run and holds {holdings}"
+        f"nothing is running in its folder; it changed and holds {holdings}"
         if attestation.host_evidence
-        else f"its folder holds {holdings} and the factory cannot prove no program is still editing it"
+        else f"its folder holds {holdings}; the factory cannot rule out another editor"
     )
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
         checked=(
-            "The checkout differs from its last recorded state."
-            if attestation.host_evidence
-            else "The host process list could not rule out live processes.",
+            *(("The checkout differs from its last recorded state.",) if attestation.host_evidence else ()),
             process_fact,
             f"It holds {counted(state.commits_ahead, 'commit')} not on the target branch.",
             f"It has {counted(state.uncommitted, 'uncommitted file')}.",
@@ -159,7 +161,6 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
 
 
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
-    question, card = attest_card(task, attestation)
     try:
         marker = action_marker(attestation.action)
         latest = (
@@ -169,7 +170,15 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
         )
         if latest is not None and latest.parked_task_id == task.pk and owner_declined(latest):
             return None
+        question, card = attest_card(task, attestation)
         with transaction.atomic():
+            held = DeferredQuestion.owner_pending().select_for_update().filter(dedupe_marker=marker).first()
+            if held is not None and (
+                held.question != question
+                or held.evidence != card.to_evidence()
+                or held.options_json != card.options_json()
+            ):
+                held.mark_stale("The waiting step or pull request changed", resolver_id="checkout_attest")
             obsolete = (
                 DeferredQuestion.owner_pending()
                 .filter(

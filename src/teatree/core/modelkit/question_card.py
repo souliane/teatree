@@ -96,10 +96,11 @@ def safe_card_title(title: str, fallback: str) -> str:
 def safe_ticket_card_title(short_description: object, extra: object, fallback: str) -> str:
     legacy = extra.get("issue_title", "") if isinstance(extra, dict) else ""
     short = short_description.strip() if isinstance(short_description, str) else ""
-    # A description at the column limit or ending in an ellipsis was cut mid-word; the whole title trims cleanly.
-    cut = len(short) >= MAX_CARD_TITLE_CHARS or short.endswith(("\u2026", "..."))
-    title = legacy if (cut or not short) and isinstance(legacy, str) and legacy.strip() else short
-    return safe_card_title(title, fallback)
+    full = legacy.strip() if isinstance(legacy, str) else ""
+    cut = short.endswith(("\u2026", "...")) or (full.startswith(short) and len(full) > len(short))
+    if full and (cut or not short) and (safe_full := safe_card_title(full, "")):
+        return safe_full
+    return safe_card_title(short, fallback)
 
 
 def counted(count: int, noun: str) -> str:

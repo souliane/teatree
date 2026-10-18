@@ -15,8 +15,29 @@ from teatree.core.modelkit.question_card import (
     counted,
     internal_shorthand,
     plain_text,
+    safe_ticket_card_title,
     word_count,
 )
+
+
+def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:
+    short = "Readable short title..."
+
+    assert safe_ticket_card_title(short, {"issue_title": "unsafe_dash_live"}, "this ticket") == short
+
+
+def test_complete_eighty_character_short_title_wins_over_unrelated_full_title() -> None:
+    short = "Readable " * 8 + "Precise!"
+    assert len(short) == 80
+    assert safe_ticket_card_title(short, {"issue_title": "Another valid title"}, "this ticket") == short
+
+
+def test_seeded_eighty_character_prefix_uses_the_full_title() -> None:
+    full = "The issue title is longer than the eighty character seed and should remain readable in cards"
+    short = full[:80]
+
+    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") != short
+
 
 SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"
 SAMPLE_WHY = "This tells me whether it is set up for channels or only for our direct messages."

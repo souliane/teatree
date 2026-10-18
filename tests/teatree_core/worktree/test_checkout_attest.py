@@ -12,10 +12,13 @@ from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, PullRequest, Task
 from teatree.core.owner_question_message import render_text
 from teatree.core.worktree.checkout_attest import (
+    _STEPS,
     AttestRefusedError,
     CheckoutAttestation,
     ask_owner_to_attest,
@@ -55,7 +58,7 @@ class TestCheckoutAttestCard(TestCase):
 
         assert f"Should the coding step of <{ISSUE_URL}|Fix the login page>" in text
         assert "It will write the change;" in text
-        assert f"<{pull_request.url}|its pull request> waits on it" in text
+        assert f"it may hold up <{pull_request.url}|this pull request> while open" in text
 
     def test_card_without_an_open_pull_request_says_it_blocks_none(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -64,7 +67,7 @@ class TestCheckoutAttestCard(TestCase):
 
         _row, text = _ask(TaskFactory(ticket=ticket))
 
-        assert "it blocks no pull request" in text
+        assert "no pull request was open when asked" in text
         assert "/pull/" not in text
 
     def test_card_never_uses_internal_words(self) -> None:
@@ -80,9 +83,9 @@ class TestCheckoutAttestCard(TestCase):
                 assert not [word for word in ("checkout", "host process list", "live process") if word in folded]
                 assert "3 commits and 2 uncommitted files" in text
                 doubt = (
-                    "nothing is running in its folder, but the folder changed since its last run"
+                    "nothing is running in its folder; it changed"
                     if host_evidence
-                    else "the factory cannot prove no program is still editing it"
+                    else "the factory cannot rule out another editor"
                 )
                 assert doubt in text
                 assert row.evidence["action"]["binding"] == "d" * 64
@@ -94,8 +97,8 @@ class TestCheckoutAttestCard(TestCase):
             True: "The step resumes on the folder as it is; changes the factory did not make become part of its work.",
         }
         declines = {
-            True: "The step stays stuck until the folder changes, and its pull request keeps waiting.",
-            False: "The step stays stuck until the folder changes; no pull request waits on it.",
+            True: "The step stays stuck until the folder changes; the pull request may wait while open.",
+            False: "The step stays stuck until the folder changes; no pull request was open when asked.",
         }
         for host_evidence, with_pull_request in product((False, True), repeat=2):
             with self.subTest(host_evidence=host_evidence, with_pull_request=with_pull_request):
@@ -145,11 +148,94 @@ class TestCheckoutAttestCard(TestCase):
                 _row, text = _ask(task, host_evidence=host_evidence, commits=99999, uncommitted=99999)
 
                 assert f"Should the {step} of <{issue_url}|{title}>" in text
-                worktree = WorktreeFactory(ticket=ticket)
-                state = CheckoutState("e" * 64, commits_ahead=99999, uncommitted=99999)
-                question, card = attest_card(task, CheckoutAttestation(worktree, state, host_evidence=host_evidence))
-                assert card.problems(question) == []
                 assert len(_shown_lines(text)) <= 5
+
+    def test_every_write_capable_phase_has_step_wording(self) -> None:
+        write_capable = {phase for phase in KNOWN_PHASES if {"write_file", "edit_file"} & tools_for_phase(phase)}
+        assert write_capable <= set(_STEPS)
+
+    def test_a_six_digit_holdings_card_is_recorded(self) -> None:
+        ticket = TicketFactory(short_description="Review the design")
+        PullRequestFactory(ticket=ticket)
+
+        row, _text = _ask(
+            TaskFactory(ticket=ticket, phase="architectural_review"),
+            host_evidence=True,
+            commits=999999,
+            uncommitted=999999,
+        )
+
+        assert row.is_pending
+
+    def test_pull_request_lookup_failure_returns_no_card(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+
+        with patch("teatree.core.models.pull_request.PullRequestQuerySet.live", side_effect=OperationalError):
+            row = ask_owner_to_attest(task, attestation)
+
+        assert row is None
+        assert not DeferredQuestion.objects.filter(parked_task=task).exists()
+
+    def test_a_new_step_replaces_the_held_card_for_the_same_state(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        first = ask_owner_to_attest(TaskFactory(ticket=ticket, phase="coding"), attestation)
+        assert first is not None
+
+        second = ask_owner_to_attest(TaskFactory(ticket=ticket, phase="debugging"), attestation)
+
+        assert second is not None
+        assert second.pk != first.pk
+        first.refresh_from_db()
+        assert not first.is_pending
+        assert "debugging step" in second.question
+        assert "coding step" not in second.question
+
+    def test_a_changed_pull_request_state_replaces_the_held_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        pull_request = PullRequestFactory(ticket=ticket)
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        first = ask_owner_to_attest(task, attestation)
+        assert first is not None
+
+        pull_request.state = PullRequest.State.MERGED
+        pull_request.save(update_fields=["state"])
+        second = ask_owner_to_attest(task, attestation)
+
+        assert second is not None
+        assert second.pk != first.pk
+        first.refresh_from_db()
+        assert not first.is_pending
+        assert "no pull request was open when asked" in render_text(second)
+
+    def test_the_card_links_only_a_pull_request_in_its_checkout_repo(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        other = PullRequestFactory(ticket=ticket, repo="other/repo", url="https://github.com/other/repo/pull/999")
+        own = PullRequestFactory(ticket=ticket, repo="souliane/teatree")
+
+        _row, text = _ask(TaskFactory(ticket=ticket))
+
+        assert own.url in text
+        assert other.url not in text
+
+    def test_a_pull_request_in_another_repo_does_not_block_this_checkout(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        other = PullRequestFactory(ticket=ticket, repo="other/repo", url="https://github.com/other/repo/pull/999")
+
+        _row, text = _ask(TaskFactory(ticket=ticket))
+
+        assert "no pull request was open when asked" in text
+        assert other.url not in text
+
+    def test_checked_facts_do_not_repeat_the_missing_process_evidence(self) -> None:
+        row, _text = _ask(TaskFactory(), host_evidence=False)
+
+        assert len(row.evidence["checked"]) == len(set(row.evidence["checked"]))
 
     def test_private_ticket_data_never_reaches_the_card(self) -> None:
         marker = "zqxprivate"

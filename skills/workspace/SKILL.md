@@ -109,9 +109,11 @@ A writing run whose exit was deferred by a checkout process records that exit st
 the next writer attests it only after the process is gone and the state is unchanged.
 
 An attestable refusal also asks the owner in Slack. The card links the ticket,
-names the waiting step and what it will do, links the open pull request it holds
-up or says it blocks none, gives the commit and uncommitted-file counts and whether
-nothing was found running, and says what Accept and Decline each do.
+names the waiting step and what it will do, links any open pull request in the
+checkout's repo that it may hold up while open or says none was open when asked,
+gives the commit and uncommitted-file counts and whether nothing was found running,
+and says what Accept and Decline each do. A re-ask replaces a pending card when
+its step or pull-request wording changes.
 Accepting rechecks the checkout and releases the parked task; declining leaves it
 parked. The terminal command remains available for an owner with host access.
 Only the owner's Slack button tap can approve or decline the action card.
