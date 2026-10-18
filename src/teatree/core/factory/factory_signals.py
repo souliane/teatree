@@ -30,7 +30,6 @@ from typing import TypedDict
 
 from django.utils import timezone
 
-from teatree.core.factory.factory_signal_merge_latency import compute_s4
 from teatree.core.factory.factory_signal_queries import (
     MIN_SAMPLE,
     Computation,
@@ -43,6 +42,7 @@ from teatree.core.factory.factory_signal_queries import (
     compute_s1,
     compute_s2,
     compute_s3,
+    compute_s4,
     compute_s5,
     compute_s6,
     current_window,

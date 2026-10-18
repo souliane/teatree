@@ -543,7 +543,7 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
     _ReadTool(
         "factory_signals",
         _factory_signals,
-        "- factory_signals(overlay, window_days): the five factory quality/velocity "
+        "- factory_signals(overlay, window_days): the factory quality/velocity "
         "signals with fail-loud statuses and the verdict.",
     ),
 )

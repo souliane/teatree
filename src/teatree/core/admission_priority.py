@@ -19,10 +19,10 @@ ADMISSION_ORDER: tuple[str | OrderBy, ...] = (
     "pk",
 )
 
-#: Stage part: a review-lane row outranks every other row, continuing work outranks a new ticket.
+#: Stage part: review lane, then a ticket with a started pull request, then continuing work, then a new ticket.
 _REVIEW_STAGE = 400
-_CONTINUING_STAGE = 100
 _STARTED_PR_STAGE = 150
+_CONTINUING_STAGE = 100
 _NEW_TICKET_STAGE = 0
 #: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
 _EXPEDITED_PRIORITY = 200

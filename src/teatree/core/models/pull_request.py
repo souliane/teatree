@@ -36,9 +36,15 @@ def pull_request_start_expression(*, ticket_ref: str = "ticket_id") -> models.Ex
         .order_by("created_at", "pk")
         .values("created_at")[:1]
     )
+    first_creation = (
+        PullRequest.objects.filter(ticket_id=models.OuterRef(ticket_ref), create_verified_at__isnull=False)
+        .order_by("create_verified_at", "pk")
+        .values("create_verified_at")[:1]
+    )
     return Coalesce(
         models.Subquery(first_admission),
         models.Subquery(first_transition),
+        models.Subquery(first_creation),
         output_field=models.DateTimeField(),
     )
 

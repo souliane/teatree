@@ -222,7 +222,7 @@ so the repetition is automated rather than remembered.
 |---|---|---|---|
 | `standing-golden-rule` | 300s | every attended session | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
 | `standing-todo-consolidate` | 1800s | every attended session | Every user request is captured as a task, and every OPEN task is drained — closed when durable state already satisfies it; reconcile from durable state first, rescan the transcript only if unaccounted for; then implement the outstanding requests, oldest first. |
-| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact; open PRs are listed with age and pending task, started PRs first, oldest first, and a stalled one gets its cause fixed at once. |
 
 Every slot arrives as context on a turn that is already happening: all three when the
 session starts, resumes, clears or compacts, and each again on the first tool call after

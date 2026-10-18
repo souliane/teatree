@@ -146,6 +146,14 @@ class TestTheThreeSlots:
         assert "never merge over a hold" in text
         assert "maker ≠ checker" in text
 
+    def test_pr_board_directive_lists_open_prs_and_fixes_a_stall_at_once(self) -> None:
+        text = _text("standing-pr-board")
+        assert "its age and pending task" in text
+        assert "started PRs first, oldest first" in text
+        assert "stalled" in text
+        assert "fix it now" in text
+        assert "open for days" in text
+
     def test_every_default_text_is_within_the_context_cost_cap(self) -> None:
         for directive in STANDING_DIRECTIVES:
             assert len(directive.default_text) <= MAX_DIRECTIVE_CHARS, directive.slot_id

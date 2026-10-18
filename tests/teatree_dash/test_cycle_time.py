@@ -7,18 +7,22 @@ buckets, and packing each series' own points left-to-right would draw them again
 different time scales while the page shows one set of labels).
 """
 
+import re
 from datetime import timedelta
 
 import pytest
+from django.db.models.signals import post_save
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.signals import _auto_enqueue_task
 from teatree.dash.charts import BAR_WIDTH, TREND_PADDING, TREND_WIDTH, BarInput, line_series, stacked_bar
 from teatree.dash.cycle_time import (
     DEFAULT_WINDOW_DAYS,
@@ -67,6 +71,17 @@ def ticket_taking(
         cost_is_estimated=True,
     )
     return ticket
+
+
+def started_pull_request(*, hours_ago: float, state: str = PullRequest.State.OPEN) -> PullRequest:
+    ticket = Ticket.objects.create()
+    task = Task.objects.create(
+        ticket=ticket,
+        session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+        phase="coding",
+    )
+    Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(hours=hours_ago))
+    return PullRequestFactory.create(ticket=ticket, state=state)
 
 
 class StackedBarGeometryTestCase(TestCase):
@@ -228,6 +243,10 @@ class CycleTimePageTestCase(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = ticket_taking(minutes=85, phase_cost=1.5)
 
+    def setUp(self) -> None:
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
     def test_the_page_is_in_the_nav(self) -> None:
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
 
@@ -238,6 +257,24 @@ class CycleTimePageTestCase(TestCase):
 
         assert "Pull requests: start to merged" in body
         assert pr.url in body
+
+    def test_the_flow_band_shows_the_merged_median_and_open_ages_oldest_first(self) -> None:
+        for hours in (4, 6, 8):
+            merged = started_pull_request(hours_ago=hours, state=PullRequest.State.MERGED)
+            TicketTransition.objects.create(
+                ticket=merged.ticket, from_state=State.REVIEW_REQUESTED, to_state=State.MERGED
+            )
+        young = started_pull_request(hours_ago=5)
+        old = started_pull_request(hours_ago=80)
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Median of 3 merged pull requests: <strong>6h</strong>" in body
+        assert body.index(old.url) < body.index(young.url)
+        assert re.search(rf'<tr data-group="failed">\s*<td><a href="{re.escape(old.url)}">', body)
+        assert re.search(rf'<tr>\s*<td><a href="{re.escape(young.url)}">', body)
+        assert re.search(rf'{re.escape(old.url)}</a></td>\s*<td class="num">80h</td>', body)
+        assert re.search(rf'{re.escape(young.url)}</a></td>\s*<td class="num">5h</td>', body)
 
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)

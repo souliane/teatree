@@ -1,6 +1,6 @@
 """The recipe-weighted factory score (SIG-PR-2).
 
-Folds the five SIG-PR-1 signal readings into one aggregate the T4 outer loop can
+Folds the SIG-PR-1 signal readings into one aggregate the T4 outer loop can
 optimise against — but only ever an *honest* one. The honesty invariants are
 structural, not advisory. Any signal at ``instrumentation_gap`` (a silent
 recorder) or any RED report row (e.g. S4's stale-CLEAR trip) folds the whole

@@ -135,6 +135,9 @@ _TODO_CONSOLIDATE_TEXT = (
 
 _PR_BOARD_TEXT = (
     "Drive the PR board — merge properly, but promptly: every open PR must advance every pass. "
+    "List every open PR with its age and pending task, started PRs first, oldest first. A PR stuck on "
+    "the same step as the prior pass is stalled: find the cause (a refused or unretried task, a fence "
+    "hold) and fix it now, never only re-queue it — no PR stays open for days. "
     "Clean and no verdict → dispatch an independent cold review at the live head. "
     "Fresh merge_safe at the LIVE head with green CI → merge now via the keystone "
     "(`review record` → `ticket clear` → `ticket merge <clear_id>`; the standing substrate "

@@ -7,13 +7,14 @@ import enum
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from statistics import mean
+from statistics import mean, median
 from typing import NotRequired, TypedDict
 
 from django.db.models import Min
 
 from teatree.core.cycle_time.distribution import percentile
 from teatree.core.cycle_time.pull_request_flow import merged_pull_request_seconds, open_pull_requests
+from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable_clear_age_hours
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
@@ -395,6 +396,43 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     caught = sum(1 for slug, pr_id in matchable if _review_caught(slug, pr_id))
     evidence["caught"] = caught
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
+
+
+def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
+    """S4 merge_latency: median CLEAR→merge hours + stale-actionable-CLEAR age.
+
+    The exact FK join ``MergeClear.issued_at`` → ``MergeAudit.merged_at``. The
+    staleness companion is independent of the merge sample: an actionable CLEAR
+    older than :data:`~teatree.core.factory.merge_backlog.STALE_CLEAR_HOURS` trips
+    RED even in a zero-merge window.
+    """
+    audits = _merge_audits_in(window, overlay)
+    latencies = [
+        (audit.merged_at - audit.clear.issued_at).total_seconds() / 3600.0
+        for audit in audits
+        if audit.merged_at >= audit.clear.issued_at
+    ]
+    denom = len(latencies)
+    stale_hours = max_actionable_clear_age_hours(overlay, now)
+    hard_red = stale_hours is not None and stale_hours > STALE_CLEAR_HOURS
+    evidence: S4Evidence = {
+        "merges": denom,
+        "stale_clear_hours": round(stale_hours, 2) if stale_hours is not None else 0.0,
+    }
+    reason = "actionable CLEAR older than 48h" if hard_red else ""
+    if denom < MIN_SAMPLE:
+        return Computation(
+            SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA),
+            evidence,
+            hard_red=hard_red,
+            hard_red_reason=reason,
+        )
+    return Computation(
+        SignalReading(round(median(latencies), 3), denom, window.days, SignalStatus.OK),
+        evidence,
+        hard_red=hard_red,
+        hard_red_reason=reason,
+    )
 
 
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
