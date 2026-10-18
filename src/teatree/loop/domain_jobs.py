@@ -73,7 +73,7 @@ from teatree.loop.scanners import (
     WaitingDigestScanner,
     WorkStateScanner,
 )
-from teatree.loop.scanners.base import ScannerError
+from teatree.loop.scanners.base import Scanner, ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
@@ -322,6 +322,34 @@ def _review_request_sender_runs(backend: OverlayBackends) -> bool:
     return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
 
 
+class _RefusedOverlayFollowupScanners:
+    name = "overlay_followup_scanners"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def scan(self) -> list[ScanSignal]:
+        raise ValueError(self.reason)
+
+
+def _overlay_followup_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+    if backend.overlay is None:
+        return []
+    try:
+        scanners = list(backend.overlay.review.get_followup_scanners(backend))
+    except Exception as exc:
+        logger.exception("Overlay %s follow-up scanner hook raised", tag)
+        reason = f"{type(exc).__name__}: {exc}"
+        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
+
+    jobs = [_ScannerJob(scanner=scanner, overlay=tag) for scanner in scanners if isinstance(scanner, Scanner)]
+    bad_types = sorted({type(scanner).__name__ for scanner in scanners if not isinstance(scanner, Scanner)})
+    if bad_types:
+        reason = f"Non-Scanner items: {', '.join(bad_types)}"
+        jobs.append(_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag))
+    return jobs
+
+
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The colleague-facing review posts (overlay-scoped). Intake is the unified ``issue_intake`` job.
 
@@ -371,6 +399,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         if triage is not None:
             metadata = backend.overlay.metadata if backend.overlay is not None else OverlayMetadata()
             jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage, metadata=metadata), overlay=tag))
+        jobs.extend(_overlay_followup_jobs(backend, tag))
     return jobs
 
 

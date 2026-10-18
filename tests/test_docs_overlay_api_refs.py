@@ -82,3 +82,16 @@ def test_mandatory_e2e_review_hooks_are_documented_in_overlay_api() -> None:
     docs = (REPO_ROOT / "docs/overlay-api.md").read_text(encoding="utf-8")
     review_section = docs.split("### Review hooks", 1)[1].split("### Connector hooks", 1)[0]
     assert all(hook in review_section for hook in hooks)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "BLUEPRINT.md",
+        "docs/overlay-api.md",
+        "docs/blueprint/loop-topology.md",
+        "skills/internals/SKILL.md",
+    ],
+)
+def test_followup_scanner_hook_is_documented_at_each_contract_surface(path: str) -> None:
+    assert "get_followup_scanners" in (REPO_ROOT / path).read_text(encoding="utf-8")

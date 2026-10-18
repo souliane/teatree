@@ -187,6 +187,7 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 | Method | Default | Purpose |
 |--------|---------|---------|
 | `merge_candidate_repo_slugs()` | `[]` | Static working-repo slugs the cross-repo merge probe binds against. |
+| `get_followup_scanners(backend)` | `[]` | Extra scanners selected for the follow-up loop only while colleague egress is allowed. Their signals carry the overlay name. Called at selection on every tick, outside the scan deadline. Construct scanners only and do forge I/O in `scan()`. Import `Scanner` and `ScanSignal` from `teatree.loop.scanners.base`. A raise or a non-Scanner item is reported as `overlay_followup_scanners[<overlay>]`. Scanner names must be unique among follow-up scanners. |
 | `can_auto_merge(*, target_ref, thread_ref)` | `MergeGuard(allowed=True)` | Verdict on whether an approved merge request may auto-merge. Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=…)` to block, adding `escalate=True` to raise an escalation instead of a silent block. |
 | `visual_qa_targets(changed_files)` | `[]` | Files whose change warrants a visual-QA pass. |
 | `classify_customer_display_impact(changed_files)` | `True` (fail-closed) | Whether a diff could impact what the customer sees; the mandatory-E2E gate reads it, so the default treats every diff as display-impacting. |
