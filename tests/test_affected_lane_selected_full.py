@@ -3,15 +3,15 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from teatree.quality.affected_tests import Selection
-
 _BASH = shutil.which("bash") or "/bin/bash"
 _LANE = Path(__file__).resolve().parents[1] / "dev" / "test-affected.sh"
 _SCOPED = "--tach --tach-base origin/main -p teatree.quality.force_keep_plugin"
+_MODEL_FULL = "__model_full__"
 
 
 def _lane_result(
@@ -19,8 +19,15 @@ def _lane_result(
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    selector_output = f'echo "{selection}"'
+    if selection == _MODEL_FULL:
+        selector_output = (
+            '"$TEST_SELECTOR_PYTHON" -c '
+            "'from teatree.quality.affected_tests import Selection; "
+            'print(" ".join(Selection(full=True, reason="changed selector").pytest_args()))\''
+        )
     stubs = {
-        "t3": (f'if [[ " $* " == *" --pytest-args "* ]]; then echo "{selection}"; exit {selector_exit}; fi\nexit 0'),
+        "t3": (f'if [[ " $* " == *" --pytest-args "* ]]; then {selector_output}; exit {selector_exit}; fi\nexit 0'),
         "uv": 'printf "%s\\n" "$@"',
     }
     for name, body in stubs.items():
@@ -28,7 +35,11 @@ def _lane_result(
         (bin_dir / name).chmod(0o755)
     return subprocess.run(
         [_BASH, str(_LANE), *lane_args],
-        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "TEST_SELECTOR_PYTHON": sys.executable,
+        },
         capture_output=True,
         text=True,
         timeout=30,
@@ -44,7 +55,7 @@ def _pytest_argv(tmp_path: Path, *lane_args: str, selection: str) -> list[str]:
 
 @pytest.mark.parametrize(
     ("lane_args", "selection"),
-    [(("--full",), ""), ((), " ".join(Selection(full=True, reason="migration", create_db=True).pytest_args()))],
+    [(("--full",), ""), ((), "--create-db --teatree-selected-full")],
 )
 def test_a_full_verdict_declares_itself_to_the_whole_tree_guard(
     tmp_path: Path, lane_args: tuple[str, ...], selection: str
@@ -53,8 +64,7 @@ def test_a_full_verdict_declares_itself_to_the_whole_tree_guard(
 
 
 def test_a_full_verdict_without_a_database_change_runs_the_whole_tree(tmp_path: Path) -> None:
-    selection = " ".join(Selection(full=True, reason="changed selector").pytest_args())
-    assert "--teatree-selected-full" in _pytest_argv(tmp_path, selection=selection)
+    assert "--teatree-selected-full" in _pytest_argv(tmp_path, selection=_MODEL_FULL)
 
 
 def test_a_scoped_selection_stays_under_the_whole_tree_guard(tmp_path: Path) -> None:
