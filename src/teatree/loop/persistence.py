@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core import on_behalf_gate_recorded
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
@@ -281,6 +282,22 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
     )
 
 
+_REVIEW_FINDINGS_BASE = (
+    "Auto-scheduled review-findings fix — read the unresolved review findings on {pr_url}, "
+    "IMPLEMENT accepted findings on that MR's own branch, run the tests and push once. "
+)
+_REVIEW_FINDINGS_VOICED = (
+    "Answer questions and push-backs in their own threads. After the push, reply "
+    "'Fixed in <short sha>.' to each fixed thread and resolve it. On GitLab use "
+    "t3 review reply-to-discussion and t3 review resolve-discussion. "
+    "Never add a top-level comment or change reviewers; escalate only if the fix cannot proceed"
+)
+_REVIEW_FINDINGS_SILENT = (
+    "When the owner's voice is forbidden, fix and push only; do not reply or resolve threads. "
+    "Escalate only if the fix cannot proceed"
+)
+
+
 #: The remedy each un-mergeable condition's debugging task is scheduled for. The
 #: conflict wording carries the never-rebase constraint into the task itself, so the
 #: agent that picks it up does not have to re-derive it.
@@ -290,14 +307,7 @@ _FIX_REASON_BY_KIND: dict[str, str] = {
         "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
         "into the head branch, never by rebasing"
     ),
-    # Our own MR, so the finding is IMPLEMENTED rather than commented on: read the
-    # unresolved discussions and the recorded review findings, fix them on the MR's
-    # own branch, run the tests, push. Escalate only if the fix cannot proceed.
-    RedMrFixAttempt.Kind.REVIEW_FINDINGS: (
-        "Auto-scheduled review-findings fix — read the unresolved review findings on {pr_url}, "
-        "IMPLEMENT them on that MR's own branch, run the tests and push. Never answer a finding "
-        "on our own MR with another comment; escalate only if the fix cannot proceed"
-    ),
+    RedMrFixAttempt.Kind.REVIEW_FINDINGS: _REVIEW_FINDINGS_BASE + _REVIEW_FINDINGS_VOICED,
 }
 
 
@@ -332,9 +342,13 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             return None
         if not claim_red_mr_fix(payload):
             return None
+        fix_kind = fix_kind_of(payload)
+        reason = _FIX_REASON_BY_KIND[fix_kind]
+        if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and not on_behalf_gate_recorded.owner_voice_permitted():
+            reason = _REVIEW_FINDINGS_BASE + _REVIEW_FINDINGS_SILENT
         return ticket.schedule_implementing(
             "debugging",
-            reason=_FIX_REASON_BY_KIND[fix_kind_of(payload)].format(pr_url=pr_url),
+            reason=reason.format(pr_url=pr_url),
         )
 
 

@@ -663,3 +663,39 @@ class TestEveryFixKindHasAScheduledRemedy(TestCase):
         # Each reason is formatted with ``pr_url``; one that drops the placeholder
         # would schedule a task naming no merge request.
         assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())
+
+
+class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
+    def _reason(self, *, permitted: bool, pr_id: int) -> str:
+        signal = ScanSignal(
+            kind="my_pr.findings_to_fix",
+            summary="Review findings need a fix",
+            payload={
+                "pr_url": f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}",
+                "head_sha": f"{pr_id:040d}",
+                "fix_kind": RedMrFixAttempt.Kind.REVIEW_FINDINGS,
+                "overlay": "acme",
+            },
+        )
+        with patch("teatree.core.on_behalf_gate_recorded.owner_voice_permitted", return_value=permitted):
+            created = persist_agent_actions(_agent_actions(signal))
+        assert len(created) == 1
+        return created[0].execution_reason
+
+    def test_permitted_voice_answers_and_resolves_in_threads_after_one_push(self) -> None:
+        reason = self._reason(permitted=True, pr_id=201)
+        assert "questions and push-backs" in reason
+        assert "push once" in reason
+        assert "Fixed in <short sha>." in reason
+        assert "t3 review reply-to-discussion" in reason
+        assert "t3 review resolve-discussion" in reason
+        assert "top-level comment" in reason
+        assert "change reviewers" in reason
+
+    def test_forbidden_voice_fixes_and_pushes_without_replying(self) -> None:
+        reason = self._reason(permitted=False, pr_id=202)
+        assert "fix and push only" in reason
+        assert "reply-to-discussion" not in reason
+        assert "resolve-discussion" not in reason
+        assert "Fixed in" not in reason
+        assert "Escalate only if the fix cannot proceed" in reason
