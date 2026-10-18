@@ -79,7 +79,15 @@ fi
 t3 tool affected-tests --base "$BASE"
 echo "==="
 
-read -r -a SELECTED <<< "$(t3 tool affected-tests --base "$BASE" --pytest-args)"
+if ! SELECTED_OUTPUT="$(t3 tool affected-tests --base "$BASE" --pytest-args)"; then
+    echo "affected-tests: selector failed; refusing to run pytest" >&2
+    exit 4
+fi
+if [[ -z "$SELECTED_OUTPUT" ]]; then
+    echo "affected-tests: selector returned no pytest arguments; refusing to run pytest" >&2
+    exit 4
+fi
+read -r -a SELECTED <<< "$SELECTED_OUTPUT"
 # A FULL verdict emits no --tach flag ⇒ the whole suite runs.
 SELECTED_FULL=1
 for arg in ${SELECTED[@]+"${SELECTED[@]}"}; do

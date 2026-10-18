@@ -190,14 +190,9 @@ def per_agent_test_workers(
     pytest-xdist resolves ``-n auto``. The addopts stay untouched and every run
     takes slots from the shared pool before workers start.
 
-    Cores formerly sized the TOTAL at ``cores * 2``, which on 8 cores is 16 workers — 10.4 GB
-    at the measured p50 worker RSS but 19.8 GB at the p90, against 19.7 GB usable (#4163).
-    The bound is safe at the median and over the line at the tail, which is why the OOMs
-    were relentless but intermittent. *ram_available_gb* (the live cgroup-aware reading)
-    and *per_worker_gb* (the operator's ``test_worker_ram_gb``) add the term that makes
-    the total respond to the resource that actually saturates: whichever of the two totals
-    is smaller wins. Both are applied to the TOTAL, never to the per-agent share — a
-    per-agent memory budget would hand each of N agents the whole box.
+    *ram_available_gb* is the live cgroup-aware reading and *per_worker_gb* is
+    the operator's ``test_worker_ram_gb``. The smaller of the CPU and memory
+    totals wins. Both constrain the total before it is divided among agents.
 
     Omitting either is the fail-safe path, and it is BOUNDED rather than closed: the
     result is exactly the cores-derived bound, never a manufactured clamp to 1. Denying
