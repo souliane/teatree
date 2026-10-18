@@ -16,6 +16,7 @@ import typer
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.app_helpers import RunReportPaths
+from teatree.cli.eval.metered_trials import UsageLimitAfterFailureError, run_trials_with_limit_evidence
 from teatree.cli.eval.metered_trials import park_on_usage_limit as _park_on_usage_limit
 from teatree.cli.eval.metered_trials import run_pass_at_k_results as _run_pass_at_k_results
 from teatree.cli.eval.run_modes import (
@@ -37,7 +38,6 @@ from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_jso
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
-from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.surface import is_advisory
@@ -263,7 +263,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         )
     except _MatrixUsageLimitError as exc:
         advisory = {spec.name for spec in specs if is_advisory(spec)}
-        failed = any(
+        failed = exc.failed_within_cell or any(
             row.errored or (not row.passed and not row.skipped and row.scenario not in advisory) for row in exc.rows
         )
         _park_on_usage_limit(html_out=html_out, failed_before_limit=failed)
@@ -400,9 +400,10 @@ class _MatrixCell:
 
 
 class _MatrixUsageLimitError(UsageLimitReachedError):
-    def __init__(self, rows: list[MatrixRow]) -> None:
+    def __init__(self, rows: list[MatrixRow], *, failed_within_cell: bool) -> None:
         super().__init__("usage limit reached during matrix collection")
         self.rows = rows
+        self.failed_within_cell = failed_within_cell
 
 
 def collect_matrix_rows(
@@ -436,7 +437,9 @@ def collect_matrix_rows(
                     )
                 )
             except UsageLimitReachedError as exc:
-                raise _MatrixUsageLimitError(rows) from exc
+                raise _MatrixUsageLimitError(
+                    rows, failed_within_cell=isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)
+                ) from exc
     return rows
 
 
@@ -499,7 +502,7 @@ def _matrix_trial(
 ) -> MatrixRow:
     spec = cell.spec
     if cell.policy.trials > 1:
-        result = run_pass_at_k(
+        result = run_trials_with_limit_evidence(
             spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=cell.policy.trials, require=cell.policy.require
         )
         return MatrixRow(

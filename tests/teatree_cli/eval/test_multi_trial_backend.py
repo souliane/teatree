@@ -141,6 +141,46 @@ def test_matrix_keeps_a_measured_red_when_a_later_cell_hits_the_limit(tmp_path: 
     assert "failed before the usage limit" in dashboard.read_text()
 
 
+def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path: Path) -> None:
+    runner = _LimitAfterRedRunner()
+    summary = tmp_path / "summary.md"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_pass_at_k_lane(
+            [_spec("red")],
+            backend=API_BACKEND,
+            max_turns=None,
+            trials=2,
+            require="any",
+            output_format="text",
+            summary_md=summary,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
+    assert "failed before the usage limit" in summary.read_text()
+
+
+def test_matrix_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path: Path) -> None:
+    runner = _LimitAfterRedRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("red")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=2,
+            require="any",
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
+    assert "failed before the usage limit" in dashboard.read_text()
+
+
 @dataclasses.dataclass
 class _Lane:
     """The backends the lane asked ``make_runner`` for, and what its runs produce."""

@@ -15,6 +15,28 @@ from teatree.eval.report import ScenarioResult
 from teatree.eval.surface import is_advisory
 
 
+class UsageLimitAfterFailureError(UsageLimitReachedError):
+    pass
+
+
+def run_trials_with_limit_evidence(
+    spec: EvalSpec, trial: Callable[[EvalSpec], ScenarioResult], *, k: int, require: str
+) -> PassAtKResult:
+    observed: list[ScenarioResult] = []
+
+    def tracked(candidate: EvalSpec) -> ScenarioResult:
+        result = trial(candidate)
+        observed.append(result)
+        return result
+
+    try:
+        return run_pass_at_k(spec, tracked, k=k, require=require)
+    except UsageLimitReachedError as exc:
+        if any(result.measured_failure for result in observed):
+            raise UsageLimitAfterFailureError from exc
+        raise
+
+
 def _emit_progress(line: str) -> None:
     sys.stderr.write(f"{line}\n")
     sys.stderr.flush()
@@ -30,7 +52,7 @@ def _run_scenario_with_progress(
 ) -> PassAtKResult:
     index, total = position
     _emit_progress(f"RUN  [{index}/{total}] {spec.name} (k={trials}, require={require})")
-    result = run_pass_at_k(spec, trial, k=trials, require=require)
+    result = run_trials_with_limit_evidence(spec, trial, k=trials, require=require)
     verdict = "SKIP" if result.skipped else ("PASS" if result.ok else "FAIL")
     _emit_progress(f"DONE [{index}/{total}] {spec.name}: {verdict} ({result.passes}/{result.trials})")
     return result
@@ -66,8 +88,8 @@ def run_pass_at_k_results(
             results.append(
                 _run_scenario_with_progress(spec, trial, trials=trials, require=require, position=(index, len(specs)))
             )
-        except UsageLimitReachedError:
-            failed = any(
+        except UsageLimitReachedError as exc:
+            failed = (isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)) or any(
                 result.verdict == "fail" and not is_advisory(specs[position]) for position, result in enumerate(results)
             )
             park_on_usage_limit(summary_md=summary_md, failed_before_limit=failed)
