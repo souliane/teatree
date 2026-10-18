@@ -284,6 +284,20 @@ class CheckoutFenceTests(TestCase):
             walk.assert_not_called()
         walk.assert_called_once()
 
+    def test_refused_task_frees_its_seat_for_a_sibling_immediately(self) -> None:
+        sibling = TaskFactory(ticket=self.ticket, phase="debugging")
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        Task.objects.filter(pk=sibling.pk).update(admitted_at=None)
+        Task.objects.filter(pk=self.task.pk).update(admitted_at=timezone.now())
+        assert Task.objects.expensive_lane_occupancy() == 1
+
+        park_task_checkout(self.task, reason="unattested checkout")
+
+        assert Task.objects.expensive_lane_occupancy() == 0
+        assert Task.objects.record_admission(sibling.pk, cheap=False, lane_ceiling=1)
+        sibling.refresh_from_db()
+        assert sibling.admitted_at is not None
+
     def test_refusal_passes_attestation_to_card_after_scheduling_admission(self) -> None:
         refusal = CheckoutFenceError(
             "foreign checkout",
