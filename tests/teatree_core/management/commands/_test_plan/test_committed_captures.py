@@ -552,6 +552,28 @@ class TestTheDefaultPlansDirIsInvocationRelative(_PlanCaptureTestBase):
         ) in message
         assert "nothing declared an invocation cwd" not in message
 
+    def test_refusal_uses_the_declaration_snapshot_that_selected_the_cwd(self) -> None:
+        self._stand_in_another_tree()
+        missing = self._tmp / "appearing-later"
+        self._declare(missing)
+        original_is_dir = Path.is_dir
+        probes = 0
+
+        def appears_after_first_probe(path: Path) -> bool:
+            nonlocal probes
+            if path == missing:
+                probes += 1
+                return probes > 1
+            return original_is_dir(path)
+
+        self._monkeypatch.setattr(Path, "is_dir", appears_after_first_probe)
+
+        message = self._refusal()
+
+        assert probes == 1
+        assert f"{_invocation_cwd.INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in message
+        assert "which came from the process working directory" in message
+
     def test_a_resolution_failure_reads_differently_from_genuinely_missing_captures(self) -> None:
         bare = self._tmp / "no-plans-at-all"
         bare.mkdir()

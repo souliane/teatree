@@ -9,12 +9,7 @@ resolving) because the resolver returns it.
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.invocation_cwd import (
-    INVOCATION_CWD_ENV,
-    declared_invocation_cwd,
-    invocation_cwd,
-    invocation_cwd_declaration_problem,
-)
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd_with_problem, invocation_cwd
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_review_state import has_passed_review
 from teatree.core.provision.worktree_adopt import NotAWorktreeError, WorktreeAdoptError, adopt_worktree_for_ticket
@@ -69,7 +64,7 @@ def _adopt_invoking_worktree(ticket: Ticket) -> Worktree | WorktreeMissingError:
 
     The directory is the DECLARED invocation cwd, falling back to the process cwd when
     nothing declared one (a host-native run, unchanged). The split is
-    :func:`~teatree.core.invocation_cwd.declared_invocation_cwd` rather than
+    :func:`~teatree.core.invocation_cwd.declared_invocation_cwd_with_problem` rather than
     ``invocation_cwd`` because only the absence tells a propagation failure from an
     operator genuinely standing outside a worktree.
 
@@ -77,7 +72,7 @@ def _adopt_invoking_worktree(ticket: Ticket) -> Worktree | WorktreeMissingError:
     idempotent; otherwise it goes through the guarded core seam and any guardrail
     failure surfaces as the :class:`WorktreeMissingError` contract.
     """
-    declared = declared_invocation_cwd()
+    declared, problem = declared_invocation_cwd_with_problem()
     cwd = declared if declared is not None else Path.cwd()
     recorded = ticket.worktrees.filter(
         extra__worktree_path__in=_candidate_paths(str(cwd)),
@@ -87,7 +82,7 @@ def _adopt_invoking_worktree(ticket: Ticket) -> Worktree | WorktreeMissingError:
     try:
         return adopt_worktree_for_ticket(ticket, cwd=str(cwd))
     except NotAWorktreeError as exc:
-        if declared is None and (problem := invocation_cwd_declaration_problem()):
+        if declared is None and problem:
             return _unusable_invocation_cwd_error(cwd, problem)
         return WorktreeMissingError(error=str(exc))
     except WorktreeAdoptError as exc:

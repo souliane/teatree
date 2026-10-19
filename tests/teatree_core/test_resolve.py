@@ -204,7 +204,7 @@ class TestResolveWorktree(TestCase):
 
         assert f"{INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in str(exc.value)
 
-    def test_explicit_path_refusal_does_not_name_declaration(self) -> None:
+    def test_an_explicit_path_refusal_does_not_name_the_declaration(self) -> None:
         self._monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
 
         with pytest.raises(WorktreeNotFoundError) as exc:
