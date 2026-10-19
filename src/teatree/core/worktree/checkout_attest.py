@@ -6,16 +6,19 @@ from pathlib import Path
 from typing import NamedTuple
 
 from django.db import DatabaseError, transaction
+from django.db.models import Q
 
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, counted, safe_ticket_card_title
-from teatree.core.models import PullRequest, Task, Worktree
+from teatree.core.models import PullRequest, Task, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.question_actions import owner_declined
 from teatree.core.models.worktree_occupancy import occupancy_holder
+from teatree.core.notify import resolve_owner_dm_backend
+from teatree.core.owner_question_message import NO_LONGER_NEEDED, closed_message, replace_root
 from teatree.core.worktree.branch_owner import worktree_repo_slug
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -37,7 +40,7 @@ _STEPS: dict[str, _Step] = {
     "debugging": _Step("debugging", "fix a failing check", may_block_pull_request=True),
     "e2e": _Step("end-to-end", "test the app end to end", may_block_pull_request=True),
     "retro": _Step("wrap-up", "note lessons from the run", may_block_pull_request=False),
-    "architectural_review": _Step("design review", "fix design problems", may_block_pull_request=False),
+    ARCHITECTURAL_REVIEW_PHASE: _Step("design review", "fix design problems", may_block_pull_request=False),
 }
 _NEXT_STEP = _Step("next", "continue the work", may_block_pull_request=False)
 _DECLINE_PREFIX = "The step stays stuck until the folder changes or the factory can check it safely"
@@ -122,6 +125,33 @@ def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
     return attestation
 
 
+def declined_attest_tasks(worktree: Worktree, digest: str) -> set[int]:
+    answered = DeferredQuestion.objects.filter(
+        parked_task__ticket=worktree.ticket,
+        answered_at__isnull=False,
+        evidence__action__kind=OwnerActionKind.ATTEST,
+        evidence__action__target=str(worktree.pk),
+        evidence__action__binding=digest,
+    ).order_by("answered_at", "pk")
+    latest = {card.parked_task_id: card for card in answered}
+    return {task_id for task_id, card in latest.items() if task_id is not None and owner_declined(card)}
+
+
+def retire_card(row: DeferredQuestion, reason: str, *, resolver_id: str) -> None:
+    row.mark_stale(reason, resolver_id=resolver_id)
+    if row.dismissed_at is not None and row.slack_ts:
+        transaction.on_commit(lambda: _close_posted_card(row))
+
+
+def _close_posted_card(row: DeferredQuestion) -> None:
+    try:
+        backend = resolve_owner_dm_backend()[0]
+        if backend is not None:
+            replace_root(row, closed_message(row, NO_LONGER_NEEDED), backend)
+    except Exception:
+        logger.exception("Could not close the posted checkout question %s", row.pk)
+
+
 def _options(attestation: CheckoutAttestation, decline: str) -> tuple[CardOption, CardOption]:
     accept = (
         "The step resumes on the folder as it is; changes the factory did not make become part of its work."
@@ -129,9 +159,7 @@ def _options(attestation: CheckoutAttestation, decline: str) -> tuple[CardOption
         else "The step runs once on the folder as it is; "
         "edits the factory did not make, even unfinished ones, become part of its work."
     )
-    accept_option = CardOption("Accept", accept, recommended=attestation.host_evidence, approves_action=True)
-    decline_option = CardOption("Decline", decline, recommended=not attestation.host_evidence)
-    return (accept_option, decline_option) if attestation.host_evidence else (decline_option, accept_option)
+    return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
 
 def _pull_request_url(task: Task, worktree: Worktree) -> str:
@@ -150,16 +178,9 @@ def _pull_request_url(task: Task, worktree: Worktree) -> str:
     if not slug:
         return ""
     rows = rows.filter(repo__iexact=slug)
-    if (
-        isinstance(preferred, str)
-        and preferred_ref is not None
-        and preferred_ref.slug.casefold() == slug.casefold()
-        and (
-            rows.filter(url=preferred).exists()
-            or not PullRequest.objects.filter(ticket=task.ticket, url=preferred).exists()
-        )
-    ):
-        return preferred
+    if isinstance(preferred, str) and preferred_ref is not None and preferred_ref.slug.casefold() == slug.casefold():
+        known = PullRequest.objects.filter(ticket=task.ticket, url=preferred)
+        return preferred if rows.filter(url=preferred).exists() or not known.exists() else ""
     return rows.order_by("pk").values_list("url", flat=True).first() or ""
 
 
@@ -167,7 +188,7 @@ def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
     if url and may_block:
         return (
             f"it may hold up <{url}|this pull request> while open",
-            f"{_DECLINE_PREFIX}; the pull request may wait while open.",
+            f"{_DECLINE_PREFIX}; the pull request may wait.",
         )
     if url:
         return (
@@ -176,19 +197,19 @@ def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
         )
     return (
         "no pull request for this folder was open when asked",
-        f"{_DECLINE_PREFIX}; no pull request for this folder was open when asked.",
+        f"{_DECLINE_PREFIX}; no pull request waits.",
     )
 
 
-def _unlinked_title(title: str) -> str:
-    return f"{title.removesuffix('...')}\u2026" if title.endswith("...") else title
+def _question(step: _Step, ticket: Ticket, title: str) -> str:
+    # Outside a link, a trailing "..." or a sentence mark followed by more words reads as a sentence end.
+    unlinked = f"{title.removesuffix('...')}\u2026" if title.endswith("...") else title.rstrip(".?!") or "this ticket"
+    subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else unlinked
+    return f"Should the {step.label} step of {subject} run on its working folder as it is?"
 
 
 def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, QuestionCard]:
     ticket = task.ticket
-    title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
-    # Outside a link, a trailing "..." followed by more words reads as a sentence end.
-    subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else _unlinked_title(title)
     step = _STEPS.get(normalize_phase(task.phase), _NEXT_STEP)
     pull_request = _pull_request_url(task, attestation.worktree)
     waits, decline = _pull_request_words(pull_request, may_block=step.may_block_pull_request)
@@ -217,7 +238,8 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
         options=_options(attestation, decline),
         action=attestation.action_for(task),
     )
-    return f"Should the {step.label} step of {subject} run on its working folder as it is now?", card
+    question = _question(step, ticket, safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket"))
+    return (_question(step, ticket, "this ticket") if card.problems(question) else question), card
 
 
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
@@ -228,7 +250,7 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
             .order_by("-answered_at", "-pk")
             .first()
         )
-        if latest is not None and latest.parked_task_id == task.pk and owner_declined(latest):
+        if latest is not None and owner_declined(latest):
             return None
         unresolved = (
             DeferredQuestion.objects.filter(
@@ -251,8 +273,8 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
                 or held.evidence != card.to_evidence()
                 or held.options_json != card.options_json()
             ):
-                held.mark_stale(
-                    "The checkout card changed since this question was asked", resolver_id="checkout_attest"
+                retire_card(
+                    held, "The checkout card changed since this question was asked", resolver_id="checkout_attest"
                 )
             obsolete = (
                 DeferredQuestion.owner_pending()
@@ -260,11 +282,11 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
                     evidence__action__kind=OwnerActionKind.ATTEST,
                     evidence__action__target=str(attestation.worktree.pk),
                 )
-                .filter(parked_task=task)
+                .filter(Q(parked_task=task) | ~Q(evidence__action__binding=attestation.state.digest))
                 .exclude(dedupe_marker=marker)
             )
             for row in obsolete.select_for_update():
-                row.mark_stale("The checkout changed since this question was asked", resolver_id="checkout_attest")
+                retire_card(row, "The checkout changed since this question was asked", resolver_id="checkout_attest")
             return DeferredQuestion.record(question, dedupe_marker=marker, parked_task=task, card=card)
     except (DatabaseError, DeferredQuestionError):
         logger.exception("Could not record checkout attestation question for task %s", task.pk)

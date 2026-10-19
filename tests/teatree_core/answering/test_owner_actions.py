@@ -31,7 +31,12 @@ from teatree.core.models import (
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.owner_question_message import bump_text, render_text
 from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, read_attestation
-from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, park_task_checkout, verify_task_checkout
+from teatree.core.worktree.checkout_fence import (
+    CheckoutFenceError,
+    claim_task_checkout_or_park,
+    park_task_checkout,
+    verify_task_checkout,
+)
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, bind_reply, resolve_answer
@@ -45,12 +50,11 @@ from tests.void_merge_fixtures import PR_URL, landed_ticket, stub_forge
 
 _OWNER = "U0DEMOOWNER"
 _CLEAR = ProcessTable(frozenset(), "/proc")
+_OPTION_INDEX = {"Accept": 1, "Decline": 2, "Proceed": 1, "Void": 1}
 
 
 def _tap(row: DeferredQuestion, label: str, *, user: str = _OWNER) -> dict[str, object]:
-    index = next(
-        index for index, option in enumerate(CardOption.parse_all(row.options_json), 1) if option.label == label
-    )
+    index = _OPTION_INDEX[label]
     return {
         "type": "block_actions",
         "user": {"id": user},
@@ -126,9 +130,18 @@ class TestCheckoutAttestation(TestCase):
         assert other.pk != first.pk
         self._answer(first, "Accept")
 
-        assert self._carry_out() == [f"carried out {first.pk}"]
+        assert other.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000300")
+        backend = _owner_backend()
+
+        with (
+            patch("teatree.core.worktree.checkout_attest.resolve_owner_dm_backend", return_value=(backend, None)),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            assert self._carry_out() == [f"carried out {first.pk}"]
         other.refresh_from_db()
         assert not other.is_pending
+        assert backend.update_message.call_args.kwargs["ts"] == "1800000000.000300"
+        assert "This question no longer needs an answer" in backend.update_message.call_args.kwargs["text"]
 
     def test_decline_keeps_the_task_parked_and_attests_nothing(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -142,20 +155,30 @@ class TestCheckoutAttestation(TestCase):
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
         assert self._outcomes(row) == ["declined"]
 
-    def test_recommended_decline_cannot_carry_out_the_action(self) -> None:
-        self._park_on_a_foreign_edit()
-        row = ask_owner_to_attest(
-            self.task,
-            CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=False),
-        )
-        assert row is not None
-        assert CardOption.parse_all(row.options_json)[0].label == "Decline"
+    def test_nonrecommended_tap_cannot_carry_out_if_decline_shortcut_is_missed(self) -> None:
+        row = self._park_on_a_foreign_edit()
         self._answer(row, "Decline")
 
-        assert self._carry_out() == [f"declined {row.pk}"]
+        with patch("teatree.core.answering.owner_actions.owner_declined", return_value=False):
+            assert self._carry_out() == [f"refused {row.pk}"]
 
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
+
+    def test_a_card_marked_only_by_its_recommended_option_still_attests(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        row.options_json = json.dumps(
+            [
+                {"label": "Accept", "description": "The step resumes.", "recommended": True},
+                {"label": "Decline", "description": "The step stays stuck."},
+            ]
+        )
+        row.save(update_fields=["options_json"])
+        self._answer(row, "Accept")
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
 
     def test_typed_yes_leaves_the_checkout_card_pending(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -322,7 +345,7 @@ class TestCheckoutAttestation(TestCase):
             blocker="Only the owner may accept this state.",
             why="The factory stopped before writing.",
             options=(
-                CardOption("Proceed", "I record this checkout state.", recommended=True, approves_action=True),
+                CardOption("Proceed", "I record this checkout state.", recommended=True),
                 CardOption("Leave", "The task stays parked."),
             ),
             action=CheckoutAttestation(self.worktree, state, host_evidence=True).action,
@@ -385,6 +408,48 @@ class TestCheckoutAttestation(TestCase):
         other_task.refresh_from_db()
         assert self.task.not_before is None
         assert other_task.not_before is not None
+
+    def test_accept_keeps_a_declined_step_parked_on_the_same_checkout(self) -> None:
+        coding = self._park_on_a_foreign_edit()
+        retro = TaskFactory(ticket=self.task.ticket, phase="retro")
+        park_task_checkout(
+            retro,
+            reason="foreign edit",
+            attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
+        )
+        declined = retro.deferred_questions.get()
+        assert declined.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000200")
+        self._answer(declined, "Decline")
+        assert self._carry_out() == [f"declined {declined.pk}"]
+
+        self._answer(coding, "Accept")
+        assert self._carry_out() == [f"carried out {coding.pk}"]
+
+        self.task.refresh_from_db()
+        retro.refresh_from_db()
+        assert self.task.not_before is None
+        assert retro.not_before is not None
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            with pytest.raises(CheckoutFenceError, match="differs from its attested state"):
+                verify_task_checkout(retro, str(self.checkout))
+            assert claim_task_checkout_or_park(self.task) is None
+
+    def test_a_declined_step_on_a_clean_folder_stays_parked(self) -> None:
+        self.worktree.merge_extra(set_keys={"attested_state": "e" * 64})
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            assert claim_task_checkout_or_park(self.task) is not None
+        row = self.task.deferred_questions.get()
+        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+        self._answer(row, "Decline")
+        assert self._carry_out() == [f"declined {row.pk}"]
+
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
+            pytest.raises(CheckoutFenceError, match="differs from its attested state"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout))
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == "e" * 64
 
     def test_answered_action_can_be_asked_again_for_the_same_state(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -617,7 +682,7 @@ class TestActionIdentity(TestCase):
             blocker="Only the owner may accept it.",
             why="The factory stopped before writing.",
             options=(
-                CardOption("Accept", "I record this state.", recommended=True, approves_action=True),
+                CardOption("Accept", "I record this state.", recommended=True),
                 CardOption("Decline", "Nothing changes."),
             ),
             action=action,

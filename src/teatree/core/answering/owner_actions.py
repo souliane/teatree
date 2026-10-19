@@ -18,7 +18,13 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, read_attestation
+from teatree.core.worktree.checkout_attest import (
+    AttestRefusedError,
+    CheckoutAttestation,
+    declined_attest_tasks,
+    read_attestation,
+    retire_card,
+)
 
 logger = logging.getLogger(__name__)
 _RETRY_AFTER = timedelta(minutes=5)
@@ -74,8 +80,10 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
             .exclude(pk=row.pk)
         )
         for other in other_cards:
-            other.mark_stale("The checkout was accepted through another card", resolver_id="owner_actions")
-        for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
+            retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
+        declined = declined_attest_tasks(worktree, attestation.state.digest)
+        parked_tasks = Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False)
+        for parked in parked_tasks.exclude(pk__in=declined):
             latest = parked.attempts.order_by("-pk").values("result").first()
             result = latest["result"] if latest is not None else {}
             checkout_id = result.get("checkout_worktree_id") if isinstance(result, dict) else None
@@ -125,11 +133,11 @@ def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Dec
         return _Decision("refused", "Only the owner's Slack button tap may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
-    if option is None or not option.approves_action:
+    if option is None or not option.recommended:
         note = (
             "The answer did not match a card option; ask again."
             if option is None
-            else "Only the approving option may carry out this action."
+            else "Only the recommended option may approve this action."
         )
         return _Decision("refused", note, notify=True)
     try:

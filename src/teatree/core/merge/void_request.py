@@ -42,10 +42,7 @@ def request_void(pr_url: str, reason: str) -> DeferredQuestion:
         why=f"The forge reports a merge, but the default branch holds none of its {changed}.",
         options=(
             CardOption(
-                "Void",
-                f"I close {closes} and return {restores} to the state before the merge.",
-                recommended=True,
-                approves_action=True,
+                "Void", f"I close {closes} and return {restores} to the state before the merge.", recommended=True
             ),
             CardOption("Keep", "Nothing changes."),
         ),

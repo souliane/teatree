@@ -24,7 +24,12 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
+from teatree.core.worktree.checkout_attest import (
+    CheckoutAttestation,
+    ask_owner_to_attest,
+    checkout_rows,
+    declined_attest_tasks,
+)
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -84,7 +89,9 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         message = f"checkout {path} state could not be read: {exc}"
         raise CheckoutFenceError(message) from exc
     worktree = rows[0]
-    attested = worktree.get_extra().get("attested_state")
+    # Another step's owner Accept never covers a step the owner declined for this same folder state.
+    declined = task.pk in declined_attest_tasks(worktree, state.digest)
+    attested = None if declined else worktree.get_extra().get("attested_state")
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:
         message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
@@ -93,7 +100,7 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
-    if attested is None and state.pristine:
+    if attested is None and state.pristine and not declined:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
     _accept_changed_checkout(task, worktree, state, table, attested=attested)

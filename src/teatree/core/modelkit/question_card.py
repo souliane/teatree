@@ -104,6 +104,8 @@ def safe_ticket_card_title(short_description: object, extra: object, fallback: s
     )
     if full and (cut or not short) and (safe_full := safe_card_title(full, "")):
         return safe_full
+    if len(short) == MAX_CARD_TITLE_CHARS and short[-1].isalnum() and short != full:
+        short = f"{short}..."  # a seed at the column limit may end mid-word; the ellipsis trims it at a word
     return safe_card_title(short, fallback)
 
 
@@ -117,7 +119,6 @@ class OptionDict(TypedDict):
     label: str
     description: str
     recommended: NotRequired[bool]
-    approves_action: NotRequired[bool]
 
 
 class CardEvidence(TypedDict):
@@ -138,14 +139,11 @@ class CardOption:
     label: str
     description: str
     recommended: bool = dataclasses.field(default=False, kw_only=True)
-    approves_action: bool = dataclasses.field(default=False, kw_only=True)
 
     def as_dict(self) -> OptionDict:
         option = OptionDict(label=self.label, description=self.description)
         if self.recommended:
             option["recommended"] = True
-        if self.approves_action:
-            option["approves_action"] = True
         return option
 
     @classmethod
@@ -154,10 +152,7 @@ class CardOption:
             return cls(raw, "")
         if isinstance(raw, Mapping):
             return cls(
-                str(raw.get("label", "")),
-                str(raw.get("description", "")),
-                recommended=raw.get("recommended") is True,
-                approves_action=raw.get("approves_action") is True,
+                str(raw.get("label", "")), str(raw.get("description", "")), recommended=raw.get("recommended") is True
             )
         return None
 
@@ -172,11 +167,7 @@ class CardOption:
 
 def match_action_option(options_json: str, answer: str) -> CardOption | None:
     options = CardOption.parse_all(options_json)
-    if (
-        not options
-        or sum(option.recommended for option in options) != 1
-        or sum(option.approves_action for option in options) != 1
-    ):
+    if not options or sum(option.recommended for option in options) != 1:
         return None
     normalized = " ".join(answer.casefold().split())
     for option in options:
@@ -316,8 +307,6 @@ class QuestionCard:
             problems.append("the quoted text must be one line")
         if self.options and not any(option.recommended for option in self.options):
             problems.append("mark exactly one option as recommended, and list it first")
-        if self.action is not None and sum(option.approves_action for option in self.options) != 1:
-            problems.append("mark exactly one option as approving the action")
         problems += [f"option {o.label!r} needs a consequence" for o in self.options if not o.description.strip()]
         return problems
 

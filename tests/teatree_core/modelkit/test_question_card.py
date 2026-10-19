@@ -14,23 +14,10 @@ from teatree.core.modelkit.question_card import (
     QuestionCard,
     counted,
     internal_shorthand,
-    match_action_option,
     plain_text,
     safe_ticket_card_title,
     word_count,
 )
-
-
-def test_action_match_requires_one_approving_option_even_when_decline_is_recommended() -> None:
-    options = [
-        {"label": "Decline", "description": "Wait.", "recommended": True},
-        {"label": "Accept", "description": "Proceed.", "approves_action": True},
-    ]
-
-    assert match_action_option(json.dumps(options), "Accept") == CardOption("Accept", "Proceed.", approves_action=True)
-    assert match_action_option(json.dumps(options), "Decline") == CardOption("Decline", "Wait.", recommended=True)
-    assert match_action_option(json.dumps([{**options[0], "approves_action": True}, options[1]]), "Decline") is None
-    assert match_action_option(json.dumps([{**options[0]}, {**options[1], "approves_action": False}]), "Accept") is None
 
 
 def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:
@@ -78,6 +65,23 @@ def test_unrelated_ellipsis_short_wins_over_the_imported_title() -> None:
         safe_ticket_card_title("Investigate the hang...", {"issue_title": "Old imported title"}, "this ticket")
         == "Investigate the hang..."
     )
+
+
+def test_eighty_character_seed_ends_at_a_word_boundary_without_its_issue_title() -> None:
+    short = "Improve the owner decision card so its description, selected answer and result stay clear"[:80]
+    assert short.endswith("result s")
+
+    for extra in ({"issue_title": "Short dreaming ledger title"}, {}):
+        assert safe_ticket_card_title(short, extra, "this ticket") == (
+            "Improve the owner decision card so its description, selected answer and..."
+        )
+
+
+def test_whole_eighty_character_title_matching_its_issue_title_is_kept() -> None:
+    title = "Make the owner cards readable for someone who never saw the factory before today"
+    assert len(title) == 80
+
+    assert safe_ticket_card_title(title, {"issue_title": title}, "this ticket") == title
 
 
 SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"

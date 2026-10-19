@@ -4,7 +4,7 @@ import re
 from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.db import OperationalError
@@ -13,7 +13,7 @@ from django.test import TestCase
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, KNOWN_PHASES
-from teatree.core.modelkit.question_card import QuestionCard
+from teatree.core.modelkit.question_card import MAX_WORDS, QuestionCard, plain_text, word_count
 from teatree.core.models import DeferredQuestion, PullRequest, Task
 from teatree.core.owner_question_message import render_text
 from teatree.core.worktree.checkout_attest import (
@@ -118,6 +118,23 @@ class TestCheckoutAttestCard(TestCase):
         assert row is not None
         assert closed.url not in render_text(row)
 
+    def test_closed_indexed_branch_does_not_link_another_branch_pr(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        closed = PullRequestFactory(ticket=ticket, state=PullRequest.State.CLOSED)
+        other = PullRequestFactory(ticket=ticket)
+        ticket.extra = {"pr_url_by_branch": {worktree.branch: closed.url}}
+        ticket.save(update_fields=["extra"])
+
+        row = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+
+        assert row is not None
+        assert "no pull request for this folder was open when asked" in render_text(row)
+        assert other.url not in render_text(row)
+
     def test_card_without_an_open_pull_request_says_it_blocks_none(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         PullRequestFactory(ticket=ticket, state=PullRequest.State.MERGED)
@@ -156,9 +173,9 @@ class TestCheckoutAttestCard(TestCase):
         }
         declines = {
             True: "The step stays stuck until the folder changes or the factory can check it safely; "
-            "the pull request may wait while open.",
+            "the pull request may wait.",
             False: "The step stays stuck until the folder changes or the factory can check it safely; "
-            "no pull request for this folder was open when asked.",
+            "no pull request waits.",
         }
         for host_evidence, with_pull_request in product((False, True), repeat=2):
             with self.subTest(host_evidence=host_evidence, with_pull_request=with_pull_request):
@@ -168,16 +185,14 @@ class TestCheckoutAttestCard(TestCase):
 
                 row, text = _ask(TaskFactory(ticket=ticket), host_evidence=host_evidence)
 
-                advice = "Accept" if host_evidence else "Decline"
-                assert f"[{advice}] (recommended)" in text
-                assert accepts[host_evidence] in text
-                assert declines[with_pull_request] in text
+                assert f"[Accept] (recommended) - {accepts[host_evidence]}" in text
+                assert f"[Decline] - {declines[with_pull_request]}" in text
                 card = QuestionCard.from_row(row.evidence, row.options_json)
                 assert card is not None
-                assert card.options[0].label == advice
-                assert [(option.label, option.approves_action) for option in card.options] == (
-                    [("Accept", True), ("Decline", False)] if host_evidence else [("Decline", False), ("Accept", True)]
-                )
+                assert [(option.label, option.recommended) for option in card.options] == [
+                    ("Accept", True),
+                    ("Decline", False),
+                ]
                 assert card.decision == OwnerDecision.IRREVERSIBLE
                 assert card.action is not None
                 assert card.action["binding"] == "d" * 64
@@ -198,6 +213,7 @@ class TestCheckoutAttestCard(TestCase):
             "zorblax_phase": "next step",
         }
         title = "Make the owner cards readable for someone who never saw the factory before today"
+        shown = "Make the owner cards readable for someone who never saw the factory before..."
         cases = product(steps.items(), (False, True), (False, True))
         for number, ((phase, step), host_evidence, with_pull_request) in enumerate(cases, 10000):
             with self.subTest(phase=phase, host_evidence=host_evidence, with_pull_request=with_pull_request):
@@ -209,8 +225,44 @@ class TestCheckoutAttestCard(TestCase):
 
                 _row, text = _ask(task, host_evidence=host_evidence, commits=9_999_999, uncommitted=9_999_999)
 
-                assert f"Should the {step} of <{issue_url}|{title}>" in text
+                assert f"Should the {step} of <{issue_url}|{shown}>" in text
                 assert len(_shown_lines(text)) <= 5
+
+    def test_a_wordy_eighty_character_title_keeps_its_title_with_room_to_spare(self) -> None:
+        title = "Workflow gap (dreaming Pass 2): When a PR body's design rationale rests on inven"
+        for number, with_pull_request in enumerate((False, True), 30000):
+            with self.subTest(with_pull_request=with_pull_request):
+                ticket = TicketFactory(
+                    issue_url=f"https://github.com/example/repo/issues/{number}", short_description=title
+                )
+                if with_pull_request:
+                    PullRequestFactory(ticket=ticket)
+                task = TaskFactory(ticket=ticket, phase="e2e")
+                question, card = attest_card(
+                    task,
+                    CheckoutAttestation(
+                        WorktreeFactory(ticket=ticket), CheckoutState("d" * 64, 99_999, 99_999), host_evidence=False
+                    ),
+                )
+
+                assert card.problems(question) == []
+                assert f"|{title.removesuffix(' inven')}...>" in question
+                assert word_count(plain_text(card.view(question))) <= MAX_WORDS - 5
+
+    def test_a_title_too_wordy_for_the_card_gives_way_to_this_ticket(self) -> None:
+        title = "Fix a bug so a UI we use at HQ on a PC or a Mac is OK to go to in a day or so"
+        assert len(title) <= 80
+        ticket = TicketFactory(issue_url=ISSUE_URL, short_description=title)
+        task = TaskFactory(ticket=ticket, phase="e2e")
+        question, card = attest_card(
+            task,
+            CheckoutAttestation(
+                WorktreeFactory(ticket=ticket), CheckoutState("d" * 64, 99_999, 99_999), host_evidence=False
+            ),
+        )
+
+        assert card.problems(question) == []
+        assert f"Should the end-to-end step of <{ISSUE_URL}|this ticket> run" in question
 
     def test_every_write_capable_phase_has_step_wording(self) -> None:
         assert ARCHITECTURAL_REVIEW_PHASE in KNOWN_PHASES
@@ -320,6 +372,47 @@ class TestCheckoutAttestCard(TestCase):
         original.refresh_from_db()
         assert original.dismissed_reason == "The checkout card changed since this question was asked"
 
+    def test_replacement_closes_the_posted_buttons(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        original = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert original is not None
+        assert original.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+        backend = MagicMock()
+
+        with (
+            patch("teatree.core.worktree.checkout_attest.resolve_owner_dm_backend", return_value=(backend, None)),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ask_owner_to_attest(task, CheckoutAttestation(worktree, CheckoutState("e" * 64, 2, 1), host_evidence=False))
+
+        backend.update_message.assert_called_once()
+        assert "This question no longer needs an answer" in backend.update_message.call_args.kwargs["text"]
+        assert "[Accept]" not in backend.update_message.call_args.kwargs["text"]
+
+    def test_new_digest_retires_old_cards_for_every_waiting_step(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        worktree = WorktreeFactory(ticket=ticket)
+        coding = TaskFactory(ticket=ticket, phase="coding")
+        retro = TaskFactory(ticket=ticket, phase="retro")
+        original = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        old_coding = ask_owner_to_attest(coding, original)
+        old_retro = ask_owner_to_attest(retro, original)
+        assert old_coding is not None
+        assert old_retro is not None
+
+        renewed = ask_owner_to_attest(
+            coding, CheckoutAttestation(worktree, CheckoutState("e" * 64, 2, 1), host_evidence=False)
+        )
+
+        assert renewed is not None
+        old_coding.refresh_from_db()
+        old_retro.refresh_from_db()
+        assert not old_coding.is_pending
+        assert not old_retro.is_pending
+
     def test_the_card_links_only_a_pull_request_in_its_checkout_repo(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         other = PullRequestFactory(ticket=ticket, repo="other/repo", url="https://github.com/other/repo/pull/999")
@@ -329,6 +422,21 @@ class TestCheckoutAttestCard(TestCase):
 
         assert own.url in text
         assert other.url not in text
+
+    def test_pull_request_repo_case_does_not_hide_the_link(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        pull_request = PullRequestFactory(
+            ticket=ticket, repo="Souliane/TeaTree", url="https://github.com/Souliane/TeaTree/pull/19"
+        )
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket, repo_path="souliane/teatree")
+
+        row = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+
+        assert row is not None
+        assert pull_request.url in render_text(row)
 
     def test_a_pull_request_in_another_repo_does_not_block_this_checkout(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -414,6 +522,15 @@ class TestCheckoutAttestCard(TestCase):
 
         assert row.is_pending
         assert "step of The issue title is longer than the eighty character seed and should remain\u2026 run" in text
+
+    def test_unlinked_title_with_terminal_punctuation_records_a_card(self) -> None:
+        for ending in (".", "?", "!"):
+            with self.subTest(ending=ending):
+                ticket = TicketFactory(issue_url="", short_description=f"Make decisions clear{ending}")
+                row, text = _ask(TaskFactory(ticket=ticket))
+
+                assert row.is_pending
+                assert "step of Make decisions clear run" in text
 
     def test_long_legacy_title_keeps_the_card_answerable(self) -> None:
         ticket = TicketFactory(
