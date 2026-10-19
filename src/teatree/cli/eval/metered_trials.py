@@ -32,7 +32,7 @@ def run_trials_with_limit_evidence(
     try:
         return run_pass_at_k(spec, tracked, k=k, require=require)
     except UsageLimitReachedError as exc:
-        if any(result.measured_failure for result in observed):
+        if require == "all" and any(result.measured_failure for result in observed):
             raise UsageLimitAfterFailureError from exc
         raise
 
