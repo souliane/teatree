@@ -596,11 +596,13 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
             assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
 
     def test_an_error_line_names_the_checkout(self) -> None:
-        """Django TestCase: injected row failure through reap_done_worktrees_detailed."""
-        self._make_worktree(Ticket.State.WORK_STARTED)
+        """Django TestCase: malformed clone metadata fails through the real sweep."""
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        Worktree.objects.filter(pk=worktree.pk).update(
+            extra={"worktree_path": str(self.wt_path), "clone_path": ["not-a-path"]}
+        )
 
-        with patch.object(worktree_done, "reap_done_worktree", side_effect=RuntimeError("boom")):
-            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
 
         assert [outcome.action for outcome in outcomes] == ["error"]
         assert "row skipped, nothing wiped" in outcomes[0].label
