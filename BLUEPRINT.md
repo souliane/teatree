@@ -873,8 +873,8 @@ post-write result.
   logins declared in `self_forge_identities` for the API host. The shared reader
   PRESERVES case: the push gate lowercases, review-candidate casefolds, and the
   review own-MR proof compares exactly. The primitive lives in the hooks layer
-  because the cold PreToolUse subprocess reads it too
-  and may import only stdlib plus `teatree.config`.
+  because the cold PreToolUse subprocess reads it too and may import only stdlib
+  plus `teatree.config`.
 - **The MCP create dedupes in two calls, so the pass cannot be skipped.**
   `<forge>_issue_create` is the surface an agent actually files from, so it is where a
   skippable dedupe would be skipped. Called with no `dedupe` it WRITES NOTHING and
