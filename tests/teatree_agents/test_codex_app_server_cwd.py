@@ -51,7 +51,7 @@ class TestCodexStartsInTheWorktree(TestCase):
     def test_a_file_change_approval_without_its_own_cwd_is_accepted(self) -> None:
         seen: list[str] = []
 
-        async def accept(_tool: str, _tool_input: object, cwd: str, _params: object) -> tuple[str, None]:
+        async def accept(_tool: str, _tool_input: object, cwd: str, _params: object, _env: object) -> tuple[str, None]:
             await asyncio.sleep(0)
             seen.append(cwd)
             return "accept", None

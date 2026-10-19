@@ -16,21 +16,22 @@ async def report_completed_item(item: Mapping[str, Any], thread_id: str, options
     if item.get("status") == "declined":
         return
     cwd = str(item.get("cwd") or options.core.cwd)
+    context = (thread_id, options.core.env)
     item_type = item.get("type")
     if item_type == "commandExecution":
         command = item.get("command")
         if not isinstance(command, str):
             return
         output = str(item.get("aggregatedOutput") or "")
-        await _send_post("Bash", {"command": command, "cwd": cwd}, output, cwd, thread_id)
+        await _send_post("Bash", {"command": command, "cwd": cwd}, output, cwd, context)
         if item.get("status") == "completed" and item.get("exitCode") in {None, 0}:
             for path in _read_paths(item.get("commandActions"), cwd):
-                await _send_post("Read", {"file_path": path}, output, cwd, thread_id)
+                await _send_post("Read", {"file_path": path}, output, cwd, context)
     elif item_type == "fileChange":
-        await _report_file_changes(item, cwd, thread_id)
+        await _report_file_changes(item, cwd, context)
 
 
-async def _report_file_changes(item: Mapping[str, Any], cwd: str, thread_id: str) -> None:
+async def _report_file_changes(item: Mapping[str, Any], cwd: str, context: tuple[str, Mapping[str, str]]) -> None:
     changes = item.get("changes")
     if not isinstance(changes, list):
         return
@@ -46,7 +47,7 @@ async def _report_file_changes(item: Mapping[str, Any], cwd: str, thread_id: str
                 tool_input = {"file_path": str((Path(cwd) / path).resolve())}
                 if isinstance(change.get("diff"), str):
                     tool_input["content" if actual_tool == "Write" else "new_string"] = change["diff"]
-                await _send_post(actual_tool, tool_input, str(item.get("status") or ""), cwd, thread_id)
+                await _send_post(actual_tool, tool_input, str(item.get("status") or ""), cwd, context)
 
 
 def _read_paths(actions: object, cwd: str) -> tuple[str, ...]:
@@ -63,8 +64,11 @@ def _read_paths(actions: object, cwd: str) -> tuple[str, ...]:
     )
 
 
-async def _send_post(tool: str, tool_input: dict[str, str], response: str, cwd: str, thread_id: str) -> None:
+async def _send_post(
+    tool: str, tool_input: dict[str, str], response: str, cwd: str, context: tuple[str, Mapping[str, str]]
+) -> None:
+    thread_id, dispatch_env = context
     payload = {"session_id": thread_id, "tool_name": tool, "tool_input": tool_input, "tool_response": response}
-    run = await run_router("PostToolUse", payload, cwd)
+    run = await run_router("PostToolUse", payload, cwd, dispatch_env=dispatch_env)
     if run is None or run.returncode != 0 or run.crashed:
         logger.warning("Codex PostToolUse router failed for %s", tool)
