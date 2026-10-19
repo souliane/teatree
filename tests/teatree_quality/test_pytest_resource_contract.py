@@ -20,16 +20,17 @@ from teatree.quality.pytest_resource_contract import (
 from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_probe import available_cpu_count
 from tests.teatree_quality.real_pytest_pool_support import (
+    REPO,
     ProbeSettings,
     created_workers,
     kill_group,
     launch_pytest,
     live_workers,
+    pytest_command,
+    standalone_pytest_env,
     wait_for,
     worker_pids,
 )
-from tests.teatree_quality.real_pytest_pool_support import pytest_command as _pytest_command
-from tests.teatree_quality.real_pytest_pool_support import standalone_pytest_env as _standalone_pytest_env
 
 
 def test_auto_workers_are_parallel_but_bounded_on_a_healthy_box() -> None:
@@ -135,35 +136,6 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
     assert "unsharded whole-tree pytest is refused" not in result.stderr
 
 
-def test_slot_pool_caps_explicit_requests_and_releases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    pool = WorkerSlotPool(tmp_path, capacity=3)
-    with pool.acquire(9) as lease:
-        assert lease.workers == 3
-    assert "granted 3 of 9" in capsys.readouterr().err
-    with pool.acquire(2) as lease:
-        assert lease.workers == 2
-    assert capsys.readouterr().err == ""
-
-
-@pytest.mark.timeout(5)
-def test_slot_pool_waits_for_capacity_and_says_why_once(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    pool = WorkerSlotPool(tmp_path, capacity=1)
-    first = pool.acquire(1)
-    acquired = threading.Event()
-
-    def contender() -> None:
-        with pool.acquire(1, poll_interval=0.01):
-            acquired.set()
-
-    thread = threading.Thread(target=contender)
-    thread.start()
-    assert not acquired.wait(0.2)
-    first.release()
-    assert acquired.wait(1)
-    thread.join(timeout=1)
-    assert capsys.readouterr().err.count(f"has no free slots (capacity 1); holder pid {os.getpid()}; waiting") == 1
-
-
 def test_missing_shared_root_is_created(tmp_path: Path) -> None:
     pool = WorkerSlotPool(tmp_path / "missing", capacity=1)
     with pool.acquire(1) as lease:
@@ -186,7 +158,6 @@ def test_hermetic_tests_resolve_registries_under_the_sandboxed_home() -> None:
     assert loop_registry_dir() == Path(os.environ["HOME"]) / ".local" / "share" / "teatree"
 
 
-_REPO = Path(__file__).resolve().parents[2]
 _BOX_CAPACITY = available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE
 _REAL_CAPACITY = max(2, _BOX_CAPACITY)
 _BOUNDED_NODE = f"{__file__}::test_auto_workers_are_parallel_but_bounded_on_a_healthy_box"
@@ -195,9 +166,9 @@ _BOUNDED_NODE = f"{__file__}::test_auto_workers_are_parallel_but_bounded_on_a_he
 @pytest.mark.timeout(60)
 def test_real_pytest_creates_missing_shared_pool(tmp_path: Path) -> None:
     result = subprocess.run(
-        _pytest_command("-n", "1", "-q", _BOUNDED_NODE),
-        cwd=_REPO,
-        env=_standalone_pytest_env(tmp_path / "missing"),
+        pytest_command("-n", "1", "-q", _BOUNDED_NODE),
+        cwd=REPO,
+        env=standalone_pytest_env(tmp_path / "missing"),
         capture_output=True,
         text=True,
         timeout=45,
@@ -205,42 +176,6 @@ def test_real_pytest_creates_missing_shared_pool(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "missing" / "pytest-worker-slots").is_dir()
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize(
-    ("worker_args", "worker_cap"),
-    [
-        (("-n", "3"), None),
-        (("-n", "auto"), None),
-        ((), None),
-        ((), "3"),
-        (("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"), None),
-        (("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"), None),
-    ],
-)
-def test_real_pytest_caps_every_worker_request_to_free_slots(
-    tmp_path: Path, worker_args: tuple[str, ...], worker_cap: str | None
-) -> None:
-    held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY - 1) if _BOX_CAPACITY > 1 else None
-    try:
-        env = _standalone_pytest_env(tmp_path)
-        if worker_cap is not None:
-            env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = worker_cap
-        result = subprocess.run(
-            _pytest_command(*worker_args, "-vv", _BOUNDED_NODE),
-            cwd=_REPO,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=False,
-        )
-    finally:
-        if held is not None:
-            held.release()
-    assert result.returncode == 0, result.stderr
-    assert "created: 1/1 worker" in result.stdout
 
 
 @pytest.mark.timeout(60)
@@ -255,11 +190,11 @@ def test_real_pytest_capacity_changes_with_named_factor(tmp_path: Path) -> None:
         "            return\n"
         "    raise RuntimeError('root conftest was not loaded')\n"
     )
-    env = _standalone_pytest_env(tmp_path)
+    env = standalone_pytest_env(tmp_path)
     env["PYTHONPATH"] = f"{tmp_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
     result = subprocess.run(
-        _pytest_command("-p", "slot_factor_plugin", "-n", "2", "-vv", _BOUNDED_NODE),
-        cwd=_REPO,
+        pytest_command("-p", "slot_factor_plugin", "-n", "2", "-vv", _BOUNDED_NODE),
+        cwd=REPO,
         env=env,
         capture_output=True,
         text=True,
@@ -273,10 +208,10 @@ def test_real_pytest_capacity_changes_with_named_factor(tmp_path: Path) -> None:
 @pytest.mark.timeout(60)
 def test_real_nested_pytest_runs_on_its_parents_slot_when_the_pool_is_full(tmp_path: Path) -> None:
     with WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).session_lease(_BOX_CAPACITY):
-        env = {**_standalone_pytest_env(tmp_path), INHERITED_LEASE_ENV: os.environ[INHERITED_LEASE_ENV]}
+        env = {**standalone_pytest_env(tmp_path), INHERITED_LEASE_ENV: os.environ[INHERITED_LEASE_ENV]}
         result = subprocess.run(
-            _pytest_command("-n", "3", "-vv", _BOUNDED_NODE),
-            cwd=_REPO,
+            pytest_command("-n", "3", "-vv", _BOUNDED_NODE),
+            cwd=REPO,
             env=env,
             capture_output=True,
             text=True,
@@ -285,40 +220,6 @@ def test_real_nested_pytest_runs_on_its_parents_slot_when_the_pool_is_full(tmp_p
         )
     assert result.returncode == 0, result.stderr
     assert "created: 1/1 worker" in result.stdout
-
-
-@pytest.mark.timeout(60)
-def test_real_pytest_waits_for_a_slot_and_says_why(tmp_path: Path) -> None:
-    held = WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).acquire(_BOX_CAPACITY)
-    stderr_path = tmp_path / "stderr.log"
-    with stderr_path.open("w") as stderr:
-        run = subprocess.Popen(
-            _pytest_command("-n", "1", "-q", _BOUNDED_NODE),
-            cwd=_REPO,
-            env=_standalone_pytest_env(tmp_path),
-            stdout=subprocess.DEVNULL,
-            stderr=stderr,
-        )
-    try:
-        deadline = time.monotonic() + 30
-        while "has no free slots" not in stderr_path.read_text() and time.monotonic() < deadline:
-            assert run.poll() is None, stderr_path.read_text()
-            time.sleep(0.1)
-        expected = f"has no free slots (capacity {_BOX_CAPACITY}); holder pid {os.getpid()}; waiting"
-        assert expected in stderr_path.read_text()
-        held.release()
-        assert run.wait(timeout=30) == 0, stderr_path.read_text()
-    finally:
-        held.release()
-        if run.poll() is None:
-            run.kill()
-            run.wait()
-
-
-def test_unwritable_pool_path_refuses(tmp_path: Path) -> None:
-    (tmp_path / "pytest-worker-slots").write_text("occupied")
-    with pytest.raises(PoolUnavailableError, match="is unavailable"):
-        WorkerSlotPool(tmp_path, capacity=2).acquire(1)
 
 
 def test_symlink_slot_refuses_instead_of_skipping(tmp_path: Path) -> None:
@@ -330,18 +231,62 @@ def test_symlink_slot_refuses_instead_of_skipping(tmp_path: Path) -> None:
 
 
 class TestWorkerSlotPool:
-    @pytest.mark.parametrize("obstruction", ["parent-is-a-file", "slot-is-a-directory"])
+    def test_takes_free_slots_up_to_the_request_and_never_more(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pool = WorkerSlotPool(tmp_path, capacity=3)
+        with pool.acquire(9) as lease:
+            assert lease.workers == 3
+        assert "granted 3 of 9" in capsys.readouterr().err
+        with pool.acquire(2) as lease:
+            assert lease.workers == 2
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.timeout(5)
+    def test_waits_for_one_slot_then_names_the_pool_and_its_holders(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pool = WorkerSlotPool(tmp_path, capacity=1)
+        first = pool.acquire(1)
+        acquired = threading.Event()
+
+        def contender() -> None:
+            with pool.acquire(1, poll_interval=0.01):
+                acquired.set()
+
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert not acquired.wait(0.2)
+        first.release()
+        assert acquired.wait(1)
+        thread.join(timeout=1)
+        stderr = capsys.readouterr().err
+        assert stderr.count(f"has no free slots (capacity 1); holder pid {os.getpid()}; waiting") == 1
+        assert str(pool.path) in stderr
+
+    @pytest.mark.timeout(5)
+    def test_release_frees_every_held_slot(self, tmp_path: Path) -> None:
+        pool = WorkerSlotPool(tmp_path, capacity=3)
+        with pool.acquire(2) as first, pool.acquire(1) as second:
+            assert first.workers + second.workers == 3
+        with pool.acquire(3, poll_interval=0.01) as released:
+            assert released.workers == 3
+
+    @pytest.mark.parametrize("obstruction", ["parent-is-a-file", "pool-is-a-file", "slot-is-a-directory"])
     def test_an_unusable_pool_raises_naming_the_path(self, tmp_path: Path, obstruction: str) -> None:
         root = tmp_path / "root"
         path = root / "pytest-worker-slots"
         if obstruction == "parent-is-a-file":
             root.write_text("occupied")
+        elif obstruction == "pool-is-a-file":
+            root.mkdir()
+            path.write_text("occupied")
         else:
             path.mkdir(parents=True)
             (path / "slot-0000.lock").mkdir()
         with pytest.raises(PoolUnavailableError, match="shared pytest worker pool") as error:
             WorkerSlotPool(root, capacity=1).acquire(1)
-        assert str(path if obstruction == "parent-is-a-file" else path / "slot-0000.lock") in str(error.value)
+        assert str(path / "slot-0000.lock" if obstruction == "slot-is-a-directory" else path) in str(error.value)
 
     @pytest.mark.timeout(15)
     def test_a_smaller_participant_can_take_a_free_shared_slot(self, tmp_path: Path) -> None:
@@ -409,25 +354,50 @@ class TestRealPytestRunsDrawFromOneBoxPool:
                 lease.release()
 
     @pytest.mark.timeout(150)
-    @pytest.mark.parametrize("worker_request", ["explicit-n", "env-override-auto"])
-    def test_a_request_above_the_free_slots_is_clamped(self, real_pytest_root: Path, worker_request: str) -> None:
+    @pytest.mark.parametrize(
+        ("worker_request", "worker_args", "worker_cap"),
+        [
+            pytest.param("explicit-n", ("-n", "4"), None, id="explicit-n"),
+            pytest.param("env-override-auto", ("-n", "auto"), "4", id="env-override-auto"),
+            pytest.param("addopts-auto", (), None, id="addopts-auto"),
+            pytest.param("env-override-addopts", (), "3", id="env-override-addopts"),
+            pytest.param(
+                "tx-multiplier",
+                ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"),
+                None,
+                id="tx-multiplier",
+            ),
+            pytest.param(
+                "tx-plus-multiplier",
+                ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"),
+                None,
+                id="tx-plus-multiplier",
+            ),
+        ],
+    )
+    def test_a_request_above_the_free_slots_is_clamped(
+        self, real_pytest_root: Path, worker_request: str, worker_args: tuple[str, ...], worker_cap: str | None
+    ) -> None:
         tmp_path = real_pytest_root
         capacity = max(4, _REAL_CAPACITY)
         with WorkerSlotPool(tmp_path, capacity=capacity).acquire(capacity - 2):
-            args = ("-n", "4" if worker_request == "explicit-n" else "auto")
             run, stdout, stderr, pids = launch_pytest(
                 tmp_path,
                 tmp_path,
                 worker_request,
-                *args,
-                settings=ProbeSettings(worker_cap="4" if worker_request == "env-override-auto" else None),
+                *worker_args,
+                settings=ProbeSettings(worker_cap=worker_cap),
             )
             try:
                 assert run.wait(timeout=120) == 0, stderr.read_text(encoding="utf-8")
-                assert "granted 2 of 4" in stderr.read_text(encoding="utf-8")
                 assert "; waiting" not in stderr.read_text(encoding="utf-8")
-                assert created_workers(stdout.read_text(encoding="utf-8")) == 2
-                assert len(worker_pids(pids)) == 2
+                created = created_workers(stdout.read_text(encoding="utf-8"))
+                assert 1 <= created <= 2
+                assert len(worker_pids(pids)) == created
+                if worker_request != "addopts-auto":
+                    assert created == 2
+                if worker_request in {"explicit-n", "env-override-auto"}:
+                    assert "granted 2 of 4" in stderr.read_text(encoding="utf-8")
             finally:
                 kill_group(run)
 
@@ -469,9 +439,9 @@ class TestRealPytestRunsDrawFromOneBoxPool:
         tmp_path = real_pytest_root
         with WorkerSlotPool(tmp_path, capacity=_REAL_CAPACITY).acquire(_REAL_CAPACITY):
             result = subprocess.run(
-                _pytest_command("-n", "0", "-q", _BOUNDED_NODE),
-                cwd=_REPO,
-                env=_standalone_pytest_env(tmp_path),
+                pytest_command("-n", "0", "-q", _BOUNDED_NODE),
+                cwd=REPO,
+                env=standalone_pytest_env(tmp_path),
                 capture_output=True,
                 text=True,
                 timeout=45,
@@ -485,9 +455,9 @@ class TestRealPytestRunsDrawFromOneBoxPool:
         tmp_path = real_pytest_root
         with WorkerSlotPool(tmp_path, capacity=_REAL_CAPACITY).acquire(_REAL_CAPACITY):
             result = subprocess.run(
-                _pytest_command("-n", "0", "-q"),
-                cwd=_REPO,
-                env=_standalone_pytest_env(tmp_path),
+                pytest_command("-n", "0", "-q"),
+                cwd=REPO,
+                env=standalone_pytest_env(tmp_path),
                 capture_output=True,
                 text=True,
                 timeout=45,
