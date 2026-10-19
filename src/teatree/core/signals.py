@@ -1,5 +1,4 @@
 import logging
-from importlib import import_module
 
 from django.db import transaction
 from django.db.models.signals import post_save
@@ -311,9 +310,9 @@ def _auto_enqueue_task(
 
 
 def _admit_after_checkout_capacity(**_kwargs: object) -> None:
-    transaction.on_commit(
-        lambda: import_module("teatree.core.task_dispatch").admit_waiting_tasks(at="checkout capacity"), robust=True
-    )
+    from teatree.core.task_dispatch import admit_waiting_tasks  # noqa: PLC0415 — deferred: call-time import
+
+    transaction.on_commit(lambda: admit_waiting_tasks(at="checkout capacity"), robust=True)
 
 
 def _close_session_on_terminal_task(

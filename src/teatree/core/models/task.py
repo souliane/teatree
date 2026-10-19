@@ -524,16 +524,12 @@ class Task(models.Model):
         self.not_before = not_before
         self.session_continuation = self.continuation_on_requeue()
         self._clear_claim()
-        released_seat = not_before > timezone.now()
-        if released_seat:
-            self.admitted_at = None
         self.save(
             update_fields=[
                 "status",
                 "not_before",
                 "session_continuation",
                 *CLAIM_FIELDS,
-                *(["admitted_at"] if released_seat else []),
             ],
         )
 

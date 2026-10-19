@@ -173,6 +173,8 @@ def park_task_checkout(
     own_row = Task.objects.filter(pk=task.pk)
     seat_freed = bool(own_row.cheap_lane_occupancy() or own_row.expensive_lane_occupancy())
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
+    own_row.update(admitted_at=None)
+    task.admitted_at = None
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
     rearmed = _rearm_if_occupancy_cleared(task, behind=behind, unknown_holder=unknown_holder)
     if seat_freed or rearmed:

@@ -80,6 +80,10 @@ class CheckoutFenceTests(TestCase):
             pytest.raises(CheckoutFenceError, match=r"no attested state.*worktree attest"),
         ):
             verify_task_checkout(self.task, str(self.checkout))
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            attempt = claim_task_checkout_or_park(self.task)
+        assert attempt is not None
+        assert "no attested state" in attempt.error
 
     def _park_on_a_foreign_edit(self) -> None:
         verify_task_checkout(self.task, str(self.checkout))
@@ -474,14 +478,15 @@ class CheckoutFenceTests(TestCase):
             sibling.claim(claimed_by="worker-2", claimed_by_session="s2")
             assert claim_task_checkout_or_park(sibling) is not None
             completed_at = timezone.now()
+            TaskAttempt.objects.create(task=self.task, ended_at=completed_at, exit_code=0)
             self.task.complete()
             released = Worktree.objects.get(pk=self.worktree.pk)
-            assert occupancy_holder(released) is None
+            assert released.occupied_by == ""
             assert not any(not tenure["ended"] for tenure in released.get_extra()["checkout_custody"]["tenures"])
             assert released.get_extra()["attested_state"] != initial
 
         finished = Worktree.objects.get(pk=self.worktree.pk)
-        assert occupancy_holder(finished) is None
+        assert finished.occupied_by == ""
         assert finished.get_extra()["attested_state"] != initial
         sibling.refresh_from_db()
         assert sibling.not_before is not None
