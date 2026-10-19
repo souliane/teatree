@@ -631,8 +631,6 @@ jobs:
       - name: Redact the settled owed ledger in place
         id: redact
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
       - name: Upload the settled owed ledger
         if: always() && steps.settle.outcome == 'success' && steps.redact.outcome == 'success'
