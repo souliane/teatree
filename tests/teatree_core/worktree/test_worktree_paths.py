@@ -29,7 +29,7 @@ class TestCanonicalLayout(TestCase):
 
 
 class TestPathsMatch(TestCase):
-    """``paths_match`` is symlink-tolerant pairwise equality wrapping ``_candidate_paths``."""
+    """``paths_match`` preserves local variants and verified mount identity."""
 
     def test_identical_paths_match(self) -> None:
         assert paths_match("/ws/a/repo", "/ws/a/repo") is True
@@ -55,6 +55,10 @@ class TestPathsMatch(TestCase):
             link = tmp / "link"
             link.symlink_to(target)
             assert paths_match(str(link), str(target)) is True
+
+    def test_private_prefix_variant_still_matches_without_mountinfo(self) -> None:
+        with missing_mount_table():
+            assert paths_match("/private/var/folders/x", "/var/folders/x")
 
     def test_a_recorded_spelling_absent_here_matches_its_mount_alias_both_ways(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

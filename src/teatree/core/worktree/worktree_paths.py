@@ -40,14 +40,7 @@ def worktree_dir_for(workspace: Path, branch: str, repo: str) -> Path:
     return ticket_dir_for(workspace, branch) / Path(repo).name
 
 
-def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> list[str]:
-    """Return de-duplicated list of path variants to try for DB lookups.
-
-    On macOS, ``/var`` is a symlink to ``/private/var``, so a path stored
-    as ``/var/folders/…`` won't match ``/private/var/folders/…`` (and vice
-    versa).  We try the original, the resolved form, and the ``/private``
-    prefix stripped/added variants, plus spellings from the current mount table.
-    """
+def _local_paths(path: str) -> tuple[list[str], str]:
     candidates: list[str] = [path]
     resolved = str(Path(path).resolve())
     if resolved != path:
@@ -59,6 +52,12 @@ def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> lis
         prefixed = "/private" + path
         if Path(prefixed).exists():
             candidates.append(prefixed)
+    return list(dict.fromkeys(candidates)), resolved
+
+
+def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> list[str]:
+    """Return literal, resolved, macOS ``/private``, and verified mount spellings for DB lookups."""
+    candidates, resolved = _local_paths(path)
     table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
     candidates.extend(table.spellings(path, resolved=resolved))
     return list(dict.fromkeys(candidates))
@@ -81,7 +80,7 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
 
     The pairwise form of the matcher the DB-lookup sites in :mod:`teatree.core.intake.resolve`
     already use via ``filter(extra__worktree_path__in=_candidate_paths(...))``. Two
-    paths match when ANY of their :func:`_candidate_paths` variants coincide, so a
+    paths match when their local variants coincide or map to one physical location, so a
     ``/var`` path matches its ``/private/var`` twin (and a resolved symlink matches
     its source). Routing the on-disk pairwise comparisons through it — the
     ``reconcile`` stale-dir scan, ``worktree_collision`` own-dir exclusion, and the
@@ -89,5 +88,18 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
     and mount tolerance. :func:`path_is_within` handles descendants, including
     the idle-stack active-CWD check.
     """
+    raw_a, raw_b = str(a), str(b)
+    local_a, resolved_a = _local_paths(raw_a)
+    local_b, resolved_b = _local_paths(raw_b)
+    if not set(local_a).isdisjoint(local_b):
+        return True
     table = parsed_mount_table(read_mount_table())
-    return not set(_candidate_paths(str(a), mount_table=table)).isdisjoint(_candidate_paths(str(b), mount_table=table))
+    location_a = table.locate(raw_a, resolved=resolved_a)
+    location_b = table.locate(raw_b, resolved=resolved_b)
+    if location_a is None or location_b is None:
+        return False
+    return (
+        location_a == location_b
+        or any(table.locate(path) == location_b for path in local_a[1:])
+        or any(table.locate(path) == location_a for path in local_b[1:])
+    )
