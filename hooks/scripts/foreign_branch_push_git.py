@@ -128,21 +128,10 @@ def bounded(text: str) -> str:
 
 
 def _without_active_tokens(text: str) -> str:
-    active = tuple(
-        value
-        for key in ("GH_TOKEN", "GITHUB_TOKEN")
-        if len(value := os.environ.get(key, "")) >= _MIN_ACTIVE_TOKEN_LENGTH and value in text
-    )
-    if not active:
-        return text
-    try:
-        with teatree_src_on_path():
-            from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
-    except (ImportError, RuntimeError):
-        for value in active:
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if len(value := os.environ.get(key, "")) >= _MIN_ACTIVE_TOKEN_LENGTH:
             text = text.replace(value, "<redacted>")
-        return text
-    return scrub_active_tokens(text, os.environ)
+    return text
 
 
 def probe_cause(probe: GitProbe) -> str:
