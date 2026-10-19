@@ -200,21 +200,19 @@ def test_remote_process_must_be_running_the_worker_command() -> None:
 
 def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) -> None:
     recipient = LiveMailboxBroker(runtime_dir=tmp_path)
-    closed = threading.Event()
+    served = threading.Event()
     handle = recipient._handle
 
-    async def close_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def handle_then_signal(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             await handle(reader, writer)
         finally:
-            writer.close()
-            await writer.wait_closed()
-            closed.set()
+            served.set()
 
     with (
-        patch.object(recipient, "_handle", close_connection),
-        recipient,
         LiveMailboxBroker(runtime_dir=tmp_path) as source,
+        patch.object(recipient, "_handle", handle_then_signal),
+        recipient,
     ):
         sender = source.register(room="first", harness="claude_sdk", label="sender")
         target = recipient.register(room="second", harness="claude_sdk", label="recipient")
@@ -222,9 +220,9 @@ def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) 
 
         peers = asyncio.run(MailboxClient(sender.socket_path, sender.token).peers())
         assert target.address not in {peer["address"] for peer in peers}
-        if not closed.wait(timeout=5):
-            msg = "Public-mode server connection did not close"
-            raise TimeoutError(msg)
+        # The source refuses before sending, so a shutdown can race the recipient's accept and leak its transport.
+        assert served.wait(timeout=5)
+    # Report a leaked transport in this test, not in whichever test the collector next runs in.
     gc.collect()
 
 
