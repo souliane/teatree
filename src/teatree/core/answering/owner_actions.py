@@ -73,14 +73,15 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
     def write() -> str:
         attestation = read()
         attestation.record()
-        other_cards = (
-            DeferredQuestion.owner_pending()
-            .select_for_update()
-            .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
-            .exclude(pk=row.pk)
-        )
-        for other in other_cards:
-            retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
+        with transaction.atomic():
+            other_cards = (
+                DeferredQuestion.owner_pending()
+                .select_for_update()
+                .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
+                .exclude(pk=row.pk)
+            )
+            for other in other_cards:
+                retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
         declined = declined_attest_tasks(worktree, attestation.state.digest)
         parked_tasks = Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False)
         for parked in parked_tasks.exclude(pk__in=declined):
