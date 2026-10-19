@@ -9,7 +9,10 @@ gitdir this venue cannot see.
 
 from pathlib import Path
 
+import pytest
+
 from teatree.core.intake.worktree_refusal import unresolvable_worktree_message
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 
 
 def _linked(checkout: Path, gitdir: Path | str) -> Path:
@@ -19,6 +22,33 @@ def _linked(checkout: Path, gitdir: Path | str) -> Path:
 
 
 class TestUnresolvableWorktreeMessage:
+    def test_unset_declaration_is_named(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+
+        message = unresolvable_worktree_message(str(tmp_path))
+
+        assert f"{INVOCATION_CWD_ENV} is unset (not declared)" in message
+
+    def test_unresolvable_declaration_is_quoted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        missing = tmp_path / "missing"
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(missing))
+
+        message = unresolvable_worktree_message(str(tmp_path))
+
+        assert f"{INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in message
+        assert "is unset" not in message
+
+    def test_valid_declaration_keeps_the_existing_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(tmp_path))
+
+        assert unresolvable_worktree_message(str(tmp_path)) == (
+            f"Cannot auto-detect worktree from {tmp_path}.\n"
+            "Make sure you are running t3 from inside a worktree directory.\n"
+            "Register an existing checkout with `t3 <overlay> worktree adopt <path>` (it provisions nothing)."
+        )
+
     def test_names_the_cwd(self, tmp_path: Path) -> None:
         assert str(tmp_path) in unresolvable_worktree_message(str(tmp_path))
 
