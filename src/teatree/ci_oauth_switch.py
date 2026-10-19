@@ -52,6 +52,7 @@ from functools import partial
 from typing import Protocol
 
 from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, rank
+from teatree.config import get_effective_settings
 from teatree.credential_config import TokenKind
 from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.llm.rate_limits import used_fraction
@@ -304,7 +305,11 @@ class CiAccountSwitcher:
         rejected — rather than leaving a spent account in place and reporting success.
         A *dry_run*, and an already-optimal secret, both leave the forge untouched.
         """
-        selection = select_account(rows, run_start=run_start)
+        allowlist = set(get_effective_settings().eval_ci_account_allowlist)
+        if not allowlist:
+            message = "eval CI account allowlist is empty; the secret was left untouched"
+            raise NoEligibleAccountError(message)
+        selection = select_account([row for row in rows if row.account in allowlist], run_start=run_start)
         best = selection.best
         if best is None:
             raise NoEligibleAccountError(self._no_eligible_message(selection), rejected=selection.rejected)

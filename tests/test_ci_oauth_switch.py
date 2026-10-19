@@ -25,6 +25,7 @@ from teatree.ci_oauth_switch import (
     NoEligibleAccountError,
     select_account,
 )
+from teatree.core.models import ConfigSetting
 from teatree.credential_config import TokenKind
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.token_report import TokenAccountRow, TokenSource, TokenStatus
@@ -274,6 +275,23 @@ class TestSelectionRule(TestCase):
 
 class TestSwitch(TestCase):
     """Applying the selection to the repo secret + its readable account variable."""
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SOULIANE, SPARE_ACCOUNT, SPENT_ACCOUNT])
+
+    def test_manual_switch_uses_only_allowlisted_accounts(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SPARE_ACCOUNT])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        outcome = _switcher(gh).switch(_live_rows(), run_start=RUN_START)
+        assert outcome.account == SPARE_ACCOUNT
+        assert gh.wrote_secret
+
+    def test_manual_switch_refuses_an_unset_allowlist(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        with pytest.raises(NoEligibleAccountError, match="allowlist"):
+            _switcher(gh).switch(_live_rows(), run_start=RUN_START)
+        assert not gh.wrote_secret
 
     def test_switch_writes_the_secret_and_records_the_account(self) -> None:
         gh = FakeGh(active=SPENT_ACCOUNT)
