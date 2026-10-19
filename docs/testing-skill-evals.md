@@ -109,7 +109,7 @@ The fresh-run `api` lane authenticates with the credential `agent_harness_provid
 selects, resolved through `resolve_eval_credential` — **defaulting to the
 subscription `CLAUDE_CODE_OAUTH_TOKEN`** (it draws no per-token bill). TRADEOFF: the
 subscription's depleting 5h/7d window is shared with the main loop, so the CI lane is
-RIGHT-SIZED, and an eval runs on an account only while it keeps the eval reserve free
+RIGHT-SIZED, and an eval runs on an account only while it preserves the eval reserve
 for the factory (else the lane parks green and the scenarios are owed to the nightly).
 The **weekly sweep** (`eval.yml`, checked daily, run inside the 24h before a 7-day reset)
 runs the BASELINE: each scenario ONCE at

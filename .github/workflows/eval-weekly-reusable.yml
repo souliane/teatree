@@ -175,8 +175,16 @@ jobs:
           LEDGER="$RUNNER_TEMP/eval-owed-ledger.json"
           uv run t3 eval owed collect --repo "$GITHUB_REPOSITORY" --first-lookback-days 90 --out "$LEDGER"
           uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
+      - name: Redact the owed ledger in place
+        id: redact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+        run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
       - name: Upload the owed ledger for the next scheduled run
-        if: github.ref_name == github.event.repository.default_branch
+        if: always() && github.ref_name == github.event.repository.default_branch && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-owed-ledger
@@ -620,8 +628,14 @@ jobs:
         id: settle
         if: needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
         run: uv run t3 eval owed settle --out "$RUNNER_TEMP/eval-owed-ledger.json" --all-covered
+      - name: Redact the settled owed ledger in place
+        id: redact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
       - name: Upload the settled owed ledger
-        if: steps.settle.outcome == 'success'
+        if: always() && steps.settle.outcome == 'success' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-owed-ledger

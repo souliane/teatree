@@ -167,7 +167,7 @@ installed editable from a clone; the eval harness ships inside it.
 - **CI weekly.** The metered Agent-SDK scenario run lives in a STANDALONE
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
   run neither runs nor displays a metered-eval check. Its cron is checked daily,
-  but the sweep runs only when an OAuth account keeps the eval reserve free AND
+  but the sweep runs only when an OAuth account preserves the eval reserve AND
   resets its 7-day window within 24h (`EVAL_SWEEP_WITHIN_HOURS=24`), one leg at a
   time, so it runs about once per weekly window on quota that would otherwise
   expire. The scheduled run also skips cleanly when nothing new merged in the
@@ -648,8 +648,8 @@ api_key`) for a lane that needs per-token cost accounting (e.g. a local
 cost-bounds audit).
 
 **The eval reserve — evals never drain the factory's window ([#5014](https://github.com/souliane/teatree/issues/5014)).**
-An eval runs on a subscription account only while that account keeps a reserve
-free for the factory: 40% of the 5h window and 30% of the 7d window by default
+An eval runs on a subscription account only while that account preserves a reserve
+for the factory: 40% of the 5h window and 30% of the 7d window by default
 (`EVAL_RESERVE_5H_FREE` / `EVAL_RESERVE_7D_FREE`). A missing reading counts as
 unknown and is never eligible. With no eligible account the CI selector exits 75
 and the lane PARKS: the run is green, the `eval-gate` says `PARKED` and names the

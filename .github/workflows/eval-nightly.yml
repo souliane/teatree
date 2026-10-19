@@ -135,7 +135,7 @@ jobs:
           uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
       - name: Redact the owed-scenario ledger in place
         id: redact
-        if: always() && github.ref == 'refs/heads/main'
+        if: always()
         run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
       - name: Upload the owed-scenario ledger
         if: always() && github.ref == 'refs/heads/main' && steps.redact.outcome == 'success'
