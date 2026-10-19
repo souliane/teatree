@@ -167,16 +167,7 @@ each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
 `loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
 member from the store via the Django-free `cold_reader`, so every existing reader
 (`discover_overlays`, `load_e2e_repos`, `load_peer_instances`) is untouched and teatree
-boots fully DB-configured with no config file present. Because the DB row REPLACES
-the whole file table, a lingering `[overlays.<name>]` / `[e2e_repos.<name>]` value that
-DIVERGES from the DB row would be silently masked on read — editing an overlay `path` in the
-file had NO effect and returned the stale DB value with zero signal
-([#128](https://github.com/souliane/teatree/issues/128)). `load_config` now surfaces that
-mask: it names each masked leaf and both reconcile commands as a loud WARN by default, RAISES
-`RegistryTomlMaskError` under `enforce_registry_partition=True`, and `t3 doctor`'s
-`_check_registry_toml_drift` hard-FAILs on it. The remediation actually works because
-`config_setting import` reads the RAW file (`load_raw_toml`), not the DB-injected `config.raw`
-— so an edited `path` is migrated instead of the stale DB row re-written.)
+boots fully DB-configured with no config file present.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
@@ -186,10 +177,7 @@ resolved by `config.worktree_root()` — DB `ConfigSetting` (overlay scope, then
 (`~/workspace`, where main repo clones live; `T3_WORKSPACE_DIR` env/Django-setting
 override → `~/workspace`), which `find_clone_path` and every clone-discovery caller
 use — conflating the two would make provisioning scan the worktree root for clones
-and fail. A `[teatree] workspace_dir` (or `[overlays.<name>] workspace_dir`) value
-left in TOML is **ignored on read** and warned about on load (it silently relocated
-worktrees pre-warning); migrate it into the store with `t3 <overlay> config_setting
-import` or set it explicitly. `t3 <overlay> workspace relocate` moves an overlay's
+and fail. `t3 <overlay> workspace relocate` moves an overlay's
 EXISTING teatree-managed worktrees to that per-overlay dir with `git worktree move`
 (skipping any locked / dirty / live mid-task one, idempotent, `--dry-run`-able). The
 resolution-tier wiring below details each home's chain.
@@ -524,7 +512,7 @@ architecture-design = "opus"
 
 **`session_model` / `session_effort` (interactive main agent only).** Injected
 as `--model` / `--effort` into the interactive `claude` spawn argv by
-`t3 loop start` (`cli/loop.py`'s `os.execv`), so the main agent runs at the
+`t3 loop start` (`cli/loop/app.py`'s `os.execv`), so the main agent runs at the
 pinned model/effort without a manual `/model`. This is the interactive
 main-agent axis; the per-sub-agent reasoning effort is separate — a headless SDK
 spawn gets its effort from its phase's abstract tier (`[agent.tier_effort]`, see

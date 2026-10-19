@@ -441,7 +441,7 @@ teatree resolves ALL required state from its own stores; an assistant's memory i
 ## Things That Catch People
 
 - The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.
-- `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
+- `DJANGO_SETTINGS_MODULE` is stripped from env when running `managepy()` so the overlay's own settings win.
 - **Running unit tests from another repo's working directory** (e.g., an overlay project) may fail with "No module named" errors because `DJANGO_SETTINGS_MODULE` from the outer shell leaks in before conftest can strip it. Fix: pass `--ds=tests.django_settings` to pytest, or `unset DJANGO_SETTINGS_MODULE` before invoking.
 - Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.
