@@ -56,6 +56,7 @@ from teatree.core.models.checkout_exit import CheckoutExit, CheckoutExitScope, c
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import (
     OccupancyHolder,
+    TenureOptions,
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
     _occupied_error,
@@ -69,7 +70,7 @@ from teatree.core.models.worktree_occupancy import (
     terminal_holder_task_pk,
     terminal_task_pk,
 )
-from teatree.core.worktree.cancel_processes import wait_for_owned_checkout_processes
+from teatree.core.worktree.cancel_processes import finish_owned_checkout_processes
 from teatree.core.worktree.checkout_fence import writes_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.survivor_notice import page_surviving_checkout
@@ -98,9 +99,9 @@ logger = logging.getLogger(__name__)
 
 
 def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait: bool = True) -> CheckoutExit:
-    """Wait for the run's own processes, then say whether its checkout may be released and what it attests."""
+    """Finish owned processes when requested, then check release and attestation evidence."""
     path = Path(worktree.worktree_path)
-    if wait and wait_for_owned_checkout_processes(path):
+    if wait and finish_owned_checkout_processes(path):
         return _defer_checkout_exit(task, worktree, attest=attest, cause="own_processes")
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(path):
@@ -137,12 +138,12 @@ def _defer_checkout_exit(
 
 
 def _prepare_task_checkout_exit(
-    task: Task, ticket: "Ticket", *, attest: bool, holder: str, holder_session: str
+    task: Task, *, attest: bool, wait: bool, holder: str, holder_session: str
 ) -> CheckoutExit | None:
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
-    row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
-    return None if row is None else _settle_checkout_exit(task, row, attest=attest)
+    row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
+    return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -199,8 +200,8 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
 @contextmanager
 def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Generator[None]:
     with checkout_exit_scope(
-        lambda task, attest: _prepare_task_checkout_exit(
-            task, ticket, attest=attest, holder=holder, holder_session=holder_session
+        lambda task, attest, wait: _prepare_task_checkout_exit(
+            task, attest=attest, wait=wait, holder=holder, holder_session=holder_session
         )
     ) as scope:
         try:
@@ -227,6 +228,7 @@ def occupy_ticket_checkout(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
+    namespace: str = "",
 ) -> Generator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
@@ -241,7 +243,13 @@ def occupy_ticket_checkout(
     worktree = _worktree_at(ticket, path) if path else None
     if worktree is not None:
         _release_if_finished_task(worktree)
-        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
+        acquire(
+            worktree,
+            holder=holder,
+            holder_session=holder_session,
+            lease_seconds=lease_seconds,
+            tenure=TenureOptions(namespace=namespace),
+        )
     with _held_checkout(ticket, holder=holder, holder_session=holder_session):
         yield path
 
@@ -268,7 +276,13 @@ def renew_ticket_checkout(
     if worktree is None:
         return
     try:
-        acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds, renewal=True)
+        acquire(
+            worktree,
+            holder=holder,
+            holder_session=holder_session,
+            lease_seconds=lease_seconds,
+            tenure=TenureOptions(renewal=True),
+        )
     except WorktreeOccupiedError as exc:
         raise WorktreeOccupancyLostError(str(exc)) from exc
 
