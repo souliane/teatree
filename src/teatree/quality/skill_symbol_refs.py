@@ -104,6 +104,8 @@ class RepoIndex:
     repo_root: Path
     modules: dict[str, tuple[str, ...]]
     path_pattern: re.Pattern[str]
+    package_roots: dict[str, tuple[str, ...]]
+    package_path_pattern: re.Pattern[str]
 
     def is_citation(self, ref: str) -> bool:
         """Whether a path reference names a repo file rather than prose or a stand-in.
@@ -131,10 +133,17 @@ def build_repo_index(repo_root: Path) -> RepoIndex:
             parts = parts[:-1] if parts[-1] == "__init__" else parts
             modules.setdefault(parts[-1], []).append(".".join(parts))
     tops = sorted(re.escape(entry.name) for entry in repo_root.iterdir() if entry.is_dir() and entry.name[0] != ".")
+    package_roots: dict[str, list[str]] = {}
+    for directory in (repo_root / "src" / "teatree").rglob("*"):
+        if directory.is_dir() and (directory / "__init__.py").is_file():
+            package_roots.setdefault(directory.name, []).append(str(directory.relative_to(repo_root)))
+    package_names = "|".join(re.escape(name) for name in sorted(package_roots, key=len, reverse=True))
     return RepoIndex(
         repo_root=repo_root,
         modules={basename: tuple(dotted) for basename, dotted in modules.items()},
         path_pattern=re.compile(rf"(?<![\w/.-])(?:{'|'.join(tops)})/[A-Za-z0-9_.][A-Za-z0-9_./*-]*"),
+        package_roots={name: tuple(paths) for name, paths in package_roots.items()},
+        package_path_pattern=re.compile(rf"`((?:{package_names})/[A-Za-z0-9_./*-]+)`"),
     )
 
 
@@ -151,10 +160,18 @@ def _ensure_repo_root_importable(repo_root: Path) -> None:
         sys.path.append(root_str)
 
 
-def resolve_repo_path(ref: str, repo_root: Path) -> str | None:
+def resolve_repo_path(ref: str, repo_root: Path, *, charter: bool = False) -> str | None:
     """Return ``None`` when ``ref`` names an existing path, else why not."""
-    if (repo_root / ref).exists():
+    path = repo_root / ref
+    if path.exists():
         return None
+    if charter and not path.suffix and path.with_suffix(".py").is_file():
+        return None
+    if charter and ref.startswith(_TEATREE_SRC):
+        relative = ref.removeprefix(_TEATREE_SRC)
+        app = relative.split("/", 1)[0]
+        if any((repo_root / _TEATREE_SRC / app / root / relative).exists() for root in ("templates", "static")):
+            return None
     return "no such path in the tree"
 
 
@@ -289,16 +306,36 @@ def _imported_names(clause: str) -> list[str]:
     return names
 
 
-def _path_refs(line: str, index: RepoIndex) -> Iterator[str]:
+def _path_refs(line: str, index: RepoIndex, *, charter: bool = False) -> Iterator[str]:
+    claimed: list[tuple[int, int]] = []
+    for match in index.package_path_pattern.finditer(line) if charter else ():
+        root, _, tail = match.group(1).partition("/")
+        if any(elision in tail for elision in _ELISIONS):
+            continue
+        paths = index.package_roots[root]
+        repo_candidate = index.repo_root / match.group(1)
+        if repo_candidate.exists() or repo_candidate.with_suffix(".py").is_file():
+            continue
+        viable = [
+            path
+            for path in paths
+            if (index.repo_root / path / tail).exists()
+            or (not tail.endswith("/") and (index.repo_root / path / tail).with_suffix(".py").is_file())
+        ]
+        selected = viable or paths
+        yield f"{selected[0]}/{tail}" if len(selected) == 1 else match.group(1)
+        claimed.append(match.span())
     for pattern in (_PATH, index.path_pattern):
         for match in pattern.finditer(line):
+            if any(start <= match.start() and match.end() <= end for start, end in claimed):
+                continue
             ref = match.group().rstrip("`.,;:)")
             if not any(elision in ref for elision in _ELISIONS) and index.is_citation(ref):
                 yield ref
 
 
-def _refs_in_line(line: str, index: RepoIndex) -> list[str]:
-    refs: list[str] = list(_path_refs(line, index))
+def _refs_in_line(line: str, index: RepoIndex, *, charter: bool = False) -> list[str]:
+    refs: list[str] = list(_path_refs(line, index, charter=charter))
     spans = _bracketed_spans(line)
     for match in _DOTTED.finditer(line):
         dotted = match.group()
@@ -318,11 +355,11 @@ def _refs_in_line(line: str, index: RepoIndex) -> list[str]:
     return refs
 
 
-def _resolve(ref: str, index: RepoIndex) -> str | None:
+def _resolve(ref: str, index: RepoIndex, *, charter: bool = False) -> str | None:
     """Try every reading the reference admits; unresolved only when all of them fail."""
     if "/" not in ref:
         return resolve_dotted(ref) if ref.partition(".")[0] == "teatree" else resolve_module_local(ref, index)
-    path_reason = resolve_repo_path(ref, index.repo_root)
+    path_reason = resolve_repo_path(ref, index.repo_root, charter=charter)
     if path_reason is None:
         return None
     symbol_reason = resolve_path_qualified_symbol(ref, index)
@@ -331,7 +368,7 @@ def _resolve(ref: str, index: RepoIndex) -> str | None:
     return path_reason if symbol_reason == _NO_SYMBOL_READING else f"{path_reason}; {symbol_reason}"
 
 
-def scan_source(source: str, path: Path, repo_root: Path) -> list[SymbolRefFinding]:
+def scan_source(source: str, path: Path, repo_root: Path, *, charter: bool = False) -> list[SymbolRefFinding]:
     """Extract and resolve every teatree-shaped reference in a skill document."""
     index = build_repo_index(repo_root)
     exempt = _exempt_lines(source)
@@ -340,16 +377,18 @@ def scan_source(source: str, path: Path, repo_root: Path) -> list[SymbolRefFindi
     for lineno, line in enumerate(source.splitlines(), start=1):
         if lineno in exempt:
             continue
-        for ref in _refs_in_line(line, index):
+        for ref in _refs_in_line(line, index, charter=charter):
             if (lineno, ref) in seen:
                 continue
             seen.add((lineno, ref))
-            findings.append(SymbolRefFinding(path=path, lineno=lineno, ref=ref, reason=_resolve(ref, index)))
+            findings.append(
+                SymbolRefFinding(path=path, lineno=lineno, ref=ref, reason=_resolve(ref, index, charter=charter))
+            )
     return findings
 
 
-def scan_file(path: Path, repo_root: Path) -> list[SymbolRefFinding]:
-    return scan_source(path.read_text(encoding="utf-8"), path, repo_root)
+def scan_file(path: Path, repo_root: Path, *, charter: bool = False) -> list[SymbolRefFinding]:
+    return scan_source(path.read_text(encoding="utf-8"), path, repo_root, charter=charter)
 
 
 def scan_tree(skills_root: Path, repo_root: Path) -> list[SymbolRefFinding]:

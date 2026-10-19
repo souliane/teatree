@@ -36,7 +36,6 @@ _REMOTE_AUTH_REFUSED: Final[re.Pattern[str]] = re.compile(
 )
 # A refusal is read in a terminal, so git's output — stderr and stdout alike — is truncated past this, not dropped.
 _MAX_QUOTED_CHARS: Final[int] = 400
-_MIN_ACTIVE_TOKEN_LENGTH: Final[int] = 8
 # `git config --get` exits 1 for a key nobody set, which is an ANSWER and not a failure.
 _CONFIG_KEY_UNSET: Final[int] = 1
 # `push.default` values that write every same-named branch, or none, but never one named.
@@ -128,10 +127,10 @@ def bounded(text: str) -> str:
 
 
 def _without_active_tokens(text: str) -> str:
-    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if len(value := os.environ.get(key, "")) >= _MIN_ACTIVE_TOKEN_LENGTH:
-            text = text.replace(value, "<redacted>")
-    return text
+    with teatree_src_on_path():
+        from teatree.forge_credentials import scrub_active_tokens  # noqa: PLC0415 -- cold-hook import
+
+        return scrub_active_tokens(text, os.environ)
 
 
 def probe_cause(probe: GitProbe) -> str:

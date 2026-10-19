@@ -122,3 +122,8 @@ class PromotionToggleTestCase(TestCase):
         assert outcome.deferred is True
         assert _pending() == []
         assert list(ConsolidatedMemory.objects.needs_ticket()) == [row]
+
+    def test_unreadable_settings_are_not_reported_as_disabled(self) -> None:
+        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("settings unavailable")):
+            outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
+        assert "unreadable" in outcome.reason

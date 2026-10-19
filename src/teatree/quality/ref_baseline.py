@@ -136,7 +136,7 @@ def _pairs(root: Path, findings: Iterable[SymbolRefFinding]) -> set[tuple[str, s
 def _reported_cached(ratchet: Ratchet, root: Path) -> Pins:
     """The whole-tree walk, run once per (ratchet, root) rather than once per caller."""
     if ratchet == "charter":
-        findings = [f for doc in charter_docs(root) if doc.is_file() for f in scan_file(doc, root)]
+        findings = [f for doc in charter_docs(root) if doc.is_file() for f in scan_file(doc, root, charter=True)]
     else:
         findings = scan_python_tree(root)
     return frozenset(_pairs(root, findings))

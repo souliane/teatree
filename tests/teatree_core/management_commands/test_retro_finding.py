@@ -2,8 +2,8 @@
 
 A finding is recorded in the consolidation ledger and queued on the umbrella host's
 pending ledger for the backlog sweep — the drain dreaming Pass 2 already uses. The
-queueing follows the default-ON ``dream_memory_promote`` setting; each case pins it through
-``T3_DREAM_MEMORY_PROMOTE`` so the OFF case is its own class.
+queueing follows the default-ON ``dream_memory_promote`` setting; promoting and OFF cases
+pin it through ``T3_DREAM_MEMORY_PROMOTE``.
 """
 
 import json

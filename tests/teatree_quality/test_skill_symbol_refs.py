@@ -132,7 +132,7 @@ def _unresolved_charter_refs() -> set[tuple[str, str]]:
         (str(doc.relative_to(_REPO_ROOT)), finding.ref)
         for doc in _CHARTER_DOCS
         if doc.is_file()
-        for finding in _unresolved(scan_file(doc, _REPO_ROOT))
+        for finding in _unresolved(scan_file(doc, _REPO_ROOT, charter=True))
     }
 
 
@@ -160,7 +160,7 @@ class TestCharterDocs:
     def test_the_charter_documents_are_actually_walked(self) -> None:
         # The ratchet above is satisfied by scanning nothing, so pin that the walk
         # reaches real content: BLUEPRINT.md alone cites dozens of live symbols.
-        resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT) if f.reason is None]
+        resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT, charter=True) if f.reason is None]
         assert len(resolved) > 10, "BLUEPRINT.md yielded almost no teatree-shaped references — the walk is broken"
 
 
