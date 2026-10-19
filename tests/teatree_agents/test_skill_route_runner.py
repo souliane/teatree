@@ -11,7 +11,7 @@ from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
-from teatree.agents import harness_registry
+from teatree.agents import harness_registry, runner_preparation
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -203,7 +203,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         with (
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
-                runner_mod, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
+                runner_preparation, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
             ),
         ):
             final = self._run(self._config("claude_like", "codex_like"))

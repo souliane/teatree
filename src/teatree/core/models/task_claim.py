@@ -276,10 +276,10 @@ def _refuse_lost_lease(task: "Task") -> None:
 
 
 @contextmanager
-def atomic_after_checkout_exit(task: "Task", *, attest: bool = True) -> Generator[None]:
+def atomic_after_checkout_exit(task: "Task", *, attest: bool = True, wait: bool = True) -> Generator[None]:
     """Settle outside the write lock only while this claim still holds."""
     _refuse_lost_lease(task)
-    prepared_checkout_exit(task, attest=attest)
+    prepared_checkout_exit(task, attest=attest, wait=wait)
     try:
         with transaction.atomic():
             yield
@@ -360,7 +360,11 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
         task_occupancy_release_deferred,
     )
 
-    exit_state = prepared_checkout_exit(task, attest=_exit_attests(failure_kind)) if by_holder else None
+    exit_state = (
+        prepared_checkout_exit(task, attest=_exit_attests(failure_kind), wait=failure_kind != FailureKind.CANCELLED)
+        if by_holder
+        else None
+    )
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
@@ -402,7 +406,9 @@ def fail_claimed(task: "Task", *, reason: str) -> None:
     occupancy claim later, if any.
     """
     _, failure_kind = _failure_details(reason)
-    with atomic_after_checkout_exit(task, attest=_exit_attests(failure_kind)):
+    with atomic_after_checkout_exit(
+        task, attest=_exit_attests(failure_kind), wait=failure_kind != FailureKind.CANCELLED
+    ):
         _refuse_lost_lease(task)
         task.fail(reason=reason, by_holder=True)
 
