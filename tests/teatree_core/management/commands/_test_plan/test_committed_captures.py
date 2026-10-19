@@ -559,12 +559,12 @@ class TestTheDefaultPlansDirIsInvocationRelative(_PlanCaptureTestBase):
         original_is_dir = Path.is_dir
         probes = 0
 
-        def appears_after_first_probe(path: Path) -> bool:
+        def appears_after_first_probe(path: Path, *, follow_symlinks: bool = True) -> bool:
             nonlocal probes
             if path == missing:
                 probes += 1
                 return probes > 1
-            return original_is_dir(path)
+            return original_is_dir(path, follow_symlinks=follow_symlinks)
 
         self._monkeypatch.setattr(Path, "is_dir", appears_after_first_probe)
 

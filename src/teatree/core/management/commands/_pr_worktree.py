@@ -48,7 +48,7 @@ def _worktree_missing_error(ticket: Ticket) -> WorktreeMissingError:
 
 
 def _unusable_invocation_cwd_error(process_cwd: Path, problem: str) -> WorktreeMissingError:
-    """Name why the declared cwd degraded to the image WORKDIR (#4281)."""
+    """Name the missing or unusable declaration; bare "not a git worktree" sends operators to the fallback path."""
     return WorktreeMissingError(
         error=(
             f"Refusing to adopt: {problem}, so adoption fell back to the "

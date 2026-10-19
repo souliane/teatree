@@ -112,10 +112,10 @@ class TestInvocationCwdDeclarationProblem:
         monkeypatch.setenv(INVOCATION_CWD_ENV, str(value))
         original_is_dir = Path.is_dir
 
-        def deny_parent(path: Path) -> bool:
+        def deny_parent(path: Path, *, follow_symlinks: bool = True) -> bool:
             if path == value:
                 raise PermissionError(value)
-            return original_is_dir(path)
+            return original_is_dir(path, follow_symlinks=follow_symlinks)
 
         monkeypatch.setattr(Path, "is_dir", deny_parent)
 
