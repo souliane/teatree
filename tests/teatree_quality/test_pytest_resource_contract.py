@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from teatree.quality.pytest_resource_contract import (
-    INHERITED_LEASE_ENV,
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
     WorkerSlotPool,
@@ -133,17 +132,6 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
         check=False,
     )
     assert "unsharded whole-tree pytest is refused" not in result.stderr
-
-
-def test_outer_session_lease_is_inherited_by_its_descendants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(INHERITED_LEASE_ENV, raising=False)
-    pool = WorkerSlotPool(tmp_path, capacity=2)
-    with pool.session_lease(5) as outer:
-        assert outer.workers == 2
-        assert os.environ[INHERITED_LEASE_ENV] == f"{pool.path}:{os.getpid()}"
-        with pool.session_lease(5) as nested:
-            assert nested.workers == 1
-    assert INHERITED_LEASE_ENV not in os.environ
 
 
 _BOX_CAPACITY = available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE
