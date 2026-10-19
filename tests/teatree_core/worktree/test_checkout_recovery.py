@@ -14,13 +14,18 @@ from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
 from teatree.utils.git import run_strict
+from tests._process_table_venue import nested_venue, table_with_unreadable_pid
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
+
+
+class InterruptedRun(BaseException):
+    pass
 
 
 class _RecoveryCase(TestCase):
@@ -67,6 +72,62 @@ class _RecoveryCase(TestCase):
 
 
 class CheckoutRecoveryTests(_RecoveryCase):
+    def test_namespace_less_previous_writer_still_parks_for_host_gap(self) -> None:
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+            assert claim_task_checkout_or_park(self.next_task) is not None
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+
+    def test_mixed_previous_tenures_still_park_for_host_gap(self) -> None:
+        extra = self.worktree.get_extra()
+        prior = extra["checkout_custody"]["tenures"][0]
+        extra["checkout_custody"]["tenures"] = [prior, {**prior, "namespace": "pid:[42]"}]
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+            assert claim_task_checkout_or_park(self.next_task) is not None
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+
+    def test_nested_previous_writer_sets_aside_only_host_namespace_gap(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        gap = "pid 21 (claude) is unreadable by this uid"
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        assert table.eviction_refuse_reason() == gap
+
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+            assert claim_task_checkout_or_park(self.next_task) is None
+
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.path).digest
+        audit = self.worktree.get_extra()["auto_attestation"]
+        assert audit["process_table"]["set_aside"] == [gap]
+        assert audit["tenures"][0]["namespace"] == "pid:[42]"
+
+    def test_nested_previous_writer_still_refuses_nested_unreadable_pid(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\t7\n")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+            assert claim_task_checkout_or_park(self.next_task) is not None
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+
+    def test_recovery_refuses_visible_checkout_process_after_nested_writer(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        acquire(self.worktree, holder=task_holder_id(self.next_task))
+
+        table = ProcessTable(frozenset({self.path}), "/host-proc")
+        assert not reattest_on_proof(self.next_task, self.worktree, checkout_state(self.path), table)
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+
     def test_a_hand_holder_between_runs_refuses(self) -> None:
         acquire(self.worktree, holder="operator", holder_session="terminal")
         release(self.worktree, holder="operator", holder_session="terminal")
@@ -219,6 +280,58 @@ class ReRootedCheckoutRecoveryTests(_RecoveryCase):
         probe.assert_called_once_with(str(self.path), "rerooted")
 
 
+class InterruptedRunnerRecoveryTests(TestCase):
+    def test_runner_records_nested_venue_and_next_claim_reattests(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "checkout"
+        _init_repo_with_branch(path, branch="feature", commits_ahead=0)
+        ticket = TicketFactory()
+        previous = TaskFactory(ticket=ticket, phase="coding")
+        next_task = TaskFactory(ticket=ticket, phase="testing")
+        worktree = WorktreeFactory(ticket=ticket, branch="feature", extra={"worktree_path": str(path)})
+        clear = ProcessTable(frozenset(), "/host-proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            verify_task_checkout(previous, str(path))
+        anchor = checkout_state(path).digest
+        previous.claim(claimed_by="worker", claimed_by_session="run-1")
+
+        def commit_change(*_args: object, **_kwargs: object) -> TaskAttempt:
+            (path / "change.txt").write_text("interrupted change")
+            run_strict(repo=str(path), args=["config", "user.email", "test@example.com"])
+            run_strict(repo=str(path), args=["config", "user.name", "Test"])
+            run_strict(repo=str(path), args=["add", "change.txt"])
+            run_strict(repo=str(path), args=["commit", "-m", "interrupted change"])
+            return Mock(spec=TaskAttempt)
+
+        with (
+            nested_venue(Path(temporary.name) / "proc"),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            patch("teatree.core.worktree.occupancy._finish_task_checkout", side_effect=InterruptedRun),
+            patch.object(runner, "_run_agent", side_effect=commit_change),
+            pytest.raises(InterruptedRun),
+        ):
+            runner.run_agent(previous, phase="coding", overlay_skill_metadata={})
+
+        worktree.refresh_from_db()
+        extra = worktree.get_extra()
+        assert worktree.occupied_by == task_holder_id(previous)
+        assert extra["attested_state"] == anchor
+        assert extra["checkout_custody"]["tenures"][-1]["ended"] == ""
+        assert "deferred_exit" not in extra
+        Worktree.objects.filter(pk=worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        table = table_with_unreadable_pid(path.parent, nspid="NSpid:\t21\n")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+            assert claim_task_checkout_or_park(next_task) is None
+
+        worktree.refresh_from_db()
+        assert worktree.get_extra()["attested_state"] == checkout_state(path).digest
+        audit = worktree.get_extra()["auto_attestation"]
+        assert audit["process_table"]["set_aside"] == ["pid 21 (claude) is unreadable by this uid"]
+        assert audit["tenures"][0]["namespace"] == "pid:[42]"
+        assert audit["tenures"][0]["ended"] == "abandoned"
+
+
 class DeferredExitRecoveryTests(_RecoveryCase):
     def setUp(self) -> None:
         super().setUp()
@@ -249,6 +362,10 @@ class DeferredExitRecoveryTests(_RecoveryCase):
         assert audit["previous"] == self.anchor
         assert audit["holder"] == {"id": task_holder_id(self.next_task), "session": ""}
         assert serialize_worktree(self.worktree)["auto_attestation"] == audit
+
+    def test_cancelled_holder_cannot_use_the_deferred_record(self) -> None:
+        Task.objects.filter(pk=self.previous.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
+        self.assert_parked(self.container_table)
 
     def test_claim_path_admits_the_next_writer(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.container_table):

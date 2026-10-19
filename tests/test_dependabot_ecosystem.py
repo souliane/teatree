@@ -28,7 +28,7 @@ _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _PRE_COMMIT = _REPO_ROOT / ".pre-commit-config.yaml"
 
-_HELD = frozenset(canonicalize_name(name) for name in ("click", "django-typer", "ruff", "typer"))
+_HELD = frozenset(canonicalize_name(name) for name in ("click", "django-typer", "ruff", "ty", "typer"))
 
 #: The ignore range that begins exactly at each ceiling operator's edge.
 _IGNORE_FROM_CEILING = {"<": ">=", "<=": ">", "==": ">"}

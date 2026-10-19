@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 from django.apps import apps
 from django.db import transaction
+from django_fsm import TransitionNotAllowed, can_proceed
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
@@ -35,7 +36,7 @@ class SelfReviewRework(NamedTuple):
 
 
 class TicketSchedulingModel(TicketFacet):
-    """Fresh-session phase-task scheduling, orphan-task consumption, and the dirty-worktree preflight."""
+    """Fresh-session phase-task scheduling, orphan-task consumption, and the transition preflights."""
 
     if TYPE_CHECKING:
         # Reverse accessor for ``Task.ticket``'s ``related_name="tasks"`` — Django
@@ -318,9 +319,9 @@ class TicketSchedulingModel(TicketFacet):
         transition bodies. Dirty-collection rule and the no-auto-stash/
         lease-reaper rationale live on :func:`collect_dirty_worktree_paths`
         (#1983 LOC-ratchet split). On dirty: a loud :class:`DirtyWorktreeError`
-        names the dirty worktree(s) and the transition does not advance —
-        every production caller wraps the transition body in an outer
-        ``transaction.atomic``, so the raise rolls that whole atomic back.
+        names the dirty worktree(s) and the transition does not advance.
+        Transition callers wrap their writes in ``transaction.atomic``;
+        the sync preflight has no writes to roll back.
         """
         dirty = collect_dirty_worktree_paths(self)
         if not dirty:
@@ -333,6 +334,19 @@ class TicketSchedulingModel(TicketFacet):
             f"and could clobber another branch — #806.)"
         )
         raise DirtyWorktreeError(msg)
+
+    def refuse_unless_shippable(self: "Ticket") -> None:
+        """Raise what ``ship()`` would refuse with, without transitioning — the preflight before any push."""
+        if not can_proceed(self.ship):
+            msg = f"Can't switch from state '{self.state}' using method 'ship'"
+            raise TransitionNotAllowed(msg, object=self, method=self.ship)
+        self._refuse_if_worktree_dirty("shipping")
+        get_gate("local_e2e_dod")(self)
+        get_gate("forced_repro")(self)
+
+    def complete_ship_after_pr_open(self: "Ticket") -> None:
+        self.ship()
+        self.request_review()
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
         """Mark non-terminal tasks for ``phase`` as COMPLETED.

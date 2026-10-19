@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "uv_build"
-requires = [ "uv-build>=0.7,<0.13" ]
+requires = [ "uv-build>=0.7,<0.14" ]
 
 [project]
 name = "teatree"
@@ -197,7 +197,9 @@ dev = [
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
-  "ty>=0.0.85",
+  # Held until ty accepts nested Meta overrides (astral-sh/ty#4711); Django and
+  # factory_boy consume these classes in their metaclasses.
+  "ty>=0.0.85,<0.0.86",
   # Upper-bounded because ``django-typer`` gates it: 3.9.0 (the newest release the
   # ``django-typer<4`` bound above admits) requires ``typer<0.26.0``. Without the
   # ceiling the resolver takes typer 0.27, finds 3.9.0 unsatisfiable and backtracks

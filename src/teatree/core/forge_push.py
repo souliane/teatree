@@ -72,7 +72,7 @@ VERIFY_TIMEOUT_SECONDS = 60.0
 
 REDACTION = "<redacted>"
 
-#: Marks a push whose caller opens the PR itself and may hold the control-DB write lock; the ensure-pr hook skips it.
+#: Marks a push whose caller opens the PR itself; the ensure-pr hook skips it.
 SHIP_PUSH_ENV = "TEATREE_SHIP_PUSH"
 
 #: Userinfo prefixes that identify a forge token embedded in a remote URL. A bare

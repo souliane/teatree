@@ -27,7 +27,8 @@ def verify_pr_exists(host: CodeHostBackend, url: str) -> RereadOutcome:
     concrete open/merged/closed state for the PR, ``not_confirmed`` when the
     re-read comes back ``UNKNOWN`` (404 / auth / unparsable). The caller gates
     on ``outcome.confirmed`` — a create whose re-read is not confirmed is
-    reported failed, never recorded, so no phantom PR row/URL escapes.
+    reported failed, never recorded as a PR, so no phantom PR row/URL escapes;
+    the sync ship only indexes it for a retry that re-reads it before adopting.
     """
     return verify_by_reread(
         label=f"create_pr:{url}",

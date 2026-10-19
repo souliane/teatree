@@ -11,13 +11,24 @@ from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Task, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
-from teatree.core.models.checkout_proof import AutoAttestation, DeferredExitAttestation
+from teatree.core.models.checkout_proof import AutoAttestation, CheckoutProcessEvidence, DeferredExitAttestation
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
+
+
+def _holder_task(holder: str, task: Task) -> Task | None:
+    pk = holder.removeprefix("task:")
+    if not holder.startswith("task:") or not pk.isdigit():
+        return None
+    return Task.objects.filter(pk=int(pk), ticket=task.ticket).first()
+
+
+def _cancelled(task: Task | None) -> bool:
+    return task is not None and task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
 
 
 def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
@@ -35,14 +46,8 @@ def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
     ):
         return None
     prior_holder, _ = next(iter(identities))
-    if not prior_holder.startswith("task:") or not prior_holder[5:].isdigit():
-        return None
-    prior = Task.objects.filter(pk=int(prior_holder[5:]), ticket=task.ticket).first()
-    if (
-        prior is None
-        or not tools_for_phase(prior.phase) & {"write_file", "edit_file", MCP_WRITE}
-        or (prior.status == Task.Status.FAILED and prior.failure_kind == FailureKind.CANCELLED)
-    ):
+    prior = _holder_task(prior_holder, task)
+    if prior is None or not tools_for_phase(prior.phase) & {"write_file", "edit_file", MCP_WRITE} or _cancelled(prior):
         return None
     return prior
 
@@ -89,7 +94,11 @@ def _state_unchanged(task: Task, worktree: Worktree, state: CheckoutState) -> bo
 
 def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable) -> bool:
     custody = Custody.from_extra(worktree.get_extra())
-    if custody is None or table.eviction_refuse_reason() or table.holds(Path(worktree.worktree_path)):
+    if (
+        custody is None
+        or table.eviction_refuse_reason(nested_writer=custody.prior_tenures_nested)
+        or table.holds(Path(worktree.worktree_path))
+    ):
         return False
     prior = _interrupted_writer(task, custody)
     branch_proof = _expected_branches(task, worktree, state) if prior is not None else None
@@ -97,12 +106,15 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
         return False
     branches, pull_requests = branch_proof
     current: Tenure = custody.tenures[-1]
+    process_evidence: CheckoutProcessEvidence = {"source": table.source, "gaps": list(table.gaps)}
+    if custody.prior_tenures_nested and table.host_namespace_gaps:
+        process_evidence["set_aside"] = list(table.host_namespace_gaps)
     audit: AutoAttestation = {
         "at": timezone.now().isoformat(),
         "previous": custody.anchor,
         "digest": state.digest,
         "tenures": [entry.as_dict() for entry in custody.tenures],
-        "process_table": {"source": table.source, "gaps": list(table.gaps)},
+        "process_table": process_evidence,
         "branches": branches,
         "pull_requests": pull_requests,
         "holder": {"id": current.holder, "session": current.session},
@@ -135,7 +147,7 @@ def attest_deferred_exit(task: Task, worktree: Worktree, state: CheckoutState, t
         or (worktree.occupied_by, worktree.occupied_by_session) != claimant
     ):
         return False
-    if not _state_unchanged(task, worktree, state):
+    if _cancelled(_holder_task(record["holder"], task)) or not _state_unchanged(task, worktree, state):
         return False
     audit: DeferredExitAttestation = {
         "at": timezone.now().isoformat(),
