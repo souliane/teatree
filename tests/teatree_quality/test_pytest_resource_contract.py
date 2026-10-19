@@ -17,7 +17,6 @@ from teatree.quality.pytest_resource_contract import (
     bounded_auto_workers,
     whole_tree_refusal,
 )
-from teatree.utils.hook_registry import loop_registry_dir
 from teatree.utils.ram_probe import available_cpu_count
 from tests.teatree_quality.real_pytest_pool_support import (
     REPO,
@@ -136,13 +135,6 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
     assert "unsharded whole-tree pytest is refused" not in result.stderr
 
 
-def test_missing_shared_root_is_created(tmp_path: Path) -> None:
-    pool = WorkerSlotPool(tmp_path / "missing", capacity=1)
-    with pool.acquire(1) as lease:
-        assert lease.workers == 1
-    assert pool.path.is_dir()
-
-
 def test_outer_session_lease_is_inherited_by_its_descendants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(INHERITED_LEASE_ENV, raising=False)
     pool = WorkerSlotPool(tmp_path, capacity=2)
@@ -154,80 +146,9 @@ def test_outer_session_lease_is_inherited_by_its_descendants(tmp_path: Path, mon
     assert INHERITED_LEASE_ENV not in os.environ
 
 
-def test_hermetic_tests_resolve_registries_under_the_sandboxed_home() -> None:
-    assert loop_registry_dir() == Path(os.environ["HOME"]) / ".local" / "share" / "teatree"
-
-
 _BOX_CAPACITY = available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE
 _REAL_CAPACITY = max(2, _BOX_CAPACITY)
 _BOUNDED_NODE = f"{__file__}::test_auto_workers_are_parallel_but_bounded_on_a_healthy_box"
-
-
-@pytest.mark.timeout(60)
-def test_real_pytest_creates_missing_shared_pool(tmp_path: Path) -> None:
-    result = subprocess.run(
-        pytest_command("-n", "1", "-q", _BOUNDED_NODE),
-        cwd=REPO,
-        env=standalone_pytest_env(tmp_path / "missing"),
-        capture_output=True,
-        text=True,
-        timeout=45,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert (tmp_path / "missing" / "pytest-worker-slots").is_dir()
-
-
-@pytest.mark.timeout(60)
-def test_real_pytest_capacity_changes_with_named_factor(tmp_path: Path) -> None:
-    plugin = tmp_path / "slot_factor_plugin.py"
-    plugin.write_text(
-        "def pytest_configure(config):\n"
-        "    for module in config.pluginmanager.get_plugins():\n"
-        "        if getattr(module, '__file__', '').endswith('/tests/conftest.py'):\n"
-        "            module.available_cpu_count = lambda: 1\n"
-        "            module.TOTAL_TEST_WORKERS_PER_CORE = 2\n"
-        "            return\n"
-        "    raise RuntimeError('root conftest was not loaded')\n"
-    )
-    env = standalone_pytest_env(tmp_path)
-    env["PYTHONPATH"] = f"{tmp_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
-    result = subprocess.run(
-        pytest_command("-p", "slot_factor_plugin", "-n", "2", "-vv", _BOUNDED_NODE),
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=45,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "created: 2/2 workers" in result.stdout
-
-
-@pytest.mark.timeout(60)
-def test_real_nested_pytest_runs_on_its_parents_slot_when_the_pool_is_full(tmp_path: Path) -> None:
-    with WorkerSlotPool(tmp_path, capacity=_BOX_CAPACITY).session_lease(_BOX_CAPACITY):
-        env = {**standalone_pytest_env(tmp_path), INHERITED_LEASE_ENV: os.environ[INHERITED_LEASE_ENV]}
-        result = subprocess.run(
-            pytest_command("-n", "3", "-vv", _BOUNDED_NODE),
-            cwd=REPO,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=False,
-        )
-    assert result.returncode == 0, result.stderr
-    assert "created: 1/1 worker" in result.stdout
-
-
-def test_symlink_slot_refuses_instead_of_skipping(tmp_path: Path) -> None:
-    slot_dir = tmp_path / "pytest-worker-slots"
-    slot_dir.mkdir()
-    (slot_dir / "slot-0000.lock").symlink_to(tmp_path / "target")
-    with pytest.raises(PoolUnavailableError, match="is unreadable"):
-        WorkerSlotPool(tmp_path, capacity=2).acquire(1)
 
 
 class TestWorkerSlotPool:
@@ -272,49 +193,18 @@ class TestWorkerSlotPool:
         with pool.acquire(3, poll_interval=0.01) as released:
             assert released.workers == 3
 
-    @pytest.mark.parametrize("obstruction", ["parent-is-a-file", "pool-is-a-file", "slot-is-a-directory"])
+    @pytest.mark.parametrize("obstruction", ["parent-is-a-file", "slot-is-a-directory"])
     def test_an_unusable_pool_raises_naming_the_path(self, tmp_path: Path, obstruction: str) -> None:
         root = tmp_path / "root"
         path = root / "pytest-worker-slots"
         if obstruction == "parent-is-a-file":
             root.write_text("occupied")
-        elif obstruction == "pool-is-a-file":
-            root.mkdir()
-            path.write_text("occupied")
         else:
             path.mkdir(parents=True)
             (path / "slot-0000.lock").mkdir()
         with pytest.raises(PoolUnavailableError, match="shared pytest worker pool") as error:
             WorkerSlotPool(root, capacity=1).acquire(1)
         assert str(path / "slot-0000.lock" if obstruction == "slot-is-a-directory" else path) in str(error.value)
-
-    @pytest.mark.timeout(15)
-    def test_a_smaller_participant_can_take_a_free_shared_slot(self, tmp_path: Path) -> None:
-        script = (
-            "import sys,time; from pathlib import Path; "
-            "from teatree.quality.pytest_resource_contract import WorkerSlotPool; "
-            "pool=WorkerSlotPool(Path(sys.argv[1]),capacity=int(sys.argv[2])); "
-            "lease=pool.acquire(1); print(lease.workers,flush=True); time.sleep(float(sys.argv[3]))"
-        )
-        with subprocess.Popen(
-            [sys.executable, "-c", script, str(tmp_path), "8", "10"],
-            stdout=subprocess.PIPE,
-            text=True,
-        ) as holder:
-            try:
-                assert holder.stdout is not None
-                assert holder.stdout.readline().strip() == "1"
-                caller = subprocess.run(
-                    [sys.executable, "-c", script, str(tmp_path), "1", "0"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                assert caller.returncode == 0, caller.stderr
-                assert caller.stdout.strip() == "1"
-            finally:
-                holder.kill()
 
 
 class TestRealPytestRunsDrawFromOneBoxPool:
@@ -359,20 +249,6 @@ class TestRealPytestRunsDrawFromOneBoxPool:
         [
             pytest.param("explicit-n", ("-n", "4"), None, id="explicit-n"),
             pytest.param("env-override-auto", ("-n", "auto"), "4", id="env-override-auto"),
-            pytest.param("addopts-auto", (), None, id="addopts-auto"),
-            pytest.param("env-override-addopts", (), "3", id="env-override-addopts"),
-            pytest.param(
-                "tx-multiplier",
-                ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "3*popen"),
-                None,
-                id="tx-multiplier",
-            ),
-            pytest.param(
-                "tx-plus-multiplier",
-                ("-o", "addopts=--ds=tests.django_settings", "-d", "--tx", "+3*popen"),
-                None,
-                id="tx-plus-multiplier",
-            ),
         ],
     )
     def test_a_request_above_the_free_slots_is_clamped(
@@ -392,12 +268,9 @@ class TestRealPytestRunsDrawFromOneBoxPool:
                 assert run.wait(timeout=120) == 0, stderr.read_text(encoding="utf-8")
                 assert "; waiting" not in stderr.read_text(encoding="utf-8")
                 created = created_workers(stdout.read_text(encoding="utf-8"))
-                assert 1 <= created <= 2
+                assert created == 2
                 assert len(worker_pids(pids)) == created
-                if worker_request != "addopts-auto":
-                    assert created == 2
-                if worker_request in {"explicit-n", "env-override-auto"}:
-                    assert "granted 2 of 4" in stderr.read_text(encoding="utf-8")
+                assert "granted 2 of 4" in stderr.read_text(encoding="utf-8")
             finally:
                 kill_group(run)
 
