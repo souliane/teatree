@@ -1,6 +1,6 @@
 """Typed records for checkout custody and attestation."""
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class CheckoutTenure(TypedDict):
@@ -9,6 +9,7 @@ class CheckoutTenure(TypedDict):
     since: str
     ended: str
     ended_at: str
+    namespace: NotRequired[str]
 
 
 class CheckoutCustody(TypedDict):
@@ -19,6 +20,7 @@ class CheckoutCustody(TypedDict):
 class CheckoutProcessEvidence(TypedDict):
     source: str
     gaps: list[str]
+    set_aside: NotRequired[list[str]]
 
 
 class CheckoutHolderEvidence(TypedDict):

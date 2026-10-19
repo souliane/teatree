@@ -34,7 +34,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.cleanup.process_table import host_proc_root, venue_proc_root
+from teatree.core.cleanup.process_table import host_proc_root, pid_namespace_depth, venue_proc_root
 
 #: Sustained fraction of one core, summed across the group, below which a leaderless group
 #: is parked rather than spinning. The incident measured ~0.57; an idle orphan ~0.000.
@@ -205,18 +205,7 @@ def _is_nested_namespace(pid_dir: Path) -> bool:
     An unreadable or absent ``NSpid`` answers False: over-reporting an advisory finding is
     recoverable, dropping one silently is not.
     """
-    try:
-        status = (pid_dir / "status").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    for line in status.splitlines():
-        if line.startswith("NSpid:"):
-            return len(line.split()) > _MIN_NSPID_FIELDS
-    return False
-
-
-#: ``NSpid:`` plus one entry — a pid living only in the table's own namespace.
-_MIN_NSPID_FIELDS = 2
+    return pid_namespace_depth(pid_dir) > 1
 
 
 def scan_orphan_groups(
