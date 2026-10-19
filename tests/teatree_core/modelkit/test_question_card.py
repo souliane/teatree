@@ -41,6 +41,16 @@ def test_seeded_eighty_character_prefix_uses_the_full_title() -> None:
     )
 
 
+def test_seed_cut_on_a_space_uses_the_full_title() -> None:
+    full = "The owner card should show the whole issue title when the seed stops on a space between words here"
+    short = full[:80]
+    assert short.endswith(" ")
+
+    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") == (
+        "The owner card should show the whole issue title when the seed stops on a..."
+    )
+
+
 def test_whole_short_prefix_wins_over_the_longer_issue_title() -> None:
     assert (
         safe_ticket_card_title(

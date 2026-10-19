@@ -155,9 +155,9 @@ class TestCheckoutAttestCard(TestCase):
             True: "The step resumes on the folder as it is; changes the factory did not make become part of its work.",
         }
         declines = {
-            True: "The step stays parked until the folder changes or the factory can check it safely; "
+            True: "The step stays stuck until the folder changes or the factory can check it safely; "
             "the pull request may wait while open.",
-            False: "The step stays parked until the folder changes or the factory can check it safely; "
+            False: "The step stays stuck until the folder changes or the factory can check it safely; "
             "no pull request for this folder was open when asked.",
         }
         for host_evidence, with_pull_request in product((False, True), repeat=2):
@@ -411,7 +411,7 @@ class TestCheckoutAttestCard(TestCase):
         row, text = _ask(TaskFactory(ticket=ticket))
 
         assert row.is_pending
-        assert "Should the" in text
+        assert "step of The issue title is longer than the eighty character seed and should remain\u2026 run" in text
 
     def test_long_legacy_title_keeps_the_card_answerable(self) -> None:
         ticket = TicketFactory(

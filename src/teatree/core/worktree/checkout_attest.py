@@ -40,7 +40,7 @@ _STEPS: dict[str, _Step] = {
     "architectural_review": _Step("design review", "fix design problems", may_block_pull_request=False),
 }
 _NEXT_STEP = _Step("next", "continue the work", may_block_pull_request=False)
-_DECLINE_PREFIX = "The step stays parked until the folder changes or the factory can check it safely"
+_DECLINE_PREFIX = "The step stays stuck until the folder changes or the factory can check it safely"
 
 
 class AttestRefusedError(RuntimeError):
@@ -178,10 +178,15 @@ def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
     )
 
 
+def _unlinked_title(title: str) -> str:
+    return f"{title.removesuffix('...')}\u2026" if title.endswith("...") else title
+
+
 def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, QuestionCard]:
     ticket = task.ticket
     title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
-    subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else title.removesuffix("...")
+    # Outside a link, a trailing "..." followed by more words reads as a sentence end.
+    subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else _unlinked_title(title)
     step = _STEPS.get(normalize_phase(task.phase), _NEXT_STEP)
     pull_request = _pull_request_url(task, attestation.worktree)
     waits, decline = _pull_request_words(pull_request, may_block=step.may_block_pull_request)

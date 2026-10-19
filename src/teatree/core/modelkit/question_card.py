@@ -95,11 +95,12 @@ def safe_card_title(title: str, fallback: str) -> str:
 
 def safe_ticket_card_title(short_description: object, extra: object, fallback: str) -> str:
     legacy = extra.get("issue_title", "") if isinstance(extra, dict) else ""
-    short = short_description.strip() if isinstance(short_description, str) else ""
+    stored = short_description if isinstance(short_description, str) else ""
+    short = stored.strip()
     full = legacy.strip() if isinstance(legacy, str) else ""
     ellipsis_prefix = short.removesuffix("...").removesuffix("\u2026")
     cut = bool(full and full.startswith(ellipsis_prefix)) and (
-        short.endswith(("\u2026", "...")) or (len(short) >= MAX_CARD_TITLE_CHARS and len(full) > len(short))
+        short.endswith(("\u2026", "...")) or (len(stored) >= MAX_CARD_TITLE_CHARS and len(full) > len(short))
     )
     if full and (cut or not short) and (safe_full := safe_card_title(full, "")):
         return safe_full
