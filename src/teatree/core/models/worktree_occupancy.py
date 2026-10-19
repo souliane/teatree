@@ -76,6 +76,15 @@ class OccupancyHolder:
         return f"{self.holder}{session}{since}, lease expires {self.expires_at.isoformat()}"
 
 
+@dataclass(frozen=True)
+class TenureOptions:
+    renewal: bool = False
+    namespace: str = ""
+
+
+_DEFAULT_TENURE = TenureOptions()
+
+
 def task_holder_id(task: Task) -> str:
     """The holder id a dispatched agent occupies a checkout under.
 
@@ -170,7 +179,7 @@ def acquire(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
-    renewal: bool = False,
+    tenure: TenureOptions = _DEFAULT_TENURE,
 ) -> OccupancyHolder:
     """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
 
@@ -209,7 +218,9 @@ def acquire(
             extra = Worktree.objects.filter(pk=worktree.pk).values_list("extra", flat=True).get() or {}
             custody = Custody.from_extra(extra)
             if custody is not None:
-                updated = custody.opened(holder, holder_session, now, renewal=renewal)
+                updated = custody.opened(
+                    holder, holder_session, now, renewal=tenure.renewal, namespace=tenure.namespace
+                )
                 if updated != custody:
                     Worktree.objects.filter(pk=worktree.pk).update(
                         extra={**extra, "checkout_custody": updated.as_dict()}
