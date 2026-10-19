@@ -129,7 +129,9 @@ def _options(attestation: CheckoutAttestation, decline: str) -> tuple[CardOption
         else "The step runs once on the folder as it is; "
         "edits the factory did not make, even unfinished ones, become part of its work."
     )
-    return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
+    accept_option = CardOption("Accept", accept, recommended=attestation.host_evidence, approves_action=True)
+    decline_option = CardOption("Decline", decline, recommended=not attestation.host_evidence)
+    return (accept_option, decline_option) if attestation.host_evidence else (decline_option, accept_option)
 
 
 def _pull_request_url(task: Task, worktree: Worktree) -> str:

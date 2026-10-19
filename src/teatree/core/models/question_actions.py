@@ -22,7 +22,7 @@ def is_action_question(row: "DeferredQuestion") -> bool:
 
 def owner_declined(row: "DeferredQuestion") -> bool:
     option = match_action_option(row.options_json, row.answer_text)
-    return row.resolved_via == row.ResolvedVia.SLACK and option is not None and not option.recommended
+    return row.resolved_via == row.ResolvedVia.SLACK and option is not None and not option.approves_action
 
 
 def held_question(

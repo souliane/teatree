@@ -45,11 +45,12 @@ from tests.void_merge_fixtures import PR_URL, landed_ticket, stub_forge
 
 _OWNER = "U0DEMOOWNER"
 _CLEAR = ProcessTable(frozenset(), "/proc")
-_OPTION_INDEX = {"Accept": 1, "Decline": 2, "Proceed": 1, "Void": 1}
 
 
 def _tap(row: DeferredQuestion, label: str, *, user: str = _OWNER) -> dict[str, object]:
-    index = _OPTION_INDEX[label]
+    index = next(
+        index for index, option in enumerate(CardOption.parse_all(row.options_json), 1) if option.label == label
+    )
     return {
         "type": "block_actions",
         "user": {"id": user},
@@ -141,12 +142,17 @@ class TestCheckoutAttestation(TestCase):
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
         assert self._outcomes(row) == ["declined"]
 
-    def test_nonrecommended_tap_cannot_carry_out_if_decline_shortcut_is_missed(self) -> None:
-        row = self._park_on_a_foreign_edit()
+    def test_recommended_decline_cannot_carry_out_the_action(self) -> None:
+        self._park_on_a_foreign_edit()
+        row = ask_owner_to_attest(
+            self.task,
+            CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=False),
+        )
+        assert row is not None
+        assert CardOption.parse_all(row.options_json)[0].label == "Decline"
         self._answer(row, "Decline")
 
-        with patch("teatree.core.answering.owner_actions.owner_declined", return_value=False):
-            assert self._carry_out() == [f"refused {row.pk}"]
+        assert self._carry_out() == [f"declined {row.pk}"]
 
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] != checkout_state(self.checkout).digest
@@ -316,7 +322,7 @@ class TestCheckoutAttestation(TestCase):
             blocker="Only the owner may accept this state.",
             why="The factory stopped before writing.",
             options=(
-                CardOption("Proceed", "I record this checkout state.", recommended=True),
+                CardOption("Proceed", "I record this checkout state.", recommended=True, approves_action=True),
                 CardOption("Leave", "The task stays parked."),
             ),
             action=CheckoutAttestation(self.worktree, state, host_evidence=True).action,
@@ -611,7 +617,7 @@ class TestActionIdentity(TestCase):
             blocker="Only the owner may accept it.",
             why="The factory stopped before writing.",
             options=(
-                CardOption("Accept", "I record this state.", recommended=True),
+                CardOption("Accept", "I record this state.", recommended=True, approves_action=True),
                 CardOption("Decline", "Nothing changes."),
             ),
             action=action,

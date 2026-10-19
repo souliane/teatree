@@ -125,11 +125,11 @@ def _decide(row: DeferredQuestion, answer: DeferredQuestionAudit | None) -> _Dec
         return _Decision("refused", "Only the owner's Slack button tap may approve this action.", notify=True)
     kind = OwnerActionKind(action["kind"])
     option = match_action_option(row.options_json, row.answer_text)
-    if option is None or not option.recommended:
+    if option is None or not option.approves_action:
         note = (
             "The answer did not match a card option; ask again."
             if option is None
-            else "Only the recommended option may approve this action."
+            else "Only the approving option may carry out this action."
         )
         return _Decision("refused", note, notify=True)
     try:

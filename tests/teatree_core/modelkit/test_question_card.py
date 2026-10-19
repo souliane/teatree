@@ -14,10 +14,23 @@ from teatree.core.modelkit.question_card import (
     QuestionCard,
     counted,
     internal_shorthand,
+    match_action_option,
     plain_text,
     safe_ticket_card_title,
     word_count,
 )
+
+
+def test_action_match_requires_one_approving_option_even_when_decline_is_recommended() -> None:
+    options = [
+        {"label": "Decline", "description": "Wait.", "recommended": True},
+        {"label": "Accept", "description": "Proceed.", "approves_action": True},
+    ]
+
+    assert match_action_option(json.dumps(options), "Accept") == CardOption("Accept", "Proceed.", approves_action=True)
+    assert match_action_option(json.dumps(options), "Decline") == CardOption("Decline", "Wait.", recommended=True)
+    assert match_action_option(json.dumps([{**options[0], "approves_action": True}, options[1]]), "Decline") is None
+    assert match_action_option(json.dumps([{**options[0]}, {**options[1], "approves_action": False}]), "Accept") is None
 
 
 def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:

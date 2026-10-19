@@ -168,14 +168,16 @@ class TestCheckoutAttestCard(TestCase):
 
                 row, text = _ask(TaskFactory(ticket=ticket), host_evidence=host_evidence)
 
-                assert f"[Accept] (recommended) - {accepts[host_evidence]}" in text
-                assert f"[Decline] - {declines[with_pull_request]}" in text
+                advice = "Accept" if host_evidence else "Decline"
+                assert f"[{advice}] (recommended)" in text
+                assert accepts[host_evidence] in text
+                assert declines[with_pull_request] in text
                 card = QuestionCard.from_row(row.evidence, row.options_json)
                 assert card is not None
-                assert [(option.label, option.recommended) for option in card.options] == [
-                    ("Accept", True),
-                    ("Decline", False),
-                ]
+                assert card.options[0].label == advice
+                assert [(option.label, option.approves_action) for option in card.options] == (
+                    [("Accept", True), ("Decline", False)] if host_evidence else [("Decline", False), ("Accept", True)]
+                )
                 assert card.decision == OwnerDecision.IRREVERSIBLE
                 assert card.action is not None
                 assert card.action["binding"] == "d" * 64
