@@ -25,7 +25,7 @@ radius = 400
 # The skill-loading kill-switch has no TaskCreated counterpart.
 "docs/blueprint/configuration.md" = ["fc8f72f58efdba5f"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
-"docs/blueprint/factory-architecture.md" = ["8fef355432273104"]
+"docs/blueprint/factory-architecture.md" = ["4563a0158e257724"]
 # 1: the harness's 27-event constant list.
 # 2: the task-event table, the optional fields, the ONE-producer fact, and that stopReason
 # sets preventContinuation the task-creation consumer never reads.
