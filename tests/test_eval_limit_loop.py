@@ -27,6 +27,7 @@ _PR_LOOP = "Metered behavioral eval — the changed scenarios (in Docker)"
 _NIGHTLY_OWED = "Owed scenarios (in Docker)"
 _NIGHTLY_SHARD = "Nightly smoke behavioral eval (in Docker)"
 _WEEKLY_LEG = "Behavioral eval suite (in Docker; pass@k; --require-executed always armed)"
+_BENCHMARK_LEG = "Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)"
 _SELECTOR = 'uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]'
 _LIMIT = 75
 
@@ -94,6 +95,7 @@ def shell(tmp_path: Path):
         environment = {
             "PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin",
             "RUNNER_TEMP": str(temp),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary"),
             "STUB_LOG": str(log),
             **{f"STUB_RC_{name}": str(code) for name, code in (rcs or {}).items()},
             **env,
@@ -130,6 +132,13 @@ class TestPrLaneParksOnTheLimit:
         assert first.invoked == retry.invoked == ["alpha", "beta"]
         assert retry.returncode == 1
 
+    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell, workflow: str) -> None:
+        script = _script(workflow, "eval", _PR_LOOP)
+        first = shell(script, rcs={"alpha": 1}, EVAL_NAMES="alpha,beta")
+        later = shell(script, rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta")
+        assert first.returncode == later.returncode == 1
+        assert later.lines("eval-owed-limit.txt") == ["beta"]
+
     def test_no_limit_owes_nothing(self, shell, workflow: str) -> None:
         run = shell(_script(workflow, "eval", _PR_LOOP), EVAL_NAMES="alpha,beta")
         assert run.returncode == 0
@@ -138,6 +147,12 @@ class TestPrLaneParksOnTheLimit:
 
 
 class TestNightlyOwedBatch:
+    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell) -> None:
+        script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
+        first = shell(script, rcs={"alpha": 1, "beta": 1}, STUB_OWED="alpha beta")
+        later = shell(script, rcs={"beta": _LIMIT}, STUB_OWED="alpha beta")
+        assert first.returncode == later.returncode == 1
+
     def test_a_pass_clears_and_the_limit_leaves_the_rest_owed(self, shell) -> None:
         script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
         run = shell(script, rcs={"beta": _LIMIT}, STUB_OWED="alpha beta gamma")
@@ -164,6 +179,14 @@ class TestNightlyOwedBatch:
     ids=["nightly", "weekly"],
 )
 class TestSingleInvocationLanesParkOnTheLimit:
+    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell, workflow: str, step_name: str) -> None:
+        script = _script(workflow, "eval", step_name)
+        first = shell(script, rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2")
+        later = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
+        replay = shell(script, EVAL_SUFFIX="clean_room-1-2")
+        assert first.returncode == later.returncode == replay.returncode == 1
+        assert replay.invoked == ["suite", "suite"]
+
     def test_the_limit_parks_green(self, shell, workflow: str, step_name: str) -> None:
         run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
         assert run.returncode == 0
@@ -223,6 +246,44 @@ def test_a_sweep_whose_every_leg_parked_publishes_no_empty_dashboard(shell) -> N
 
 def test_the_benchmark_never_overlaps() -> None:
     assert _workflow("eval-benchmark.yml")["concurrency"] == {"group": "eval-benchmark", "cancel-in-progress": False}
+
+
+class TestBenchmarkCapacityPark:
+    def test_selector_park_uploads_a_marker(self, shell) -> None:
+        step = _step("eval-weekly-reusable.yml", "eval", "Mark a benchmark parked by the reserve")
+        upload = _step("eval-weekly-reusable.yml", "eval", "Upload the benchmark matrix HTML dashboard")
+        assert step["if"] == "steps.select.outputs.parked == 'true'"
+        run = shell(step["run"], SUFFIX="clean_room-1")
+        assert run.returncode == 0
+        assert (run.temp / "eval-benchmark-clean_room-1.parked").read_text(encoding="utf-8") == "parked\n"
+        assert ".parked" in upload["with"]["path"]
+
+    def test_limit_parks_and_retry_invokes_nothing(self, shell) -> None:
+        script = _script("eval-weekly-reusable.yml", "eval", _BENCHMARK_LEG)
+        first = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1")
+        retry = shell(script, EVAL_SUFFIX="clean_room-1")
+        assert first.returncode == retry.returncode == 0
+        assert first.invoked == retry.invoked == ["suite"]
+        assert (first.temp / "eval-limit-hit-clean_room-1").exists()
+
+    def test_earlier_measured_red_beats_a_later_limit(self, shell) -> None:
+        script = _script("eval-weekly-reusable.yml", "eval", _BENCHMARK_LEG)
+        first = shell(script, rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1")
+        second = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1")
+        assert first.returncode == second.returncode == 1
+        assert second.invoked == ["suite", "suite"]
+
+    def test_parked_artifact_skips_publish_without_a_dashboard(self, shell, tmp_path: Path) -> None:
+        marker = tmp_path / "runner-temp" / "benchmarks" / "eval-benchmark-clean_room-1.parked"
+        marker.parent.mkdir()
+        marker.write_text("parked\n", encoding="utf-8")
+        script = _script(
+            "eval-weekly-reusable.yml", "publish", "Refuse to publish an incomplete or unmetered dashboard"
+        )
+        result = shell(script, GITHUB_OUTPUT=str(tmp_path / "output"), EVAL_MATRIX='[{"lane":"clean_room"}]')
+        assert result.returncode == 0
+        assert result.invoked == []
+        assert (tmp_path / "output").read_text(encoding="utf-8") == "publish=false\n"
 
 
 def test_the_nightly_runs_owed_scenarios_before_the_shard() -> None:

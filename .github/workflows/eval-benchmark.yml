@@ -63,6 +63,8 @@ jobs:
   benchmark:
     permissions:
       contents: write
+      actions: read
+      pull-requests: read
     uses: ./.github/workflows/eval-weekly-reusable.yml
     with:
       force: true

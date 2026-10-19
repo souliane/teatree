@@ -10,12 +10,15 @@ piece of it.
 import re
 from pathlib import Path
 
+import yaml
+
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr.yml"
 _PR_REUSABLE = _WORKFLOWS / "eval-pr-reusable.yml"
 _NIGHTLY = _WORKFLOWS / "eval-nightly.yml"
 _WEEKLY = _WORKFLOWS / "eval.yml"
 _WEEKLY_REUSABLE = _WORKFLOWS / "eval-weekly-reusable.yml"
+_BENCHMARK = _WORKFLOWS / "eval-benchmark.yml"
 _CACHE_ACTION = _WORKFLOWS.parent / "actions" / "eval-verdict-cache" / "action.yml"
 
 
@@ -73,6 +76,28 @@ def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
     text = _WEEKLY.read_text(encoding="utf-8")
     assert "summary-directory: ${{ runner.temp }}/summaries" in text
     assert 'mkdir -p "$SUMMARY_DIRECTORY"' in _CACHE_ACTION.read_text(encoding="utf-8")
+
+
+def test_benchmark_caller_grants_prepare_read_permissions() -> None:
+    caller = yaml.safe_load(_BENCHMARK.read_text(encoding="utf-8"))
+    grants = caller["jobs"]["benchmark"]["permissions"]
+    assert grants["actions"] == "read"
+    assert grants["pull-requests"] == "read"
+
+
+def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
+    workflow = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["publish"]["steps"]
+    downloaded = next(i for i, step in enumerate(steps) if step.get("name") == "Download the owed ledger")
+    settled = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name") == "Settle owed scenarios covered by the full green benchmark"
+    )
+    assert downloaded < settled
+    assert steps[downloaded]["with"]["name"] == "eval-owed-ledger"
+    assert steps[downloaded]["with"]["path"] == "${{ runner.temp }}"
+    assert steps[settled]["env"]["XDG_DATA_HOME"] == "${{ runner.temp }}/xdg"
 
 
 def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:

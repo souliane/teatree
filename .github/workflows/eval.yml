@@ -561,6 +561,16 @@ jobs:
           # starts. The filter appends, so both attempts stay in the one uploaded log.
           command: |
             set -o pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit-$EVAL_SUFFIX"
+            RED_MARKER="$RUNNER_TEMP/eval-confirmed-red-$EVAL_SUFFIX"
+            if [ -f "$LIMIT_MARKER" ]; then
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              if [ -f "$RED_MARKER" ]; then
+                read -r rc < "$RED_MARKER"
+                exit "$rc"
+              fi
+              exit 0
+            fi
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             MODEL_FLAG=""
@@ -586,9 +596,15 @@ jobs:
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
             if [ "$rc" -eq 75 ]; then
+              touch "$LIMIT_MARKER"
               echo "::warning title=eval PARKED::leg $EVAL_SUFFIX hit the usage limit; its remaining scenarios did not run"
+              if [ -f "$RED_MARKER" ]; then
+                read -r rc < "$RED_MARKER"
+                exit "$rc"
+              fi
               exit 0
             fi
+            echo "$rc" > "$RED_MARKER"
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
             tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"

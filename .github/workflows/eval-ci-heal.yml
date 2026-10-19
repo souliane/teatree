@@ -235,6 +235,7 @@ jobs:
             set -euo pipefail
             mkdir -p "$HEAL_DIR"
             limit_marker="$RUNNER_TEMP/eval-limit-hit"
+            red_marker="$RUNNER_TEMP/eval-confirmed-red"
             if [ -f "$limit_marker" ]; then
               read -r recorded_rc < "$limit_marker" || recorded_rc=0
               echo "PARKED: an earlier attempt hit the subscription usage limit; t3 is not re-run into it."
@@ -251,6 +252,8 @@ jobs:
               if [ "$rc" -eq 75 ]; then
                 limit_hit=true
                 rc=0
+              elif [ "$rc" -ne 0 ]; then
+                echo "$rc" > "$red_marker"
               fi
             else
               IFS=',' read -ra NAMES <<< "$EVAL_SCENARIOS"
@@ -269,11 +272,15 @@ jobs:
                 fi
                 if [ "$scenario_rc" -ne 0 ]; then
                   rc="$scenario_rc"
+                  echo "$scenario_rc" > "$red_marker"
                 fi
               done
             fi
             # A red measured before the limit stays red; the marker replays the verdict without re-running t3.
             if [ "$limit_hit" = true ]; then
+              if [ "$rc" -eq 0 ] && [ -f "$red_marker" ]; then
+                read -r rc < "$red_marker"
+              fi
               echo "$rc" > "$limit_marker"
               echo "PARKED: the subscription usage limit refused scenarios; this leg parks instead of retrying into it."
             fi

@@ -265,6 +265,7 @@ jobs:
           command: |
             set -euo pipefail
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-owed-confirmed-red"
             PASSED="$RUNNER_TEMP/eval-owed-passed.txt"
             ATTEMPTED="$RUNNER_TEMP/eval-owed-attempted.txt"
             touch "$PASSED"
@@ -292,6 +293,9 @@ jobs:
                 | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-owed-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-owed-$name.md" >> "$RUNNER_TEMP/eval-summary-owed.md"
               if [ "$scenario_rc" -eq 75 ]; then
+                if [ "$rc" -eq 0 ] && [ -f "$RED_MARKER" ]; then
+                  read -r rc < "$RED_MARKER"
+                fi
                 echo "$rc" > "$LIMIT_MARKER"
                 echo "::warning title=eval PARKED::usage limit reached at $name; it and the rest of the batch stay owed"
                 break
@@ -300,6 +304,7 @@ jobs:
                 echo "$name" >> "$PASSED"
               else
                 rc="$scenario_rc"
+                echo "$scenario_rc" > "$RED_MARKER"
               fi
             done
             exit "$rc"
@@ -337,8 +342,13 @@ jobs:
           command: |
             set -euo pipefail
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-smoke-confirmed-red"
             if [ -f "$LIMIT_MARKER" ]; then
               echo "The usage limit was hit tonight — the smoke shard is parked."
+              if [ -f "$RED_MARKER" ]; then
+                read -r rc < "$RED_MARKER"
+                exit "$rc"
+              fi
               exit 0
             fi
             rc=0
@@ -351,9 +361,15 @@ jobs:
               --summary-json "$RUNNER_TEMP/eval-verdict-rows-nightly.json" \
               --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee || rc=$?
             if [ "$rc" -eq 75 ]; then
+              touch "$LIMIT_MARKER"
               echo "::warning title=eval PARKED::usage limit reached in the smoke shard"
+              if [ -f "$RED_MARKER" ]; then
+                read -r rc < "$RED_MARKER"
+                exit "$rc"
+              fi
               exit 0
             fi
+            [ "$rc" -ne 0 ] && echo "$rc" > "$RED_MARKER"
             exit "$rc"
       # Clear every owed scenario that passed tonight; a red or unrun one stays owed.
       - name: Settle the owed-scenario ledger

@@ -353,6 +353,7 @@ jobs:
             echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" \
               | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-confirmed-red"
             if [ -f "$LIMIT_MARKER" ]; then
               read -r rc < "$LIMIT_MARKER"
               echo "The usage limit was hit on an earlier attempt — invoking no scenario."
@@ -386,12 +387,16 @@ jobs:
               fi
               if [ "$scenario_rc" -eq 75 ]; then
                 printf '%s\n' "${NAMES[@]:index}" | xargs -n1 > "$RUNNER_TEMP/eval-owed-limit.txt"
+                if [ "$rc" -eq 0 ] && [ -f "$RED_MARKER" ]; then
+                  read -r rc < "$RED_MARKER"
+                fi
                 echo "$rc" > "$LIMIT_MARKER"
                 echo "::warning title=eval PARKED::usage limit reached at $name"
                 break
               fi
               if [ "$scenario_rc" -ne 0 ]; then
                 rc="$scenario_rc"
+                echo "$scenario_rc" > "$RED_MARKER"
               fi
             done
             # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed

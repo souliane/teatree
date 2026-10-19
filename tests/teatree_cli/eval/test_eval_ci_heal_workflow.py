@@ -226,6 +226,13 @@ class TestALegParksOnTheUsageLimit:
         assert len(_t3_calls(leg)) == 2
         assert _limit_marker(leg).exists()
 
+    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, leg: dict[str, str]) -> None:
+        leg["T3_RCS"] = "1 75"
+        first = _attempt(leg)
+        later = _attempt(leg)
+        assert (first.returncode, later.returncode) == (1, 1)
+        assert _limit_marker(leg).read_text(encoding="utf-8") == "1\n"
+
     def test_a_selector_park_records_the_leg_as_parked(self, leg: dict[str, str]) -> None:
         leg["SELECT_PARKED"] = "true"
 

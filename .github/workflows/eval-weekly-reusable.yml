@@ -23,6 +23,8 @@
 #   out + symlink the host so `uv sync` registers the overlay entry point and
 #   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
 #   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
+#   The caller job must grant contents: write, actions: read, and
+#   pull-requests: read; called jobs cannot raise the caller's token grants.
 #
 # AUTH (`credential` input, mirrors `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` provider pin)
 #   DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` secret
@@ -414,6 +416,13 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
+      - name: Mark a benchmark parked by the reserve
+        if: steps.select.outputs.parked == 'true'
+        env:
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
+        run: |
+          printf 'parked\n' > "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
+          echo "Benchmark PARKED — no eligible subscription account." >> "$GITHUB_STEP_SUMMARY"
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         if: steps.select.outputs.parked != 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
@@ -466,6 +475,13 @@ jobs:
           # uploaded log.
           command: |
             set -o pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit-$EVAL_SUFFIX"
+            RED_MARKER="$RUNNER_TEMP/eval-confirmed-red-$EVAL_SUFFIX"
+            if [ -f "$LIMIT_MARKER" ]; then
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              [ -f "$RED_MARKER" ] && exit 1
+              exit 0
+            fi
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             TAIL_LINES=400
@@ -479,6 +495,14 @@ jobs:
               --transcript-html "$MATRIX_HTML" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
+            if [ "$rc" -eq 75 ]; then
+              printf 'parked\n' > "$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.parked"
+              touch "$LIMIT_MARKER"
+              echo "Benchmark PARKED — usage limit reached." >> "$GITHUB_STEP_SUMMARY"
+              [ -f "$RED_MARKER" ] && exit 1
+              exit 0
+            fi
+            touch "$RED_MARKER"
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
             tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
@@ -504,6 +528,7 @@ jobs:
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/eval-benchmark-$SUFFIX.html"
+          "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
           "$RUNNER_TEMP/eval-run-$SUFFIX.log"
       # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
       # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
@@ -515,7 +540,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
-          path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
+          path: |
+            ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
+            ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.parked
           if-no-files-found: warn
       # The captured, redacted stdout/stderr of every attempt (the `artifact_redaction tee` target
       # in the eval command). Unlike the matrix dashboard — rendered only if the run reaches
@@ -582,6 +609,12 @@ jobs:
           path: ${{ runner.temp }}/benchmarks
           pattern: eval-benchmark-*
           merge-multiple: true
+      - name: Download the owed ledger
+        if: needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}
       # REFUSE an unmetered or INCOMPLETE dashboard. When the subscription OAuth
       # window is exhausted mid-run the remaining shards still "complete": every
       # scenario force-FAILs and the affected model reports $0.0000. When a leg
@@ -591,16 +624,26 @@ jobs:
       # shard refuses rather than shrinking the dashboard into a complete-looking
       # commit. Runs BEFORE the copy, so nothing bad reaches the working tree.
       - name: Refuse to publish an incomplete or unmetered dashboard
+        id: verify
         env:
           EVAL_MATRIX: ${{ needs.prepare.outputs.matrix }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          parked=("$RUNNER_TEMP"/benchmarks/*.parked)
+          if [ "${#parked[@]}" -gt 0 ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Benchmark PARKED — dashboard and owed ledger stay unchanged." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           EXPECTED="$(printf '%s' "$EVAL_MATRIX" | python -c 'import json,sys; print(len(json.load(sys.stdin)))')"
           uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
       # Copy every shard's matrix HTML into the caller's public dashboard dir. The
       # per-shard HTML files keep their lane/shard/effort suffix, so parallel legs
       # never collide. An index links them; the dir is the published dashboard.
       - name: Collect the shard matrices into the public dashboard dir
+        if: steps.verify.outputs.publish == 'true'
         env:
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
@@ -611,6 +654,7 @@ jobs:
       # Commit + push the dashboard ONLY when it changed (an unchanged file is a
       # clean no-op — no empty commit).
       - name: Commit and push the dashboard when it changed
+        if: steps.verify.outputs.publish == 'true'
         env:
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
@@ -626,7 +670,9 @@ jobs:
           fi
       - name: Settle owed scenarios covered by the full green benchmark
         id: settle
-        if: needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
+        if: steps.verify.outputs.publish == 'true' && needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/xdg
         run: uv run t3 eval owed settle --out "$RUNNER_TEMP/eval-owed-ledger.json" --all-covered
       - name: Redact the settled owed ledger in place
         id: redact
