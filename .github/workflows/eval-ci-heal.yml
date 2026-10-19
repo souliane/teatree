@@ -400,13 +400,15 @@ jobs:
       # Full-suite ONLY (empty `scenarios`): a named-subset heal re-run evals a red
       # slice on purpose, so it is NOT a full-suite proof and this step is skipped.
       # It runs BEFORE the upload; the upload is `if: always()` so the artifact still
-      # publishes for the heal loop even when this gate reds.
+      # publishes for the heal loop even when this gate reds. A parked run (a leg the
+      # reserve or the usage limit stopped) exits 75: not a proof, not a red — the heal
+      # loop reads the merged `parked` flag and requeues the session.
       - name: Assert the full-suite eval green proof (231/231, 0 reds)
         if: inputs.scenarios == ''
         env:
           SHA: ${{ needs.prepare.outputs.sha }}
           OUT_DIR: ${{ runner.temp }}/combined
-        run: uv run t3 eval green-proof "$OUT_DIR/eval-heal-$SHA.json" --sha "$SHA"
+        run: uv run t3 eval green-proof "$OUT_DIR/eval-heal-$SHA.json" --sha "$SHA" || [ "$?" -eq 75 ]
       # KNOWN-RED QUARANTINE AUDIT (souliane/teatree#4173). A quarantined scenario is
       # suppressed from the bounded selective-PR lane only — it is still run, still
       # graded, and still reds the proof above. This step is where that stays visible:

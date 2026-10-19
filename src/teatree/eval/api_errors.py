@@ -21,6 +21,10 @@ MAX_TURNS_REASON = "max_turns"
 USAGE_LIMIT_REACHED_REASON = "usage_limit_reached"
 
 
+def is_usage_limit_skip_reason(terminal_reason: str) -> bool:
+    return terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")
+
+
 class UsageLimitReachedError(RuntimeError):
     """The Messages API refused with HTTP 400: the organisation reached the usage limit set in its console."""
 

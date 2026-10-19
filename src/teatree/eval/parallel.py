@@ -30,7 +30,7 @@ import traceback
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError, is_usage_limit_skip_reason
 from teatree.eval.backends import EvalRunner
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.anthropic_limits import CreditExhaustedError
@@ -235,7 +235,7 @@ def usage_limit_skip(name: str) -> EvalRun:
 
 
 def is_usage_limit_skip(run: EvalRun) -> bool:
-    return run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")
+    return is_usage_limit_skip_reason(run.terminal_reason)
 
 
 @dataclasses.dataclass

@@ -16,6 +16,7 @@ from teatree.backends.github.ci_eval_client import (
     GhCiEvalClient,
     build_ci_eval_client,
 )
+from teatree.eval.api_errors import is_usage_limit_skip_reason
 from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, default_fixer, fix_turn_admitted
 from teatree.token_report import cached_ci_eval_reserve_met
 from teatree.types import RawAPIDict
@@ -79,6 +80,7 @@ def red_scenario_names(payload: RawAPIDict) -> list[str]:
     reading it off the wire keeps this module inside its ``teatree.loop`` boundary
     instead of re-deriving the exemption from a copied surface literal. A row
     missing the flag reads as GATING — an older artifact is never silently exempted.
+    A row the usage limit skipped is excluded too: it never ran, so there is nothing to fix.
     """
     scenarios = payload.get("scenarios")
     if not isinstance(scenarios, list):
@@ -90,8 +92,21 @@ def red_scenario_names(payload: RawAPIDict) -> list[str]:
         record = cast("RawAPIDict", raw)
         if record.get("triage_class") is None or bool(record.get("advisory")):
             continue
+        if _never_ran(record):
+            continue
         names.append(str(record.get("name", "")))
     return names
+
+
+def _never_ran(record: RawAPIDict) -> bool:
+    return is_usage_limit_skip_reason(str(record.get("terminal_reason", "")))
+
+
+def _cut_short(payload: RawAPIDict) -> bool:
+    """Whether a leg parked, or the usage limit skipped any of its scenarios after it measured others."""
+    scenarios = payload.get("scenarios")
+    rows = scenarios if isinstance(scenarios, list) else []
+    return payload.get("parked") is True or any(isinstance(row, dict) and _never_ran(row) for row in rows)
 
 
 def _match_run(runs: Iterable[RawAPIDict], *, head_sha: str) -> RawAPIDict | None:
@@ -140,7 +155,7 @@ def _download_payload(client: GhCiEvalClient, *, run_id: int | None, head_sha: s
         payloads = [_load_json(artifact) for artifact in artifacts]
         return _RunPayload(
             reds=tuple(name for payload in payloads for name in red_scenario_names(payload)),
-            parked=any(payload.get("parked") is True for payload in payloads),
+            parked=any(_cut_short(payload) for payload in payloads),
         )
 
 

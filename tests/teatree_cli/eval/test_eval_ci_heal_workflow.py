@@ -260,6 +260,14 @@ class TestALegParksOnTheUsageLimit:
         }
 
 
+class TestTheGreenProofStep:
+    @pytest.mark.parametrize(("proof_rc", "step_rc"), [(0, 0), (75, 0), (1, 1)])
+    def test_only_a_park_is_tolerated(self, leg: dict[str, str], proof_rc: int, step_rc: int) -> None:
+        step = next(step for step in _jobs()["combine"]["steps"] if "t3 eval green-proof" in str(step.get("run", "")))
+        leg |= {"T3_RCS": str(proof_rc), "OUT_DIR": leg["RUNNER_TEMP"], "SHA": _SHA}
+        assert _run(step["run"], leg).returncode == step_rc
+
+
 class TestTheSelectorLine:
     @pytest.mark.parametrize(("selector_rc", "step_rc"), [(0, 0), (75, 0), (1, 1)])
     def test_only_a_park_is_tolerated(self, tmp_path: Path, selector_rc: int, step_rc: int) -> None:
