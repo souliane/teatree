@@ -138,6 +138,17 @@ class CheckoutFenceTests(TestCase):
         assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
         assert self.worktree.get_extra()["auto_attestation"]["tenures"][0]["holder"] == task_holder_id(previous)
 
+    def test_a_fence_minting_the_first_tenure_records_the_writers_namespace(self) -> None:
+        acquire(self.worktree, holder=task_holder_id(self.task))
+        with patch(
+            "teatree.core.worktree.checkout_fence.read_process_table",
+            return_value=ProcessTable(frozenset(), "/proc"),
+        ):
+            verify_task_checkout(self.task, str(self.checkout), namespace="pid:[42]")
+        self.worktree.refresh_from_db()
+        tenures = self.worktree.get_extra()["checkout_custody"]["tenures"]
+        assert [entry["namespace"] for entry in tenures] == ["pid:[42]"]
+
     def test_checkout_parks_do_not_spend_repair_budget(self) -> None:
         for _ in range(5):
             attempt = park_task_checkout(self.task, reason="foreign checkout state")
@@ -467,7 +478,7 @@ class CheckoutFenceTests(TestCase):
 
         with (
             patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=settled) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=settled) as wait,
             patch("teatree.core.worktree.occupancy.page_surviving_checkout") as page,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
@@ -593,7 +604,7 @@ class CheckoutFenceTests(TestCase):
             return ()
 
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=settled) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=settled) as wait,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):
@@ -601,18 +612,18 @@ class CheckoutFenceTests(TestCase):
         wait.assert_called_once()
         assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 
-    def test_a_reaped_run_waits_for_its_processes_and_never_attests(self) -> None:
+    def test_a_reaped_run_finishes_owned_processes_without_attesting(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
         verify_task_checkout(self.task, str(self.checkout))
         initial = Worktree.objects.get(pk=self.worktree.pk).get_extra()["attested_state"]
         with (
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", return_value=()) as wait,
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", return_value=()) as wait,
             occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s1"),
             drive_claim(self.task),
         ):
             (self.checkout / "partial.txt").write_text("half done")
             Task.objects.get(pk=self.task.pk).fail(reason="lease_expired: reaped", by_holder=False)
-        wait.assert_called_once()
+        wait.assert_called_once_with(self.checkout)
         finished = Worktree.objects.get(pk=self.worktree.pk)
         assert occupancy_holder(finished) is None
         assert finished.get_extra()["attested_state"] == initial
