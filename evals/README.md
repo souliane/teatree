@@ -252,7 +252,7 @@ t3 eval owed outputs eval-owed.json           # CI primitive: print parked=/owed
 t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since (fails loud on a GitHub API error)
 t3 eval owed next eval-owed-ledger.json --cap 14  # nightly: the oldest owed scenarios the catalog still defines
 t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # nightly: clear the owed scenarios that passed
-t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
+t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); 1 on any red or an empty run, 75 when a leg parked or the usage limit skipped a scenario
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
 t3 eval ci-heal open --ref <pr-branch>        # CI heal loop (observe-only, default-OFF): open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
@@ -661,7 +661,10 @@ exits 75 unless something it measured failed — a confirmed red still reds. On 
 box, the `eval_local` loop and the dream pass's eval promotion refresh stale
 token rows and check the account the sticky selector will use. The heal loop
 refreshes stale rows and dispatches only while an allowlisted CI-pool account
-meets the reserve; a hold over twelve ticks escalates.
+meets the reserve, holding a pending session until the reserve returns. A retry
+after a measured red invokes nothing and stays red. A scenario the limit skipped
+is never handed to the heal fixer, and `t3 eval green-proof` parks it (exit 75)
+rather than counting it red.
 
 The eval lane and the dispatch lane now share ONE knob, so a deployment that
 pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend
