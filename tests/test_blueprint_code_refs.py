@@ -1,6 +1,6 @@
 # test-path: cross-cutting — scans BLUEPRINT.md and docs/blueprint/ for code references;
 # its subject is the architecture spec, not any one package.
-"""Every first-party path and private name the architecture spec cites must exist in the tree.
+"""Every first-party path, private name and env var the architecture spec cites must exist in the tree.
 
 A module moved into a package or a helper renamed leaves the spec pointing at nothing,
 and a reader who follows it finds no code. Paths resolve the way the spec writes them:
@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = REPO_ROOT / "src" / "teatree"
 SPEC = (REPO_ROOT / "BLUEPRINT.md", *sorted((REPO_ROOT / "docs" / "blueprint").glob("*.md")))
 CODE_ROOTS = ("src", "hooks", "scripts", "dev", "deploy")
-CODE_SUFFIXES = frozenset({".py", ".sh", ".zsh"})
+CODE_SUFFIXES = frozenset({".py", ".sh", ".zsh", ""})
 #: Box-local files the spec names but the repo never holds.
 RUNTIME_SUFFIXES = frozenset({".env", ".json"})
 #: Private names of third-party code the spec cites by their own name.
@@ -25,6 +25,7 @@ _SUBPACKAGES = "|".join(sorted(p.name for p in PACKAGE.iterdir() if (p / "__init
 PATH_REF = re.compile(rf"`(?:src/teatree/|teatree/)?((?:{_SUBPACKAGES})/[\w/.-]+?)`")
 DOTTED_REF = re.compile(r"`([\w.]+)(?:\(\))?`")
 PRIVATE_SEGMENT = re.compile(r"_[a-z]\w{3,}")
+ENV_REF = re.compile(r"\b((?:T3|TEATREE)_[A-Z][A-Z0-9_]{2,})\b")
 
 
 def _spec_refs(pattern: re.Pattern[str]) -> list[tuple[str, str]]:
@@ -70,6 +71,7 @@ def test_the_scan_reads_the_spec() -> None:
     """Guards the guard: a pattern that stopped matching would make the checks below vacuous."""
     assert len(_spec_refs(PATH_REF)) >= 200
     assert len(_private_refs()) >= 50
+    assert len(_spec_refs(ENV_REF)) >= 50
 
 
 def test_every_cited_path_resolves() -> None:
@@ -84,3 +86,8 @@ def test_every_cited_path_resolves() -> None:
 def test_every_cited_private_name_exists() -> None:
     stale = [f"{where}: {name}" for where, name in _private_refs() if name not in _code_words()]
     assert not stale, "spec names no code defines:\n  " + "\n  ".join(stale)
+
+
+def test_every_cited_env_var_is_read() -> None:
+    stale = [f"{where}: {name}" for where, name in _spec_refs(ENV_REF) if name not in _code_words()]
+    assert not stale, "spec env vars no code reads:\n  " + "\n  ".join(stale)
