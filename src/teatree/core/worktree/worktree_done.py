@@ -505,18 +505,20 @@ def _reap_or_report(worktree: Worktree, *, workspace: Path, dry_run: bool) -> Re
     """One row's disposition, or an ``error`` outcome — a raising row never aborts the sweep.
 
     A single unreadable row used to abort the whole first pass, so every row after
-    it went unexamined and the backlog could only ever grow. Every line ends with
-    the checkout it judged.
+    it went unexamined and the backlog could only ever grow.
     """
-    checkout = "unresolvable"
     try:
-        checkout = resolve_worktree_path(workspace, worktree)
         outcome = reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
     except Exception as exc:  # one bad row must not cost the sweep every row after it
         logger.exception("reaping wt#%s failed", worktree.pk)
         outcome = ReapOutcome(
             "error", f"ERROR wt#{worktree.pk} '{worktree.branch}': {exc!r} — row skipped, nothing wiped"
         )
+    try:
+        checkout = resolve_worktree_path(workspace, worktree)
+    except Exception:
+        logger.exception("resolving checkout for wt#%s failed", worktree.pk)
+        checkout = "unresolvable"
     return replace(outcome, label=f"{outcome.label} [checkout: {checkout}]")
 
 
