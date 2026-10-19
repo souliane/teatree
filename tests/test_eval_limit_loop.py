@@ -251,12 +251,13 @@ def test_the_benchmark_never_overlaps() -> None:
 class TestBenchmarkCapacityPark:
     def test_selector_park_uploads_a_marker(self, shell) -> None:
         step = _step("eval-weekly-reusable.yml", "eval", "Mark a benchmark parked by the reserve")
-        upload = _step("eval-weekly-reusable.yml", "eval", "Upload the benchmark matrix HTML dashboard")
+        upload = _step("eval-weekly-reusable.yml", "eval", "Upload the benchmark park marker")
         assert step["if"] == "steps.select.outputs.parked == 'true'"
         run = shell(step["run"], SUFFIX="clean_room-1")
         assert run.returncode == 0
         assert (run.temp / "eval-benchmark-clean_room-1.parked").read_text(encoding="utf-8") == "parked\n"
-        assert ".parked" in upload["with"]["path"]
+        assert upload["with"]["path"] == "${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.parked"
+        assert upload["with"]["name"].startswith("eval-benchmark-")
 
     def test_limit_parks_and_retry_invokes_nothing(self, shell) -> None:
         script = _script("eval-weekly-reusable.yml", "eval", _BENCHMARK_LEG)
@@ -265,6 +266,7 @@ class TestBenchmarkCapacityPark:
         assert first.returncode == retry.returncode == 0
         assert first.invoked == retry.invoked == ["suite"]
         assert (first.temp / "eval-limit-hit-clean_room-1").exists()
+        assert (first.temp / "eval-benchmark-clean_room-1.parked").read_text(encoding="utf-8") == "parked\n"
 
     def test_earlier_measured_red_beats_a_later_limit(self, shell) -> None:
         script = _script("eval-weekly-reusable.yml", "eval", _BENCHMARK_LEG)

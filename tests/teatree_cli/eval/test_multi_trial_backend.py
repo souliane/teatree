@@ -141,7 +141,17 @@ def test_matrix_keeps_a_measured_red_when_a_later_cell_hits_the_limit(tmp_path: 
     assert "failed before the usage limit" in dashboard.read_text()
 
 
-def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path: Path) -> None:
+#: An all-of-k red trial settles the verdict; an any-of-k one leaves it undecided, so it parks.
+_RED_TRIAL_THEN_LIMIT = pytest.mark.parametrize(
+    ("require", "exit_code", "message"),
+    [("all", 1, "failed before the usage limit"), ("any", 75, "PARKED")],
+)
+
+
+@_RED_TRIAL_THEN_LIMIT
+def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(
+    tmp_path: Path, require: str, exit_code: int, message: str
+) -> None:
     runner = _LimitAfterRedRunner()
     summary = tmp_path / "summary.md"
     with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
@@ -150,16 +160,19 @@ def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path
             backend=API_BACKEND,
             max_turns=None,
             trials=2,
-            require="any",
+            require=require,
             output_format="text",
             summary_md=summary,
         )
-    assert exc.value.exit_code == 1
+    assert exc.value.exit_code == exit_code
     assert runner.calls == 2
-    assert "failed before the usage limit" in summary.read_text()
+    assert message in summary.read_text()
 
 
-def test_matrix_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path: Path) -> None:
+@_RED_TRIAL_THEN_LIMIT
+def test_matrix_keeps_a_red_trial_when_the_next_trial_hits_the_limit(
+    tmp_path: Path, require: str, exit_code: int, message: str
+) -> None:
     runner = _LimitAfterRedRunner()
     dashboard = tmp_path / "matrix.html"
     with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
@@ -169,16 +182,16 @@ def test_matrix_keeps_a_red_trial_when_the_next_trial_hits_the_limit(tmp_path: P
             models="claude-opus-4-8",
             max_turns=None,
             trials=2,
-            require="any",
+            require=require,
             output_format="text",
             persist=False,
             baseline=False,
             gate_regressions=False,
             html_out=dashboard,
         )
-    assert exc.value.exit_code == 1
+    assert exc.value.exit_code == exit_code
     assert runner.calls == 2
-    assert "failed before the usage limit" in dashboard.read_text()
+    assert message in dashboard.read_text()
 
 
 @dataclasses.dataclass

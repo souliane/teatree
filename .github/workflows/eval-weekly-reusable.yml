@@ -421,7 +421,7 @@ jobs:
         env:
           SUFFIX: ${{ steps.artifact.outputs.suffix }}
         run: |
-          printf 'parked\n' > "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
+          printf 'parked\n' | uv run python -m teatree.eval.artifact_redaction tee "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
           echo "Benchmark PARKED — no eligible subscription account." >> "$GITHUB_STEP_SUMMARY"
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         if: steps.select.outputs.parked != 'true'
@@ -496,7 +496,7 @@ jobs:
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
             if [ "$rc" -eq 75 ]; then
-              printf 'parked\n' > "$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.parked"
+              printf 'parked\n' | uv run python -m teatree.eval.artifact_redaction tee "$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.parked"
               touch "$LIMIT_MARKER"
               echo "Benchmark PARKED — usage limit reached." >> "$GITHUB_STEP_SUMMARY"
               [ -f "$RED_MARKER" ] && exit 1
@@ -540,10 +540,17 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
-          path: |
-            ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
-            ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.parked
+          path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
           if-no-files-found: warn
+      # A parked leg's marker; `publish` downloads it with the dashboards (`eval-benchmark-*`)
+      # and refuses to publish. Only a parked leg writes one, so its absence is the normal case.
+      - name: Upload the benchmark park marker
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-benchmark-${{ steps.artifact.outputs.suffix }}-parked
+          path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.parked
+          if-no-files-found: ignore
       # The captured, redacted stdout/stderr of every attempt (the `artifact_redaction tee` target
       # in the eval command). Unlike the matrix dashboard — rendered only if the run reaches
       # its end — this file exists from the first byte, so it is the one artifact that
