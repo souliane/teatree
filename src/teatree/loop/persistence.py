@@ -21,7 +21,7 @@ from django.db import transaction
 from teatree.core import on_behalf_gate_recorded
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
-from teatree.loop.dispatch import DispatchAction
+from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
@@ -287,9 +287,12 @@ _REVIEW_FINDINGS_BASE = (
     "IMPLEMENT accepted findings on that MR's own branch, run the tests and push once. "
 )
 _REVIEW_FINDINGS_VOICED = (
-    "Answer questions and push-backs in their own threads. After the push, reply "
-    "'Fixed in <short sha>.' to each fixed thread and resolve it. On GitLab use "
-    "t3 review reply-to-discussion and t3 review resolve-discussion. "
+    "On GitLab, answer questions and push-backs in their own threads; "
+    "reply only after the push has landed with 'Fixed in <short sha>.' to each fixed thread and resolve it. "
+    "Skip any thread whose latest reply is already ours. "
+    "Answer, reply and resolve only via t3 review reply-to-discussion and t3 review resolve-discussion; "
+    "if either refuses, post nothing by another route. "
+    "On a GitHub PR there is no sanctioned reply/resolve path: fix and push only. "
     "Never add a top-level comment or change reviewers; escalate only if the fix cannot proceed"
 )
 _REVIEW_FINDINGS_SILENT = (
@@ -311,6 +314,14 @@ _FIX_REASON_BY_KIND: dict[str, str] = {
 }
 
 
+def _fix_reason(payload: ActionPayload, pr_url: str) -> str:
+    fix_kind = fix_kind_of(payload)
+    reason = _FIX_REASON_BY_KIND[fix_kind]
+    if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and not on_behalf_gate_recorded.owner_voice_permitted():
+        reason = _REVIEW_FINDINGS_BASE + _REVIEW_FINDINGS_SILENT
+    return reason.format(pr_url=pr_url)
+
+
 def _handle_debug(action: DispatchAction) -> Task | None:
     """Un-mergeable own PR (``my_pr.failed`` / ``my_pr.conflicted``) → author ticket + ``debugging`` task.
 
@@ -327,6 +338,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
     if not pr_url:
         logger.debug("Skipping t3:debug action with no pr_url: %r", action.detail)
         return None
+    reason = _fix_reason(payload, pr_url)
     with transaction.atomic():
         ticket, _created = _get_or_create_ticket(
             pr_url,
@@ -342,13 +354,9 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             return None
         if not claim_red_mr_fix(payload):
             return None
-        fix_kind = fix_kind_of(payload)
-        reason = _FIX_REASON_BY_KIND[fix_kind]
-        if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and not on_behalf_gate_recorded.owner_voice_permitted():
-            reason = _REVIEW_FINDINGS_BASE + _REVIEW_FINDINGS_SILENT
         return ticket.schedule_implementing(
             "debugging",
-            reason=reason.format(pr_url=pr_url),
+            reason=reason,
         )
 
 

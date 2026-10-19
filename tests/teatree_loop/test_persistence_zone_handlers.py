@@ -689,6 +689,13 @@ class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
         assert "Fixed in <short sha>." in reason
         assert "t3 review reply-to-discussion" in reason
         assert "t3 review resolve-discussion" in reason
+        expected = (
+            "Skip any thread whose latest reply is already ours",
+            "reply only after the push has landed",
+            "On a GitHub PR there is no sanctioned reply/resolve path: fix and push only",
+            "Answer, reply and resolve only via",
+        )
+        assert not [text for text in expected if text not in reason]
         assert "top-level comment" in reason
         assert "change reviewers" in reason
 
