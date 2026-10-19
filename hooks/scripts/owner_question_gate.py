@@ -11,7 +11,6 @@ import os
 import re
 import sys
 
-from hooks.scripts.gate_result import warn_gate_skipped
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.question_gates import (
     find_decision_prose,
@@ -41,12 +40,25 @@ _BATCHED_WARN = (
     "(skills/rules/references/asking-questions.md 'One decision per question'); split the rest "
     "and ask the next after this answer.\n"
 )
+_ATTENDED_CACHE: tuple[dict, bool] | None = None
+
+
+def _dispatched_agent() -> bool:
+    with teatree_src_on_path():
+        from teatree.utils.agent_spawn_marker import is_dispatched_agent_process  # noqa: PLC0415 — cold-hook import
+
+        return is_dispatched_agent_process()
 
 
 def attended_turn(data: dict) -> bool:
     from hooks.scripts.hook_router import _is_live_user_turn, _session_drives_loop  # noqa: PLC0415 deferred back-import
 
-    return _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", "")))
+    global _ATTENDED_CACHE  # noqa: PLW0603 — one hook invocation shares this read across handlers.
+    if _ATTENDED_CACHE is not None and _ATTENDED_CACHE[0] is data:
+        return _ATTENDED_CACHE[1]
+    result = _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", "")))
+    _ATTENDED_CACHE = (data, result)
+    return result
 
 
 def _owner_reads_this_turn(data: dict) -> bool:
@@ -76,7 +88,9 @@ def _sanctioned_prose(data: dict, text: str) -> bool:
 
 
 def handle_block_decision_prose(data: dict) -> bool | None:
-    if data.get("stop_hook_active") or os.getenv("T3_DISPATCHED_AGENT"):
+    if data.get("stop_hook_active") or _dispatched_agent():
+        return None
+    if not _gate_enabled() or not _owner_reads_this_turn(data):
         return None
     final = data.get("last_assistant_message")
     text = (
@@ -85,9 +99,7 @@ def handle_block_decision_prose(data: dict) -> bool | None:
         else current_turn_final_text(str(data.get("transcript_path", "")))
     )
     decision = find_decision_prose(text)
-    if decision is None or _escape_reason([text[-_ESCAPE_SCAN_CHARS:]]) or not _gate_enabled():
-        return None
-    if not _owner_reads_this_turn(data) or _sanctioned_prose(data, text):
+    if decision is None or _escape_reason([text[-_ESCAPE_SCAN_CHARS:]]) or _sanctioned_prose(data, text):
         return None
     reason = (
         f"TEATREE OWNER DECISION GATE: {decision[:80]!r} puts an owner decision in the final reply. "
@@ -109,33 +121,31 @@ def _questions(data: dict) -> list | None:
     return raw if isinstance(raw, list) else None
 
 
-def _well_formed(questions: list) -> bool:
-    return all(
-        isinstance(item, dict) and isinstance(text := _question_text(item), str) and text.strip() for item in questions
-    )
-
-
-def _fit_problems(questions: list[dict]) -> list[str]:
+def _fit_problems(questions: list) -> list[str]:
     problems = [f"{len(questions)} questions in one call; ask one decision per call"] if len(questions) > 1 else []
     try:
         with teatree_src_on_path():
             from teatree.core.modelkit.question_card import CardView  # noqa: PLC0415 — deferred: cold-hook import
     except ImportError:
-        warn_gate_skipped("owner-question-fit", "the shared question-card check could not be imported")
+        sys.stderr.write(
+            "NOTE: the owner-question-fit gate did NOT validate wording — the shared question-card check "
+            "could not be imported. The call proceeds unvalidated; remote CI cannot check the live question.\n"
+        )
         return problems
     for question in questions:
-        problems.extend(CardView.ask_problems({**question, "question": _question_text(question)}))
+        if isinstance(question, dict) and isinstance(text := _question_text(question), str) and text.strip():
+            problems.extend(CardView.ask_problems({**question, "question": text}))
     return problems
 
 
 def handle_block_unfit_question(data: dict) -> bool:
     if data.get("tool_name") not in _QUESTION_TOOLS or (questions := _questions(data)) is None:
         return False
-    problems = _fit_problems(questions) if _well_formed(questions) else []
+    problems = _fit_problems(questions)
     if (
         not problems
-        or os.getenv("T3_DISPATCHED_AGENT")
-        or _escape_reason([str(_question_text(question)) for question in questions])
+        or _dispatched_agent()
+        or _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
         or not _gate_enabled()
         or not _owner_reads_this_turn(data)
     ):

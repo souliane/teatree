@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+import hooks.scripts.hook_router as router
+import hooks.scripts.owner_question_gate as owner_gate
+
 _ROUTER = Path(__file__).resolve().parents[1] / "hooks/scripts/hook_router.py"
 _ADAPTER = _ROUTER.with_name("codex_hook_adapter.py")
 _DISPATCHED = {"T3_DISPATCHED_AGENT": "1"}
@@ -518,3 +521,238 @@ def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path)
     ]
 
     assert [result.returncode for result in results] == [2, 2, 2]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Needs you: (none)",
+        "Needs you: —",
+        "Needs you: no",
+        "Needs you: all clear",
+        "Waiting on you: 0",
+        "Needs you:",
+        "Needs you: nothing pending",
+        "Needs you: no outstanding decisions",
+        "Waiting on you: zero",
+    ],
+)
+def test_empty_owner_labels_pass_through_router(tmp_path: Path, text: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Review done. Pull requests that are ok to merge:\n- First\n- Second",
+        "Lint is clean. Warnings that are OK to ignore:\n- First\n- Second",
+        "Files that are ok to delete:\n- First\n- Second",
+        "If you want me to look later, here are the logs:\n- First\n- Second",
+        "What we changed:\n- First\n- Second",
+    ],
+)
+def test_status_intro_with_two_bullets_passes_router(tmp_path: Path, text: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_real_colon_choice_list_still_blocks_router(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": "Do you want me to:\n- merge now\n- wait for review",
+        },
+    )
+
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+@pytest.mark.parametrize(
+    "text", ["Your call — I went with the smaller change and pushed it.", "Approve? Answered yes."]
+)
+def test_label_recaps_pass_router(tmp_path: Path, text: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Needs you: nothing blocking, but should I merge the hotfix now?",
+        "Needs you: none yet. Should I merge the hotfix now or wait?",
+        "Needs you \u2013 pick one:\n- Merge now\n- Wait for review",
+    ],
+)
+def test_owner_label_with_real_decision_blocks_router(tmp_path: Path, text: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+@pytest.mark.parametrize(
+    "question", ["Should the deferred migration run now?", "Which file should I edit, README.md or the docs page?"]
+)
+def test_plain_client_question_words_and_filenames_pass(tmp_path: Path, question: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask(question)]},
+        },
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("bad", [{}, None])
+def test_malformed_item_does_not_hide_batch_refusal(tmp_path: Path, bad: object) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge this now?"), bad]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "one decision per call" in result.stdout
+
+
+def test_malformed_item_does_not_hide_other_item_shorthand(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{}, _ask("Merge ticket 42 now?")]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "internal shorthand" in result.stdout
+
+
+def test_whitespace_dispatched_marker_does_not_skip_gate(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge ticket 42 now?")]},
+        },
+        env={"T3_DISPATCHED_AGENT": "  "},
+    )
+
+    assert result.returncode == 2
+
+
+def test_router_refuses_a_123_word_card(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    card = _ask(
+        "Merge this now?",
+        options=[
+            {"label": "Merge", "description": "a " * 58},
+            {"label": "Wait", "description": "b " * 59},
+        ],
+    )
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [card]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "123 words; at most 120" in result.stdout
+
+
+def test_skipped_owner_wording_gate_names_no_remote_ci_backstop(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setitem(sys.modules, "teatree.core.modelkit.question_card", None)
+
+    owner_gate._fit_problems([_ask("Merge this now?")])
+
+    warning = capsys.readouterr().err
+    assert "owner-question-fit" in warning
+    assert "remote CI job remains the backstop" not in warning
+
+
+def test_disabled_stop_gate_does_not_resolve_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("T3_DISPATCHED_AGENT", raising=False)
+    monkeypatch.setattr(owner_gate, "_gate_enabled", lambda: False)
+    monkeypatch.setattr(owner_gate, "current_turn_final_text", lambda _path: pytest.fail("parsed transcript"))
+    monkeypatch.setattr(owner_gate, "find_decision_prose", lambda _text: pytest.fail("ran detector"))
+
+    assert owner_gate.handle_block_decision_prose({"transcript_path": "missing"}) is None
+
+
+def test_pretooluse_attended_check_is_read_once_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("T3_DISPATCHED_AGENT", raising=False)
+    reads = 0
+
+    def live(_data: dict) -> bool:
+        nonlocal reads
+        reads += 1
+        return True
+
+    monkeypatch.setattr(router, "_is_live_user_turn", live)
+    monkeypatch.setattr(owner_gate, "_fit_problems", lambda _questions: ["problem"])
+    monkeypatch.setattr(router, "_fail_open_or_deny", lambda *_args, **_kwargs: False)
+    data = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Merge this now?")]}}
+
+    owner_gate.handle_block_unfit_question(data)
+    router.handle_mirror_question_to_slack(data)
+
+    assert reads == 1

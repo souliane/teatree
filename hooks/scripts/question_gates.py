@@ -519,15 +519,25 @@ _OWNER_DECISION_LABELS = (
     r"|waiting on you|blocked on you"
 )
 _OWNER_DECISION_MARKER_RE = re.compile(
-    rf"^(?:(?P<label>{_OWNER_DECISION_LABELS})\s*(?P<punct>[:?—-]|$)|approve\?)\s*(?P<rest>.*)$", re.IGNORECASE
+    rf"^(?:(?P<label>{_OWNER_DECISION_LABELS})\s*(?P<punct>[:?—\u2013-]|$)|approve\?)\s*(?P<rest>.*)$",
+    re.IGNORECASE,
 )
 _OWNER_CHOICE_CUE_RE = re.compile(
     r"\b(?:do you|would you|could you|should i|shall i|can i|may i|want me to|ok to)\b", re.IGNORECASE
 )
+_OWNER_CHOICE_ASK_RE = re.compile(
+    r"(?:^|[.!]\s+)(?:do you|would you|could you|should i|shall i|can i|may i|want me to|"
+    r"(?:which|what|how)\b.{0,60}\b(?:do you|would you|should i|shall i|choose|pick|prefer))\b",
+    re.IGNORECASE,
+)
 _CHOICE_VERB_RE = re.compile(r"^(?:approve|confirm|decide|choose|pick|select|sign off)\b", re.IGNORECASE)
-_RECAP_RE = re.compile(r"\b(?:asked|answered|chose|recorded|filed|relayed|raised|posed)\b", re.IGNORECASE)
+_RECAP_RE = re.compile(r"\b(?:asked|answered|chose|recorded|filed|relayed|raised|posed|went with)\b", re.IGNORECASE)
 _NO_DECISION_RE = re.compile(
-    r"^(?:none|nothing|n/?a|no (?:decisions?|input|questions?|actions?|blockers?))\b", re.IGNORECASE
+    r"^(?:\(?none\)?(?: yet| right now| at the moment)?|"
+    r"nothing(?: right now| blocking| pending| to decide)?|n/?a|"
+    r"no(?: (?:outstanding )?(?:decisions?|input|questions?|actions?|blockers?)(?: needed)?)?|"
+    r"all clear|clear|0|zero|[—\u2013-])(?=$|[.!?;,\s])",
+    re.IGNORECASE,
 )
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+•]|\d+[.)])\s+(.+)$")
@@ -551,8 +561,23 @@ def find_decision_prose(text: str) -> str | None:
                 return line
             continue
         following = next((_plain(later) for later in lines[index + 1 :] if later), "")
-        if not _NO_DECISION_RE.match(marker["rest"].strip() or following):
-            return line
+        rest = marker["rest"].strip()
+        candidate = rest or following
+        if not candidate:
+            continue
+        empty = _NO_DECISION_RE.match(candidate)
+        if empty and (
+            not candidate[empty.end() :].strip(". ")
+            or (
+                candidate[empty.end() :].startswith(". ")
+                and "?" not in candidate[empty.end() :]
+                and not _OWNER_CHOICE_CUE_RE.search(candidate[empty.end() :])
+            )
+        ):
+            continue
+        if _RECAP_RE.search(rest) and "?" not in rest and not _OWNER_CHOICE_CUE_RE.search(rest):
+            continue
+        return line
 
     return _choice_list_decision(lines)
 
@@ -580,7 +605,9 @@ def _choice_list_decision(lines: list[str]) -> str | None:
         intro = _plain(intro)
         if len(items) < _MIN_CHOICES or _RECAP_RE.search(intro):
             continue
-        if intro.endswith(("?", ":")) and _OWNER_CHOICE_CUE_RE.search(intro):
+        if (intro.endswith("?") and _OWNER_CHOICE_CUE_RE.search(intro)) or (
+            intro.endswith(":") and _OWNER_CHOICE_ASK_RE.search(intro)
+        ):
             return intro
         if sum(item.endswith("?") and bool(_OWNER_CHOICE_CUE_RE.search(item)) for item in items) >= _MIN_CHOICES:
             return line
