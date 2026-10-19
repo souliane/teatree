@@ -62,6 +62,7 @@ SAFETY_FAIL_CLOSED_STORED_VALUES: dict[str, Any] = {
     "mode": "interactive",
     "require_human_approval_to_merge": True,
     "require_human_approval_to_answer": True,
+    "forced_repro_gate_enabled": True,
 }
 
 #: The marker filename, beside the primary control DB.

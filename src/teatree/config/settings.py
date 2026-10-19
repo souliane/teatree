@@ -476,6 +476,8 @@ class _MergeGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Merge & done")
 
+    forced_repro_gate_enabled: bool = True
+
     # The branch-protection required-status-check contexts the operator KNOWS must
     # gate a merge on this overlay's repos (e.g. ``["test (3.13)"]``). A fail-closed
     # floor: when the forge reports a DETERMINATE-EMPTY required set (branch
