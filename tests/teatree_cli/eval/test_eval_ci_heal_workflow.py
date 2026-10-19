@@ -231,7 +231,17 @@ class TestALegParksOnTheUsageLimit:
         first = _attempt(leg)
         later = _attempt(leg)
         assert (first.returncode, later.returncode) == (1, 1)
-        assert _limit_marker(leg).read_text(encoding="utf-8") == "1\n"
+        assert len(_t3_calls(leg)) == 1
+        assert not _limit_marker(leg).exists()
+
+    @pytest.mark.parametrize("scenarios", ["", "alpha,beta"], ids=["full-suite", "subset"])
+    def test_a_retry_never_turns_a_measured_red_green(self, leg: dict[str, str], scenarios: str) -> None:
+        leg |= {"EVAL_SCENARIOS": scenarios, "T3_RCS": "1 0"}
+        first = _attempt(leg)
+        calls = len(_t3_calls(leg))
+        retried = _attempt(leg)
+        assert (first.returncode, retried.returncode) == (1, 1)
+        assert len(_t3_calls(leg)) == calls
 
     def test_a_selector_park_records_the_leg_as_parked(self, leg: dict[str, str]) -> None:
         leg["SELECT_PARKED"] = "true"

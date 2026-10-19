@@ -263,6 +263,9 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.run_eval == 'true'
     runs-on: ubuntu-latest
+    # The agent under test runs here: never inherit the caller's wider grant.
+    permissions:
+      contents: read
     strategy:
       # A red shard does not cancel the others — each leg's verdict is independent.
       fail-fast: false
@@ -477,9 +480,12 @@ jobs:
             set -o pipefail
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit-$EVAL_SUFFIX"
             RED_MARKER="$RUNNER_TEMP/eval-confirmed-red-$EVAL_SUFFIX"
+            if [ -f "$RED_MARKER" ]; then
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit 1
+            fi
             if [ -f "$LIMIT_MARKER" ]; then
               echo "The usage limit was hit on an earlier attempt — invoking no scenario."
-              [ -f "$RED_MARKER" ] && exit 1
               exit 0
             fi
             EFFORT_FLAG=""
@@ -499,7 +505,6 @@ jobs:
               printf 'parked\n' | uv run python -m teatree.eval.artifact_redaction tee "$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.parked"
               touch "$LIMIT_MARKER"
               echo "Benchmark PARKED — usage limit reached." >> "$GITHUB_STEP_SUMMARY"
-              [ -f "$RED_MARKER" ] && exit 1
               exit 0
             fi
             touch "$RED_MARKER"

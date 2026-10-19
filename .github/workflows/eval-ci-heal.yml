@@ -236,6 +236,11 @@ jobs:
             mkdir -p "$HEAL_DIR"
             limit_marker="$RUNNER_TEMP/eval-limit-hit"
             red_marker="$RUNNER_TEMP/eval-confirmed-red"
+            if [ -f "$red_marker" ]; then
+              read -r recorded_rc < "$red_marker" || recorded_rc=1
+              echo "An earlier attempt measured a red; t3 is not re-run."
+              exit "${recorded_rc:-1}"
+            fi
             if [ -f "$limit_marker" ]; then
               read -r recorded_rc < "$limit_marker" || recorded_rc=0
               echo "PARKED: an earlier attempt hit the subscription usage limit; t3 is not re-run into it."
@@ -278,9 +283,6 @@ jobs:
             fi
             # A red measured before the limit stays red; the marker replays the verdict without re-running t3.
             if [ "$limit_hit" = true ]; then
-              if [ "$rc" -eq 0 ] && [ -f "$red_marker" ]; then
-                read -r rc < "$red_marker"
-              fi
               echo "$rc" > "$limit_marker"
               echo "PARKED: the subscription usage limit refused scenarios; this leg parks instead of retrying into it."
             fi

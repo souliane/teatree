@@ -279,7 +279,7 @@ jobs:
       # log carries no credential value (`pipefail` keeps the exit code and reds a filter
       # crash). A scenario exiting 75 hit the subscription usage limit: the loop stops
       # there, records that scenario and every one after it as owed, and leaves a marker
-      # so a retry attempt invokes nothing.
+      # so a retry attempt invokes nothing. A retry after a red replays the red.
       - name: Metered behavioral eval — the changed scenarios (in Docker)
         if: steps.select.outputs.parked != 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
@@ -300,6 +300,11 @@ jobs:
             set -euo pipefail
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
             RED_MARKER="$RUNNER_TEMP/eval-confirmed-red"
+            if [ -f "$RED_MARKER" ]; then
+              read -r rc < "$RED_MARKER"
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit "$rc"
+            fi
             if [ -f "$LIMIT_MARKER" ]; then
               read -r rc < "$LIMIT_MARKER"
               echo "The usage limit was hit on an earlier attempt — invoking no scenario."
@@ -331,9 +336,6 @@ jobs:
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
               if [ "$scenario_rc" -eq 75 ]; then
                 printf '%s\n' "${NAMES[@]:index}" | xargs -n1 > "$RUNNER_TEMP/eval-owed-limit.txt"
-                if [ "$rc" -eq 0 ] && [ -f "$RED_MARKER" ]; then
-                  read -r rc < "$RED_MARKER"
-                fi
                 echo "$rc" > "$LIMIT_MARKER"
                 echo "::warning title=eval PARKED::usage limit reached at $name; owed: $(paste -sd, "$RUNNER_TEMP/eval-owed-limit.txt")"
                 break

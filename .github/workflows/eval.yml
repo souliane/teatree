@@ -563,12 +563,13 @@ jobs:
             set -o pipefail
             LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit-$EVAL_SUFFIX"
             RED_MARKER="$RUNNER_TEMP/eval-confirmed-red-$EVAL_SUFFIX"
+            if [ -f "$RED_MARKER" ]; then
+              read -r rc < "$RED_MARKER"
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit "$rc"
+            fi
             if [ -f "$LIMIT_MARKER" ]; then
               echo "The usage limit was hit on an earlier attempt — invoking no scenario."
-              if [ -f "$RED_MARKER" ]; then
-                read -r rc < "$RED_MARKER"
-                exit "$rc"
-              fi
               exit 0
             fi
             EFFORT_FLAG=""
@@ -598,10 +599,6 @@ jobs:
             if [ "$rc" -eq 75 ]; then
               touch "$LIMIT_MARKER"
               echo "::warning title=eval PARKED::leg $EVAL_SUFFIX hit the usage limit; its remaining scenarios did not run"
-              if [ -f "$RED_MARKER" ]; then
-                read -r rc < "$RED_MARKER"
-                exit "$rc"
-              fi
               exit 0
             fi
             echo "$rc" > "$RED_MARKER"

@@ -115,6 +115,28 @@ def test_every_job_that_hands_the_workflow_token_to_a_step_is_accounted_for() ->
     assert holders <= set(_MINIMUM_GRANTS) | _CALLER_BOUNDED
 
 
+_AGENT_RUN = re.compile(r"\bt3 eval run\b")
+
+
+def _runs_the_agent_under_test(job: Mapping[str, Any]) -> bool:
+    scripts = (script for step in _steps(job) for script in (step.get("run"), step.get("with", {}).get("command")))
+    return any(_AGENT_RUN.search(script) for script in scripts if script)
+
+
+_AGENT_JOBS = [(name, key) for name, key, job in _all_jobs() if _runs_the_agent_under_test(job)]
+
+
+def test_the_agent_job_scan_sees_both_reusable_lanes() -> None:
+    assert {("eval-pr-reusable.yml", "eval"), ("eval-weekly-reusable.yml", "eval")} <= set(_AGENT_JOBS)
+
+
+@pytest.mark.parametrize(("name", "key"), _AGENT_JOBS, ids=str)
+def test_a_job_that_runs_the_agent_under_test_holds_only_contents_read(name: str, key: str) -> None:
+    # A reusable job with no block inherits whatever its caller granted, so it must declare its own.
+    workflow = _workflow(name)
+    assert workflow["jobs"][key].get("permissions", workflow.get("permissions")) == {"contents": "read"}
+
+
 _USES = re.compile(r"^[ \t-]*uses:\s*(?P<action>[^\s@]+)@(?P<ref>\S+?)(?:\s+#\s*(?P<label>\S+))?\s*$", re.MULTILINE)
 
 

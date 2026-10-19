@@ -137,7 +137,8 @@ class TestPrLaneParksOnTheLimit:
         first = shell(script, rcs={"alpha": 1}, EVAL_NAMES="alpha,beta")
         later = shell(script, rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta")
         assert first.returncode == later.returncode == 1
-        assert later.lines("eval-owed-limit.txt") == ["beta"]
+        assert later.invoked == first.invoked == ["alpha", "beta"]
+        assert later.lines("eval-owed-limit.txt") == []
 
     def test_no_limit_owes_nothing(self, shell, workflow: str) -> None:
         run = shell(_script(workflow, "eval", _PR_LOOP), EVAL_NAMES="alpha,beta")
@@ -166,6 +167,13 @@ class TestNightlyOwedBatch:
         assert run.returncode == 1
         assert run.lines("eval-owed-passed.txt") == ["beta"]
 
+    def test_a_retry_never_records_an_earlier_red_as_passed(self, shell) -> None:
+        script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
+        shell(script, rcs={"alpha": 1}, STUB_OWED="alpha beta")
+        retry = shell(script, STUB_OWED="alpha beta")
+        assert retry.returncode == 1
+        assert retry.lines("eval-owed-passed.txt") == ["beta"]
+
     def test_the_shard_does_not_run_after_the_limit(self, shell) -> None:
         shell(_script("eval-nightly.yml", "eval", _NIGHTLY_OWED), rcs={"alpha": _LIMIT}, STUB_OWED="alpha")
         shard = shell(_script("eval-nightly.yml", "eval", _NIGHTLY_SHARD))
@@ -185,7 +193,7 @@ class TestSingleInvocationLanesParkOnTheLimit:
         later = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
         replay = shell(script, EVAL_SUFFIX="clean_room-1-2")
         assert first.returncode == later.returncode == replay.returncode == 1
-        assert replay.invoked == ["suite", "suite"]
+        assert replay.invoked == ["suite"]
 
     def test_the_limit_parks_green(self, shell, workflow: str, step_name: str) -> None:
         run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
@@ -195,6 +203,29 @@ class TestSingleInvocationLanesParkOnTheLimit:
     def test_a_red_stays_red(self, shell, workflow: str, step_name: str) -> None:
         run = shell(_script(workflow, "eval", step_name), rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2")
         assert run.returncode == 1
+
+
+_RETRIED_BODIES = [
+    pytest.param("eval-pr.yml", _PR_LOOP, {"alpha": 1}, {"EVAL_NAMES": "alpha,beta"}, id="eval-pr"),
+    pytest.param("eval-pr-reusable.yml", _PR_LOOP, {"alpha": 1}, {"EVAL_NAMES": "alpha,beta"}, id="eval-pr-reusable"),
+    pytest.param("eval-nightly.yml", _NIGHTLY_OWED, {"alpha": 1}, {"STUB_OWED": "alpha beta"}, id="nightly-owed"),
+    pytest.param("eval-nightly.yml", _NIGHTLY_SHARD, {"suite": 1}, {}, id="nightly-shard"),
+    pytest.param("eval.yml", _WEEKLY_LEG, {"suite": 1}, {"EVAL_SUFFIX": "clean_room-1-2"}, id="weekly-leg"),
+    pytest.param(
+        "eval-weekly-reusable.yml", _BENCHMARK_LEG, {"suite": 1}, {"EVAL_SUFFIX": "clean_room-1"}, id="benchmark-leg"
+    ),
+]
+
+
+@pytest.mark.parametrize(("workflow", "step_name", "red", "env"), _RETRIED_BODIES)
+def test_a_retry_never_turns_a_measured_red_green(
+    shell, workflow: str, step_name: str, red: dict[str, int], env: dict[str, str]
+) -> None:
+    script = _script(workflow, "eval", step_name)
+    first = shell(script, rcs=red, **env)
+    retry = shell(script, **env)
+    assert first.returncode == retry.returncode == 1
+    assert retry.invoked == first.invoked
 
 
 @pytest.mark.parametrize(
@@ -273,7 +304,7 @@ class TestBenchmarkCapacityPark:
         first = shell(script, rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1")
         second = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1")
         assert first.returncode == second.returncode == 1
-        assert second.invoked == ["suite", "suite"]
+        assert second.invoked == ["suite"]
 
     def test_parked_artifact_skips_publish_without_a_dashboard(self, shell, tmp_path: Path) -> None:
         marker = tmp_path / "runner-temp" / "benchmarks" / "eval-benchmark-clean_room-1.parked"
