@@ -152,6 +152,7 @@ class AgentResult(OwnerStop, total=False):
     """Structured result from an agent task execution."""
 
     summary: str
+    push_ownership_venue_fault: bool
     plan_text: str
     base_sha: str
     adequacy: PlanAdequacy
@@ -195,6 +196,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
+        "push_ownership_venue_fault": {"type": "boolean"},
         "skill_application": {
             "type": "array",
             "description": "One honest reference per required skill; self-report, not verified compliance.",
