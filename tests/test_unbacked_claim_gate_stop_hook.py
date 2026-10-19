@@ -128,9 +128,13 @@ class TestPassesWhenCitedOrOutOfScope:
         assert _decision(capsys) == {}
         assert result is not True
 
-    def test_skip_token_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        body = _FLUENT_DIAGNOSIS + "[skip-evidence-gate: the log is in the linked job, quoted upthread]\n"
+    def test_audited_token_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body = _FLUENT_DIAGNOSIS + "[gate-escape:unbacked_claim: the log is in the linked job, quoted upthread]\n"
         transcript = _write_transcript(tmp_path, [_user(), _assistant(body)])
+
+        monkeypatch.setattr(gate, "escape_allows", lambda data, gate_id, *, turn_text: True)
 
         result = handle_unbacked_claim_gate({"transcript_path": str(transcript)})
 
@@ -161,3 +165,12 @@ class TestRegisteredOnTheStopChain:
 
         assert "handle_unbacked_claim_gate" in names
         assert names.index("handle_unbacked_claim_gate") < names.index("handle_hand_back_answers")
+
+
+def test_legacy_escape_token_no_longer_suppresses_stop(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    transcript = _write_transcript(
+        tmp_path, [_user("go"), _assistant(_FLUENT_DIAGNOSIS + "\n[skip-evidence-gate: legacy]\n")]
+    )
+    result = handle_unbacked_claim_gate({"transcript_path": str(transcript)})
+    assert result is True
+    assert _decision(capsys)["decision"] == "block"

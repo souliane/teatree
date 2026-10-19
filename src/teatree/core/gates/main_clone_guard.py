@@ -134,7 +134,7 @@ def deny_reason(finding: MainCloneFinding) -> str:
         "or: git worktree add -b <branch> --no-track ~/workspace/t3-workspaces/<repo>-wt origin/main\n"
         "Read-only git, `git fetch`, `git pull --ff-only`, `git checkout <default>`, "
         "and `git worktree add/remove/prune/list` are always allowed. Vetted "
-        f"one-off: put `[main-clone-ok: <reason>]` in {where} (first 512 chars)."
+        f"one-off: put `[gate-escape:main_clone: <reason>]` in {where} (first 512 chars)."
     )
 
 

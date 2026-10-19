@@ -362,9 +362,10 @@ class TestNeverLockoutEscapes:
 
     def test_per_call_token_allows_the_governed_call(self, tmp_path: Path) -> None:
         event = _event(_write_transcript(tmp_path), "Bash")
-        event["tool_input"] = {"command": "touch notes.md  # [visible-plan-ok: scratch file the owner asked for]"}
+        event["tool_input"] = {"command": "touch notes.md # [gate-escape:visible_plan_gate: scratch file]"}
 
-        assert _verdict(event)[0] is False
+        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert _verdict(event)[0] is False
 
     def test_a_token_with_an_empty_reason_does_not_unlock(self, tmp_path: Path) -> None:
         event = _event(_write_transcript(tmp_path), "Bash")
@@ -375,7 +376,6 @@ class TestNeverLockoutEscapes:
     def test_a_token_with_an_empty_reason_on_read_only_bash_does_not_unlock(self, tmp_path: Path) -> None:
         event = _event(_write_transcript(tmp_path), "Bash")
         event["tool_input"] = {"command": "ls # [visible-plan-ok: ]"}
-        assert gate.visible_plan_ok_token(event) is None
         assert _verdict(event)[0] is False
 
     def test_kill_switch_disables_the_gate(self, tmp_path: Path) -> None:
@@ -389,7 +389,9 @@ class TestNeverLockoutEscapes:
         assert deny_circuit_breaker.deny_is_ux_gate(payload["hookSpecificOutput"]["permissionDecisionReason"]) is True
 
     def test_the_escape_token_is_stripped_from_the_deny_fingerprint(self) -> None:
-        assert deny_circuit_breaker._SIGNATURE_STRIP_RE.sub("", "ls [visible-plan-ok: why]").strip() == "ls"
+        assert (
+            deny_circuit_breaker._SIGNATURE_STRIP_RE.sub("", "ls [gate-escape:visible_plan_gate: why]").strip() == "ls"
+        )
 
     def test_the_kill_switch_key_is_a_registered_cold_hook_setting(self) -> None:
         assert COLD_HOOK_SETTINGS["visible_plan_gate_enabled"].default is True
@@ -576,3 +578,9 @@ class TestOnlyTheOwnersOrderArmsTheGate:
         entries = [_user_entry(_ORDER, origin={"kind": "human"}), _assistant_entry(plan), *_skill_load("No targets.")]
 
         assert _refused_by_plan_gate(tmp_path, entries, "Edit", _EDIT) is False
+
+
+def test_legacy_visible_plan_marker_does_not_allow(tmp_path: Path) -> None:
+    event = _event(_write_transcript(tmp_path), "Bash")
+    event["tool_input"] = {"command": "touch notes.md # [visible-plan-ok: legacy]"}
+    assert _verdict(event)[0] is True

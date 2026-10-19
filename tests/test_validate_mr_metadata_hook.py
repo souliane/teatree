@@ -123,14 +123,14 @@ class TestDefaultOverlayValidation:
         assert out["permissionDecision"] == "deny"
         assert "validate" in out["permissionDecisionReason"].lower()
 
-    def test_broken_env_escape_hatch_fails_open(self, monkeypatch):
+    def test_legacy_broken_env_flag_does_not_allow(self, monkeypatch):
         # The deliberate self-rescue opt-in: when the operator sets
         # T3_MR_VALIDATE_ALLOW_BROKEN_ENV, an unresolvable validator falls
         # back to fail-open so a genuinely broken env is not a hard deadlock.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
-        assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
+        assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is True
 
     def test_fails_closed_when_validator_binary_missing(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
@@ -162,9 +162,9 @@ class TestDefaultOverlayValidation:
         assert "this checkout is not visible inside the container" in reason
         assert "2 running teatree-worker containers" in reason
         assert "export TEATREE_INVOCATION_CWD" not in reason
-        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1" in reason
+        assert "[gate-escape:mr_metadata: <reason>]" in reason
 
-    def test_the_broken_env_opt_in_also_lets_a_venue_fault_through_and_says_so(self, monkeypatch, capsys):
+    def test_legacy_env_flag_does_not_allow_a_venue_fault(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
@@ -172,10 +172,9 @@ class TestDefaultOverlayValidation:
             patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
             patch.object(t3_invocation, "unreachable_reason", return_value=None),
         ):
-            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
-        err = capsys.readouterr().err
-        assert "venue fault" in err
-        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
+            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "venue fault" in reason
 
     def test_missing_title_is_validated_not_skipped(self, monkeypatch, capsys):
         # An MR create with no --title is exactly the bad metadata the gate
@@ -233,15 +232,16 @@ class TestUnvalidatedOutcomeIsAnnounced:
         err = self._stderr_for(monkeypatch, capsys, "glab mr update 9120 --add-label needs-review")
         assert "neither a title nor a description" in err
 
-    def test_broken_env_opt_in_bypass_is_announced(self, monkeypatch, capsys):
+    def test_audited_broken_env_escape_can_allow(self, monkeypatch, capsys):
         # Taking the fail-closed escape hatch must not be a quiet bypass.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
-        assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
-        err = capsys.readouterr().err
-        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
-        assert "SKIPPED is not PASSED" in err
+        monkeypatch.setattr(router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "mr_metadata")
+        data = _glab_create("bad", "bad")
+        data["tool_input"]["command"] += " # [gate-escape:mr_metadata: validator unavailable]"
+        assert handle_validate_mr_metadata(data) is False
+        assert capsys.readouterr().out == ""
 
     def test_a_clean_pass_stays_silent(self, monkeypatch, capsys):
         # The gate must not become chatty: a validated, valid MR says nothing.

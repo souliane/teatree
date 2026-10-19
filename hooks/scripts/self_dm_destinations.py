@@ -160,7 +160,7 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
 
     What counts as a write is the Slack write guard's default-deny classifier
     (:func:`~hooks.scripts.mcp_slack_write_guard.is_slack_mcp_write`), so the two agree.
-    Unlike that guard, nothing on the call lifts this deny — no ``[slack-mcp-ok: …]``
+    Unlike that guard, nothing on the call lifts this deny — no ``[gate-escape:mcp_slack_write: …]``
     token (which an agent can add itself), no ``danger_gate_fail_open``, and not the
     guard's own kill-switch, the setting under which a self-DM write would otherwise
     pass. Only the operator's ``self_dm_gate_enabled = false`` does, for a misfiring

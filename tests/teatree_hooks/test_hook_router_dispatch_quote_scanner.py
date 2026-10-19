@@ -26,7 +26,7 @@ from hooks.scripts.hook_router import (
     handle_dispatch_prompt_quote_scanner,
     handle_dispatch_prompt_quote_scanner_on_task_create,
 )
-from teatree.hooks.quote_scanner import dispatch_quote_ok_reason, extract_dispatch_payload
+from teatree.hooks.quote_scanner import extract_dispatch_payload
 
 
 @pytest.fixture(autouse=True)
@@ -85,26 +85,6 @@ class TestExtractDispatchPayload:
         assert extract_dispatch_payload(tool_name, {"prompt": "anything"}) is None
 
 
-class TestDispatchQuoteOkReason:
-    """The in-prompt ``[quote-ok: <reason>]`` opt-out token."""
-
-    def test_token_with_reason_returns_reason(self) -> None:
-        assert dispatch_quote_ok_reason("[quote-ok: paraphrase-impossible]\n\nbody") == "paraphrase-impossible"
-
-    def test_token_inline_first_line(self) -> None:
-        assert dispatch_quote_ok_reason("[quote-ok: legal-exact-wording] do the thing") == "legal-exact-wording"
-
-    def test_empty_reason_is_rejected(self) -> None:
-        assert dispatch_quote_ok_reason("[quote-ok: ]\n\nbody") is None
-
-    def test_no_token_returns_none(self) -> None:
-        assert dispatch_quote_ok_reason("an ordinary prompt with no token") is None
-
-    def test_token_buried_past_head_window_is_ignored(self) -> None:
-        prompt = ("x" * 600) + "[quote-ok: too-late]"
-        assert dispatch_quote_ok_reason(prompt) is None
-
-
 class TestHandlerDeny:
     """A HIGH user-voice/PII match in a dispatch prompt is denied with an actionable reason."""
 
@@ -116,7 +96,7 @@ class TestHandlerDeny:
         reason = decision["permissionDecisionReason"]
         # The reason must name the gate, what matched, and the unblock path.
         assert "pre-dispatch quote-scanner" in reason
-        assert "quote-ok" in reason
+        assert "does not accept an inline escape" in reason
         assert "paraphrase" in reason.lower()
         ledger = _ledger_lines(tmp_path)
         assert ledger
@@ -166,15 +146,14 @@ class TestHandlerDeny:
 class TestHandlerAllow:
     """The opt-out token and clean/MEDIUM prompts pass without false-deny."""
 
-    def test_quote_ok_token_bypasses_high_match(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_legacy_quote_token_cannot_clear_high_match(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         prompt = f"[quote-ok: exact-wording-required-for-repro]\n\n{_HIGH_VOICE_PROMPT}"
         blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-        ledger = _ledger_lines(tmp_path)
-        assert ledger
-        assert ledger[-1]["decision"] == "allow-override"
-        assert ledger[-1]["override"] is True
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
     def test_ordinary_prompt_is_allowed_no_false_deny(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # The common case: a normal author-voice brief with no user-voice
@@ -216,11 +195,9 @@ class TestHandlerAllow:
         prompt = padding + "\n\n" + fenced_decoy
         description = "## User ask (verbatim, 2026-05-20) [quote-ok: relaying the owner's verbatim authorisation]"
         blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt, description=description))
-        assert blocked is False, "the genuine description-field override must still clear the dispatch"
-        assert capsys.readouterr().out == ""
-        ledger = _ledger_lines(tmp_path)
-        assert ledger[-1]["decision"] == "allow-override"
-        assert ledger[-1]["override"] is True
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
 
 class TestToolScope:
@@ -291,13 +268,12 @@ class TestOnTaskCreateGate:
         assert payload is None
         assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
 
-    def test_quote_ok_token_clears_high_match(self, tmp_path: Path) -> None:
+    def test_legacy_quote_token_cannot_clear_high_match(self, tmp_path: Path) -> None:
         blocked, payload = _run_task(f"[quote-ok: exact-wording-required]\n\n{_HIGH_VOICE_PROMPT}")
-        assert blocked is False
-        assert payload is None
-        ledger = _ledger_lines(tmp_path)
-        assert ledger[-1]["decision"] == "allow-override"
-        assert ledger[-1]["override"] is True
+        assert blocked is True
+        assert payload is not None
+        assert payload["continue"] is False
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
     def test_missing_session_id_passes_through(self, tmp_path: Path) -> None:
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT, session_id="")

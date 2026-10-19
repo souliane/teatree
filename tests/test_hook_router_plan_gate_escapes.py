@@ -151,8 +151,9 @@ class TestSkipPlanGateToken(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
             _started_ticket_in_repo(toplevel)
-            data = self._edit_input(toplevel, new_string="[skip-plan-gate: trivial typo] b")
-            blocked, _ = _capture_block(data)
+            data = self._edit_input(toplevel, new_string="[gate-escape:plan_gate: trivial typo] b")
+            with patch.object(router._gate_escape, "escape_allows", return_value=True):
+                blocked, _ = _capture_block(data)
         assert blocked is False
 
     def test_write_carrying_skip_plan_gate_token_in_content_is_allowed(self) -> None:
@@ -160,8 +161,9 @@ class TestSkipPlanGateToken(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
             _started_ticket_in_repo(toplevel)
-            data = self._write_input(toplevel, content="[skip-plan-gate: add comment] x = 1")
-            blocked, _ = _capture_block(data)
+            data = self._write_input(toplevel, content="[gate-escape:plan_gate: add comment] x = 1")
+            with patch.object(router._gate_escape, "escape_allows", return_value=True):
+                blocked, _ = _capture_block(data)
         assert blocked is False
 
     def test_empty_reason_in_skip_plan_gate_token_is_not_an_escape(self) -> None:

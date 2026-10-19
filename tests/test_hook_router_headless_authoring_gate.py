@@ -164,29 +164,33 @@ class TestTheCarveOutsHold:
             "tool_name": "Edit",
             "tool_input": {
                 "file_path": "/repo/src/teatree/x.py",
-                "new_string": "fix [headless-authoring-ok: factory is down, restoring it]",
+                "new_string": "fix [gate-escape:headless_authoring: factory is down, restoring it]",
             },
         }
-        assert _run_chain(allowed) is False
+        with mock.patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert _run_chain(allowed) is False
         # Exactly one: the NEXT call, without the token, is refused again.
         assert _run_chain(_edit()) is True
 
-    def test_the_override_is_recorded_with_its_reason(self, engaged_session: Path) -> None:
+    def test_the_override_reaches_the_shared_audit(self, engaged_session: Path) -> None:
         data = {
             "session_id": "s1",
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[headless-authoring-ok: emergency]"},
+            "tool_input": {
+                "file_path": "/repo/src/teatree/x.py",
+                "new_string": "[gate-escape:headless_authoring: emergency]",
+            },
         }
-        _run_chain(data)
-        audit = engaged_session / "s1.authoring-overrides"
-        assert audit.is_file()
-        assert "emergency" in audit.read_text(encoding="utf-8")
+        with mock.patch.object(router._gate_escape, "escape_allows", return_value=True) as audit:
+            assert _run_chain(data) is False
+        audit.assert_called_once()
+        assert audit.call_args.args[1] == "headless_authoring"
 
     def test_an_empty_override_reason_does_not_unblock(self, engaged_session: Path) -> None:
         data = {
             "session_id": "s1",
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[headless-authoring-ok: ]"},
+            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[gate-escape:headless_authoring: ]"},
         }
         assert _run_chain(data) is True
 
@@ -370,8 +374,9 @@ class TestTheOverrideIsReachableFromACommitMessage:
         self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
     ) -> None:
         clone, _worktree = clone_and_live_worktree
-        message = self._long_message("[headless-authoring-ok: the factory itself is down]")
-        assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is False
+        message = self._long_message("[gate-escape:headless_authoring: the factory itself is down]")
+        with mock.patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is False
 
     def test_the_same_long_message_without_a_token_is_still_refused(
         self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
@@ -466,7 +471,8 @@ class TestAMentionOfAPushIsNotAPush:
     def test_a_push_inside_a_heredoc_body_is_not_a_push(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
         managed, _unmanaged = managed_and_unmanaged
         command = "python - <<'PY'\nprint('then run: cd repo && git push origin main')\nPY"
-        assert _run_gate(_bash(command, str(managed))) is False
+        with mock.patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert _run_gate(_bash(command, str(managed))) is False
 
     def test_a_push_inside_a_quoted_argument_is_not_a_push(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
         managed, _unmanaged = managed_and_unmanaged
@@ -488,10 +494,24 @@ class TestTheOverrideMustLiveInTheCallsOwnText:
 
     def test_a_token_in_the_command_unblocks(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
         managed, _unmanaged = managed_and_unmanaged
-        command = "git push origin HEAD  # [headless-authoring-ok: the factory itself is down]"
-        assert _run_gate(_bash(command, str(managed))) is False
+        command = "git push origin HEAD # [gate-escape:headless_authoring: the factory itself is down]"
+        with mock.patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert _run_gate(_bash(command, str(managed))) is False
 
     def test_a_token_only_in_the_description_does_not_unblock(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
         data = _bash("git push origin HEAD", str(managed_and_unmanaged[0]))
-        data["tool_input"]["description"] = "[headless-authoring-ok: the factory itself is down]"
+        data["tool_input"]["description"] = "[gate-escape:headless_authoring: the factory itself is down]"
         assert _run_gate(data) is True
+
+
+def test_legacy_override_refuses_when_its_audit_write_fails(engaged_session: Path) -> None:
+    data = {
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/src/teatree/x.py",
+            "new_string": "fix [headless-authoring-ok: emergency]",
+        },
+    }
+    with mock.patch.object(router, "_append_line", side_effect=OSError("locked")):
+        assert _run_chain(data) is True

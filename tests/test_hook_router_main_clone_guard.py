@@ -452,9 +452,13 @@ class TestBashMediatedWriteIntoMainClone:
 
 
 class TestNeverLockout:
-    def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_per_call_token_allows(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         clone = _managed_main_clone(tmp_path / "teatree")
-        event = _bash_event("git checkout feature  [main-clone-ok: rescue]", clone, "sess-token")
+        event = _bash_event("git checkout feature # [gate-escape:main_clone: rescue]", clone, "sess-token")
+        monkeypatch.setattr(router, "_current_hook_context", lambda: ("PreToolUse", event))
+        monkeypatch.setattr(router._gate_escape, "escape_allows", lambda data, gate_id: True)
         assert router.handle_block_main_clone_mutation(event) is False
         assert _deny(capsys) is None
 
@@ -469,4 +473,31 @@ class TestNeverLockout:
         )
         event = _bash_event("git checkout feature", clone, "sess-killswitch")
         assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+
+class TestAuditedMainCloneEscape:
+    def test_legacy_marker_no_longer_allows_mutation(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event("git checkout feature # [main-clone-ok: old escape]", clone, "legacy-session")
+        assert router.handle_block_main_clone_mutation(event) is True
+        deny = _deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    def test_new_marker_reaches_audited_deny_seam(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event("git checkout feature # [gate-escape:main_clone: fixture]", clone, "new-session")
+        calls: list[tuple[dict, str]] = []
+
+        def audit(data: dict, gate_id: str) -> bool:
+            calls.append((data, gate_id))
+            return True
+
+        monkeypatch.setattr(router, "_current_hook_context", lambda: ("PreToolUse", event))
+        monkeypatch.setattr(router._gate_escape, "escape_allows", audit)
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert calls == [(event, "main_clone")]
         assert _deny(capsys) is None

@@ -7,6 +7,7 @@ from typing import NotRequired, TypedDict
 
 class OwnerActionKind(StrEnum):
     ATTEST = "attest"
+    ESCAPE = "escape"
     VOID = "void"
 
 
@@ -16,6 +17,7 @@ class ActionRequest(TypedDict):
     binding: str
     note: NotRequired[str]
     host_evidence: NotRequired[bool]
+    scope: NotRequired[dict[str, str]]
 
 
 MARKER_PREFIX = "owner-action:"
@@ -43,6 +45,15 @@ def read_action(evidence: object) -> ActionRequest | None:
         return None
     if "note" in action and not isinstance(action["note"], str):
         return None
-    if "host_evidence" in action and not isinstance(action["host_evidence"], bool):
+    scope = action.get("scope")
+    scope_valid = "scope" not in action
+    if action["kind"] == OwnerActionKind.ESCAPE:
+        expected = {"gate", "reason", "actor", "subject", "head", "action_digest", "session_id", "call_id"}
+        scope_valid = (
+            isinstance(scope, dict)
+            and set(scope) == expected
+            and all(isinstance(value, str) for value in scope.values())
+        )
+    if ("host_evidence" in action and not isinstance(action["host_evidence"], bool)) or not scope_valid:
         return None
     return action

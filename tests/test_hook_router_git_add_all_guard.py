@@ -114,7 +114,7 @@ class TestWholeTreeStageIsDenied:
         reason = deny_reason()
         assert "git add <path>" in reason
         assert "scratch" in reason.lower()
-        assert "[add-all-ok:" in reason
+        assert "[gate-escape:git_add_all:" in reason
 
 
 class TestNarrowlyScoped:
@@ -188,11 +188,13 @@ class TestNarrowlyScoped:
 
 class TestNeverLockout:
     def test_a_token_inside_the_wrapped_script_allows(self) -> None:
-        blocked, _payload = _run("bash -c 'git add -A # [add-all-ok: first commit of a scaffold]'")
+        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+            blocked, _payload = _run("bash -c 'git add -A # [gate-escape:git_add_all: scaffold]'")
         assert blocked is False
 
     def test_per_call_token_allows(self) -> None:
-        blocked, payload = _run("git add -A  # [add-all-ok: first commit on a scaffolded dir]")
+        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+            blocked, payload = _run("git add -A # [gate-escape:git_add_all: scaffold]")
         assert blocked is False
         assert payload is None
 
@@ -205,3 +207,9 @@ class TestNeverLockout:
         blocked, payload = _run("git add -A")
         assert blocked is False
         assert payload is None
+
+
+def test_legacy_add_all_marker_does_not_allow() -> None:
+    blocked, payload = _run("git add -A # [add-all-ok: legacy]")
+    assert blocked is True
+    assert payload is not None

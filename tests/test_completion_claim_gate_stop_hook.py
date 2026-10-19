@@ -133,9 +133,13 @@ class TestPassesWhenCompliantOrOutOfScope:
 
 
 class TestEscapesAndRefireGuard:
-    def test_skip_token_in_turn_text_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        body = _STRANDED_CLAIM + "\n[skip-completion-gate: single doc deliverable, map not applicable]"
+    def test_audited_token_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body = _STRANDED_CLAIM + "\n[gate-escape:completion_claim: single doc deliverable, map not applicable]"
         transcript = _write_transcript(tmp_path, [_user("deliver"), _assistant(body)])
+
+        monkeypatch.setattr(gate, "escape_allows", lambda data, gate_id, *, turn_text: True)
 
         result = handle_completion_claim_gate({"transcript_path": str(transcript)})
 
@@ -179,3 +183,12 @@ class TestFailSafeAndEdgeInputs:
         result = handle_completion_claim_gate({"transcript_path": str(path)})
         assert _decision(capsys) == {}
         assert result is not True
+
+
+def test_legacy_escape_token_no_longer_suppresses_stop(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    transcript = _write_transcript(
+        tmp_path, [_user("deliver"), _assistant(_STRANDED_CLAIM + "\n[skip-completion-gate: legacy]\n")]
+    )
+    result = handle_completion_claim_gate({"transcript_path": str(transcript)})
+    assert result is True
+    assert _decision(capsys)["decision"] == "block"

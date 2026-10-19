@@ -63,7 +63,7 @@ order being read as wider than it is:
 
 - **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
   ticket the factory already started.
-- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+- **The recorded per-action emergency escape** — `[gate-escape:headless_authoring: <reason>]`, for a
   genuine emergency (the factory itself is down). Single-use, recorded, per action.
 
 The deterministic backstop is the PreToolUse authoring gate

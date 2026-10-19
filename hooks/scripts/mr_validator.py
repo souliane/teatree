@@ -9,8 +9,7 @@ router (``_extract_mr_fields``), and every deny goes through the router's
 The typed verdict has three outcomes: ALLOW, DENY, and CANNOT_EVALUATE. A timeout,
 failed spawn, or crash warns and allows. An absent validator or a launcher that
 cannot run in this venue has no verdict and fails CLOSED, with the
-``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in, the master fail-open switch and the
-self-rescue commands as escapes.
+audited per-action escape, the master fail-open switch and self-rescue commands.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
@@ -30,7 +29,6 @@ from hooks.scripts.gate_result import (
     announce_cannot_evaluate,
     classify_validator_run,
     run_validator,
-    warn_gate_skipped,
 )
 from hooks.scripts.mr_cli_fields import cli_update_is_title_only, extract_mr_target_repo, mr_deny_reason
 from hooks.scripts.t3_invocation import t3_argv, venue_fault
@@ -95,13 +93,8 @@ _UNRESOLVABLE = "is not resolvable"
 
 _MR_VALIDATE_BROKEN_ENV_DENY = (
     "Cannot validate MR title/description — the overlay validator (`t3 tool validate-mr`) {cause}. Refusing to "
-    "create the MR with unvalidated metadata (fail closed). Fix the environment, or set "
-    "T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
-)
-
-_MR_VALIDATE_BROKEN_ENV_SKIP = (
-    "the overlay validator (`t3 tool validate-mr`) {cause} and T3_MR_VALIDATE_ALLOW_BROKEN_ENV is set, so the "
-    "fail-closed deny was deliberately bypassed"
+    "create the MR with unvalidated metadata (fail closed). Fix the environment, or "
+    "add `[gate-escape:mr_metadata: <reason>]` to this one action for an audited exception."
 )
 
 
@@ -110,17 +103,13 @@ def _handle_broken_validate_env(data: dict, cause: str = _UNRESOLVABLE) -> bool:
 
     The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
     must never reach GitLab just because the env could not validate it. The
-    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
-    self-rescue — and taking it is announced, never mute, so an MR that goes out
-    unvalidated says so. The broken-env deny additionally routes through
+    audited `[gate-escape:mr_metadata: <reason>]` token is the per-action
+    rescue. The broken-env deny routes through
     ``_fail_open_or_deny`` so the master ``danger_gate_fail_open`` switch and
     the always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
     """
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred back-import
 
-    if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
-        warn_gate_skipped("MR-metadata", _MR_VALIDATE_BROKEN_ENV_SKIP.format(cause=cause))
-        return False
     return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY.format(cause=cause), gate_id="mr_metadata")
 
 
@@ -163,7 +152,7 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     allowance, are both CANNOT_EVALUATE — crash ≠ deny (#1528), and neither is a
     timeout: each warns and allows, with the remote CI job as backstop. The
     UNRESOLVABLE validator (no ``t3``, no script) and a launcher that cannot run in
-    this venue (exit 69) FAIL CLOSED; the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV``
+    this venue (exit 69) FAIL CLOSED; the audited per-action escape
     opt-in restores fail-open there.
 
     Every outcome in which the gate does NOT actually validate the MR — an

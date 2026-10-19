@@ -281,34 +281,23 @@ class TestSelfBypassDoesNotPoisonDistinctCommands:
         assert _circuit_broken(env, "poison") == [], "distinct commands never trip the breaker"
 
 
-class TestConfirmedFalsePositiveGrant:
-    """#3252(b) — a confirmed identical false positive stops re-prompting.
-
-    A ``[fp-confirmed:]`` token suppresses the deny and records a session-scoped,
-    per-fingerprint grant; the IDENTICAL command WITHOUT the token then auto-passes
-    (the grant hit) instead of re-prompting. RED on pre-fix code (no grant store,
-    and the token is not recognised).
-    """
-
-    def test_confirmed_fp_grants_and_identical_call_stops_reprompting(self, env: dict[str, str]) -> None:
+class TestLegacyFalsePositiveToken:
+    def test_legacy_token_cannot_grant_an_identical_call(self, env: dict[str, str]) -> None:
         confirmed = {
             "session_id": "grant",
             "tool_name": "Bash",
             "tool_input": {"command": "uv run pytest --no-cov -q [fp-confirmed: known-quick targeted run]"},
         }
         rc_confirm, payload_confirm, stderr_confirm = _run(env, confirmed)
-        assert rc_confirm == 0, "the [fp-confirmed:] call is suppressed (allowed)"
-        assert payload_confirm is None
-        assert "CONFIRMED FALSE POSITIVE" in stderr_confirm
-        assert _grant_file(env, "grant").is_file(), "a session grant is recorded"
+        _assert_denied(rc_confirm, payload_confirm)
+        assert "CONFIRMED FALSE POSITIVE" not in stderr_confirm
+        assert not _grant_file(env, "grant").is_file()
 
         identical = _safety_deny("grant")  # same command, no token
         rc_reuse, payload_reuse, _ = _run(env, identical)
-        assert rc_reuse == 0, "the identical FP auto-passes via the grant — no re-prompt"
-        assert payload_reuse is None
-        assert _streak(env, "grant") is None, "a granted call accumulates no streak"
+        _assert_denied(rc_reuse, payload_reuse)
 
-    def test_distinct_command_after_grant_still_denies(self, env: dict[str, str]) -> None:
+    def test_distinct_command_after_legacy_token_still_denies(self, env: dict[str, str]) -> None:
         confirmed = {
             "session_id": "grant2",
             "tool_name": "Bash",

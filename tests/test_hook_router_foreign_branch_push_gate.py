@@ -577,7 +577,7 @@ class TestAForcePushHasNoEscape:
         assert payload is not None
         assert payload["hookSpecificOutput"]["gate_id"] == gate.FORCE_DELETE_GATE_ID
 
-    def test_a_non_force_fp_confirmed_token_releases_the_live_breaker(
+    def test_a_non_force_fp_confirmed_token_cannot_release_the_live_breaker(
         self, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
@@ -588,8 +588,8 @@ class TestAForcePushHasNoEscape:
         monkeypatch.setattr(router, "_CURRENT_DATA", _event(command, work))
         with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
             blocked, payload = _run(command, work)
-        assert blocked is False
-        assert payload is None
+        assert blocked is True
+        assert payload is not None
 
     def test_a_non_force_push_still_routes_through_the_shared_fail_open_chain(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")

@@ -15,6 +15,7 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.models.gate_escape import EscapeScope, GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
@@ -97,8 +98,25 @@ def _prepare_void(_row: DeferredQuestion, action: ActionRequest, actor: str) -> 
     return write
 
 
+def _prepare_escape(_row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
+    scope = EscapeScope(**action["scope"])
+    if action["target"] != scope.gate or action["binding"] != scope.binding():
+        message = "The requested gate escape scope changed."
+        raise OwnerActionRefusedError(message)
+
+    def write() -> str:
+        try:
+            grant = GateEscape.grant_human(scope, issuer_id=actor, ttl=timedelta(hours=1))
+        except GateEscapeError as exc:
+            raise OwnerActionRefusedError(str(exc)) from exc
+        return f"Approved one gate escape {grant.pk}."
+
+    return write
+
+
 _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
     OwnerActionKind.ATTEST: _prepare_attest,
+    OwnerActionKind.ESCAPE: _prepare_escape,
     OwnerActionKind.VOID: _prepare_void,
 }
 

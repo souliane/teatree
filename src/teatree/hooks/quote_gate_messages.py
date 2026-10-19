@@ -16,7 +16,6 @@ detector stays free of presentation.
 from dataclasses import dataclass
 from typing import Final
 
-from teatree.hooks import _dispatch_quote_ok
 from teatree.hooks.quote_scanner import ScanResult
 
 
@@ -27,7 +26,6 @@ class QuoteGateSurface:
     gate_label: str
     carrier: str
     consequence: str
-    escape_location: str
 
 
 #: The ``Agent``/``Task`` ``PreToolUse`` arm (#1401) — the only interception point a
@@ -41,7 +39,6 @@ DISPATCH_SURFACE: Final[QuoteGateSurface] = QuoteGateSurface(
     carrier="The Agent/Task prompt",
     consequence="before dispatching (the sub-agent would otherwise echo it into a published output, "
     "defeating the #1213 publish gate)",
-    escape_location="in the one-line `description` (subject) field",
 )
 
 #: The task-list arm (#171). The task-list tools bypass ``PreToolUse`` entirely and
@@ -52,7 +49,6 @@ TASK_ENTRY_SURFACE: Final[QuoteGateSurface] = QuoteGateSurface(
     carrier="The task subject/description",
     consequence="before the entry is created (it would otherwise sit in the task list and be echoed "
     "into a published output, defeating the #1213 publish gate)",
-    escape_location="near the start of the task subject or description",
 )
 
 
@@ -66,8 +62,7 @@ def _format_quote_block_message(result: ScanResult, surface: QuoteGateSurface) -
         f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
         f"Paraphrase it into author-voice description {surface.consequence}. "
         "If this is a false match, rephrase without the quoted span or ask the owner. "
-        "The owner may approve this one entry with a per-call `[quote-ok: <reason>]` override "
-        f"{surface.escape_location}."
+        "This privacy gate does not accept an inline escape."
     )
 
 
@@ -87,9 +82,7 @@ def format_block_message(result: ScanResult, *, slack_mcp: bool = False) -> str:
 
 def format_dispatch_block_message(result: ScanResult) -> str:
     """Render the PreToolUse deny reason for a HIGH match in a dispatch prompt (#1401)."""
-    names = ", ".join(sorted({f.name for f in result.high}))
-    excerpt = next((f.excerpt for f in result.high if f.excerpt), "")
-    return _dispatch_quote_ok.block_message(names, excerpt)
+    return _format_quote_block_message(result, DISPATCH_SURFACE)
 
 
 def format_task_entry_block_message(result: ScanResult) -> str:

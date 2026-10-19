@@ -252,8 +252,10 @@ class TestTheDryRunExemptionBelongsToItsOwnPush:
 class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = _repo_with_remote(tmp_path / "tok", "git@github.com:randomuser/randomrepo.git")
-        command = "git push origin HEAD  # [scope-push-ok: vetted one-off]"
-        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is False
+        command = "git push origin HEAD # [gate-escape:unknown_repo_push: vetted one-off]"
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(router._gate_escape, "escape_allows", lambda data, gate_id: True)
+            assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is False
         assert _parse_deny(capsys) is None
 
     def test_empty_token_does_not_allow(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -270,3 +272,10 @@ class TestNeverLockout:
     def test_unresolvable_cwd_fails_open(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", None)) is False
         assert _parse_deny(capsys) is None
+
+
+def test_legacy_scope_push_marker_does_not_allow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_remote(tmp_path / "legacy", "git@github.com:randomuser/randomrepo.git")
+    event = _push_event("git push origin HEAD # [scope-push-ok: legacy]", repo)
+    assert router.handle_block_unknown_repo_push(event) is True
+    assert _parse_deny(capsys) is not None

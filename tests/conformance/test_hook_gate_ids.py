@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts.gate_ledger import DECLARED_GATES
+from teatree.hooks.gate_escape import KNOWN_GATES
 
 _SCRIPTS = Path(__file__).resolve().parents[2] / "hooks" / "scripts"
 _DENY_ROUTES = frozenset({"emit_pretooluse_deny", "_fail_open_or_deny"})
@@ -262,3 +263,49 @@ def test_the_check_sees_a_deny_however_the_route_is_reached(source: str, expecte
     problems, _count = gate_id_problems({"synthetic.py": source}, frozenset())
 
     assert problems == expected
+
+
+def test_every_declared_gate_has_one_escape_policy() -> None:
+    stop_gates = {"answer_first", "completion_claim", "standing_goal_stop", "unbacked_claim"}
+    assert DECLARED_GATES | stop_gates == KNOWN_GATES
+
+
+def test_no_per_gate_escape_regexes_remain() -> None:
+    roots = (
+        Path(__file__).resolve().parents[2] / "hooks" / "scripts",
+        Path(__file__).resolve().parents[2] / "src" / "teatree" / "hooks",
+        Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "gates",
+    )
+    old_markers = (
+        "add-all-ok",
+        "admission-ok",
+        "brief-anchor-ok",
+        "config-overwrite-ok",
+        "cron-loop-ok",
+        "delegate-ok",
+        "fg-ok",
+        "general-purpose-ok",
+        "glab-base-ok",
+        "grant-ask-ok",
+        "headless-authoring-ok",
+        "main-clone-ok",
+        "merge-detect-ok",
+        "orchestration-ok",
+        "quote-ok",
+        "reviewer-ok",
+        "scope-push-ok",
+        "single-branch-ok",
+        "skill-load-ok",
+        "skip-plan-gate",
+        "slack-mcp-ok",
+        "visible-plan-ok",
+        "worktree-containment-ok",
+    )
+    parsers = [
+        f"{path.relative_to(root)}:{number}"
+        for root in roots
+        for path in root.rglob("*.py")
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "re.compile" in line and any(f"\\[{marker}:" in line for marker in old_markers)
+    ]
+    assert not parsers, parsers

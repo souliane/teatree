@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from dataclasses import fields
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,7 +14,10 @@ from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
+    from teatree.core.models.gate_escape import EscapeScope
     from teatree.core.overlay import OverlayBase
+
+_GATE_ESCAPE_INPUT_LIMIT = 32768
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
 
@@ -54,6 +58,59 @@ def privacy_scan(
 ) -> None:
     """Scan text for privacy-sensitive patterns (emails, keys, IPs)."""
     ToolRunner.run_script("privacy_scan", path)
+
+
+class GateEscapeTool:
+    @staticmethod
+    def _read_scope() -> "EscapeScope":
+        from teatree.core.models.gate_escape import EscapeScope  # noqa: PLC0415 — load after Django bootstrap
+
+        raw = sys.stdin.read(_GATE_ESCAPE_INPUT_LIMIT + 1)
+        payload = json.loads(raw)
+        names = {field.name for field in fields(EscapeScope)}
+        if len(raw) > _GATE_ESCAPE_INPUT_LIMIT or not isinstance(payload, dict) or set(payload) != names:
+            message = "Gate escape scope is malformed"
+            raise ValueError(message)
+        if any(not isinstance(value, str) for value in payload.values()):
+            message = "Gate escape scope must contain strings"
+            raise ValueError(message)
+        return EscapeScope(**payload)
+
+    @staticmethod
+    def _record_scope(scope: "EscapeScope") -> None:
+        from teatree.core.models.gate_escape import GateEscape  # noqa: PLC0415 — load after Django bootstrap
+        from teatree.hooks.gate_escape import (  # noqa: PLC0415 — keep audit policy with its CLI call
+            EscapePolicy,
+            policy_for,
+        )
+
+        policy = policy_for(scope.gate)
+        if policy is EscapePolicy.AUDITED:
+            GateEscape.record_agent(scope)
+        elif policy is EscapePolicy.HUMAN_ONLY:
+            if GateEscape.consume_human(scope) is None:
+                from teatree.core.gates.gate_escape_request import request_owner_escape  # noqa: PLC0415 — grant only
+
+                request_owner_escape(scope)
+                message = "Owner approval is required for this gate"
+                raise ValueError(message)
+        else:
+            message = "This gate does not accept escapes"
+            raise ValueError(message)
+
+    @staticmethod
+    def run() -> None:
+        try:
+            ensure_django()
+            GateEscapeTool._record_scope(GateEscapeTool._read_scope())
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, ValueError) else "Gate escape audit unavailable"
+            typer.echo(json.dumps({"allowed": False, "reason": reason}))
+            raise typer.Exit(code=1) from exc
+        typer.echo(json.dumps({"allowed": True}))
+
+
+tool_app.command("gate-escape")(GateEscapeTool.run)
 
 
 def _deny_with_errors(errors: list[str]) -> None:

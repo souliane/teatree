@@ -90,17 +90,21 @@ class TestNeverLockout:
 
         assert handle_block_cron_loop_shell(_cron_event(_TICK_PROMPT)) is False
 
-    def test_per_call_token_allows_and_notes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        prompt = f"[cron-loop-ok: pre-flip box] {_TICK_PROMPT}"
+    def test_per_call_token_allows_and_notes(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
+        prompt = f"[gate-escape:block-cron-loop-shell: pre-flip box] {_TICK_PROMPT}"
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "block-cron-loop-shell"
+        )
         assert handle_block_cron_loop_shell(_cron_event(prompt)) is False
 
-        assert "cron-loop-ok" in capsys.readouterr().err
+    def test_token_in_the_wakeup_reason_also_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
-    def test_token_in_the_wakeup_reason_also_allows(self) -> None:
         event = _wakeup_event(_TICK_PROMPT)
-        event["tool_input"]["reason"] = "[cron-loop-ok: worker is down]"
-
+        event["tool_input"]["reason"] = "[gate-escape:block-cron-loop-shell: worker is down]"
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "block-cron-loop-shell"
+        )
         assert handle_block_cron_loop_shell(event) is False
 
     def test_cold_env_without_the_core_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:

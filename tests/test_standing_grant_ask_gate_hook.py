@@ -137,13 +137,16 @@ class TestNeverLockout:
         with _grant_on():
             assert handle_block_standing_grant_ask(_ask(_COVERED_ASK)) is False
 
-    def test_per_call_token_allows_and_notes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        question = f"[grant-ask-ok: the owner asked to review this one personally] {_COVERED_ASK}"
+    def test_per_call_token_allows_and_notes(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
+        question = (
+            f"[gate-escape:block-standing-grant-ask: the owner asked to review this one personally] {_COVERED_ASK}"
+        )
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "block-standing-grant-ask"
+        )
         with _grant_on():
             assert handle_block_standing_grant_ask(_ask(question)) is False
-
-        assert "grant-ask-ok" in capsys.readouterr().err
 
     def test_an_empty_token_reason_does_not_escape(self) -> None:
         with _grant_on():

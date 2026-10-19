@@ -23,8 +23,8 @@ hard-blocking Stop gate): it fires ONLY on a loop-driven turn
 prose, so the gate would be pointless nagging there), short-circuits the
 ``stop_hook_active`` re-fire, and the detector is tuned hard for precision so a
 legitimate single-deliverable "done" or a complete on-target map is never
-blocked. Two never-lockout escapes — a per-call ``[skip-completion-gate:
-<reason>]`` token in the turn text and the ``[teatree]
+blocked. Two never-lockout escapes — an audited per-call
+``[gate-escape:completion_claim: <reason>]`` token in the turn text and the ``[teatree]
 completion_claim_gate_enabled = false`` kill-switch — keep a false fire from
 ever wedging turn-end.
 
@@ -35,16 +35,16 @@ on any error (a Stop hook must NEVER crash turn-end).
 
 import contextlib
 import json
-import re
 import sys
 from pathlib import Path
+
+from hooks.scripts.gate_escape import escape_allows
+from teatree.hooks.gate_escape import strip_stop_control_tokens
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("completion_claim_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.completion_claim_gate", sys.modules[__name__])
-
-_SKIP_COMPLETION_GATE_RE = re.compile(r"\[skip-completion-gate:\s*(\S[^\]]*?)\s*\]")
 
 
 def _completion_claim_gate_enabled() -> bool:
@@ -58,20 +58,6 @@ def _completion_claim_gate_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("completion_claim_gate_enabled", default=True)
-
-
-def _skip_completion_gate_token(text: str) -> str | None:
-    """Return the reason from a ``[skip-completion-gate: <reason>]`` token, else None.
-
-    The Stop gate has no per-call tool input, so the escape lives in the
-    assistant's final-turn text — the agent attaches the token when it has a
-    legitimate reason the heuristic cannot see. An empty reason is rejected.
-    """
-    match = _SKIP_COMPLETION_GATE_RE.search(text)
-    if match is None:
-        return None
-    reason = match.group(1).strip()
-    return reason or None
 
 
 def handle_completion_claim_gate(data: dict) -> bool | None:
@@ -126,11 +112,10 @@ def _run_completion_claim_gate(data: dict) -> bool | None:
     if turn is None:
         return None
     text = turn[0]
-    if reason_token := _skip_completion_gate_token(text):
-        sys.stderr.write(f"NOTE: completion-claim gate skipped via [skip-completion-gate: {reason_token}].\n")
-        return None
-    verdict = completion_claim_scanner.find_completion_block(text)
+    verdict = completion_claim_scanner.find_completion_block(strip_stop_control_tokens(text))
     if verdict is None:
+        return None
+    if escape_allows(data, "completion_claim", turn_text=text):
         return None
     json.dump({"decision": "block", "reason": completion_claim_scanner.format_block_message(verdict)}, sys.stdout)
     return True
