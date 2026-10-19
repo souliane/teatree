@@ -12,7 +12,7 @@ synthetic fixtures they pin. Those definitions feed two kinds of check that shar
 one umbrella CLI (`t3 eval …`):
 
 - **evals** — running the definitions against a **live model + grader**, on a
-  **cadence** (weekly cron + manual dispatch), fail-loud via `--require-executed`
+  **cadence** (daily eligibility check, at most one sweep before the weekly reset, plus manual dispatch), fail-loud via `--require-executed`
   / judge-metered / count-floor. This is the `--backend api` AI lane, the
   `--judge` / `judge:` oracles, `benchmark`, and the advisory `skill-prose-judge`.
 - **tests** — deterministic, no live model, run **every commit** (pytest +
@@ -267,7 +267,7 @@ scenario YAML **and** by changed `agent_path` skill prose, narrowed to the
 touched `agent_sections` when `--diff-file` is given, so editing the exact
 section a scenario grades can no longer select zero and pass vacuously,
 [#3944](https://github.com/souliane/teatree/issues/3944);
-`merged-prs-since` guards the weekly cron, `merge-summaries` builds the public
+`merged-prs-since` guards the scheduled sweep, `merge-summaries` builds the public
 dashboard, `verify-benchmark-publish` gates the benchmark dashboard commit on
 real metered spend) — the same logic the host's `scripts/eval/*.py`
 workflow shims and the reusable `eval-pr-reusable.yml` /
@@ -1052,7 +1052,7 @@ path drives it for real.
   test_eval.py`. The deterministic, model-free layers therefore guard every PR
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
-  scenario suite once a week on a cron — not on every push, not on every PR, and
+  scenario suite at most once per weekly reset window, checked daily — not on every push, not on every PR, and
   NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`, so a PR run
   neither runs nor displays a metered-eval check. The deterministic lanes are NOT
   re-run standalone in the weekly job (prek per push + pytest per PR is the
@@ -1122,7 +1122,7 @@ This table is the single source of truth for which lanes exist, how they run, an
 | corpus-grade | **test** | model-free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
 | skill-command-validity | **test** | model-free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every bare-`t3 eval` run + on demand |
 | ai-eval transcript | **test** (replay) | $0 extra (reuses a recorded run) | host | `t3 eval run` (default backend) | — (grades a saved transcript off disk; the in-session capture that produces it is the live step) | manual / on demand |
-| ai-eval sdk | **eval** | `agent_harness_provider`-selected — DEFAULT subscription OAuth (no per-token bill); the metered `api_key` selectable | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `t3 eval run --backend api` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` secrets, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| ai-eval sdk | **eval** | `agent_harness_provider`-selected — DEFAULT subscription OAuth (no per-token bill); the metered `api_key` selectable | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `t3 eval run --backend api` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` secrets, `--docker`) | daily 06:00 UTC eligibility check, at most one sweep before the weekly reset + manual `workflow_dispatch` |
 | `--judge` / `judge:` oracle | **eval** | subscription-covered (judge) | host/docker (with the api lane) | `t3 eval run --judge` / `corpus grade --judge` | metered path only (fail-loud: judge-metered guard) | metered path + on demand |
 | benchmark | **eval** | subscription-covered (Agent SDK) | **docker** (DEFAULT; `--local` for a host check) | `t3 eval benchmark --models …` | — (manual cost/pass-rate comparison) | on demand |
 | skill-prose-judge | **eval** (advisory) | subscription-covered (judge), **advisory** | host (judge via `ClaudeJudge`) | `t3 eval skill-prose-judge` | — (advisory — never gates CI) | bare-`t3 eval` fresh-run path + on demand |

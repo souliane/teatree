@@ -192,6 +192,28 @@ class TestNonOauthCredentialIsNoOp:
 
 
 class TestAllExhausted:
+    @pytest.mark.parametrize(
+        "status", [TokenProbeStatus.BELOW_RESERVE, TokenProbeStatus.UNKNOWN, TokenProbeStatus.UNREACHABLE]
+    )
+    def test_metered_fallback_requires_every_account_exhausted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: TokenProbeStatus
+    ) -> None:
+        env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
+        other = CandidateHealth(index=1, label="token[2]", status=status)
+        _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0), other), ranked=()))
+        code = main(
+            {
+                "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}",
+                "EVAL_API_KEY_FALLBACK": "true",
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
+            }
+        )
+        assert code == 75
+        assert "parked=true" in _env_lines(output_file)
+        assert "T3_AGENT_HARNESS_PROVIDER=api_key" not in _env_lines(env_file)
+
     def test_parks_when_fallback_off(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
