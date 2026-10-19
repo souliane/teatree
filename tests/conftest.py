@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.conf import settings
 
 from hooks.scripts import hook_budget
 from teatree.agents import live_mailbox
@@ -795,6 +796,13 @@ def pytest_configure(config: pytest.Config) -> None:
     (a worker thread that STRANDS a DB handle) and ``tests/_speak_thread_sentinel.py``
     (a test that LEAKS a local-playback thread into the next test, #4277).
     """
+    if settings.SETTINGS_MODULE != "tests.django_settings":
+        message = (
+            f"the suite runs only under tests.django_settings, not {settings.SETTINGS_MODULE}: "
+            "an ambient DJANGO_SETTINGS_MODULE won because addopts (and its --ds) were dropped; "
+            "pass --ds=tests.django_settings"
+        )
+        raise pytest.UsageError(message)
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
     config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
     config.pluginmanager.register(_session_resource_guard, "session-resource-guard")

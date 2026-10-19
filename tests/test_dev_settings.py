@@ -58,6 +58,22 @@ class TestSuiteSettingsMirrorProduction:
 
         assert settings.SETTINGS_MODULE == "tests.django_settings"
 
+    def test_a_session_under_production_settings_is_refused_before_any_test(self, tmp_path) -> None:
+        # Dropping addopts lets an ambient DJANGO_SETTINGS_MODULE win; a subset run then fails
+        # on whatever touches ConfigSetting first, which reads as an order-dependent test.
+        env = {key: value for key, value in os.environ.items() if key not in {"T3_CONTROL_DB_DIR", "XDG_DATA_HOME"}}
+        env |= {"DJANGO_SETTINGS_MODULE": "teatree.settings", "HOME": str(tmp_path)}
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-o", "addopts=", "-p", "no:cacheprovider", "--co", "-q", __file__],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=50,
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "tests.django_settings" in result.stderr
+
 
 def test_discover_overlay_apps_skips_broken_entry_points():
     """Entry points that raise on load are silently skipped."""
