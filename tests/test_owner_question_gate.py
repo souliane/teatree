@@ -1,0 +1,520 @@
+# test-path: cross-cutting — exercises the public hook router for attended owner decisions.
+"""Attended owner decisions use one plain question tool call per decision."""
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+_ROUTER = Path(__file__).resolve().parents[1] / "hooks/scripts/hook_router.py"
+_ADAPTER = _ROUTER.with_name("codex_hook_adapter.py")
+_DISPATCHED = {"T3_DISPATCHED_AGENT": "1"}
+
+
+def _transcript(tmp_path: Path, *, final: str = "") -> Path:
+    path = tmp_path / "turn.jsonl"
+    entries = [
+        {
+            "type": "user",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "message": {"role": "user", "content": [{"type": "text", "text": "Please handle this."}]},
+        }
+    ]
+    if final:
+        entries.append(
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": final}]}}
+        )
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+    return path
+
+
+def _scheduled_transcript(tmp_path: Path) -> Path:
+    transcript = tmp_path / "scheduled.jsonl"
+    entry = {
+        "type": "user",
+        "turnOrigin": "scheduled",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": {"role": "user", "content": [{"type": "text", "text": "run the loop"}]},
+    }
+    transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    return transcript
+
+
+def _seed_settings(tmp_path: Path, settings: dict[str, object]) -> Path:
+    db = tmp_path / "config.sqlite3"
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            [(key, json.dumps(value)) for key, value in settings.items()],
+        )
+    return db
+
+
+def _run_hook(
+    tmp_path: Path, event: str, payload: dict, *, adapter: bool = False, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    ambient = {key: value for key, value in os.environ.items() if key not in {"T3_DISPATCHED_AGENT", "T3_HOOK_CLIENT"}}
+    hermetic = {
+        "XDG_DATA_HOME": str(tmp_path / "data"),
+        "T3_HOOK_STATE_DIR": str(tmp_path / "hooks"),
+        "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(tmp_path / "hooks"),
+        "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loops"),
+        "T3_CONFIG_DB": str(_seed_settings(tmp_path, {})),
+    }
+    return subprocess.run(
+        [sys.executable, str(_ADAPTER if adapter else _ROUTER), "--event", event],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+        env=ambient | hermetic | (env or {}),
+        cwd=_ROUTER.parents[2],
+    )
+
+
+def _ask(question: str, *, options: list[dict] | None = None) -> dict:
+    return {
+        "header": "Merge",
+        "question": question,
+        "options": options
+        if options is not None
+        else [
+            {"label": "Merge", "description": "I merge it now."},
+            {"label": "Wait", "description": "I wait for review."},
+        ],
+    }
+
+
+def test_attended_final_decision_list_blocks(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": "Needs you:\n- Which branch should I use?\n- Should I merge after review?",
+        },
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["decision"] == "block"
+    assert "question tool" in json.loads(result.stdout)["reason"].lower()
+
+
+def test_two_separate_questions_and_clean_reply_pass(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    payload = {"session_id": "owner-turn", "transcript_path": str(transcript)}
+    first = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        payload | {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Merge this now?")]}},
+    )
+    second = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        payload | {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Use the main branch?")]}},
+    )
+    stop = _run_hook(tmp_path, "Stop", payload | {"last_assistant_message": "I have your answers and will proceed."})
+
+    assert (first.returncode, second.returncode, stop.returncode) == (0, 0, 0)
+    assert not first.stdout
+    assert not second.stdout
+    assert not stop.stdout
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The build passed. Next steps:\n1. Check the logs.\n2. Merge after review.",
+        "Needs you: none. The build is green.",
+        "I asked you two questions and recorded the answers.",
+        "Here is how I will proceed:\n- Run the tests.\n- Merge after review.",
+        "**Needs you:** none",
+        "Since 09:12 · all overlays\nNeeds you\n  - Q12: Merge the release branch now? — answer in its Slack thread",
+    ],
+)
+def test_normal_status_reply_passes(tmp_path: Path, text: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("question", ["Merge ticket 42 now?", "Use the --force flag?", "Set widget_mode now?"])
+def test_question_shorthand_is_refused(tmp_path: Path, question: str) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask(question)]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "plain words" in result.stdout
+
+
+def test_two_questions_in_one_call_are_refused(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge this now?"), _ask("Use the main branch?")]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "one decision per call" in result.stdout
+
+
+def test_long_question_is_refused(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    question = (
+        "Would you like me to merge this after I have read the review notes and checked the build result "
+        "and told everyone what happened and collected the remaining comments today?"
+    )
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask(question)]},
+        },
+    )
+
+    assert len(question) > 160
+    assert result.returncode == 2
+    assert "160" in result.stdout
+
+
+def test_stop_uses_transcript_when_final_message_is_missing(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path, final="Needs input:\n- Which branch?\n- Merge after review?")
+    result = _run_hook(tmp_path, "Stop", {"session_id": "owner-turn", "transcript_path": str(transcript)})
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+def test_dispatched_final_reply_is_not_blocked(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "agent-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": "Needs you:\n- Which branch?\n- Merge after review?",
+        },
+        env=_DISPATCHED,
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_codex_question_tool_uses_same_plain_words_check(tmp_path: Path) -> None:
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "tool_name": "request_user_input_async",
+            "tool_input": {"questions": [{"title": "Merge ticket 42 now?", "options": ["Merge", "Wait"]}]},
+        },
+        adapter=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_stop_refire_does_not_block_again(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "stop_hook_active": True,
+            "last_assistant_message": "Needs you:\n- Which branch?\n- Merge after review?",
+        },
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_third_identical_question_refusal_fails_open(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    payload = {
+        "session_id": "owner-turn",
+        "transcript_path": str(transcript),
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [_ask("Merge ticket 42 now?")]},
+    }
+
+    results = [_run_hook(tmp_path, "PreToolUse", payload) for _ in range(3)]
+
+    assert [result.returncode for result in results] == [2, 2, 0]
+
+
+def test_last_assistant_message_wins_over_lagging_transcript(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path, final="Needs you:\n- Which branch?\n- Merge after review?")
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": "I have your answer and will proceed.",
+        },
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_malformed_question_payload_passes_without_a_content_verdict(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{}]},
+        },
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_codex_final_reply_uses_same_decision_prose_check(tmp_path: Path) -> None:
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "last_assistant_message": "Needs you:\n- Which branch?\n- Merge after review?",
+        },
+        adapter=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+def test_loop_driven_question_skips_attended_content_gate(tmp_path: Path) -> None:
+    transcript = _scheduled_transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "loop-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge ticket 42 now?")]},
+        },
+    )
+
+    assert "owner-question-fit" not in result.stdout
+    assert "TEATREE OWNER QUESTION GATE" not in result.stdout
+
+
+def test_dispatched_question_skips_attended_content_gate(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "agent-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge ticket 42 now?")]},
+        },
+        env=_DISPATCHED,
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+_DECISION_LIST = "Needs you:\n- Which branch should I use?\n- Should I merge after review?"
+
+
+def test_loop_driven_final_reply_is_not_bounced_to_the_question_tool(tmp_path: Path) -> None:
+    transcript = _scheduled_transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "loop-turn", "transcript_path": str(transcript), "last_assistant_message": _DECISION_LIST},
+    )
+
+    assert result.returncode == 0
+    assert "OWNER DECISION GATE" not in result.stdout
+
+
+def test_text_list_the_owner_asked_for_after_rejecting_a_question_passes(tmp_path: Path) -> None:
+    now = datetime.now(UTC).isoformat()
+    ask = {"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": {"questions": [_ask("Merge?")]}}
+    entries = [
+        {"type": "assistant", "message": {"role": "assistant", "content": [ask]}},
+        {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}},
+        {
+            "type": "user",
+            "timestamp": now,
+            "message": {"role": "user", "content": [{"type": "text", "text": "None of these, list them as text."}]},
+        },
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": _DECISION_LIST}]}},
+    ]
+    transcript = tmp_path / "rejected.jsonl"
+    transcript.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": _DECISION_LIST},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_classifier_denial_explanation_passes(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    text = "The write was denied by the classifier.\n" + _DECISION_LIST
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+
+
+def test_escape_token_lets_the_final_reply_end(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    text = _DECISION_LIST + "\n[owner-question-ok: the owner asked for this list in text]"
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+    )
+
+    assert result.returncode == 0
+    assert not result.stdout
+    assert "owner-question-ok" in result.stderr
+
+
+def test_empty_escape_reason_still_blocks(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": _DECISION_LIST + "\n[owner-question-ok: ]",
+        },
+    )
+
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+def test_kill_switch_lets_both_arms_through(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    payload = {"session_id": "owner-turn", "transcript_path": str(transcript)}
+    _seed_settings(tmp_path, {"owner_question_gate_enabled": False})
+
+    stop = _run_hook(tmp_path, "Stop", payload | {"last_assistant_message": _DECISION_LIST})
+    ask = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        payload | {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Merge ticket 42 now?")]}},
+    )
+
+    assert (stop.returncode, stop.stdout) == (0, "")
+    assert ask.returncode == 0
+    assert "OWNER QUESTION GATE" not in ask.stdout
+
+
+def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    question = "Merge ticket 42 now? [owner-question-ok: the owner asked for the number]"
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask(question)]},
+        },
+    )
+
+    assert result.returncode == 0
+    assert "OWNER QUESTION GATE" not in result.stdout
+
+
+@pytest.mark.parametrize("dispatched", [False, True])
+def test_batched_question_the_gate_does_not_refuse_still_warns(tmp_path: Path, *, dispatched: bool) -> None:
+    transcript = _transcript(tmp_path) if dispatched else _scheduled_transcript(tmp_path)
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "loop-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge this now?"), _ask("Use the main branch?")]},
+        },
+        env=_DISPATCHED if dispatched else None,
+    )
+
+    assert "OWNER QUESTION GATE" not in result.stdout
+    assert "ONE decision per call" in result.stderr
+
+
+def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    payload = {"session_id": "owner-turn", "transcript_path": str(transcript), "tool_name": "AskUserQuestion"}
+    questions = ["Merge ticket 42 now?", "Merge ticket 43 today?", "Merge ticket 44 tonight?"]
+
+    results = [
+        _run_hook(tmp_path, "PreToolUse", payload | {"tool_input": {"questions": [_ask(question)]}})
+        for question in questions
+    ]
+
+    assert [result.returncode for result in results] == [2, 2, 2]

@@ -162,3 +162,56 @@ class TestTheTranscriptReadNewestFirst:
         assert list(iter_transcript_reversed(str(huge))) == [{"n": 0}]
 
         assert time.process_time() - started < 2 * linear
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Needs you:\n- Which branch?\n- Merge after review?",
+        "## Needs input\n- Pick the branch.\n- Approve the merge.",
+        "Approve?\nI can merge after review.",
+        "Which option do you prefer?\n- Merge now\n- Wait for review",
+        "- Should I merge now?\n- Should I wait for review?",
+        "Needs your decision: merge now or wait?",
+        "**Needs you**: merge the release branch.",
+        "- **Needs you:** merge the release branch.",
+        "**Needs you**\n- Merge the release branch now?",
+        "Run `make first.\nNeeds you:\n- Which branch should I use?\n- Should I merge now?\nThen `ok` is done.",
+        "Do you want me to:\n\n- merge now\n\n- wait for review",
+    ],
+)
+def test_decision_prose_detects_owner_asks(text: str) -> None:
+    assert question_gates.find_decision_prose(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The build passed. Next steps:\n1. Check the logs.\n2. Merge after review.",
+        "Needs you: none. The build is green.",
+        "Needs you:\nNothing right now.",
+        "Nothing needs you; I will proceed.",
+        "I asked you:\n- Which branch?\n- Merge after review?",
+        "Why did it fail?\n- The cache was empty.\n- The retry timed out.",
+        "Options I considered:\n- Merge now.\n- Wait for review.\nI chose to wait.",
+        "I asked one question and will wait for your answer.",
+        "Want me to proceed?",
+        "```\nNeeds you:\n- Which branch?\n- Merge after review?\n```",
+        "> Needs you:\n> - Which branch?\n> - Merge after review?",
+        "The phrase `Needs you:` appears in the issue title.",
+        "Here is how I will proceed:\n- Run the tests.\n- Merge after review.",
+        "I investigated:\n- Why does the import fail?\n- Is the retry flaky?",
+        "Progress:\n- Next, I will proceed with:\n  - the migration\n  - the docs",
+        "**Needs you:** none",
+        "Needs you:\n- None",
+        "Needs you: no action needed",
+        (
+            "Since 09:12 · all overlays\nNeeds you\n"
+            "  - Q12: Merge the release branch now? — answer in its Slack thread\n"
+            "  - [#34 (Fix login)](https://example.com/34) — failed agent run"
+        ),
+        "Waiting on you\n| Id | Kind | Age | Waiting on you |\n| 12 | question | 2h | Merge the release branch |",
+    ],
+)
+def test_decision_prose_leaves_status_and_quoted_examples_alone(text: str) -> None:
+    assert question_gates.find_decision_prose(text) is None

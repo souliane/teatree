@@ -153,6 +153,7 @@ SETTING_HELP: dict[str, str] = {
     "orchestrator_turn_wall_clock_seconds": "seconds one orchestrator turn may take",
     "orphan_group_min_age_hours": "hours a leaderless process group must have run before it is reported",
     "out_of_band_merge_gate_enabled": "refuse a merge that skipped the recorded review path",
+    "owner_question_gate_enabled": "refuse batched or shorthand owner questions and decisions left in reply prose",
     "raw_pr_create_gate_enabled": "refuse a raw MR/PR create that would open it under the wrong identity",
     "overlays": "per-overlay settings, keyed by overlay name",
     "peer_instances": "the boxes to compare against — each one's loopback-tunnel url and how to open it",

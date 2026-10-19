@@ -11,6 +11,7 @@ from teatree.core.modelkit.question_card import (
     MAX_QUESTION_CHARS,
     MAX_WORDS,
     CardOption,
+    CardView,
     QuestionCard,
     counted,
     internal_shorthand,
@@ -364,3 +365,44 @@ class TestFromEnvelope:
 @pytest.mark.parametrize(("count", "expected"), [(0, "0 commits"), (1, "1 commit"), (2, "2 commits")])
 def test_a_count_agrees_with_its_noun(count: int, expected: str) -> None:
     assert counted(count, "commit") == expected
+
+
+class TestInClientQuestionCard:
+    @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?", "Set widget_mode?"])
+    def test_plain_words_check_names_shorthand(self, question: str) -> None:
+        problems = CardView.ask_problems({"header": "Merge", "question": question, "options": []})
+
+        assert any("internal shorthand" in problem for problem in problems)
+
+    def test_question_length_matches_card_limit(self) -> None:
+        problems = CardView.ask_problems(
+            {"header": "Merge", "question": "Would you like me to merge " + "today " * 30 + "?", "options": []}
+        )
+
+        assert any("160" in problem for problem in problems)
+
+    def test_plain_question_passes(self) -> None:
+        assert CardView.ask_problems({"header": "Merge", "question": "Merge this now?", "options": []}) == []
+
+
+def test_in_client_question_checks_header_and_total_card_words() -> None:
+    card = {
+        "header": "PR #42",
+        "question": "Merge this now?",
+        "options": [{"label": f"Choice {index}", "description": "word " * 30} for index in range(4)],
+    }
+
+    problems = CardView.ask_problems(card)
+
+    assert any("the header carries internal shorthand" in problem for problem in problems)
+    assert any("120" in problem for problem in problems)
+
+
+def test_in_client_word_count_skips_the_slack_reply_and_ref_lines() -> None:
+    card = {
+        "header": "Merge",
+        "question": "Merge this now?",
+        "options": [{"label": label, "description": "word " * 28} for label in ("Merge", "Wait", "Close", "Hold")],
+    }
+
+    assert CardView.ask_problems(card) == []

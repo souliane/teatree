@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import hooks.scripts.turn_inspect as inspect
 from hooks.scripts.turn_inspect import current_turn_assistant_text, current_turn_edits, current_turn_tool_commands
 
 
@@ -133,3 +134,40 @@ class TestDegradedInputs:
             ],
         )
         assert current_turn_edits(transcript) == []
+
+
+def test_final_text_excludes_prose_before_last_tool_call(tmp_path: Path) -> None:
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            _user_turn(),
+            _assistant_text("Needs you:\n- Which branch?\n- Merge now?"),
+            _assistant_tool_use("AskUserQuestion", {"questions": [{"question": "Which branch?"}]}),
+            _tool_result(),
+            _assistant_text("I have the answer and will proceed."),
+        ],
+    )
+
+    assert inspect.current_turn_final_text(transcript) == "I have the answer and will proceed."
+
+
+def test_final_text_preserves_block_order_within_one_assistant_entry(tmp_path: Path) -> None:
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            _user_turn(),
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Needs you: choose a branch."},
+                        {"type": "tool_use", "name": "AskUserQuestion", "input": {}},
+                        {"type": "text", "text": "I have the answer."},
+                    ],
+                },
+            },
+        ],
+    )
+
+    assert inspect.current_turn_final_text(transcript) == "I have the answer."

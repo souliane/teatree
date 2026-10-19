@@ -223,6 +223,7 @@ orchestrator_delegation_gate_enabled = true # bool — refuse an unbounded orche
 orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
 orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
+owner_question_gate_enabled = true # bool — refuse batched or shorthand owner questions and decisions left in reply prose
 plan_edit_gate_enabled = true # bool — refuse a source edit made while the session is still planning
 raw_pr_create_gate_enabled = true # bool — refuse a raw MR/PR create that would open it under the wrong identity
 self_dm_gate_enabled = true # bool — refuse Slack MCP writes to the operator's own DM under the user token

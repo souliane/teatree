@@ -177,6 +177,28 @@ class CardView:
     ref: int
     action: bool = False
 
+    @classmethod
+    def ask_problems(cls, raw: Mapping[str, object]) -> list[str]:
+        """What is wrong with a question rendered in the owner's client, which shows no reply or ref line."""
+        question = raw.get("question")
+        header = raw.get("header")
+        options = raw.get("options")
+        question_text = question if isinstance(question, str) else ""
+        header_text = header if isinstance(header, str) else ""
+        parsed_options = (
+            tuple(option for item in options if (option := CardOption.from_raw(item)) is not None)
+            if isinstance(options, list)
+            else ()
+        )
+        view = cls(question_text, "", parsed_options, "", 0)
+        problems = [*_view_shorthand_problems(view), *_option_problems(parsed_options)]
+        problems += _shorthand_problems("the header", header_text)
+        problems += _sentence_problems("the question", question_text, limit=MAX_QUESTION_CHARS, ends_with="?")
+        shown = [header_text, question_text, *(f"{option.label} {option.description}" for option in parsed_options)]
+        if (words := word_count(" ".join(shown))) > MAX_WORDS:
+            problems.append(f"the card is {words} words; at most {MAX_WORDS}")
+        return problems
+
 
 def option_row(option: CardOption) -> str:
     """The line one option renders as, in the text and (split at the button) in the blocks."""
@@ -232,12 +254,16 @@ def _option_problems(options: tuple[CardOption, ...]) -> list[str]:
     return problems
 
 
-def shown_problems(view: CardView) -> list[str]:
-    """What is wrong with *view* as the owner will read it: shorthand anywhere, too many words, a bad option set."""
+def _view_shorthand_problems(view: CardView) -> list[str]:
     shown = [("the question", view.question), ("the why sentence", view.why), ("the quoted text", view.quoted)]
     for option in view.options:
         shown += [(f"option {option.label!r} label", option.label), (f"option {option.label!r}", option.description)]
-    problems = [problem for where, text in shown for problem in _shorthand_problems(where, text)]
+    return [problem for where, text in shown for problem in _shorthand_problems(where, text)]
+
+
+def shown_problems(view: CardView) -> list[str]:
+    """What is wrong with *view* as the owner will read it: shorthand anywhere, too many words, a bad option set."""
+    problems = _view_shorthand_problems(view)
     if (words := word_count(plain_text(view))) > MAX_WORDS:
         problems.append(f"the card is {words} words; at most {MAX_WORDS}")
     return [*problems, *_option_problems(view.options)]
