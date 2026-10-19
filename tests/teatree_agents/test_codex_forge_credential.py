@@ -115,7 +115,7 @@ class TestClaudeDispatchMarker(TestCase):
         ticket = planned_ticket(overlay="other")
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
 
-        with patch("teatree.agents.runner.shutil.which", return_value="/usr/bin/claude"):
+        with patch("teatree.agents.runner_preparation.shutil.which", return_value="/usr/bin/claude"):
             credential = _resolve_child_env_or_failure(task, ClaudeSdkHarness(), None)
 
         assert isinstance(credential, DispatchCredential)
