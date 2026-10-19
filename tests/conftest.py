@@ -871,7 +871,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
 
 
-@pytest.fixture(autouse=True)
+# Class-local _isolate_env fixtures must not shadow the process sandbox.
+@pytest.fixture(autouse=True, name="isolated_test_process_env")
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate process env so tests cannot touch host workspace/config.
 

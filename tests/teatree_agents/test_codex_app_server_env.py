@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from teatree.agents.codex_app_server_env import codex_process_env
+from teatree.agents.codex_app_server_env import codex_process_env, router_process_env
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 _SECRETS = {
@@ -62,8 +62,45 @@ def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -
     assert "T3_LOOP_REGISTRY_DIR" not in env
 
 
+def test_pool_root_reaches_codex_without_expanding_router_allowlist(tmp_path: Path) -> None:
+    ambient = {
+        "PATH": "/usr/bin",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": str(tmp_path / "shared-pool"),
+        "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+    }
+    dispatch = {
+        "GH_TOKEN": "ghp-routed",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": ambient["TEATREE_PYTEST_WORKER_POOL_ROOT"],
+        "T3_LOOP_REGISTRY_DIR": ambient["T3_LOOP_REGISTRY_DIR"],
+    }
+
+    codex_env = codex_process_env(tmp_path / "private-home", dispatch, ambient=ambient)
+    router_env = router_process_env(dispatch, ambient=ambient)
+
+    assert codex_env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == ambient["TEATREE_PYTEST_WORKER_POOL_ROOT"]
+    assert "T3_LOOP_REGISTRY_DIR" not in codex_env
+    assert router_env == {"PATH": "/usr/bin", "GH_TOKEN": "ghp-routed"}
+
+
 def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:
     assert "GH_TOKEN" not in _env(tmp_path / "home")
+
+
+def test_router_keeps_worker_hook_paths_without_inheriting_other_credentials() -> None:
+    hook_env = {
+        "T3_DATA_DIR": "/tmp/t3-data",
+        "XDG_DATA_HOME": "/tmp/xdg-data",
+        "UV_TOOL_DIR": "/tmp/uv-tools",
+        "T3_HOOK_PYTHON": "/tmp/python",
+        "T3_HOOK_STATE_DIR": "/tmp/hook-state",
+        "T3_SKILL_SEARCH_DIRS": "/tmp/skills",
+        "TEATREE_TERM_REGISTRY": "test-registry",
+    }
+
+    env = router_process_env({}, ambient={"PATH": "/usr/bin", **hook_env, **_SECRETS})
+
+    assert {key: env[key] for key in hook_env} == hook_env
+    assert not _SECRETS.keys() & env.keys()
 
 
 def test_git_answers_a_github_credential_request_with_the_routed_token(tmp_path: Path) -> None:

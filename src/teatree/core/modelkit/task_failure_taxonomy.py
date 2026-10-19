@@ -119,6 +119,8 @@ CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
 
 #: Prefix a finished coding run carries when its CODED transition was refused for plan currency.
 PLAN_STALE_PREFIX = "plan_stale: "
+#: A missing push-gate credential is a route failure, not an owner action.
+PUSH_OWNERSHIP_VENUE_FAULT = "result_error: push ownership gate could not authenticate"
 
 
 class FailureKind(models.TextChoices):
