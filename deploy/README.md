@@ -627,11 +627,11 @@ cannot read INTO refuses the sweep, because `0.00 GB of 0.00 GB` from a
 directory nothing looked into is the line an already-clean box prints. A root
 that is merely ABSENT does not refuse — that report is true.
 
-`--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
-`kernel.yama.ptrace_scope = 1` alone bounds them, and no compose knob lifts it.
-The PID namespace is not required: `ptrace_scope = 1` denies `readlink` on a
-same-uid non-dumpable process's `fd`, which is the ordinary state of an Ubuntu
-host running `systemd --user` — so this is not a container property.
+`--cap-add SYS_PTRACE` and `--pid host` did not make the worker's unreadable
+same-user host processes readable. In the measured worker, those processes were
+unconfined and had one `NSpid` entry; readable worker peers had two.
+INFERRED (profile not read on this host): this split is consistent with the
+worker's confinement profile denying inspection of unconfined host peers.
 
 Nor is the guard uniformly blind in either venue. Three measurements: 35 of 325
 sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35

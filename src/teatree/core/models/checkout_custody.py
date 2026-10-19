@@ -17,6 +17,7 @@ class Tenure:
     since: str
     ended: str = ""
     ended_at: str = ""
+    namespace: str = ""
 
     def as_dict(self) -> CheckoutTenure:
         return CheckoutTenure(
@@ -25,6 +26,7 @@ class Tenure:
             since=self.since,
             ended=self.ended,
             ended_at=self.ended_at,
+            namespace=self.namespace,
         )
 
 
@@ -47,8 +49,12 @@ class Custody:
             return None
         tenures: list[Tenure] = []
         for entry in entries:
-            if not isinstance(entry, dict) or any(
-                not isinstance(entry.get(key), str) for key in ("holder", "session", "since", "ended", "ended_at")
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("namespace", ""), str)
+                or any(
+                    not isinstance(entry.get(key), str) for key in ("holder", "session", "since", "ended", "ended_at")
+                )
             ):
                 return None
             if (
@@ -60,19 +66,33 @@ class Custody:
                 return None
             if tenures and not tenures[-1].ended:
                 return None
-            tenures.append(Tenure(entry["holder"], entry["session"], entry["since"], entry["ended"], entry["ended_at"]))
+            tenures.append(
+                Tenure(
+                    entry["holder"],
+                    entry["session"],
+                    entry["since"],
+                    entry["ended"],
+                    entry["ended_at"],
+                    entry.get("namespace", ""),
+                )
+            )
         return cls(raw["anchor"], tuple(tenures))
 
     def as_dict(self) -> CheckoutCustody:
         return CheckoutCustody(anchor=self.anchor, tenures=[entry.as_dict() for entry in self.tenures])
 
-    def opened(self, holder: str, session: str, now: datetime, *, renewal: bool) -> "Custody":
+    @property
+    def prior_tenures_nested(self) -> bool:
+        previous = self.tenures[:-1]
+        return bool(previous) and all(entry.namespace for entry in previous)
+
+    def opened(self, holder: str, session: str, now: datetime, *, renewal: bool, namespace: str = "") -> "Custody":
         entries = list(self.tenures)
         if entries and not entries[-1].ended:
             if renewal and (entries[-1].holder, entries[-1].session) == (holder, session):
                 return self
             entries[-1] = replace(entries[-1], ended="abandoned", ended_at=now.isoformat())
-        entries.append(Tenure(holder, session, now.isoformat()))
+        entries.append(Tenure(holder, session, now.isoformat(), namespace=namespace))
         return Custody(self.anchor, tuple(entries))
 
     def closed(self, holder: str, session: str, now: datetime) -> "Custody":
