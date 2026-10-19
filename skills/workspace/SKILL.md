@@ -105,8 +105,22 @@ the recorded custody chain, a clear host process table, and every ticket checkou
 on its recorded branch or the forge-reported head branch of an open pull request
 owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
 records any qualifying pull request. Hand work still needs the owner's `worktree attest`.
+For a headless run recorded in a nested PID namespace, unreadable host-root namespace
+processes may be set aside and named in the audit; legacy and namespace-less tenures stay strict.
+Every admitted headless exit reaches checkout settlement; if these gaps block direct
+attestation, the next writer's fence can re-attest, including an in-session claim.
+Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
 A writing run whose exit was deferred by a checkout process records that exit state;
 the next writer attests it only after the process is gone and the state is unchanged.
+On completion, ordinary failure, lease-expiry reap, and attested park, checkout
+settlement waits two 60-second beats for descendants and marked children, sends
+SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
+for two more beats. Each signal rechecks PID and start time through a pidfd.
+The shared Codex App Server, unmarked non-descendants, and foreign processes are
+never exit stop targets; a survivor still holds the checkout. An agent-issued
+cancel waits two beats and signals nothing; an owner stop follows the narrower
+descendant-writer rule.
+A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
 
 An attestable refusal also asks the owner in Slack. The card links the ticket and
 states the checkout's commit count, uncommitted-file count and whether the host

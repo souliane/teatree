@@ -19,7 +19,14 @@ import pytest
 from teatree.core.cleanup import process_table
 from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
-from tests._process_table_venue import THIS_PROCESS_PID, holding, this_process_in
+from tests._process_table_venue import (
+    THIS_PROCESS_PID,
+    blinded_process_table,
+    holding,
+    nested_venue,
+    table_with_unreadable_pid,
+    this_process_in,
+)
 
 
 def test_compose_supplies_a_safe_nonempty_host_os_on_first_rollout() -> None:
@@ -91,6 +98,15 @@ class TestRefuseReason:
 
 
 class TestSourceSelection:
+    @pytest.mark.parametrize(("nspid", "expected"), [("NSpid:\t41\t7\n", "pid:[42]"), ("NSpid:\t41\n", "")])
+    def test_nested_namespace_requires_host_side_depth_two(self, tmp_path: Path, nspid: str, expected: str) -> None:
+        with nested_venue(tmp_path, host_nspid=nspid):
+            assert process_table.nested_pid_namespace() == expected
+
+    def test_nested_namespace_is_empty_without_a_host_table(self, tmp_path: Path) -> None:
+        with blinded_process_table(tmp_path / "absent"):
+            assert process_table.nested_pid_namespace() == ""
+
     def test_own_recorder_excludes_its_checkout_shell_ancestors(self, tmp_path: Path) -> None:
         checkout = tmp_path / "checkout"
         peer = tmp_path / "peer"
@@ -201,50 +217,53 @@ class TestSourceSelection:
         assert table.gaps
 
 
-def _table_with_one_mute_pid(tmp_path: Path, status: str, *, name: str, uid_offset: int = 0) -> ProcessTable:
-    host = _proc_with(tmp_path / "host-proc", {"1": tmp_path / "elsewhere"})
-    pid = host / "2"
-    pid.mkdir()
-    (pid / "comm").write_text(f"{name}\n", encoding="utf-8")
-    (pid / "status").write_text(status, encoding="utf-8")
-    hidden = pid / "fd" / "0"
-    hidden.parent.mkdir()
-    hidden.symlink_to(tmp_path / "unknown")
-    readlink = Path.readlink
-
-    def _readlink(path: Path) -> Path:
-        if path == hidden:
-            raise PermissionError
-        return readlink(path)
-
-    with (
-        patch.object(process_table, "_HOST_PROC_ROOT", host),
-        patch.object(Path, "readlink", _readlink),
-        patch.object(process_table.os, "geteuid", return_value=pid.stat().st_uid + uid_offset),
-    ):
-        return read_process_table()
-
-
 class TestPartialVisibility:
+    def test_unreadable_status_keeps_the_gap_strict(self, tmp_path: Path) -> None:
+        hidden_status = tmp_path / "host-proc" / "21" / "status"
+        read_text = Path.read_text
+
+        def gated_status(path: Path, *args: object, **kwargs: object) -> str:
+            if path == hidden_status:
+                raise PermissionError
+            return read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", gated_status):
+            table = table_with_unreadable_pid(tmp_path, nspid="NSpid:\t21\n")
+        assert table.host_namespace_gaps == ()
+        assert table.eviction_refuse_reason(nested_writer=True) == "pid 21 (claude) is unreadable by this uid"
+
+    @pytest.mark.parametrize(
+        ("nspid", "expected_gaps"),
+        [("NSpid:\t21\n", ("pid 21 (claude) is unreadable by this uid",)), ("NSpid:\t21\t7\n", ()), ("", ())],
+    )
+    def test_only_root_namespace_gap_may_be_set_aside(
+        self, tmp_path: Path, nspid: str, expected_gaps: tuple[str, ...]
+    ) -> None:
+        table = table_with_unreadable_pid(tmp_path, nspid=nspid)
+        gap = "pid 21 (claude) is unreadable by this uid"
+        assert table.eviction_refuse_reason() == gap
+        assert table.host_namespace_gaps == expected_gaps
+        assert table.eviction_refuse_reason(nested_writer=True) == ("" if expected_gaps else gap)
+
     @pytest.mark.parametrize(
         ("name", "state", "threads", "expected_refusal"),
         [
-            ("python", "S", "1", "pid 2 (python) is unreadable by this uid"),
+            ("python", "S", "1", "pid 21 (python) is unreadable by this uid"),
             ("ssh-agent", "S", "1", ""),
             ("python", "Z", "1", ""),
-            ("python", "Z", "2", "pid 2 (python) is unreadable by this uid"),
+            ("python", "Z", "2", "pid 21 (python) is unreadable by this uid"),
         ],
     )
     def test_eviction_only_tolerates_known_unreadable_processes(
         self, tmp_path: Path, name: str, state: str, threads: str, expected_refusal: str
     ) -> None:
-        table = _table_with_one_mute_pid(tmp_path, f"State:\t{state}\nThreads:\t{threads}\n", name=name)
+        table = table_with_unreadable_pid(tmp_path, status=f"State:\t{state}\nThreads:\t{threads}\n", name=name)
 
         assert table.refuse_reason() == ""
         assert table.eviction_refuse_reason() == expected_refusal
 
     def test_eviction_tolerates_an_unreadable_process_of_another_user(self, tmp_path: Path) -> None:
-        table = _table_with_one_mute_pid(tmp_path, "State:\tS\nThreads:\t1\n", name="python", uid_offset=1)
+        table = table_with_unreadable_pid(tmp_path, name="python", uid_offset=1)
 
         assert table.eviction_refuse_reason() == ""
 

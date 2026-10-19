@@ -117,6 +117,58 @@ class TestRecordResultEnvelope(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
+    def test_push_ownership_venue_fault_fails_without_an_owner_question(self) -> None:
+        task = self._claimed(phase="debugging")
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Committed locally; the push gate could not authenticate.",
+                "push_ownership_venue_fault": True,
+                "needs_user_input": False,
+                "files_modified": [{"path": "a.py", "action": "modified"}],
+            },
+            usage=AttemptUsage(route_candidate_index=0, route_source_skill="debug"),
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.failure_kind == FailureKind.RESULT_ERROR
+        assert task.attempts.failed_route_candidates("debug") == {0: attempt.pk}
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_quoted_push_gate_marker_does_not_fail_a_task(self) -> None:
+        task = self._claimed(phase="testing")
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "The log quoted venue_fault: push ownership gate had no usable GitHub credential",
+                "tests_run": [{"name": "focused", "passed": True}],
+                "tests_passed": 1,
+                "tests_failed": 0,
+            },
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.failure_kind == ""
+
+    def test_push_fault_field_outside_push_phase_does_not_fail_a_task(self) -> None:
+        task = self._claimed(phase="testing")
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Tests passed",
+                "push_ownership_venue_fault": True,
+                "tests_run": [{"name": "focused", "passed": True}],
+                "tests_passed": 1,
+                "tests_failed": 0,
+            },
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.failure_kind == ""
+
     def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
         task = self._claimed()
         blob = {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]}
