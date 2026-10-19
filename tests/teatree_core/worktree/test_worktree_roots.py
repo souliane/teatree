@@ -105,6 +105,17 @@ class WorktreesOutsideCanonicalRootTest(_RootsTestCase):
         with missing_mount_table():
             assert {row.pk for row in worktrees_outside_the_canonical_root()} == {row_alias.pk, row_elsewhere.pk}
 
+    def test_a_symlinked_canonical_root_accepts_its_mount_alias(self) -> None:
+        link = self.tmp / "canonical-link"
+        link.symlink_to(self.canonical, target_is_directory=True)
+        alias = Path("/nonexistent-t3/alias/T1/repo")
+        self._register(alias, branch="symlink-alias")
+        with (
+            mock.patch("teatree.core.worktree.worktree_roots.worktree_root", return_value=link),
+            patched_mount_table(("259:2", "/ws", str(self.canonical)), ("259:2", "/ws", "/nonexistent-t3/alias")),
+        ):
+            assert worktrees_outside_the_canonical_root() == []
+
     def test_a_dotdot_escape_from_the_canonical_root_is_listed(self) -> None:
         escape = self.canonical / ".." / "elsewhere" / "T1" / "repo"
         row = self._register(escape, branch="escape")

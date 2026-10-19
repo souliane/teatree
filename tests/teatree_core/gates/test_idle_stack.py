@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
 from subprocess import CompletedProcess, TimeoutExpired
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -23,6 +24,7 @@ from teatree.core.gates import idle_stack as idle_mod
 from teatree.core.gates.idle_stack import StackActivity, classify_running_worktrees, reapable_worktrees
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
+from tests._mount_table import patched_mount_table
 
 
 def _running_worktree(
@@ -430,6 +432,18 @@ class TestIsCurrentlyActiveHelper(TestCase):
     def test_child_of_worktree_is_active(self) -> None:
         wt = _running_worktree(ticket_number="902", worktree_path="/ws/902/backend")
         assert idle_mod._is_currently_active(wt, Path("/ws/902/backend/src/app")) is True
+
+    def test_similarly_named_sibling_is_not_active(self) -> None:
+        wt = _running_worktree(ticket_number="904", worktree_path="/ws/904/backend")
+        assert idle_mod._is_currently_active(wt, Path("/ws/904/backend-other/src")) is False
+
+    def test_child_reached_through_a_mount_alias_is_active(self) -> None:
+        wt = _running_worktree(ticket_number="903", worktree_path="/nonexistent-t3/alias/T1/repo")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "mnt"
+            (root / "T1" / "repo" / "src").mkdir(parents=True)
+            with patched_mount_table(("259:2", "/ws", str(root)), ("259:2", "/ws", "/nonexistent-t3/alias")):
+                assert idle_mod._is_currently_active(wt, root / "T1" / "repo" / "src") is True
 
 
 class TestPreserveReasonFailSafeGuards(TestCase):

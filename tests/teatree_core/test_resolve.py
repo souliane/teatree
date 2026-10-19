@@ -477,6 +477,24 @@ class TestWarnCwdMismatch(TestCase):
 
         assert not self._caplog.records
 
+    def test_no_warning_for_a_child_reached_through_a_mount_alias(self) -> None:
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/nonexistent-t3/alias/T1/repo"},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "mnt"
+            (root / "T1" / "repo" / "src").mkdir(parents=True)
+            with (
+                patched_mount_table(("259:2", "/ws", str(root)), ("259:2", "/ws", "/nonexistent-t3/alias")),
+                self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"),
+            ):
+                _warn_cwd_mismatch(wt, str(root / "T1" / "repo" / "src"))
+        assert not self._caplog.records
+
     def test_warning_when_cwd_outside_worktree(self) -> None:
         """Warning when CWD doesn't match the resolved worktree path."""
         ticket = Ticket.objects.create()
@@ -492,6 +510,18 @@ class TestWarnCwdMismatch(TestCase):
 
         assert len(self._caplog.records) == 1
         assert "does not match CWD" in self._caplog.records[0].message
+
+    def test_similarly_named_sibling_warns(self) -> None:
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/workspace/ticket-42/backend"},
+        )
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
+            _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend-other")
+        assert len(self._caplog.records) == 1
 
     def test_no_warning_when_worktree_inside_cwd(self) -> None:
         """No warning when the worktree path is a subdirectory of CWD (ticket dir)."""

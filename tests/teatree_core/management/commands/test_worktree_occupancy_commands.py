@@ -24,6 +24,7 @@ from teatree.core.management.commands._worktree_occupancy import _worktree_for_p
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import acquire, occupancy_holder
+from tests._mount_table import patched_mount_table
 from tests.factories import TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -111,6 +112,16 @@ class PathResolutionTests(_CommandCase):
     def test_an_unregistered_path_refuses_rather_than_guessing(self) -> None:
         with pytest.raises(SystemExit):
             _worktree_for_path("/nowhere/at/all")
+
+    def test_an_exact_row_wins_over_an_earlier_alias_row(self) -> None:
+        alias = f"/nonexistent-t3/alias/{self.checkout.name}"
+        self.worktree.extra = {"worktree_path": alias}
+        self.worktree.save(update_fields=["extra"])
+        exact = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.checkout.parent)), ("259:2", "/ws", "/nonexistent-t3/alias")
+        ):
+            assert _worktree_for_path(str(self.checkout)).pk == exact.pk
 
 
 class AttestTests(_CommandCase):

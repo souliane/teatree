@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -68,9 +69,24 @@ class TestPathsMatch(TestCase):
                 assert paths_match(real_root / "T1" / "repo", alias)
                 assert not paths_match(alias, sibling)
 
-    def test_without_a_readable_mount_table_the_two_spellings_stay_distinct(self) -> None:
-        with missing_mount_table():
-            assert not paths_match("/nonexistent-t3/workspace/T1/repo", "/nonexistent-t3/mnt/T1/repo")
+    def test_a_missing_mount_table_removes_only_the_mount_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real = Path(directory) / "mnt" / "T1" / "repo"
+            real.mkdir(parents=True)
+            alias = "/nonexistent-t3/workspace/T1/repo"
+            with patched_mount_table(
+                ("259:2", "/ws", str(real.parent.parent)), ("259:2", "/ws", "/nonexistent-t3/workspace")
+            ):
+                assert paths_match(alias, real)
+            with missing_mount_table():
+                assert not paths_match(alias, real)
+
+    def test_an_undecodable_mount_table_keeps_path_matching_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            table = Path(directory) / "mountinfo"
+            table.write_bytes(bytes([255]))
+            with patch("teatree.mount_identity._MOUNTINFO", table):
+                assert not paths_match("/nonexistent-t3/a", "/nonexistent-t3/b")
 
 
 class TestCandidatePaths(TestCase):

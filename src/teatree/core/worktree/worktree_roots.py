@@ -21,7 +21,7 @@ from pathlib import Path
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout, wrong_venue_reason
-from teatree.mount_identity import mount_spellings, read_mount_table
+from teatree.mount_identity import MountTable, parsed_mount_table, read_mount_table
 from teatree.utils.git_run import git_env_without_overrides, run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
@@ -149,6 +149,20 @@ def scanned_worktree_roots(workspace: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(root.expanduser() for root in roots))
 
 
+def _is_within_root(checkout: Path, canonical: Path, canonical_spellings: list[str], table: MountTable) -> bool:
+    if checkout.is_relative_to(canonical):
+        return True
+    if any(Path(alias).is_relative_to(canonical) for alias in table.spellings(checkout)):
+        return True
+    for spelling in canonical_spellings:
+        root = Path(spelling)
+        if checkout.is_relative_to(root):
+            translated = canonical / checkout.relative_to(root)
+            if str(checkout) in table.spellings(translated):
+                return True
+    return False
+
+
 def worktrees_outside_the_canonical_root() -> list[Worktree]:
     """Registered worktrees whose checkout is not under :func:`canonical_worktree_root`.
 
@@ -156,26 +170,15 @@ def worktrees_outside_the_canonical_root() -> list[Worktree]:
     a pass that scans only the canonical root.
     """
     canonical = Path(os.path.normpath(canonical_worktree_root().expanduser()))
+    table = parsed_mount_table(read_mount_table())
+    canonical_spellings = table.spellings(canonical)
     outside: list[Worktree] = []
-    table: str | None = None
-    canonical_spellings: list[str] = []
     for worktree in Worktree.objects.all():
         path = worktree.worktree_path
         if not path:
             continue
         checkout = Path(os.path.normpath(Path(path).expanduser()))
-        if checkout.is_relative_to(canonical):
-            continue
-        if table is None:
-            table = read_mount_table()
-            canonical_spellings = mount_spellings(canonical, mountinfo=table)
-        if any(Path(alias).is_relative_to(canonical) for alias in mount_spellings(checkout, mountinfo=table)):
-            continue
-        if any(
-            str(checkout) in mount_spellings(canonical / checkout.relative_to(root), mountinfo=table)
-            for root in (Path(spelling) for spelling in canonical_spellings)
-            if checkout.is_relative_to(root)
-        ):
+        if _is_within_root(checkout, canonical, canonical_spellings, table):
             continue
         outside.append(worktree)
     return outside

@@ -211,6 +211,9 @@ RESET_BY_CONFTEST: dict[str, str] = {
 #: Registries are populated once at import/app-ready and are stable for the whole
 #: process — resetting them mid-session would break resolution, not isolate a test.
 EXEMPT: dict[str, str] = {
+    "teatree.mount_identity:parsed_mount_table": (
+        "bounded by two exact mountinfo texts; parsing uses no filesystem state and a changed table changes the key"
+    ),
     "teatree.config.feature_flags:FEATURE_FLAGS": (
         "import-time feature flag registry; entries are not accumulated from runtime inputs"
     ),

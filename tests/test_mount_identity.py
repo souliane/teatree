@@ -28,6 +28,13 @@ def test_an_identity_bind_reaches_the_same_directory_the_host_does() -> None:
     assert _locate(_CONTAINER_IDENTITY_BIND) == _locate(_HOST) == "259:2:/nonexistent-t3/mnt/ws/ticket/repo"
 
 
+def test_two_mount_points_in_one_runtime_identify_one_directory() -> None:
+    table = _HOST + "30 22 259:2 /nonexistent-t3/mnt/ws /alias rw - ext4 /dev/x rw\n"
+    host = physical_location(_CHECKOUT, mountinfo=table)
+    alias = physical_location(Path("/alias/ticket/repo"), mountinfo=table)
+    assert host == alias == "259:2:/nonexistent-t3/mnt/ws/ticket/repo"
+
+
 def test_a_container_private_path_never_matches_the_host() -> None:
     assert _locate(_CONTAINER_OVERLAY_ROOT) != _locate(_HOST)
 
@@ -49,6 +56,13 @@ def test_the_last_of_two_stacked_mounts_is_the_one_on_top() -> None:
     stacked += "31 30 259:7 /sub /nonexistent-t3/mnt/ws rw - ext4 /dev/z rw\n"
 
     assert _locate(stacked) == "259:7:/sub/ticket/repo"
+
+
+def test_a_later_parent_mount_hides_an_earlier_child_mount() -> None:
+    table = _HOST + "30 22 259:7 /old /nonexistent-t3/mnt/ws rw - ext4 /dev/y rw\n"
+    table += "31 22 259:9 /new /nonexistent-t3/mnt rw - ext4 /dev/z rw\n"
+
+    assert _locate(table) == "259:9:/new/ws/ticket/repo"
 
 
 def test_an_escaped_mount_point_is_read_as_the_path_it_names() -> None:

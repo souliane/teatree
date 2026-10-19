@@ -18,7 +18,7 @@ the branch — is what these helpers centralise.
 from collections.abc import Iterable
 from pathlib import Path
 
-from teatree.mount_identity import mount_spellings, read_mount_table
+from teatree.mount_identity import MountTable, parsed_mount_table, read_mount_table
 
 
 def ticket_dir_for(workspace: Path, branch: str) -> Path:
@@ -40,7 +40,7 @@ def worktree_dir_for(workspace: Path, branch: str, repo: str) -> Path:
     return ticket_dir_for(workspace, branch) / Path(repo).name
 
 
-def _candidate_paths(path: str, *, mountinfo: str | None = None) -> list[str]:
+def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> list[str]:
     """Return de-duplicated list of path variants to try for DB lookups.
 
     On macOS, ``/var`` is a symlink to ``/private/var``, so a path stored
@@ -59,13 +59,21 @@ def _candidate_paths(path: str, *, mountinfo: str | None = None) -> list[str]:
         prefixed = "/private" + path
         if Path(prefixed).exists():
             candidates.append(prefixed)
-    candidates.extend(mount_spellings(path, mountinfo=mountinfo))
+    table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
+    candidates.extend(table.spellings(path, resolved=resolved))
     return list(dict.fromkeys(candidates))
 
 
 def path_spellings(paths: Iterable[str | Path], *, mountinfo: str | None = None) -> set[str]:
-    table = mountinfo if mountinfo is not None else read_mount_table()
-    return {spelling for path in paths for spelling in _candidate_paths(str(path), mountinfo=table)}
+    table = parsed_mount_table(mountinfo if mountinfo is not None else read_mount_table())
+    return {spelling for path in paths for spelling in _candidate_paths(str(path), mount_table=table)}
+
+
+def path_is_within(path: str | Path, root: str | Path, *, mount_table: MountTable | None = None) -> bool:
+    table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
+    paths = _candidate_paths(str(path), mount_table=table)
+    roots = _candidate_paths(str(root), mount_table=table)
+    return any(Path(candidate).is_relative_to(ancestor) for candidate in paths for ancestor in roots)
 
 
 def paths_match(a: str | Path, b: str | Path) -> bool:
@@ -76,10 +84,10 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
     paths match when ANY of their :func:`_candidate_paths` variants coincide, so a
     ``/var`` path matches its ``/private/var`` twin (and a resolved symlink matches
     its source). Routing the on-disk pairwise comparisons through it — the
-    ``reconcile`` stale-dir scan, ``worktree_collision`` own-dir exclusion, the
-    orphan-worktree DB-tracked check, the idle-stack active-CWD check — gives every
-    site the same symlink and mount tolerance the DB matcher has, instead of a bare
-    ``.resolve() ==`` that misses the ``/private`` literal variants.
+    ``reconcile`` stale-dir scan, ``worktree_collision`` own-dir exclusion, and the
+    orphan-worktree DB-tracked check — gives those sites the DB matcher's symlink
+    and mount tolerance. :func:`path_is_within` handles descendants, including
+    the idle-stack active-CWD check.
     """
-    table = read_mount_table()
-    return not path_spellings([a], mountinfo=table).isdisjoint(path_spellings([b], mountinfo=table))
+    table = parsed_mount_table(read_mount_table())
+    return not set(_candidate_paths(str(a), mount_table=table)).isdisjoint(_candidate_paths(str(b), mount_table=table))

@@ -19,6 +19,7 @@ from teatree.core.worktree.checkout_attest import (
 )
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire
+from tests._mount_table import patched_mount_table
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -115,6 +116,15 @@ class TestReadAttestation(TestCase):
 
         assert busy.value.retryable
         assert occupied.value.retryable
+
+    def test_an_alias_duplicate_refuses_attestation(self) -> None:
+        WorktreeFactory(extra={"worktree_path": "/nonexistent-t3/alias/checkout"})
+        with (
+            patched_mount_table(("259:2", "/ws", str(self.checkout.parent)), ("259:2", "/ws", "/nonexistent-t3/alias")),
+            pytest.raises(AttestRefusedError, match="one unoccupied Worktree row") as duplicate,
+        ):
+            self._read(ProcessTable(frozenset(), "/proc"))
+        assert duplicate.value.retryable
 
     def test_a_checkout_that_moved_since_the_question_is_final(self) -> None:
         with pytest.raises(AttestRefusedError, match="changed since the owner was asked") as moved:

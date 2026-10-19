@@ -31,10 +31,15 @@ from teatree.core.worktree.worktree_paths import paths_match
 def _worktree_for_path(raw: str) -> Worktree:
     """The registered ``Worktree`` whose checkout is *raw*, or a refusal naming the miss."""
     candidate = Path(raw).expanduser()
+    alias: Worktree | None = None
     for worktree in Worktree.objects.exclude(extra__worktree_path__isnull=True).order_by("pk"):
         recorded = worktree.worktree_path
-        if recorded and paths_match(Path(recorded), candidate):
+        if recorded == str(candidate):
             return worktree
+        if recorded and alias is None and paths_match(recorded, candidate):
+            alias = worktree
+    if alias is not None:
+        return alias
     typer.echo(
         f"  Refused: no registered worktree is recorded at {candidate}. "
         "List the live claims with `t3 <overlay> worktree occupancy`.",
