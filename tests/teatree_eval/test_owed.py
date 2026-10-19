@@ -209,12 +209,24 @@ def _iso(moment: dt.datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
-def _artifact(artifact_id: int, *, created: dt.datetime, head_sha: str = "f" * 40, expired: bool = False) -> dict:
+def _artifact(
+    artifact_id: int,
+    *,
+    created: dt.datetime,
+    head_sha: str = "f" * 40,
+    expired: bool = False,
+    provenance: tuple[str, int] = ("main", 1),
+) -> dict:
     return {
         "id": artifact_id,
         "expired": expired,
         "created_at": _iso(created),
-        "workflow_run": {"id": artifact_id * 10, "head_sha": head_sha},
+        "workflow_run": {
+            "id": artifact_id * 10,
+            "head_sha": head_sha,
+            "head_branch": provenance[0],
+            "head_repository_id": provenance[1],
+        },
     }
 
 
@@ -244,12 +256,29 @@ def _pull(number: int, head_sha: str, *, merged: dt.datetime | None, updated: dt
 
 
 def _harvest(routes: dict[str, bytes]) -> tuple[OwedHarvest, FakeGh, list[str]]:
-    gh = FakeGh(routes)
+    gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', **routes})
     warnings: list[str] = []
     return OwedHarvest(gh=gh, repo=REPO, warn=warnings.append), gh, warnings
 
 
 class TestPreviousLedger:
+    def test_foreign_or_nondefault_artifacts_cannot_replace_the_ledger(self) -> None:
+        trusted = _ledger(_owed("trusted"), harvested_through=NOW - DAY)
+        routes = {
+            _artifacts_url(LEDGER_ARTIFACT): _listing(
+                [
+                    _artifact(3, created=NOW, provenance=("main", 2)),
+                    _artifact(2, created=NOW - dt.timedelta(hours=1), provenance=("feature", 1)),
+                    _artifact(1, created=NOW - DAY),
+                ]
+            ),
+            _zip_url(1): _zip(LEDGER_FILENAME, trusted.to_json()),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.previous_ledger() == trusted
+        assert _zip_url(2) not in gh.calls
+        assert _zip_url(3) not in gh.calls
+
     def test_the_newest_non_expired_ledger_is_read(self) -> None:
         newest = _ledger(_owed("from_newest"), harvested_through=NOW - DAY)
         routes = {
@@ -367,6 +396,22 @@ class TestMergedPrHeads:
 
 
 class TestPrOwed:
+    def test_foreign_head_repository_cannot_poison_pr_debt(self) -> None:
+        head = "a" * 40
+        trusted = _ledger(_owed("trusted"))
+        routes = {
+            _artifacts_url(PR_OWED_ARTIFACT): _listing(
+                [
+                    _artifact(2, created=NOW, head_sha=head, provenance=("main", 2)),
+                    _artifact(1, created=NOW - DAY, head_sha=head, provenance=("feature", 1)),
+                ]
+            ),
+            _zip_url(1): _zip(PR_OWED_FILENAME, trusted.to_json()),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.pr_owed([(10, head)]) == trusted
+        assert _zip_url(2) not in gh.calls
+
     def test_only_the_artifact_on_the_final_head_sha_is_harvested(self) -> None:
         final, older = "a" * 40, "0" * 40
         on_final = _ledger(_owed("owed_on_final", reason=OwedReason.LIMIT))
@@ -464,7 +509,7 @@ class TestCollect:
             _artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(7, created=NOW - 5 * DAY, head_sha=head)]),
             _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("old_parked")).to_json()),
         }
-        gh = FakeGh(routes)
+        gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', **routes})
         harvest = OwedHarvest(gh=gh, repo=REPO, warn=lambda _message: None, first_harvest_lookback=7 * DAY)
         assert harvest.collect(NOW).names == ("old_parked",)
 

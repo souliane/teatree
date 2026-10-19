@@ -14,6 +14,7 @@ import zipfile
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from functools import cached_property
 from typing import Self
 
 OWED_LEDGER_VERSION = 1
@@ -252,14 +253,19 @@ class _Artifact:
     created_at: dt.datetime
     expired: bool
     head_sha: str
+    head_branch: str
+    head_repository_id: int
 
     @classmethod
     def from_fields(cls, fields: _Fields) -> Self:
+        run = fields.nested("workflow_run")
         return cls(
             id=fields.integer("id"),
             created_at=fields.moment("created_at"),
             expired=fields.flag("expired"),
-            head_sha=fields.nested("workflow_run").text("head_sha"),
+            head_sha=run.text("head_sha"),
+            head_branch=run.text("head_branch"),
+            head_repository_id=run.integer("head_repository_id"),
         )
 
 
@@ -286,6 +292,12 @@ class OwedHarvest:
     repo: str
     warn: Callable[[str], None]
     first_harvest_lookback: dt.timedelta = FIRST_HARVEST_LOOKBACK
+
+    @cached_property
+    def repository_identity(self) -> tuple[int, str]:
+        endpoint = f"repos/{self.repo}"
+        fields = _Fields.parse(self.gh(["api", endpoint]), endpoint)
+        return fields.integer("id"), fields.text("default_branch")
 
     def previous_ledger(self) -> OwedLedger | None:
         live = [artifact for artifact in self._artifacts(LEDGER_ARTIFACT, done=_any_live) if not artifact.expired]
@@ -348,10 +360,16 @@ class OwedHarvest:
         self, name: str, *, done: Callable[[list[_Artifact]], bool], older_than: dt.datetime | None = None
     ) -> list[_Artifact]:
         seen: list[_Artifact] = []
+        repository_id, default_branch = self.repository_identity
         for page in range(1, MAX_LISTING_PAGES + 1):
             endpoint = f"repos/{self.repo}/actions/artifacts?name={name}&per_page={PAGE_SIZE}&page={page}"
             batch = [_Artifact.from_fields(_Fields.of(row, endpoint)) for row in self._rows(endpoint, key="artifacts")]
-            seen.extend(batch)
+            seen.extend(
+                artifact
+                for artifact in batch
+                if artifact.head_repository_id == repository_id
+                and (name != LEDGER_ARTIFACT or artifact.head_branch == default_branch)
+            )
             if len(batch) < PAGE_SIZE or done(seen) or (older_than is not None and batch[-1].created_at < older_than):
                 return seen
         listing = f"{name} artifacts"

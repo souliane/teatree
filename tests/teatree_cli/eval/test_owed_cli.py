@@ -221,6 +221,7 @@ class TestSettle:
 
 
 def _fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routes: dict[str, bytes]) -> None:
+    routes = {f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', **routes}
     bodies = tmp_path / "gh-bodies"
     bodies.mkdir()
     table: dict[str, str] = {}
