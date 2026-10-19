@@ -18,11 +18,13 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import DeferredQuestion, PullRequest, Task, Ticket
+from teatree.core.models import DeferredQuestion, Mode, ModeOverride, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.on_behalf_gate_recorded import owner_voice_permitted
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
 from teatree.loop.dispatch import DispatchAction, dispatch
@@ -31,6 +33,7 @@ from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 from tests.factories import planned_ticket
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -666,20 +669,33 @@ class TestEveryFixKindHasAScheduledRemedy(TestCase):
 
 
 class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
-    def _reason(self, *, permitted: bool, pr_id: int) -> str:
+    def _reason(
+        self,
+        *,
+        permitted: bool | None,
+        pr_id: int,
+        signal_kind: str = "my_pr.findings_to_fix",
+        fix_kind: str = RedMrFixAttempt.Kind.REVIEW_FINDINGS,
+    ) -> str:
+        pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+        planned_ticket(issue_url=pr_url, overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        if permitted is True:
+            seed_permitting_posture()
+        elif permitted is False:
+            seed_forbidding_posture()
         signal = ScanSignal(
-            kind="my_pr.findings_to_fix",
+            kind=signal_kind,
             summary="Review findings need a fix",
             payload={
-                "pr_url": f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}",
+                "pr_url": pr_url,
                 "head_sha": f"{pr_id:040d}",
-                "fix_kind": RedMrFixAttempt.Kind.REVIEW_FINDINGS,
+                "fix_kind": fix_kind,
                 "overlay": "acme",
             },
         )
-        with patch("teatree.core.on_behalf_gate_recorded.owner_voice_permitted", return_value=permitted):
-            created = persist_agent_actions(_agent_actions(signal))
+        created = persist_agent_actions(_agent_actions(signal))
         assert len(created) == 1
+        assert created[0].phase == "debugging"
         return created[0].execution_reason
 
     def test_permitted_voice_answers_and_resolves_in_threads_after_one_push(self) -> None:
@@ -706,3 +722,21 @@ class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
         assert "resolve-discussion" not in reason
         assert "Fixed in" not in reason
         assert "Escalate only if the fix cannot proceed" in reason
+
+    def test_unresolvable_posture_keeps_the_remedy_quiet(self) -> None:
+        ModeOverride.objects.all().delete()
+        Mode.objects.all().delete()
+        assert owner_voice_permitted() is False
+        assert egress_forbidden() is False
+        reason = self._reason(permitted=None, pr_id=203)
+        assert "fix and push only" in reason
+        assert "reply-to-discussion" not in reason
+
+    def test_other_fix_kinds_keep_their_remedies_under_a_permitting_posture(self) -> None:
+        for pr_id, signal_kind, fix_kind in (
+            (204, "my_pr.failed", RedMrFixAttempt.Kind.CI_RED),
+            (205, "my_pr.conflicted", RedMrFixAttempt.Kind.MERGE_CONFLICT),
+        ):
+            reason = self._reason(permitted=True, pr_id=pr_id, signal_kind=signal_kind, fix_kind=fix_kind)
+            pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+            assert reason == _FIX_REASON_BY_KIND[fix_kind].format(pr_url=pr_url)
