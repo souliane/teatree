@@ -1874,7 +1874,7 @@ class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
 
         with (
             patch.object(runner_mod, "_run_agent", side_effect=change_and_park),
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=ContainerRecreated),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=ContainerRecreated),
             patch("teatree.core.worktree.occupancy.read_process_table", return_value=self.clear),
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
             pytest.raises(ContainerRecreated),
