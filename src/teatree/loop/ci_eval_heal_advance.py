@@ -41,7 +41,6 @@ EscalateFn = Callable[["CiEvalHealSession"], None]
 
 #: The outcome note for an advancer that lost its step to a rival holding the same row.
 _SUPERSEDED_NOTE = "superseded by a rival advancer"
-_HELD_TIMEOUT = dt.timedelta(hours=1)
 _ARTIFACT_TIMEOUT = dt.timedelta(hours=1)
 
 
@@ -202,9 +201,6 @@ def _dispatch_ci(
     target, which is why that one still records only after its push.
     """
     if not reserve_met():
-        if timezone.now() - session.updated_at >= _HELD_TIMEOUT:
-            to_state = _halt(session, escalate=escalate, reason="eval reserve unavailable for twelve 5-minute ticks")
-            return AdvanceOutcome(session.pr_ref, "pending", to_state, note="reserve hold timed out")
         return AdvanceOutcome(session.pr_ref, "pending", session.state, note="held: no eval account meets the reserve")
     head_sha = client.resolve_head_sha(session.pr_ref)
     claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))

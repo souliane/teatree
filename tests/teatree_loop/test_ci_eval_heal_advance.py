@@ -697,17 +697,18 @@ class TestReserveGatesThePendingDispatch(TestCase):
         assert session.fix_attempts == 0
         assert "reserve" in outcome.note
 
-    def test_a_reserve_hold_past_twelve_ticks_escalates(self) -> None:
+    def test_a_reserve_hold_through_the_weekly_reset_stays_pending(self) -> None:
         session = _session()
-        CiEvalHealSession.objects.filter(pk=session.pk).update(updated_at=timezone.now() - dt.timedelta(minutes=65))
+        CiEvalHealSession.objects.filter(pk=session.pk).update(updated_at=timezone.now() - dt.timedelta(days=8))
         session.refresh_from_db()
         escalated: list[int] = []
         outcome = advance_session(
             session, client=_FakeClient(), escalate=lambda s: escalated.append(s.pk), reserve_met=_reserve_short
         )
         session.refresh_from_db()
-        assert outcome.to_state == CiEvalHealSession.State.HALTED
-        assert escalated == [session.pk]
+        assert outcome.to_state == CiEvalHealSession.State.PENDING
+        assert session.fix_attempts == 0
+        assert escalated == []
 
     def test_the_pass_forwards_the_reserve_probe(self) -> None:
         session = _session()
