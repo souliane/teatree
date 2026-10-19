@@ -83,6 +83,7 @@ def test_both_history_tokens_refused_keeps_the_bot_error_as_context() -> None:
     assert refused.value.error_code == "channel_not_found"
     assert isinstance(refused.value.__context__, ChannelReadRefusedError)
     assert refused.value.__context__.error_code == "not_in_channel"
+    assert "/invite" not in str(refused.value)
     assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
 
 

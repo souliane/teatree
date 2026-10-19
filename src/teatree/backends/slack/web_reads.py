@@ -20,6 +20,7 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
+# A bot can be absent from a channel that the configured user can read.
 _BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
@@ -33,6 +34,7 @@ def read_with_user_token_fallback(
     try:
         return read(token)
     except (SlackReadRefusedError, ChannelReadRefusedError) as refused:
+        # Thread and history readers use distinct exceptions for the same Slack code.
         if not user_token or token == user_token or refused.error_code not in _BOT_NOT_A_MEMBER:
             raise
         return read(user_token)

@@ -114,11 +114,12 @@ def read_thread_replies(*, get: TokenGetter, channel: str, thread_ts: str, user_
     a read-back keyed on a non-root user-message ts misses it. A read Slack
     refuses raises :class:`SlackReadRefusedError` — ``[]`` only ever means an
     empty thread — and each caller decides what a refusal means to it. A
-    channel the bot was never invited to is re-read through *user_token*.
+    channel the bot was never invited to is re-read through *user_token* when configured.
     """
     if not channel or not thread_ts:
         return []
     replies = read_with_user_token_fallback(
+        # Some bot-path getters accept no token keyword; the retry must supply one.
         lambda auth: _walk_thread(get if not auth else partial(get, token=auth), channel, thread_ts),
         token="",
         user_token=user_token,

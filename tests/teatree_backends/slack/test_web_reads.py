@@ -1,4 +1,6 @@
-"""Branch coverage for the web_reads free functions: the paged user lookup (#3507) and the user-group lookup."""
+"""Branch coverage for Slack web reads and shared retry decisions."""
+
+from collections.abc import Callable
 
 import pytest
 
@@ -6,6 +8,7 @@ from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.dm_history import read_thread_replies
 from teatree.backends.slack.web_reads import (
     _MAX_USER_PAGES,
+    Getter,
     read_channel_history_or_refuse,
     resolve_user_id,
     resolve_usergroup_id,
@@ -109,32 +112,64 @@ class TestResolveUsergroupId:
         assert resolve_usergroup_id(get=get, handle="reviewers") == ""
 
 
-@pytest.mark.parametrize("read_kind", ["history", "thread"])
-@pytest.mark.parametrize(
-    ("error_code", "expected_attempts"), [("not_in_channel", 2), ("channel_not_found", 2), ("is_archived", 1)]
-)
-def test_history_and_thread_share_membership_retry_decisions(
-    read_kind: str, error_code: str, expected_attempts: int
+_READERS = [
+    pytest.param(
+        lambda get: read_channel_history_or_refuse(get=get, channel="D1", token="xoxb-bot", user_token="xoxp-user"),
+        "conversations.history",
+        "xoxb-bot",
+        ChannelReadRefusedError,
+        id="history",
+    ),
+    pytest.param(
+        lambda get: read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user"),
+        "conversations.replies",
+        "",
+        SlackReadRefusedError,
+        id="thread",
+    ),
+]
+
+
+@pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
+@pytest.mark.parametrize("error_code", ["not_in_channel", "channel_not_found"])
+def test_history_and_thread_retry_membership_refusals(
+    read: Callable[[Getter], list[RawAPIDict]],
+    method: str,
+    first_token: str,
+    refusal_type: type[Exception],
+    error_code: str,
 ) -> None:
     tokens: list[str] = []
-    first_token = "xoxb-bot" if read_kind == "history" else ""
 
-    def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
-        assert method == ("conversations.history" if read_kind == "history" else "conversations.replies")
+    def get(request_method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert request_method == method
         assert params["channel"] == "D1"
         tokens.append(token)
         if token == first_token:
             return {"ok": False, "error": error_code}
         return {"ok": True, "messages": [{"ts": "1.0"}]}
 
-    def read() -> list[RawAPIDict]:
-        if read_kind == "history":
-            return read_channel_history_or_refuse(get=get, channel="D1", token=first_token, user_token="xoxp-user")
-        return read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user")
+    assert read(get) == [{"ts": "1.0", "channel": "D1"}]
+    assert tokens == [first_token, "xoxp-user"]
 
-    if expected_attempts == 2:
-        assert read() == [{"ts": "1.0", "channel": "D1"}]
-    else:
-        with pytest.raises((SlackReadRefusedError, ChannelReadRefusedError)):
-            read()
-    assert tokens == ([first_token, "xoxp-user"] if expected_attempts == 2 else [first_token])
+
+@pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
+def test_history_and_thread_preserve_refusal_type(
+    read: Callable[[Getter], list[RawAPIDict]],
+    method: str,
+    first_token: str,
+    refusal_type: type[Exception],
+) -> None:
+    tokens: list[str] = []
+
+    def get(request_method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert request_method == method
+        assert params["channel"] == "D1"
+        tokens.append(token)
+        return {"ok": False, "error": "is_archived"}
+
+    with pytest.raises(refusal_type) as refused:
+        read(get)
+
+    assert type(refused.value) is refusal_type
+    assert tokens == [first_token]

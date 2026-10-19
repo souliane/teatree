@@ -363,8 +363,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
         """Like :meth:`fetch_channel_history` but raises :class:`ChannelReadRefusedError`.
 
-        A viewing read under :attr:`SlackOp.READ`: non-DMs use the user
-        token; DMs start with the bot and retry a membership refusal as the user.
+        A viewing read under :attr:`SlackOp.READ`: with both tokens, non-DMs use
+        the user; DMs start with the bot and may retry as the user.
         A refused read stays loud.
         """
         if not channel:
