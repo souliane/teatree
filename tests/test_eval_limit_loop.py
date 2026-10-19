@@ -19,6 +19,8 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from teatree.eval.owed import OwedLedger
+
 _BASH = shutil.which("bash") or "/bin/bash"
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _PR_LOOP = "Metered behavioral eval — the changed scenarios (in Docker)"
@@ -289,10 +291,10 @@ class TestThePrLaneRecordsWhatItOwes:
         run, _ = record_owed
         assert run(deferred="gamma") == {"parked": "false", "owed": "gamma"}
 
-    def test_nothing_owed_uploads_nothing(self, record_owed) -> None:
+    def test_nothing_owed_uploads_an_empty_ledger(self, record_owed) -> None:
         run, ledger = record_owed
         assert run() == {"parked": "false", "owed": ""}
-        assert not ledger.exists()
+        assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")) == OwedLedger()
 
 
 @pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml"])
