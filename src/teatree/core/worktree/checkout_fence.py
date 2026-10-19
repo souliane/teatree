@@ -140,6 +140,7 @@ def park_task_checkout(
     reason: str,
     behind: OccupancyHolder | None = None,
     attestable: CheckoutAttestation | None = None,
+    unknown_holder: bool = False,
 ) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
@@ -173,13 +174,11 @@ def park_task_checkout(
     seat_freed = bool(own_row.cheap_lane_occupancy() or own_row.expensive_lane_occupancy())
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
-    rearmed = 0
-    if behind is not None and not _still_held_by(task, behind):
-        rearmed = Task.objects.filter(pk=task.pk).rearm_parked_behind(
-            holder=behind.holder, holder_session=behind.holder_session
-        )
+    rearmed = _rearm_if_occupancy_cleared(task, behind=behind, unknown_holder=unknown_holder)
     if seat_freed or rearmed:
         checkout_capacity_opened.send(sender=Task)
+    if rearmed:
+        return attempt
     if attestable is not None:
         question = ask_owner_to_attest(task, attestable)
         if question is not None:
@@ -205,10 +204,30 @@ def _still_held_by(task: Task, behind: OccupancyHolder) -> bool:
     ).exists()
 
 
+def _rearm_if_occupancy_cleared(task: Task, *, behind: OccupancyHolder | None, unknown_holder: bool) -> int:
+    if behind is not None:
+        if _still_held_by(task, behind):
+            return 0
+        return Task.objects.filter(pk=task.pk).rearm_parked_behind(
+            holder=behind.holder, holder_session=behind.holder_session
+        )
+    if not unknown_holder or any(
+        occupancy_holder(row) is not None for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by="")
+    ):
+        return 0
+    now = timezone.now()
+    return Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__gt=now).update(
+        not_before=now, admitted_at=None
+    )
+
+
 def park_refused_checkout(task: Task, refusal: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
     behind = refusal.holder if isinstance(refusal, WorktreeOccupiedError) else None
     attestable = refusal.attestable if isinstance(refusal, CheckoutFenceError) else None
-    return park_task_checkout(task, reason=str(refusal), behind=behind, attestable=attestable)
+    unknown_holder = isinstance(refusal, WorktreeOccupiedError) and behind is None
+    return park_task_checkout(
+        task, reason=str(refusal), behind=behind, attestable=attestable, unknown_holder=unknown_holder
+    )
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:

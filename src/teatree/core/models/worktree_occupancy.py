@@ -254,11 +254,10 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "", attest
                 }
             freed = held.update(**_UNOCCUPIED, **fields)
             if freed == 1:
-                rearmed = Task.objects.filter(ticket_id=worktree.ticket_id).rearm_parked_behind(
+                Task.objects.filter(ticket_id=worktree.ticket_id).rearm_parked_behind(
                     holder=holder, holder_session=holder_session
                 )
-                if rearmed:
-                    checkout_capacity_opened.send(sender=Worktree)
+                checkout_capacity_opened.send(sender=Worktree)
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1

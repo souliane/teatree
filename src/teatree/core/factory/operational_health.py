@@ -450,7 +450,9 @@ def _dream_staleness_signals() -> SignalCollection:
     )
 
 
-# Deterministic collectors run independently so one failed read names itself without suppressing the others.
+# The deterministic signal collectors, run in order. Each is fail-open on its
+# own so one broken read never suppresses the others; adding a new signal family
+# (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
 _COLLECTORS = (
     _overlay_health_signals,
     _stale_tick_signals,

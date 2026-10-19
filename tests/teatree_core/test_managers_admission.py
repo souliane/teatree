@@ -35,6 +35,18 @@ class TestAdmissionSeatPredicates(TestCase):
         assert Task.objects.get(pk=task.pk).not_before is not None
         assert Task.objects.expensive_lane_occupancy() == 1
 
+    def test_future_park_stays_unseated_when_its_retry_becomes_due(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now())
+        task.refresh_from_db()
+
+        task.park(not_before=timezone.now() + timedelta(minutes=1))
+        Task.objects.filter(pk=task.pk).update(not_before=timezone.now() - timedelta(seconds=1))
+
+        assert Task.objects.expensive_lane_occupancy() == 0
+        assert Task.objects.waiting_for_admission().filter(pk=task.pk).exists()
+
     def test_a_parked_seat_does_not_refuse_the_conditional_admission_stamp(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

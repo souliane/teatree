@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 from django.db import models
 from django.db.models import Q
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast, Coalesce, Concat
 from django.db.models.lookups import LessThan
 
 from teatree.core.managers_task_claim import _claimable_now_q
@@ -81,11 +81,22 @@ def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan
 
 
 def waiting_for_admission_rows(queryset: models.QuerySet, now: datetime) -> models.QuerySet:
-    """Due, unseated PENDING rows whose ticket's checkout no live occupant holds, as ``acquire`` would refuse."""
+    """Due, unseated PENDING rows whose ticket has no held checkout requiring a live holder."""
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
     worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
-    held = worktree_model.objects.filter(ticket_id=models.OuterRef("ticket_id"), occupancy_expires_at__gt=now).exclude(
-        occupied_by=""
+    finished_unowned_holders = (
+        task_model.objects.filter(
+            ticket_id=models.OuterRef("ticket_id"),
+            status__in=task_model.Status.terminal(),
+            owner_pid__isnull=True,
+        )
+        .annotate(holder=Concat(models.Value("task:"), Cast("pk", models.CharField())))
+        .values("holder")
+    )
+    held = (
+        worktree_model.objects.filter(ticket_id=models.OuterRef("ticket_id"), occupancy_expires_at__gt=now)
+        .exclude(occupied_by="")
+        .exclude(occupied_by__in=models.Subquery(finished_unowned_holders))
     )
     return (
         queryset.filter(_claimable_now_q(now), _unseated_q(now), status=task_model.Status.PENDING)

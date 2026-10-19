@@ -29,20 +29,25 @@ def _stall_signals() -> tuple[HealthSignal, ...]:
 
 class TestStalledCheckoutPullRequest(TestCase):
     def test_old_open_pull_request_is_linked_in_health(self) -> None:
-        ticket = cast("Ticket", TicketFactory(short_description="Retry due checkout tasks"))
-        TaskFactory(ticket=ticket, phase="coding")
+        _, ticket = _parked_ticket()
         pr = PullRequestFactory(ticket=ticket, create_verified_at=timezone.now() - timedelta(hours=25))
 
         report = operational_health.reconcile_health()
         issues = [issue for issue in report.open_issues if issue.kind == "stalled_checkout_pr"]
         assert len(issues) == 1
         assert issues[0].evidence_url == pr.url
-        assert f"ticket #{ticket.pk} (Retry due checkout tasks)" in issues[0].summary
+        assert f"ticket #{ticket.pk} (Retry parked checkout tasks)" in issues[0].summary
 
-    def test_future_pending_task_does_not_raise_stall(self) -> None:
+    def test_future_checkout_park_raises_stall(self) -> None:
         task, ticket = _parked_ticket()
         PullRequestFactory(ticket=ticket, create_verified_at=timezone.now() - timedelta(hours=25))
         Task.objects.filter(pk=task.pk).update(not_before=timezone.now() + timedelta(minutes=30))
+        assert len(_stall_signals()) == 1
+
+    def test_fresh_due_task_without_checkout_park_does_not_raise_stall(self) -> None:
+        ticket = cast("Ticket", TicketFactory())
+        TaskFactory(ticket=ticket, phase="coding")
+        PullRequestFactory(ticket=ticket, create_verified_at=timezone.now() - timedelta(hours=25))
         assert _stall_signals() == ()
 
     def test_recent_or_settled_pull_request_does_not_raise_stall(self) -> None:
@@ -62,15 +67,16 @@ class TestStalledCheckoutPullRequest(TestCase):
         assert len(signals) == 1
         assert signals[0].evidence_url == legacy.url
 
-    def test_due_pending_task_is_reported_even_with_an_active_sibling_or_newer_attempt(self) -> None:
+    def test_live_claim_or_newer_attempt_suppresses_checkout_stall(self) -> None:
         task, ticket = _parked_ticket()
         PullRequestFactory(ticket=ticket, create_verified_at=timezone.now() - timedelta(hours=25))
         active = TaskFactory(ticket=ticket, phase="testing")
         active.claim(claimed_by="worker", claimed_by_session="s1")
-        assert len(_stall_signals()) == 1
+        assert _stall_signals() == ()
         Task.objects.filter(pk=active.pk).update(status=Task.Status.COMPLETED)
-        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=0, result={"summary": "done"})
         assert len(_stall_signals()) == 1
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=0, result={"summary": "done"})
+        assert _stall_signals() == ()
 
     def test_unreadable_source_is_reported_by_registry(self) -> None:
         with patch(

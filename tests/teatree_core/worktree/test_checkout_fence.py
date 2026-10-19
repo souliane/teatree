@@ -197,6 +197,32 @@ class CheckoutFenceTests(TestCase):
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
         assert waiting.exists()
 
+    def test_reaped_holder_does_not_hide_a_due_sibling_from_self_heal(self) -> None:
+        holder = TaskFactory(ticket=self.ticket, phase="testing")
+        acquire(self.worktree, holder=task_holder_id(holder), holder_session="s1")
+        Task.objects.filter(pk=holder.pk).update(status=Task.Status.FAILED, owner_pid=None)
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)
+
+        assert Task.objects.waiting_for_admission().filter(pk=self.task.pk).exists()
+        with occupy_ticket_checkout(self.ticket, holder=task_holder_id(self.task), holder_session="s2"):
+            self.worktree.refresh_from_db()
+            assert self.worktree.occupied_by == task_holder_id(self.task)
+
+    def test_manual_release_walks_a_due_sibling_hidden_by_checkout_hold(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)
+        held = acquire(self.worktree, holder="operator", holder_session="s1")
+        assert not Task.objects.waiting_for_admission().filter(pk=self.task.pk).exists()
+
+        with (
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+
+        self.task.refresh_from_db()
+        assert self.task.admitted_at is not None
+        enqueue.assert_called_once_with(self.task.pk, self.task.phase)
+
     def test_releasing_holder_wakes_only_tasks_whose_newest_park_names_it(self) -> None:
         holder = TaskFactory(ticket=self.ticket, phase="coding")
         sibling = TaskFactory(ticket=self.ticket, phase="testing")
@@ -245,6 +271,24 @@ class CheckoutFenceTests(TestCase):
         assert self.task.not_before is not None
         assert self.task.not_before <= timezone.now()
 
+    def test_unknown_occupied_holder_rearms_when_checkout_is_free_without_notice(self) -> None:
+        with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
+            park_refused_checkout(self.task, WorktreeOccupiedError("checkout was occupied", holder=None))
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.task.not_before <= timezone.now()
+        notice.assert_not_called()
+
+    def test_unknown_occupied_holder_stays_parked_if_checkout_is_still_held(self) -> None:
+        acquire(self.worktree, holder="operator", holder_session="s1")
+
+        park_refused_checkout(self.task, WorktreeOccupiedError("checkout was occupied", holder=None))
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.task.not_before > timezone.now()
+
     def test_a_walk_admitting_at_the_still_held_by_seam_is_not_enqueued_twice(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
         concurrent: list[int] = []
@@ -275,15 +319,6 @@ class CheckoutFenceTests(TestCase):
         repeated.refresh_from_db()
         assert repeated.result["occupied_by"] == {"holder": held.holder, "session": held.holder_session}
 
-    def test_fence_park_schedules_an_admission_walk_after_commit(self) -> None:
-        with (
-            patch.object(task_dispatch, "admit_waiting_tasks") as walk,
-            self.captureOnCommitCallbacks(execute=True),
-        ):
-            park_task_checkout(self.task, reason="unattested checkout")
-            walk.assert_not_called()
-        walk.assert_called_once()
-
     def test_refused_task_frees_its_seat_for_a_sibling_immediately(self) -> None:
         sibling = TaskFactory(ticket=self.ticket, phase="debugging")
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
@@ -291,12 +326,16 @@ class CheckoutFenceTests(TestCase):
         Task.objects.filter(pk=self.task.pk).update(admitted_at=timezone.now())
         assert Task.objects.expensive_lane_occupancy() == 1
 
-        park_task_checkout(self.task, reason="unattested checkout")
+        with (
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            park_task_checkout(self.task, reason="unattested checkout")
 
-        assert Task.objects.expensive_lane_occupancy() == 0
-        assert Task.objects.record_admission(sibling.pk, cheap=False, lane_ceiling=1)
+        assert Task.objects.expensive_lane_occupancy() == 1
         sibling.refresh_from_db()
         assert sibling.admitted_at is not None
+        enqueue.assert_called_once_with(sibling.pk, sibling.phase)
 
     def test_refusal_passes_attestation_to_card_after_scheduling_admission(self) -> None:
         refusal = CheckoutFenceError(
@@ -460,6 +499,46 @@ class CheckoutFenceTests(TestCase):
                 runner.run_agent(testing, phase="testing", overlay_skill_metadata={})
         drive.assert_called_once()
         assert Task.objects.get(pk=testing.pk).status == Task.Status.CLAIMED
+
+    def test_worker_restart_release_is_recoverable_before_next_writer_runs(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        original = checkout_state(self.checkout).digest
+
+        def interrupted_run(*_args: object, **_kwargs: object) -> TaskAttempt:
+            (self.checkout / "interrupted.txt").write_text("run output")
+            reason = "error_during_execution"
+            raise RuntimeError(reason)
+
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
+            patch(
+                "teatree.core.worktree.occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "", ("host table unavailable",)),
+            ),
+            patch.object(runner, "_run_agent", side_effect=interrupted_run),
+            pytest.raises(RuntimeError, match="error_during_execution"),
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata={})
+
+        released = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(released) is None
+        assert released.get_extra()["attested_state"] == original
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.HARNESS_CRASH)
+
+        next_task = TaskFactory(ticket=self.ticket, phase="testing")
+        next_task.claim(claimed_by="worker", claimed_by_session="s2")
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=_CLEAR),
+            patch.object(runner, "_run_agent", return_value=Mock(spec=TaskAttempt)) as drive,
+        ):
+            runner.run_agent(next_task, phase="testing", overlay_skill_metadata={})
+
+        drive.assert_called_once()
+        recovered = Worktree.objects.get(pk=self.worktree.pk).get_extra()
+        assert recovered["attested_state"] == checkout_state(self.checkout).digest != original
+        assert recovered["auto_attestation"]["previous"] == original
 
     def test_a_run_whose_checkout_was_handed_to_another_holder_never_attests(self) -> None:
         self.task.claim(claimed_by="worker", claimed_by_session="s1")
