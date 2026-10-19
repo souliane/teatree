@@ -30,6 +30,7 @@ hits it rolls the advance back and the FSM stays put (identical to
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.config import get_effective_settings
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
@@ -40,6 +41,15 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+
+def forced_repro_gate_enabled(ticket: "Ticket") -> bool:
+    if get_effective_settings(ticket.overlay).forced_repro_gate_enabled:
+        return True
+    scope = ticket.overlay or "global"
+    logger.warning("forced_repro_gate_enabled is off for ticket %s in scope %s", ticket.pk, scope)
+    ticket.merge_extra(append_to_lists={"forced_repro_disabled_scopes": [scope]})
+    return False
 
 
 class ForcedReproGateError(InvalidTransitionError):
@@ -71,6 +81,8 @@ def check_forced_repro(ticket: "Ticket") -> None:
     """Refuse the ship transition when a FIX ticket lacks an executed repro (#118)."""
     if not is_fix(ticket):
         return
+    if not forced_repro_gate_enabled(ticket):
+        return
     if ReproWaiver.objects.filter(ticket=ticket).exists():
         logger.info("Forced-repro gate waived for ticket %s (human-authorized ReproWaiver)", ticket.pk)
         return
@@ -81,7 +93,11 @@ def check_forced_repro(ticket: "Ticket") -> None:
 
 def check_red_repro(ticket: "Ticket") -> None:
     """Refuse FIX coding completion unless the pre-fix failing run was recorded."""
-    if not is_fix(ticket) or ReproWaiver.objects.filter(ticket=ticket).exists():
+    if (
+        not is_fix(ticket)
+        or not forced_repro_gate_enabled(ticket)
+        or ReproWaiver.objects.filter(ticket=ticket).exists()
+    ):
         return
     if ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).exists():
         return

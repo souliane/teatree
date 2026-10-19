@@ -44,7 +44,8 @@ from teatree.config.override_read_health import (
 )
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.resolution import fail_closed_overrides, read_setting_layers
-from teatree.core.models import ConfigSetting, ModeOverride
+from teatree.core.gates.repro_gate import ForcedReproGateError, check_red_repro
+from teatree.core.models import ConfigSetting, ModeOverride, Ticket
 from teatree.core.models import Mode as Posture
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.on_behalf_gate import OnBehalfVerdict
@@ -358,6 +359,17 @@ class TestTheFailClosedTableIsAppliedRatherThanAssumed(TestCase):
         # fail-closed value can never be a type the resolver would reject.
         assert forced["autonomy"] is Autonomy.BABYSIT
         assert forced["mode"] is Mode.INTERACTIVE
+        assert forced["forced_repro_gate_enabled"] is True
+
+    def test_unreadable_overlay_cannot_expose_global_off(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
+        with (
+            mock.patch("teatree.config.resolution.load_overlay_rows", return_value=({}, True)),
+            pytest.raises(ForcedReproGateError),
+        ):
+            check_red_repro(ticket)
 
     def test_a_key_supplied_by_env_is_left_alone(self) -> None:
         forced = fail_closed_overrides(frozenset({"global"}), supplied_by_env={"mode"})

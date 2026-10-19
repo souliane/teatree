@@ -4,6 +4,7 @@ import os
 import shlex
 
 from teatree.core.gates.fix_dod_gate import is_fix
+from teatree.core.gates.repro_gate import forced_repro_gate_enabled
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError
@@ -82,6 +83,7 @@ def record_phase_repro(task: Task, *, phase: str) -> str:
     if (
         canonical not in {"coding", "testing"}
         or not is_fix(ticket)
+        or not forced_repro_gate_enabled(ticket)
         or ReproWaiver.objects.filter(ticket=ticket).exists()
         or ReproEvidence.objects.has_valid_repro(ticket)
     ):
