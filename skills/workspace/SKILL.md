@@ -560,7 +560,10 @@ t3 <overlay> worktree provision             # re-run; now green end-to-end
 #### A checkout `t3` does not know yet — `worktree adopt`, never `provision`
 
 `WorktreeNotFoundError: Cannot auto-detect worktree from <path>` means the checkout has
-no `Worktree` row, not that you are standing in the wrong place. Registration used to
+no `Worktree` row, not that you are standing in the wrong place.
+A declaration line in this refusal means resolution used a fallback directory and says either
+`TEATREE_INVOCATION_CWD is unset (not declared)` or
+`TEATREE_INVOCATION_CWD='<path>' is declared but does not resolve here`. Registration used to
 happen only as a side effect of resolving something else, so a worktree cut by
 `git worktree add`, by another session, or one whose row was reaped, had no verb at all
 — and `provision` is the wrong answer (it runs tenant-DB provisioning many overlays
