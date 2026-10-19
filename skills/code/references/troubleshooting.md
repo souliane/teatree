@@ -7,8 +7,8 @@
 ## Overlay Groups Show Only a Generic `run` Passthrough
 
 - **Symptom:** `t3 <overlay> <group> --help` shows a single `run` subcommand instead of the actual management command subcommands (e.g., `refresh`, `restore-ci`, `reset-passwords`).
-- **Cause:** `_build_overlay_app` bridges management commands via `_bridge_subcommand` — if the `DJANGO_GROUPS` registry doesn't list individual subcommands, only the generic passthrough appears.
-- **Fix:** Add each subcommand explicitly to `DJANGO_GROUPS` in `cli/overlay.py` with `(name, help_text)` tuples. The bridge creates one Typer command per entry that delegates to `manage.py <group> <subcommand>`.
+- **Cause:** `OverlayAppBuilder.build` bridges management commands via `_bridge_subcommand` — if the `DJANGO_GROUPS` registry doesn't list individual subcommands, only the generic passthrough appears.
+- **Fix:** Add each subcommand explicitly to `DJANGO_GROUPS` in `cli/django_groups.py` with `(name, help_text)` tuples. The bridge creates one Typer command per entry that delegates to `manage.py <group> <subcommand>`.
 - **Prevention:** When adding, renaming, or deleting a management command or subcommand, always update the matching entry in `DJANGO_GROUPS` in the **same commit**. The bridge does not auto-discover Django commands — a missing entry is silent (no group at all), and a stale entry dispatches to a non-existent backend (each call 404s with `Unknown command`).
 
 ## Overlay Bridge Dispatches to a Deleted Django Command
@@ -28,8 +28,8 @@
 ## CLI References Undefined Sub-Apps After Script Migration
 
 - **Symptom:** `NameError: name 'workspace_app' is not defined` when running any `t3` command.
-- **Cause:** During migration from scripts to management commands, old references to top-level Typer sub-apps (e.g., `workspace_app`, `pr_app`) were left in `_build_overlay_app` but the apps themselves were removed.
-- **Fix:** Remove dead references. The `_DJANGO_GROUPS` loop now handles all overlay command groups.
+- **Cause:** During migration from scripts to management commands, old references to top-level Typer sub-apps (e.g., `workspace_app`, `pr_app`) were left in `OverlayAppBuilder.build` but the apps themselves were removed.
+- **Fix:** Remove dead references. The `DJANGO_GROUPS` loop handles all overlay command groups.
 - **Prevention:** After deleting code, grep for references to deleted symbols before committing.
 
 ## Overlay Discovery Returns Empty Despite Config
