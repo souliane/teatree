@@ -97,9 +97,26 @@ def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
     assert downloaded < settled
     assert steps[downloaded]["with"]["name"] == "eval-owed-ledger"
     assert steps[downloaded]["with"]["path"] == "${{ runner.temp }}"
-    assert steps[settled]["env"]["XDG_DATA_HOME"] == "${{ runner.temp }}/xdg"
+    assert steps[settled]["run"].startswith("uv run t3 eval owed settle")
     assert '--passed-file "$RUNNER_TEMP/eval-owed-passed.txt"' in steps[settled]["run"]
     assert "--all-covered" not in steps[settled]["run"]
+
+
+def test_benchmark_ledger_commands_use_migrated_runner_sandboxes() -> None:
+    jobs = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    for job, command in (
+        ("prepare", "Harvest owed scenarios from merged PRs"),
+        ("publish", "Settle owed scenarios covered by the full green benchmark"),
+    ):
+        steps = jobs[job]["steps"]
+        names = [step.get("name") for step in steps]
+        assert names.index("Sandbox the control DB") < names.index("Migrate the self-DB") < names.index(command)
+        assert "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" in steps[names.index("Sandbox the control DB")]["run"]
+
+
+def test_benchmark_eval_job_does_not_download_an_unused_ledger() -> None:
+    steps = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
+    assert not any(step.get("name") == "Download the owed ledger" for step in steps)
 
 
 def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:

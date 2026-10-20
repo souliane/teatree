@@ -74,6 +74,7 @@ class CiEvalHealSession(models.Model):
     red_scenarios = models.JSONField(default=list, blank=True)
     needs_full_rerun = models.BooleanField(default=False)
     artifact_missing_since = models.DateTimeField(null=True, blank=True)
+    park_failures = models.PositiveSmallIntegerField(default=0)
     fix_attempts = models.PositiveSmallIntegerField(default=0)
     max_fix_attempts = models.PositiveSmallIntegerField(default=_DEFAULT_MAX_FIX_ATTEMPTS)
     last_fix_paths = models.JSONField(default=list, blank=True)
@@ -114,14 +115,16 @@ class CiEvalHealSession(models.Model):
             self.artifact_missing_since = timezone.now()
 
     @transition(field="state", source=State.AWAITING_CI, target=State.PENDING)
-    def park(self) -> None:
-        """Requeue a run the subscription reserve parked — it measured nothing, so no attempt is spent."""
+    def park(self, *, failed_run: bool = False) -> None:
+        """Requeue a parked run while counting failed CI conclusions separately from fix attempts."""
+        self.park_failures = self.park_failures + 1 if failed_run else 0
 
     @transition(field="state", source=State.AWAITING_CI, target=State.TRIAGING)
     def receive_result(self, *, red_scenarios: list[str], parked: bool = False) -> None:
         """Record the red-scenario subset the CI ``--summary-json`` artifact reported."""
         self.red_scenarios = list(red_scenarios)
         self.needs_full_rerun = parked
+        self.park_failures = 0
 
     @transition(field="state", source=State.TRIAGING, target=State.GREEN, conditions=[_no_reds])
     def mark_green(self) -> None:

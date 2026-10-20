@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 import typer
 
+from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, API_BACKEND
@@ -139,6 +140,31 @@ def test_matrix_keeps_a_measured_red_when_a_later_cell_hits_the_limit(tmp_path: 
     assert exc.value.exit_code == 1
     assert runner.calls == 2
     assert "failed before the usage limit" in dashboard.read_text()
+
+
+def test_standalone_benchmark_keeps_a_measured_red_before_the_limit() -> None:
+    runner = _LimitAfterRedRunner()
+    with (
+        patch("teatree.cli.eval.benchmark.should_route_to_docker", return_value=False),
+        patch("teatree.cli.eval.benchmark.warn_local_metered"),
+        patch("teatree.cli.eval.benchmark.ensure_django"),
+        patch("teatree.cli.eval.benchmark._select_specs", return_value=[_spec("red"), _spec("unmeasured")]),
+        patch("teatree.cli.eval.benchmark.make_runner", return_value=runner),
+        pytest.raises(typer.Exit) as exc,
+    ):
+        benchmark(
+            models="claude-opus-4-8",
+            presets=None,
+            scenarios=None,
+            trials=1,
+            max_turns=None,
+            max_budget_usd=2.0,
+            output_format="text",
+            persist=False,
+            local=True,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
 
 
 #: An all-of-k red trial settles the verdict; an any-of-k one leaves it undecided, so it parks.

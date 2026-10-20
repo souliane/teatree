@@ -656,6 +656,7 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.PENDING
         assert session.fix_attempts == 1
+        assert session.park_failures == 0
         assert outcome.to_state == CiEvalHealSession.State.PENDING
         assert "parked" in outcome.note
 
@@ -667,6 +668,19 @@ class TestParkOnTheSubscriptionReserve(TestCase):
 
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.PENDING
+        assert session.park_failures == 1
+
+    def test_repeated_failed_runs_with_parked_legs_eventually_halt(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        CiEvalHealSession.objects.filter(pk=session.pk).update(park_failures=2)
+        session.refresh_from_db()
+        client = _FakeClient(runs=[_completed("failure")], artifact=_parked())
+
+        advance_session(session, client=client, escalate=_noop)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert "parked" in session.halt_reason
 
     def test_a_measured_red_outranks_a_parked_leg(self) -> None:
         session = _awaiting(head_sha="a" * 40)

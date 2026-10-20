@@ -413,7 +413,10 @@ class Command(DreamGapCommands, TyperCommand):
             from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
             if not cached_local_eval_reserve_met():
-                return f"; eval promotion parked: window below reserve{self._derive_evals(dry_run=dry_run)}"
+                return (
+                    "; eval promotion parked: no measured OAuth account meets reserve"
+                    f"{self._derive_evals(dry_run=dry_run)}"
+                )
             validator = promote.build_live_validator()
             outcomes = promote.promote_proposals_file(
                 _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)

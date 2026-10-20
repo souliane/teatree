@@ -35,8 +35,8 @@ from teatree.eval.backends import (
     TRANSCRIPT_BACKEND,
     EvalRunner,
 )
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
-from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
+from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
@@ -146,6 +146,41 @@ def _call(
 
 
 class TestRunSingleTrialArtifacts:
+    def test_judge_limit_parks_remaining_grades(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _run_with(monkeypatch, _passing_run)
+        calls: list[str] = []
+
+        def limited_grade(spec: EvalSpec, run: EvalRun) -> JudgeOutcome:
+            calls.append(spec.name)
+            reason = "weekly limit"
+            raise UsageLimitReachedError(reason)
+
+        specs = [dataclasses.replace(_spec(name), judge=JudgeSpec(rubric="x")) for name in ("alpha", "beta")]
+        summary = tmp_path / "summary.md"
+        with pytest.raises(typer.Exit) as exc:
+            run_single_trial(
+                specs,
+                backend=API_BACKEND,
+                max_turns=None,
+                transcript_dir=None,
+                require_executed=True,
+                max_budget_usd=1.0,
+                effort=None,
+                parallel=1,
+                output_format="text",
+                grader=limited_grade,
+                judge=True,
+                transcript_html=None,
+                summary_md=summary,
+                gates=_NO_GATES,
+            )
+        assert exc.value.exit_code == 75
+        assert calls == ["alpha"]
+        assert "**2 skipped**" in summary.read_text(encoding="utf-8")
+        assert "usage_limit_reached" in capsys.readouterr().out
+
     def test_drops_both_artifacts_for_a_passing_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _run_with(monkeypatch, _passing_run)
         transcript = tmp_path / "transcript.html"

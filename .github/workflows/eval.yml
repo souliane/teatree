@@ -842,15 +842,19 @@ jobs:
       # goes through the redacting filter like every other print of an eval artifact.
       - name: Merge the shard summaries into the public dashboard
         env:
+          EVAL_MATRIX: ${{ needs.prepare.outputs.matrix }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
           # Held so the redacting filter scrubs them from the printed summary.
           GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
           TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
         run: |
-          set -o pipefail
-          if ! compgen -G "$RUNNER_TEMP/summaries/*.md" > /dev/null; then
-            echo "No leg produced a summary (every leg parked) — the dashboard is left as it is."
+          set -euo pipefail
+          EXPECTED="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<< "$EVAL_MATRIX")"
+          shopt -s nullglob
+          summaries=("$RUNNER_TEMP"/summaries/*.md)
+          if [ "$EXPECTED" -eq 0 ] || [ "${#summaries[@]}" -ne "$EXPECTED" ]; then
+            echo "::warning::Only ${#summaries[@]} of $EXPECTED planned legs produced summaries — dashboard unchanged."
             exit 0
           fi
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

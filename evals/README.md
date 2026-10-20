@@ -662,10 +662,13 @@ exits 75 unless something it measured failed — a confirmed red still reds. On 
 box, the `eval_local` loop and the dream pass's eval promotion check cached
 token rows for the account the sticky selector will use. The heal loop checks
 cached rows and dispatches only while an allowlisted CI-pool account
-meets the reserve, holding a pending session until the reserve returns. The
+meets the reserve, holding a pending session until the reserve returns. A failed CI run
+with parked legs requeues twice, then halts and escalates on its third failed park. The
 operator must arrange periodic health-row refreshes; without them, the five-minute
 cache TTL keeps local, dream and heal eval dispatch parked. A retry after a
-measured red invokes nothing and stays red. A scenario the limit skipped
+measured red invokes nothing and stays red. The weekly publisher refuses an
+incomplete planned matrix. A limit reached while judging also parks ungraded
+scenarios and stops later judge calls. A scenario the limit skipped
 is never handed to the heal fixer, and `t3 eval green-proof` parks it (exit 75)
 rather than counting it red.
 

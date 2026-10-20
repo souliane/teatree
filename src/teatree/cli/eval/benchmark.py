@@ -25,12 +25,12 @@ from teatree.cli.eval.metered_trials import exit_on_usage_limit_or_prior_red
 from teatree.cli.eval.multi_trial import (
     MatrixColumn,
     TrialPolicy,
+    _MatrixUsageLimitError,
     collect_matrix_rows,
     parse_model_tags,
     parse_preset_columns,
 )
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
-from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
 from teatree.eval.discovery import discover_specs
@@ -143,8 +143,8 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     )
     try:
         rows = collect_matrix_rows(specs, columns, runner=runner, policy=TrialPolicy(trials=trials))
-    except UsageLimitReachedError:
-        exit_on_usage_limit_or_prior_red()
+    except _MatrixUsageLimitError as exc:
+        exit_on_usage_limit_or_prior_red(failed_before_limit=exc.failed_before_limit(specs))
     RunGuards.hooks_registered(rows)
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     # The benchmark is always api-metered, yet (unlike the single-run lane and the

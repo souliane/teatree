@@ -43,6 +43,7 @@ EscalateFn = Callable[["CiEvalHealSession"], None]
 #: The outcome note for an advancer that lost its step to a rival holding the same row.
 _SUPERSEDED_NOTE = "superseded by a rival advancer"
 _ARTIFACT_TIMEOUT = dt.timedelta(hours=1)
+_MAX_FAILED_PARKS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,9 +354,9 @@ def _triage_result(
     return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note=note)
 
 
-def _park(session: "CiEvalHealSession") -> AdvanceOutcome:
+def _park(session: "CiEvalHealSession", *, failed_run: bool = False) -> AdvanceOutcome:
     """AWAITING_CI → PENDING under the ownership CAS: the reserve parked a leg, so the run measured nothing."""
-    parked = _advance_owned(session, lambda owned: owned.park())
+    parked = _advance_owned(session, lambda owned: owned.park(failed_run=failed_run))
     if parked is None:
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note=_SUPERSEDED_NOTE)
     return AdvanceOutcome(session.pr_ref, "awaiting_ci", parked.state, note="parked on the subscription reserve")
@@ -402,7 +403,11 @@ def _observe_ci(
     if payload is not None and payload.reds:
         return _triage_result(session, payload=payload, client=client, escalate=escalate, fixer=fixer)
     if payload is not None and payload.parked:
-        return _park(session)
+        if session.park_failures + 1 < _MAX_FAILED_PARKS:
+            return _park(session, failed_run=True)
+        reason = f"CI failed with parked coverage {_MAX_FAILED_PARKS} times and no confirmable behavioral red (infra)"
+        to_state = _halt(session, escalate=escalate, reason=reason)
+        return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="repeated parked failure halt")
     # Non-success with NO confirmable behavioral red — an infra failure (transport,
     # throttle, cap, cancelled, or an unfetchable artifact). Never greened.
     reason = f"CI run concluded {conclusion or 'unknown'!r} with no confirmable behavioral red (infra)"
