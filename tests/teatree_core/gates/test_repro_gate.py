@@ -282,7 +282,7 @@ class TestForcedReproGateSwitchedOff(TestCase):
         assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
 
     def test_the_unattended_loop_cannot_switch_it_off(self) -> None:
-        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorized"):
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
             ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="other")
         assert not ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="other").exists()
 

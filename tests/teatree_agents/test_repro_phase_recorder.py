@@ -25,6 +25,12 @@ class TestRecordPhaseReproSwitch(TestCase):
     def test_the_default_still_refuses_coding_without_a_red(self) -> None:
         assert "repro record-red" in record_phase_repro(self._task("coding"), phase="coding")
 
+    def test_corrupt_switch_is_a_recordable_refusal(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
+        refusal = record_phase_repro(self._task("coding"), phase="coding")
+        assert "Cannot decide forced-repro requirement" in refusal
+
     def test_switched_off_coding_completion_is_not_refused(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
         task = self._task("coding")

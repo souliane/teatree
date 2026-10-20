@@ -3,7 +3,7 @@
 import os
 import shlex
 
-from teatree.core.gates.repro_gate import audit_repro_exemption
+from teatree.core.gates.repro_gate import ForcedReproGateError, audit_repro_exemption
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError
@@ -78,10 +78,13 @@ def record_phase_repro(task: Task, *, phase: str) -> str:
     """Return a refusal until a FIX has a real RED, then record GREEN at test completion."""
     canonical = normalize_phase(phase or task.phase)
     ticket = task.ticket
-    if canonical not in {"coding", "testing"} or audit_repro_exemption(
-        ticket, evidence="red" if canonical == "coding" else "pair"
-    ):
+    if canonical not in {"coding", "testing"}:
         return ""
+    try:
+        if audit_repro_exemption(ticket, evidence="red" if canonical == "coding" else "pair"):
+            return ""
+    except ForcedReproGateError as exc:
+        return str(exc)
     red = ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).order_by("-red_recorded_at").first()
     if red is None:
         return (
