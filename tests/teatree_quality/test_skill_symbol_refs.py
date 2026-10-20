@@ -279,6 +279,9 @@ class TestResolver:
         assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
         assert resolve_repo_path(ref, _REPO_ROOT) is not None
 
+    def test_absent_suffixless_python_path_stays_unresolved_in_charter_mode(self) -> None:
+        assert resolve_repo_path("src/teatree/core/vanished_module", _REPO_ROOT, charter=True) is not None
+
     def test_template_root_path_resolves_only_when_src_qualified_in_charter_mode(self) -> None:
         ref = "src/teatree/dash/base.html"
         assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
@@ -298,6 +301,22 @@ class TestResolver:
         assert [(finding.ref, finding.reason) for finding in findings] == [
             ("src/teatree/hooks/privacy_diff_comment_density.py", None)
         ]
+
+    def test_a_claimed_package_citation_does_not_hide_a_separate_stale_path(self) -> None:
+        package_ref = "`hooks/privacy_diff_comment_density.py`"
+        stale_ref = "`src/teatree/core/vanished_module.py`"
+        for source in (f"{package_ref} and {stale_ref}", f"{stale_ref} and {package_ref}"):
+            findings = scan_source(source, Path("BLUEPRINT.md"), _REPO_ROOT, charter=True)
+            assert [(finding.ref, finding.reason is not None) for finding in findings] == [
+                ("src/teatree/hooks/privacy_diff_comment_density.py", False),
+                ("src/teatree/core/vanished_module.py", True),
+            ]
+
+    def test_a_directory_without_init_is_not_a_package_root(self, tmp_path: Path) -> None:
+        directory = tmp_path / "src" / "teatree" / "loose"
+        directory.mkdir(parents=True)
+        (directory / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        assert scan_source("`loose/helper.py`", Path("BLUEPRINT.md"), tmp_path, charter=True) == []
 
     def test_ambiguous_package_citation_stays_unresolved(self) -> None:
         findings = scan_source("`eval/__init__.py`", Path("BLUEPRINT.md"), _REPO_ROOT, charter=True)
