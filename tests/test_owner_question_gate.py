@@ -548,9 +548,21 @@ def test_stop_escape_token_only_bypasses_within_last_512_characters(tmp_path: Pa
         "Stop",
         payload | {"last_assistant_message": _DECISION_LIST + "\n" + token},
     )
+    at_boundary = _run_hook(
+        tmp_path,
+        "Stop",
+        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token + "x" * (512 - len(token))},
+    )
+    beyond_boundary = _run_hook(
+        tmp_path,
+        "Stop",
+        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token + "x" * (513 - len(token))},
+    )
 
     assert json.loads(early.stdout)["decision"] == "block"
     assert not late.stdout
+    assert not at_boundary.stdout
+    assert json.loads(beyond_boundary.stdout)["decision"] == "block"
 
 
 @pytest.mark.parametrize("dispatched", [False, True])

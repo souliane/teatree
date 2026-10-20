@@ -73,10 +73,11 @@ def _gate_enabled() -> bool:
 
 
 def _escape_reason(texts: list[str]) -> str | None:
-    reason = next((match[1] for text in texts if (match := _ESCAPE_RE.search(text[:_ESCAPE_SCAN_CHARS]))), None)
-    if reason:
-        sys.stderr.write(f"NOTE: owner-question gate skipped via [owner-question-ok: {reason}].\n")
-    return reason
+    return next((match[1] for text in texts if (match := _ESCAPE_RE.search(text[:_ESCAPE_SCAN_CHARS]))), None)
+
+
+def _note_escape(reason: str) -> None:
+    sys.stderr.write(f"NOTE: owner-question gate skipped via [owner-question-ok: {reason}].\n")
 
 
 def _sanctioned_prose(data: dict, text: str) -> bool:
@@ -99,7 +100,12 @@ def handle_block_decision_prose(data: dict) -> bool | None:
         else current_turn_final_text(str(data.get("transcript_path", "")))
     )
     decision = find_decision_prose(text)
-    if decision is None or _escape_reason([text[-_ESCAPE_SCAN_CHARS:]]) or _sanctioned_prose(data, text):
+    if decision is None:
+        return None
+    if reason := _escape_reason([text[-_ESCAPE_SCAN_CHARS:]]):
+        _note_escape(reason)
+        return None
+    if _sanctioned_prose(data, text):
         return None
     reason = (
         f"TEATREE OWNER DECISION GATE: {decision[:80]!r} puts an owner decision in the final reply. "
@@ -136,12 +142,15 @@ def handle_block_unfit_question(data: dict) -> bool:
     if data.get("tool_name") not in _QUESTION_TOOLS or (questions := _questions(data)) is None:
         return False
     batch_count = len(questions)
-    if (
-        _dispatched_agent()
-        or not _gate_enabled()
-        or not _owner_reads_this_turn(data)
-        or _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
-    ):
+    skip = _dispatched_agent() or not _gate_enabled() or not _owner_reads_this_turn(data)
+    escape_reason = (
+        None
+        if skip
+        else _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
+    )
+    if skip or escape_reason:
+        if escape_reason:
+            _note_escape(escape_reason)
         if batch_count > 1:
             sys.stderr.write(_BATCHED_WARN.format(n=batch_count))
         return False
