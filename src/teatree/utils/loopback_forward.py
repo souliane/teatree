@@ -52,6 +52,7 @@ _ADMIN_CONTAINER_PORT = 8000
 _RELAY_CHUNK = 65536
 _DOCKER_PROBE_TIMEOUT_SECONDS = 10.0
 _FORWARDER_NAME = "teatree-admin-forward"
+_FORWARDER_ADMIN_LABEL = "teatree.admin-container"
 _FORWARDER_MEMORY = "64m"
 _DOCKER_SOCKET = "/var/run/docker.sock"
 
@@ -326,7 +327,19 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     """
     name = _forwarder_name(port)
     url = f"http://{_LOOPBACK}:{port}"
-    if _docker("ps", "--filter", f"name=^{name}$", "--filter", "status=running", "--format", "{{.ID}}"):
+    # The bridge targets this admin id, which changes when the admin is recreated.
+    label = f"{_FORWARDER_ADMIN_LABEL}={container}"
+    if _docker(
+        "ps",
+        "--filter",
+        f"name=^{name}$",
+        "--filter",
+        f"label={label}",
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.ID}}",
+    ):
         return ForwardResult(url=url)
     image = _container_image(container)
     if not image:
@@ -337,6 +350,8 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
         "run",
         "--detach",
         "--rm",
+        "--label",
+        label,
         "--name",
         name,
         "--publish",
