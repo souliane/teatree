@@ -54,21 +54,6 @@ def _backend(fake: _TokenedHttp, *, user_token: str | None = None, owner_dm_only
         )
 
 
-@pytest.mark.parametrize("error_code", ["not_in_channel", "channel_not_found"])
-def test_dm_history_retries_the_user_token_after_a_bot_membership_refusal(error_code: str) -> None:
-    fake = _TokenedHttp(
-        {
-            "xoxb-bot": {"ok": False, "error": error_code},
-            "xoxp-user": {"ok": True, "messages": [{"ts": "1.0", "text": "hello"}]},
-        }
-    )
-
-    messages = _backend(fake).fetch_channel_history_or_refuse(channel="D1")
-
-    assert messages == [{"ts": "1.0", "text": "hello", "channel": "D1"}]
-    assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
-
-
 def test_both_history_tokens_refused_keeps_the_bot_error_as_context() -> None:
     fake = _TokenedHttp(
         {

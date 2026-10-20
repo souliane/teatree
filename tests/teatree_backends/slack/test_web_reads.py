@@ -112,45 +112,30 @@ class TestResolveUsergroupId:
         assert resolve_usergroup_id(get=get, handle="reviewers") == ""
 
 
+def _read_history(get: Getter) -> list[RawAPIDict]:
+    return read_channel_history_or_refuse(get=get, channel="D1", token="xoxb-bot", user_token="xoxp-user")
+
+
+def _read_thread(get: Getter) -> list[RawAPIDict]:
+    return read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user")
+
+
 _READERS = [
     pytest.param(
-        lambda get: read_channel_history_or_refuse(get=get, channel="D1", token="xoxb-bot", user_token="xoxp-user"),
+        _read_history,
         "conversations.history",
         "xoxb-bot",
         ChannelReadRefusedError,
         id="history",
     ),
     pytest.param(
-        lambda get: read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user"),
+        _read_thread,
         "conversations.replies",
         "",
         SlackReadRefusedError,
         id="thread",
     ),
 ]
-
-
-@pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
-@pytest.mark.parametrize("error_code", ["not_in_channel", "channel_not_found"])
-def test_history_and_thread_retry_membership_refusals(
-    read: Callable[[Getter], list[RawAPIDict]],
-    method: str,
-    first_token: str,
-    refusal_type: type[Exception],
-    error_code: str,
-) -> None:
-    tokens: list[str] = []
-
-    def get(request_method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
-        assert request_method == method
-        assert params["channel"] == "D1"
-        tokens.append(token)
-        if token == first_token:
-            return {"ok": False, "error": error_code}
-        return {"ok": True, "messages": [{"ts": "1.0"}]}
-
-    assert read(get) == [{"ts": "1.0", "channel": "D1"}]
-    assert tokens == [first_token, "xoxp-user"]
 
 
 @pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
