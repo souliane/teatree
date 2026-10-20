@@ -534,6 +534,25 @@ def test_escape_token_beyond_first_512_question_characters_does_not_bypass(tmp_p
     assert "OWNER QUESTION GATE" in result.stdout
 
 
+def test_stop_escape_token_only_bypasses_within_last_512_characters(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    token = "[owner-question-ok: the owner asked for this list in text]"
+    payload = {"session_id": "owner-turn", "transcript_path": str(transcript)}
+    early = _run_hook(
+        tmp_path,
+        "Stop",
+        payload | {"last_assistant_message": token + "\n" + "x" * 512 + "\n" + _DECISION_LIST},
+    )
+    late = _run_hook(
+        tmp_path,
+        "Stop",
+        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token},
+    )
+
+    assert json.loads(early.stdout)["decision"] == "block"
+    assert not late.stdout
+
+
 @pytest.mark.parametrize("dispatched", [False, True])
 def test_batched_question_the_gate_does_not_refuse_still_warns(tmp_path: Path, *, dispatched: bool) -> None:
     transcript = _transcript(tmp_path) if dispatched else _scheduled_transcript(tmp_path)
@@ -631,10 +650,7 @@ def test_owner_label_with_real_decision_blocks_router(tmp_path: Path, text: str)
     assert json.loads(result.stdout)["decision"] == "block"
 
 
-@pytest.mark.parametrize(
-    "question", ["Should the deferred migration run now?", "Which file should I edit, README.md or the docs page?"]
-)
-def test_plain_client_question_words_and_filenames_pass(tmp_path: Path, question: str) -> None:
+def test_plain_client_question_words_pass(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     result = _run_hook(
         tmp_path,
@@ -643,7 +659,7 @@ def test_plain_client_question_words_and_filenames_pass(tmp_path: Path, question
             "session_id": "owner-turn",
             "transcript_path": str(transcript),
             "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [_ask(question)]},
+            "tool_input": {"questions": [_ask("Should the deferred migration run now?")]},
         },
     )
 

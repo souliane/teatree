@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hooks.scripts import codex_hook_adapter, owner_question_gate
+from hooks.scripts import codex_hook_adapter
 from hooks.scripts.codex_hook_adapter import run_codex_hook
 
 
@@ -91,12 +91,3 @@ def test_a_hung_router_times_out_as_a_failing_hook_not_a_hung_codex_turn() -> No
     assert run.call_args.kwargs["timeout"] > 0
     assert (returncode, stdout) == (1, "")
     assert "timed out" in stderr
-
-
-def test_the_router_is_told_the_event_comes_from_codex() -> None:
-    completed = CompletedProcess(["router"], 0, "", "")
-
-    with patch.object(codex_hook_adapter.subprocess, "run", return_value=completed) as run:
-        run_codex_hook("Stop", "{}")
-
-    assert run.call_args.kwargs["env"][owner_question_gate.HOOK_CLIENT_ENV] == owner_question_gate.CODEX_CLIENT

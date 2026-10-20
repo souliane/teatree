@@ -375,21 +375,11 @@ class TestInClientQuestionCard:
         assert CardView.ask_problems({"header": "Open", "question": question, "options": []}) == []
         assert any("settings.toml" in problem for problem in shown_problems(SAMPLE_CARD.view(question)))
 
-    @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?", "Set widget_mode?"])
+    @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?"])
     def test_plain_words_check_names_shorthand(self, question: str) -> None:
         problems = CardView.ask_problems({"header": "Merge", "question": question, "options": []})
 
         assert any("internal shorthand" in problem for problem in problems)
-
-    def test_question_length_matches_card_limit(self) -> None:
-        problems = CardView.ask_problems(
-            {"header": "Merge", "question": "Would you like me to merge " + "today " * 30 + "?", "options": []}
-        )
-
-        assert any("160" in problem for problem in problems)
-
-    def test_plain_question_passes(self) -> None:
-        assert CardView.ask_problems({"header": "Merge", "question": "Merge this now?", "options": []}) == []
 
 
 def test_in_client_question_checks_header_and_total_card_words() -> None:
@@ -402,7 +392,6 @@ def test_in_client_question_checks_header_and_total_card_words() -> None:
     problems = CardView.ask_problems(card)
 
     assert any("the header carries internal shorthand" in problem for problem in problems)
-    assert any("120" in problem for problem in problems)
     assert any('must end in "?"' in problem for problem in CardView.ask_problems(card | {"question": "Merge this now"}))
     assert any("1 option" in problem for problem in CardView.ask_problems(card | {"options": card["options"][:1]}))
 

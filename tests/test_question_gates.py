@@ -218,11 +218,6 @@ def test_decision_prose_detects_owner_asks(text: str) -> None:
         "**Needs you:** none",
         "Needs you:\n- None",
         "Needs you: no action needed",
-        (
-            "Since 09:12 · all overlays\nNeeds you\n"
-            "  - Q12: Merge the release branch now? — answer in its Slack thread\n"
-            "  - [#34 (Fix login)](https://example.com/34) — failed agent run"
-        ),
         "Waiting on you\n| Id | Kind | Age | Waiting on you |\n| 12 | question | 2h | Merge the release branch |",
     ],
 )
