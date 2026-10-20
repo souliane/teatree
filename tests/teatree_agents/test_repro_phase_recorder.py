@@ -54,3 +54,21 @@ class TestRecordPhaseReproSwitch(TestCase):
         assert result == ""
         red.refresh_from_db()
         assert red.green_exit_code is None
+
+
+class TestRecordPhaseReproWithSatisfiedCoding(TestCase):
+    def test_recorded_red_does_not_audit_a_disabled_requirement(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
+        session = Session.objects.create(ticket=ticket, agent_id="tester")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        ReproEvidence.record_red(
+            ticket=ticket,
+            command="false",
+            run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
+        )
+
+        with self.assertNoLogs("teatree.core.gates.repro_gate", level="WARNING"):
+            assert record_phase_repro(task, phase="coding") == ""
+        ticket.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in ticket.extra

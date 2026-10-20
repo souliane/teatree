@@ -28,7 +28,6 @@ from typing import Any
 
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES, ConfigOverrideReadError
-from teatree.config.override_reader import OverlayRows
 from teatree.config.resolution import (
     NO_EFFECTIVE_DEFAULT,
     EnvOverrideRejection,
@@ -162,7 +161,7 @@ def _tiers(scope: str, *, persisted_only: bool) -> _Tiers:
     return _Tiers(
         env={} if persisted_only else env.values,
         db_overlay=overlay_rows,
-        db_overlay_scopes=overlay_rows.scopes if isinstance(overlay_rows, OverlayRows) else {},
+        db_overlay_scopes=layers.overlay_scopes,
         db_global=global_rows,
         code_default={} if persisted_only else overlay_code_defaults(scope),
         degraded=bool(layers.degraded_scopes),

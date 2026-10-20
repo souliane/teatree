@@ -206,7 +206,8 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
 def read_setting_layers(overlay_name: str) -> SettingLayers:
     """Read both persisted tiers once for settings resolution and provenance."""
     global_rows, global_degraded = load_global_rows()
-    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
+    overlay_scopes: dict[str, str] = {}
+    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name, scope_by_key=overlay_scopes)
     db_rows = (global_rows, overlay_rows)
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
     degraded = frozenset(
@@ -214,7 +215,7 @@ def read_setting_layers(overlay_name: str) -> SettingLayers:
         for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
         if failed
     )
-    return SettingLayers(db_rows, global_db, overlay_db, degraded_scopes=degraded)
+    return SettingLayers(db_rows, global_db, overlay_db, overlay_scopes=overlay_scopes, degraded_scopes=degraded)
 
 
 def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:

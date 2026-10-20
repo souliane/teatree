@@ -20,7 +20,6 @@ call-time import.
 import logging
 import time
 import traceback
-from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +27,7 @@ from teatree.config.override_read_health import note_healthy_read, record_degrad
 from teatree.config.settings import OverlayEntry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, MutableMapping
+    from collections.abc import Callable, MutableMapping
 
 _logger = logging.getLogger("teatree.config")
 
@@ -37,12 +36,6 @@ _logger = logging.getLogger("teatree.config")
 #: label carries no overlay NAME (the name goes in the log line instead).
 GLOBAL_SCOPE_LABEL = "global"
 OVERLAY_SCOPE_LABEL = "overlay"
-
-
-class OverlayRows(UserDict[str, Any]):
-    def __init__(self, values: "Mapping[str, Any]", scopes: dict[str, str]) -> None:
-        super().__init__(values)
-        self.scopes = scopes
 
 
 #: Frames of :func:`_calling_context`. One frame is often a memo shim or a settings helper that
@@ -225,7 +218,9 @@ def load_global_rows() -> tuple[dict[str, Any], bool]:
     return dict(rows), degraded
 
 
-def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
+def load_overlay_rows(
+    overlay_name: str = "", *, scope_by_key: dict[str, str] | None = None
+) -> tuple[dict[str, Any], bool]:
     """Read the active overlay's ``{key: value}`` rows, alias-tolerant, or ``{}``.
 
     Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
@@ -237,11 +232,13 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
     :func:`load_global_rows`: a genuine bootstrap state is silent, a runtime fault
     (incl. a ready-registry ``OperationalError`` / ``ProgrammingError``) logs loud.
     """
+    if scope_by_key is not None:
+        scope_by_key.clear()
     if not overlay_name:
-        return OverlayRows({}, {}), False
+        return {}, False
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    def read() -> OverlayRows:
+    def read() -> dict[str, Any]:
         model = apps.get_model("core", "ConfigSetting")
         canonical = OverlayEntry.canonical_overlay_name(overlay_name)
         scope_values: dict[str, dict[str, Any]] = {}
@@ -256,10 +253,12 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
                 scopes.update(dict.fromkeys(scope_values[scope], scope))
         merged.update(scope_values.get(overlay_name, {}))
         scopes.update(dict.fromkeys(scope_values.get(overlay_name, {}), overlay_name))
-        return OverlayRows(merged, scopes)
+        if scope_by_key is not None:
+            scope_by_key.update(scopes)
+        return merged
 
     rows, degraded = _read_scope_rows(OVERLAY_SCOPE_LABEL, read, log_label=f"overlay {overlay_name!r}")
-    return OverlayRows(rows, rows.scopes if isinstance(rows, OverlayRows) else {}), degraded
+    return dict(rows), degraded
 
 
 __all__ = [

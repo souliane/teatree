@@ -16,7 +16,7 @@ Django-free and pydantic-free — ``teatree.config``'s package init imports
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from teatree.config.homes import SETTING_HOMES, SettingHome
@@ -38,9 +38,10 @@ class SettingLayers:
     coerced, driving the generic ``dataclasses.replace``.
     """
 
-    db_rows: tuple[Mapping[str, Any], ...]
+    db_rows: tuple[dict[str, Any], ...]
     global_db: dict[str, Any]
     overlay_db: dict[str, Any]
+    overlay_scopes: dict[str, str] = field(default_factory=dict)
     #: The DB scopes whose override read FAILED — ``"global"`` and/or ``"overlay"`` (#3873).
     #: Empty on a healthy read, INCLUDING a healthy read of an empty table: a scope is
     #: listed only when the tier could not be determined, never when it is merely absent.
