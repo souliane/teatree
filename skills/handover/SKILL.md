@@ -26,6 +26,7 @@ The payload has three sources, in order: what the session **authored** (`--from-
 t3 <overlay> handover create --from-file handover.md            # hand over what YOU wrote (use '-' for stdin)
 t3 <overlay> handover create --body "$(cat handover.md)"        # same, inline
 t3 <overlay> handover create --from-file handover.md --to <id>  # …to a specific session id
+t3 <overlay> handover create --from-file handover.md --park     # …to the next session, even with a live owner
 t3 <overlay> handover create                                    # no body: derived, and reported UNVETTED
 ```
 
@@ -35,7 +36,9 @@ t3 <overlay> handover create                                    # no body: deriv
 
 The same rule covers anything else the body leans on — a worktree, a patch, a decision record. **Name the path.** "The three uncommitted worktrees" is not a reference; `/Users/x/workspace/foo` is.
 
-No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. A payload that resolves to something is persisted AND mirrored to the file; one that resolves EMPTY writes neither.
+No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. `--park` deliberately parks it even with a live owner and is refused with `--to`. A parked row is claimable by any session except its author at that session's next SessionStart, including a live owner's next compact or resume; a later plain `create` readdresses that author's still-unclaimed row to the live owner. A payload that resolves to something is persisted AND mirrored to the file; one that resolves EMPTY writes neither.
+
+Two sessions racing to claim one row cannot both win: the claim uses a conditional update. A failed SessionStart delivery releases its claims, and a row nobody claims remains unclaimed without expiry; hand-off rows do not gate factory admission.
 
 **One row per session, and a second `create` ADDS to it.** A session holds at most one unclaimed hand-off — a partial unique index enforces it, so no call site can reintroduce the fan-out that once left a receiver three partially-contradictory narratives from one author. A later `create` lands on that same row and appends behind a fence rather than overwriting: replacing the ROW must not replace the STATE. The JSON reports `updated_existing`, `previous_payload_bytes` and `payload_appended` so the absorb is never silent — the last of those is false when the row already carried these bytes and the absorb dropped them as a duplicate, which otherwise reads exactly like an append that added nothing. The append itself is taken under a row lock, re-reading the prior bytes inside it, so two absorbs racing for one author cannot drop each other's state.
 
@@ -55,7 +58,7 @@ No `--to` resolves the target to the live `t3-master` slot holder; if there is n
 
 An unvetted or empty payload never reports OK: the operator moving on believing state was carried over is the failure this command exists to prevent. The `empty` refusal writes NOTHING — no row, no mirror, and no mutation of this author's existing unclaimed row. A zero-agent barrier result is a negative fact about a hand-off, not a hand-off; a row carrying only it would arrive under the SESSION HAND-OFF RECEIVED directive transferring nothing, and would consume the author's single unclaimed slot. The payload is resolved ONCE, after the barrier and immediately before the write, and that one resolution decides both the refusal and what is persisted — the barrier is slow (N worktrees, git pushes, network PR upserts), so the last in-flight ticket can settle or the snapshot rotate across it, and a refusal decided on one side of it cannot speak for a write on the other.
 
-**A hand-off addressed to its own session is refused** (exit 1). `claimable_for` admits only the session named by `to_session` and excludes the session named by `from_session`, so a self-addressed row is claimable by nobody — it would sit as "pending" forever. Omit `--to` to park it for the next session instead.
+**A hand-off addressed to its own session is refused** (exit 1). `claimable_for` admits only the session named by `to_session` and excludes the session named by `from_session`, so a self-addressed row is claimable by nobody — it would sit as "pending" forever. Pass `--park` to park it for the next session instead.
 
 ### Know your own session id
 
