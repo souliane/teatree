@@ -23,7 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
-from teatree.core.modelkit.pr_start_cap import new_pr_start_allowed_q
+from teatree.core.modelkit.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
@@ -182,7 +182,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
             task.status == status.PENDING
             and not type(task).objects.filter(pk=task.pk).filter(new_pr_start_allowed_q()).exists()
         ):
-            msg = "Task held while three or more open pull requests await completion"
+            msg = f"Task held: {OPEN_PR_START_CAP} or more open pull requests, and this task could start another"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)
