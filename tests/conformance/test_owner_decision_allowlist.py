@@ -15,6 +15,7 @@ _DECLARED_BY_THE_CALLER = "<declared by the caller>"
 
 _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("hooks/scripts/slack_first_question.py", "_route"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_answer_draft"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_triage_recommendations"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "_record_clarifications"),
@@ -36,6 +37,7 @@ _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
 
 _CARD_KINDS: frozenset[tuple[str, str, str]] = frozenset(
     {
+        ("hooks/scripts/slack_first_question.py", "_route", "PRODUCT_SCOPE"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "<module>", "PUBLIC_POST"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_triage_recommendations", "PRODUCT_SCOPE"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "PRODUCT_SCOPE"),

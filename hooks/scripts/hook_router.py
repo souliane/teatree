@@ -56,6 +56,7 @@ from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
     _block_is_settings_write,  # noqa: F401 — re-export for test access
+    _is_classifier_relax_explanation,
     _settings_json_target,  # noqa: F401 — re-export for test access
     handle_allow_classifier_relax_settings_write,
 )
@@ -135,7 +136,6 @@ from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     skip_plan_gate_token,
 )
 from hooks.scripts.question_gates import (
-    FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
     _first_question,
     _options_hash,
@@ -172,7 +172,12 @@ from hooks.scripts.session_start_skills import session_start_skill_context as _s
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_path_probe import is_file_safe
 from hooks.scripts.slack_first_gate import handle_slack_first_gate
-from hooks.scripts.slack_first_question import question_run_id, supersede_pending_questions
+from hooks.scripts.slack_first_question import (
+    SLACK_FIRST_QUESTION_GATE,
+    question_run_id,
+    route_attended_question_to_slack,
+    supersede_pending_questions,
+)
 from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
 from hooks.scripts.standing_grant_ask_gate import handle_block_standing_grant_ask
 from hooks.scripts.state_files import append_line, hook_state_dir, read_lines
@@ -3117,55 +3122,6 @@ def _entry_content(entry: dict) -> list:
 # ``STRUCTURED_QUESTION_BLOCK``.
 
 
-_CLASSIFIER_RELAX_MARKERS = re.compile(
-    # Protocol-specific vocabulary only.  Each alternative is a phrase the
-    # sanctioned protocol actually produces and that does NOT appear in
-    # ordinary Stop-gate prose:
-    #   - "relax classifier" / "Allow it (relax classifier)": the shorthand
-    #     label and verbatim option text.
-    #   - "permissions.allow" ONLY when adjacent to a relax/classifier token
-    #     (review NB1): a bare "permissions.allow" is unrelated allow-list
-    #     prose and must still trip the #807 gate, so it is NOT a marker on
-    #     its own — it must co-occur with "relax"/"classifier" within a short
-    #     window.
-    #   - "denied by the classifier/harness/auto mode": the denial-source
-    #     phrasing.  A bare "was denied" is deliberately NOT a marker
-    #     (review Finding 6) — "access was denied" / "the MR was denied" are
-    #     ordinary prose and must still trip the gate.
-    r"relax classifier"
-    r"|Allow it \(relax classifier\)"
-    r"|(?:relax|classifier)[^.]{0,80}?permissions\.allow"
-    r"|permissions\.allow[^.]{0,80}?(?:relax|classifier)"
-    r"|denied by (?:the )?(?:classifier|harness|auto[- ]?mode)",
-    re.IGNORECASE,
-)
-
-
-def _is_classifier_relax_explanation(text: str) -> bool:
-    """True when ``text`` looks like a Step-2 classifier-denial explanation.
-
-    The sanctioned Classifier Denial Protocol (skills/rules/SKILL.md §
-    "Classifier Denial Protocol") requires the agent at Step 2 to explain the
-    denial in prose BEFORE calling AskUserQuestion at Step 3.  That prose
-    contains classifier-specific markers that do not appear in ordinary
-    decision questions, so we can distinguish them from questions that must
-    still go through AskUserQuestion.
-
-    Markers (any one is sufficient): "relax classifier" (the shorthand
-    label), "Allow it (relax classifier)" (the exact option text),
-    "permissions.allow" ONLY when it co-occurs with a relax/classifier
-    token within a short window (review NB1 — a bare "permissions.allow" is
-    unrelated allow-list prose and must still trip the gate), or "denied by
-    the classifier/harness/auto mode" (the denial-source phrasing).  A bare
-    "was denied" is intentionally NOT a marker (review Finding 6) so
-    unrelated denials ("access was denied") still trip the #807 gate.
-
-    This exemption is INTENTIONALLY NARROW.  It must not subsume arbitrary
-    prose — it only applies to the narrow vocabulary of the denial protocol.
-    """
-    return bool(_CLASSIFIER_RELAX_MARKERS.search(FENCED_CODE_RE.sub(" ", text)))
-
-
 def handle_enforce_structured_question(data: dict) -> bool | None:
     """Block a Stop whose final turn poses an inline user-directed question.
 
@@ -3230,22 +3186,25 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
-    """Defer a loop-driven ``AskUserQuestion`` to Slack; let an attended one render (#1174, #4673).
+    """Defer a loop-driven ``AskUserQuestion`` to Slack; let an attended one render unless factory Slack is live.
 
     Runs LAST in the PreToolUse chain. Two arms — live user turn / attended
-    non-owner turn: nothing leaves the box, the question renders in-client
+    non-owner turn: while factory Slack is live the question is posted to the owner's factory DM and the modal
+    is denied (directive 5); otherwise nothing leaves the box, the question renders in-client
     (the #189 escape) and any older pending row for this (session, run) is superseded so the owner is
     not nagged for a decision they just made; loop-driven / autonomous turn:
     capture a generation-stamped ``DeferredQuestion``, deduped against a harness
     retry of the SAME denied call, kick its delivery, then deny so the agent
     decides it and proceeds — the row is internal, never DM'd (#5096).
 
-    A Claude Code question is never asked twice: an attended session's question
-    exists only in the terminal the owner is already looking at.
+    A Claude Code question is never asked twice: it exists in the terminal, or in the owner's factory DM
+    while factory Slack is live, never both.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
+        if (reason := route_attended_question_to_slack(data)) is not None:
+            return emit_pretooluse_deny(reason, gate_id=SLACK_FIRST_QUESTION_GATE)
         supersede_pending_questions(data)
         return False
     queue_id = _capture_and_defer_question(data, dedupe=True)

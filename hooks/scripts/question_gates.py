@@ -54,8 +54,8 @@ _USER_DIRECTED_CUE_RE = re.compile(
 _SOFT_ASK_CUE_RE = re.compile(r"\blet me know (?:if|whether|which|what)\b", re.IGNORECASE)
 
 # Fenced code is stripped before the '?'/cue scan so a '?' inside a regex or
-# shell glob is not mistaken for a prompt. PUBLIC: the router's
-# classifier-relax check (`_is_classifier_relax_explanation`) reuses it.
+# shell glob is not mistaken for a prompt. PUBLIC: the
+# classifier-relax gate's check (`_is_classifier_relax_explanation`) reuses it.
 FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 # An ANNOUNCED ask — the turn narrates an imminent user ask ("**Action:** Ask

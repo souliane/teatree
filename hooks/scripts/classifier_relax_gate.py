@@ -55,6 +55,7 @@ import sys
 from pathlib import Path
 
 from hooks.scripts.pretooluse_verdict import Verdict, emit_pretooluse_allow
+from hooks.scripts.question_gates import FENCED_CODE_RE
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -368,3 +369,52 @@ def handle_allow_classifier_relax_settings_write(data: dict) -> bool | Verdict |
             gate_id="classifier_relax",
         )
     return emit_pretooluse_allow()
+
+
+_CLASSIFIER_RELAX_MARKERS = re.compile(
+    # Protocol-specific vocabulary only.  Each alternative is a phrase the
+    # sanctioned protocol actually produces and that does NOT appear in
+    # ordinary Stop-gate prose:
+    #   - "relax classifier" / "Allow it (relax classifier)": the shorthand
+    #     label and verbatim option text.
+    #   - "permissions.allow" ONLY when adjacent to a relax/classifier token
+    #     (review NB1): a bare "permissions.allow" is unrelated allow-list
+    #     prose and must still trip the #807 gate, so it is NOT a marker on
+    #     its own — it must co-occur with "relax"/"classifier" within a short
+    #     window.
+    #   - "denied by the classifier/harness/auto mode": the denial-source
+    #     phrasing.  A bare "was denied" is deliberately NOT a marker
+    #     (review Finding 6) — "access was denied" / "the MR was denied" are
+    #     ordinary prose and must still trip the gate.
+    r"relax classifier"
+    r"|Allow it \(relax classifier\)"
+    r"|(?:relax|classifier)[^.]{0,80}?permissions\.allow"
+    r"|permissions\.allow[^.]{0,80}?(?:relax|classifier)"
+    r"|denied by (?:the )?(?:classifier|harness|auto[- ]?mode)",
+    re.IGNORECASE,
+)
+
+
+def _is_classifier_relax_explanation(text: str) -> bool:
+    """True when ``text`` looks like a Step-2 classifier-denial explanation.
+
+    The sanctioned Classifier Denial Protocol (skills/rules/SKILL.md §
+    "Classifier Denial Protocol") requires the agent at Step 2 to explain the
+    denial in prose BEFORE calling AskUserQuestion at Step 3.  That prose
+    contains classifier-specific markers that do not appear in ordinary
+    decision questions, so we can distinguish them from questions that must
+    still go through AskUserQuestion.
+
+    Markers (any one is sufficient): "relax classifier" (the shorthand
+    label), "Allow it (relax classifier)" (the exact option text),
+    "permissions.allow" ONLY when it co-occurs with a relax/classifier
+    token within a short window (review NB1 — a bare "permissions.allow" is
+    unrelated allow-list prose and must still trip the gate), or "denied by
+    the classifier/harness/auto mode" (the denial-source phrasing).  A bare
+    "was denied" is intentionally NOT a marker (review Finding 6) so
+    unrelated denials ("access was denied") still trip the #807 gate.
+
+    This exemption is INTENTIONALLY NARROW.  It must not subsume arbitrary
+    prose — it only applies to the narrow vocabulary of the denial protocol.
+    """
+    return bool(_CLASSIFIER_RELAX_MARKERS.search(FENCED_CODE_RE.sub(" ", text)))

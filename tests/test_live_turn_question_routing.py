@@ -24,10 +24,13 @@ from teatree.core import notify as notify_module
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from tests._factory_slack import FakeOwnerDm, live_factory_slack
 from tests._owner_channel import owner_card
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+
+@pytest.fixture(autouse=True)
+def _database(db: None) -> None:
+    """Every test here reads and writes the database."""
 
 
 def _ask_payload(question: str, options: list[dict] | None = None, **extra: str) -> dict:
@@ -356,3 +359,90 @@ class TestSection807InteropGate:
         """Control: without this, the test above could pass on a §807 gate broken in general."""
         transcript = self._transcript(tmp_path, with_tool_use=False)
         assert handle_enforce_structured_question({"transcript_path": str(transcript)}) is True
+
+
+_RELEASE_OPTIONS = [
+    {"label": "Ship it", "description": "I merge it now."},
+    {"label": "Hold it", "description": "I wait for your word."},
+]
+
+
+def _attended(tmp_path: Path, **extra: str) -> dict[str, str]:
+    transcript = _transcript(tmp_path, _owner_typed("ask me something"))
+    return {"session_id": "s-3", "transcript_path": transcript, **extra}
+
+
+def test_attended_ask_user_question_routes_to_slack_when_factory_slack_live(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dm = FakeOwnerDm()
+    with live_factory_slack(dm):
+        result = handle_mirror_question_to_slack(
+            _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path, tool_use_id="t-30"))
+        )
+
+    row = DeferredQuestion.objects.get()
+    deny = _stdout(capsys)
+    [post] = dm.posts
+    assert result is True
+    assert deny["permissionDecision"] == "deny"
+    assert f"#{row.pk}" in deny["permissionDecisionReason"]
+    assert "slack_first_question" in deny["permissionDecisionReason"]
+    assert (row.audience, row.session_id, row.slack_ts) == (DeferredQuestion.Audience.OWNER_QUESTION, "s-3", post["ts"])
+    assert "Should the release ship today?" in post["text"]
+
+
+def test_attended_ask_user_question_renders_in_client_when_slack_not_live(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = handle_mirror_question_to_slack(
+        _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path, tool_use_id="t-31"))
+    )
+
+    assert result is False
+    assert _stdout(capsys) == {}
+    assert DeferredQuestion.objects.count() == 0
+
+
+class TestTheSlackFirstArmFailsOpenToTheModal:
+    def test_a_harness_retry_of_the_same_question_keeps_one_row_and_one_post(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dm = FakeOwnerDm()
+        payload = _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path))
+        with live_factory_slack(dm):
+            handle_mirror_question_to_slack(payload)
+            capsys.readouterr()
+            retried = handle_mirror_question_to_slack(payload)
+
+        assert retried is True
+        assert DeferredQuestion.objects.count() == 1
+        assert len(dm.posts) == 1
+
+    def test_a_question_that_is_not_a_plain_owner_card_renders_in_client(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dm = FakeOwnerDm()
+        with live_factory_slack(dm):
+            result = handle_mirror_question_to_slack(
+                _ask_payload("Rebase `feat/x` onto main, or merge it as is?", _RELEASE_OPTIONS, **_attended(tmp_path))
+            )
+
+        assert result is False
+        assert _stdout(capsys) == {}
+        assert (DeferredQuestion.objects.count(), dm.posts) == (0, [])
+
+    def test_a_failure_inside_the_arm_renders_in_client(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dm = FakeOwnerDm()
+        with (
+            live_factory_slack(dm),
+            patch("teatree.core.factory_slack_liveness.factory_slack_live", side_effect=RuntimeError("down")),
+        ):
+            result = handle_mirror_question_to_slack(
+                _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path))
+            )
+
+        assert result is False
+        assert dm.posts == []

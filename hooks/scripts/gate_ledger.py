@@ -53,6 +53,7 @@ DECLARED_GATES = frozenset(
         "self_dm",
         "single_branch_repo",
         "skill-loading-enforcement",
+        "slack_first_question",
         "unapprovable_author_create",
         "unbounded_wait",
         "unknown_repo_push",
