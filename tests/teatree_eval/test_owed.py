@@ -82,6 +82,7 @@ class TestSettled:
     def test_a_confirmed_red_moves_behind_newer_debt_after_it_was_attempted(self) -> None:
         ledger = _ledger(_owed("old_red", since=NOW - 2 * DAY), _owed("new_park", since=NOW - DAY))
         settled, _ = ledger.settled([], known={"old_red", "new_park"}, attempted=["old_red"], now=NOW)
+        assert settled.names == ("new_park", "old_red")
         assert settled.next_batch(1, {"old_red", "new_park"}) == ("new_park",)
         assert OwedLedger.from_json(settled.to_json()).next_batch(1, {"old_red", "new_park"}) == ("new_park",)
         reds = tuple(_owed(f"red_{index}", since=NOW - 2 * DAY) for index in range(14))

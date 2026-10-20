@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from teatree.eval.owed import LEG_OWED_PREFIX, PR_OWED_ARTIFACT
+
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr.yml"
 _PR_REUSABLE = _WORKFLOWS / "eval-pr-reusable.yml"
@@ -268,6 +270,35 @@ def test_nightly_ledger_steps_are_main_only_and_retries_skip_passed_debt() -> No
     owed = next(step for step in steps["eval"]["steps"] if step.get("name") == "Owed scenarios (in Docker)")
     assert 'grep -Fxq -- "$name" "$PASSED"' in owed["with"]["command"]
     assert '--attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"' in settle["run"]
+
+
+def test_pr_deferred_tail_reaches_the_owed_record_step() -> None:
+    jobs = yaml.safe_load(_PR.read_text(encoding="utf-8"))["jobs"]
+    detect = jobs["detect"]
+    select = next(step for step in detect["steps"] if step.get("id") == "select")
+    record = next(step for step in jobs["eval"]["steps"] if step.get("name") == "Record the owed scenarios")
+    assert "--deferred-out deferred.txt" in select["run"]
+    assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
+    assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
+    assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
+
+
+def test_owed_producer_artifact_names_match_harvest_contract() -> None:
+    cases = (
+        (_WEEKLY, "Upload the weekly leg's owed scenarios", LEG_OWED_PREFIX + "${{ steps.artifact.outputs.suffix }}"),
+        (
+            _WORKFLOWS / "eval-ci-heal.yml",
+            "Upload this shard's owed scenarios",
+            LEG_OWED_PREFIX + "heal-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+        ),
+        (_PR, "Upload the owed scenarios", PR_OWED_ARTIFACT),
+        (_PR_REUSABLE, "Upload the owed scenarios", PR_OWED_ARTIFACT),
+    )
+    for path, step_name, expected in cases:
+        jobs = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]
+        uploads = [step for job in jobs.values() for step in job.get("steps", []) if step.get("name") == step_name]
+        assert len(uploads) == 1, path.name
+        assert uploads[0]["with"]["name"] == expected, path.name
 
 
 def test_reusable_parked_lanes_keep_durable_owed_artifacts() -> None:

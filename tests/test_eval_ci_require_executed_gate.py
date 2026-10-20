@@ -182,8 +182,12 @@ class TestGitHubScheduledGuardManualUnguarded:
             "The matrix must come from the prepare job's computed {lane, shard} plan."
         )
         command = _gh_eval_run_command()
-        assert '--lane "$EVAL_LANE"' in command, "Each leg must scope `t3 eval run` to its one matrix lane."
-        assert '--shard "$EVAL_SHARD"' in command, "Each leg must scope `t3 eval run` to its one matrix shard."
+        assert '--lane "$EVAL_LANE"' in command, (
+            "Each leg must scope `t3 eval list --lane --shard` to its one matrix lane."
+        )
+        assert '--shard "$EVAL_SHARD"' in command, (
+            "Each leg must scope `t3 eval list --lane --shard` to its one matrix shard."
+        )
         prepare_steps = cast("list[dict[str, Any]]", jobs["prepare"]["steps"])
         assert any("lane_matrix.py" in step.get("run", "") for step in prepare_steps), (
             "The prepare job must compute the {lane, shard} matrix via lane_matrix.py."

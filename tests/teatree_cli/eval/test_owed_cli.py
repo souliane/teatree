@@ -179,6 +179,27 @@ class TestNext:
 
 
 class TestSettle:
+    def test_an_attempted_red_stays_owed_while_a_pass_clears(self, tmp_path: Path) -> None:
+        ledger = _seeded_ledger(tmp_path)
+        scenarios = _scenarios_dir(tmp_path, "alpha", "beta")
+        passed = _names_file(tmp_path, "alpha", filename="passed.txt")
+        attempted = _names_file(tmp_path, "alpha", "beta", filename="attempted.txt")
+        result = _owed(
+            "settle",
+            "--out",
+            str(ledger),
+            "--passed-file",
+            str(passed),
+            "--attempted-file",
+            str(attempted),
+            "--scenarios-dir",
+            str(scenarios),
+        )
+        assert result.exit_code == 0, result.output
+        settled = OwedLedger.from_json(ledger.read_text(encoding="utf-8"))
+        assert settled.names == ("beta",)
+        assert settled.scenarios[0].last_attempted is not None
+
     def test_a_complete_green_benchmark_clears_the_reusable_ledger(self, tmp_path: Path) -> None:
         ledger = _seeded_ledger(tmp_path)
         result = _owed("settle", "--out", str(ledger), "--all-covered")

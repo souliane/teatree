@@ -659,9 +659,9 @@ lane may fall back to the metered key (`EVAL_API_KEY_FALLBACK`). A subscription
 5h/7d limit hit mid-run is never retried or waited out: the rest of the suite is
 skipped without calling the model, no escalation trial runs, and `t3 eval run`
 exits 75 unless something it measured failed — a confirmed red still reds. On the
-box, the `eval_local` loop and the dream pass's eval promotion refresh stale
-token rows and check the account the sticky selector will use. The heal loop
-refreshes stale rows and dispatches only while an allowlisted CI-pool account
+box, the `eval_local` loop and the dream pass's eval promotion check cached
+token rows for the account the sticky selector will use. The heal loop checks
+cached rows and dispatches only while an allowlisted CI-pool account
 meets the reserve, holding a pending session until the reserve returns. A retry
 after a measured red invokes nothing and stays red. A scenario the limit skipped
 is never handed to the heal fixer, and `t3 eval green-proof` parks it (exit 75)
