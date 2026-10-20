@@ -8,6 +8,7 @@ from pathlib import Path
 
 from teatree.agents.codex_app_server_options import CodexAppServerError
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV
+from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 _PROCESS_ENV_KEYS = frozenset(
@@ -22,6 +23,7 @@ _PROCESS_ENV_KEYS = frozenset(
         "PATH",
         "T3_CONFIG_DB",
         "T3_CONTROL_DB_DIR",
+        POOL_ROOT_ENV,
         "T3_OVERLAY_NAME",
         "T3_REPO",
         "TERM",
@@ -38,8 +40,8 @@ def codex_command() -> tuple[str, ...]:
     return (executable,)
 
 
-_DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS")
-_ROUTER_AMBIENT_KEYS = _PROCESS_ENV_KEYS | frozenset(
+_DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS", POOL_ROOT_ENV)
+_ROUTER_AMBIENT_KEYS = (_PROCESS_ENV_KEYS - {POOL_ROOT_ENV}) | frozenset(
     {
         "HOME",
         "TEATREE_CLONE_DIR",
@@ -77,7 +79,7 @@ def codex_process_env(
 ) -> dict[str, str]:
     """Build a private-home environment with controlled factory runtime paths.
 
-    Of *dispatch_env* only the routed forge token, the pass key it came from and the pytest worker cap cross.
+    Of *dispatch_env* only the routed forge token, its pass key and the pytest worker budget and pool cross.
     """
     retained = {key: value for key, value in ambient.items() if key in _PROCESS_ENV_KEYS}
     retained.update({key: value for key, value in (dispatch_env or {}).items() if key in _DISPATCH_ENV_KEYS})
