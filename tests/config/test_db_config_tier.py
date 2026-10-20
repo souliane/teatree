@@ -23,7 +23,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.override_reader import load_global_rows, load_overlay_rows
+from teatree.config.override_reader import OverlayRows, load_global_rows, load_overlay_rows
 from teatree.config.resolution import env_setting_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
 
@@ -239,7 +239,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=OperationalError("database is locked")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert load_overlay_rows("my-overlay") == ({}, True)
+            assert load_overlay_rows("my-overlay") == (OverlayRows({}, {}), True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_real_read_error_is_logged_loud_not_silent(self) -> None:
@@ -271,7 +271,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=RuntimeError("corrupt read")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert load_overlay_rows("my-overlay") == ({}, True)
+            assert load_overlay_rows("my-overlay") == (OverlayRows({}, {}), True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
 

@@ -216,6 +216,16 @@ class TestForcedReproGateSwitchedOff(TestCase):
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
 
+    def test_coding_recorder_and_gate_log_one_exemption(self) -> None:
+        ticket = _fix_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="tester")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+            assert record_phase_repro(task, phase="coding") == ""
+            check_red_repro(ticket)
+        assert len(logs.output) == 1
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+
     def test_alias_scope_is_reported_by_audit_and_status(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-acme", kind=Ticket.Kind.FIX)
         with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:

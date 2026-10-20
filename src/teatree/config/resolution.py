@@ -203,22 +203,18 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     )
 
 
-def read_setting_layers(overlay_name: str, *, with_scope_provenance: bool = False) -> SettingLayers:
+def read_setting_layers(overlay_name: str) -> SettingLayers:
     """Read both persisted tiers once for settings resolution and provenance."""
     global_rows, global_degraded = load_global_rows()
-    overlay_scopes: dict[str, str] = {}
-    if with_scope_provenance:
-        overlay_rows, overlay_degraded = load_overlay_rows(overlay_name, scope_by_key=overlay_scopes)
-    else:
-        overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
-    db_rows = (global_rows, overlay_rows)
+    overlay, overlay_degraded = load_overlay_rows(overlay_name)
+    db_rows = (global_rows, overlay.rows)
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
     degraded = frozenset(
         label
         for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
         if failed
     )
-    return SettingLayers(db_rows, global_db, overlay_db, overlay_scopes=overlay_scopes, degraded_scopes=degraded)
+    return SettingLayers(db_rows, global_db, overlay_db, overlay_scopes=overlay.scopes, degraded_scopes=degraded)
 
 
 def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:
@@ -366,7 +362,7 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
     rows and vice versa) so a row written under either spelling resolves.
     """
-    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
+    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0].rows)
 
 
 def _coerce_setting_rows(rows: Mapping[str, Any]) -> dict[str, Any]:

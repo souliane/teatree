@@ -69,11 +69,10 @@ class TestRecordPhaseReproWithSatisfiedCoding(TestCase):
             command="false",
             run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
         )
-        scope_by_key: dict[str, str] = {}
-        rows, degraded = load_overlay_rows("acme", scope_by_key=scope_by_key)
+        overlay, degraded = load_overlay_rows("acme")
         assert not degraded
-        assert rows["forced_repro_gate_enabled"] is False
-        assert scope_by_key["forced_repro_gate_enabled"] == "acme"
+        assert overlay.rows["forced_repro_gate_enabled"] is False
+        assert overlay.scopes["forced_repro_gate_enabled"] == "acme"
         assert repro_disabled_scope(ticket) == "acme"
         assert not forced_repro_gate_enabled(ticket)
 

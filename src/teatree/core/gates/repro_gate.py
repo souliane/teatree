@@ -31,8 +31,7 @@ hits it rolls the advance back and the FSM stays put (identical to
 import logging
 from typing import TYPE_CHECKING, Literal
 
-from teatree.config import get_effective_settings
-from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.config.provenance import resolve_settings
 from teatree.config.resolution import _resolved_overlay_name
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
@@ -48,26 +47,15 @@ logger = logging.getLogger(__name__)
 
 def repro_disabled_scope(ticket: "Ticket") -> str | None:
     try:
-        enabled = get_effective_settings(ticket.overlay or None).forced_repro_gate_enabled
-        resolved = (
-            resolve_settings(["forced_repro_gate_enabled"], scope=_resolved_overlay_name(ticket.overlay or None))[
-                "forced_repro_gate_enabled"
-            ]
-            if not enabled
-            else None
-        )
+        resolved = resolve_settings(
+            ["forced_repro_gate_enabled"], scope=_resolved_overlay_name(ticket.overlay or None)
+        )["forced_repro_gate_enabled"]
     except ValueError as exc:
         msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: {exc}"
         raise ForcedReproGateError(msg) from exc
-    if enabled:
+    if resolved.value is not False:
         return None
-    if resolved is not None and resolved.value is False:
-        if resolved.source is ValueSource.DB_OVERLAY and resolved.scope:
-            return resolved.scope
-        if resolved.source is ValueSource.DB_GLOBAL:
-            return "global"
-    msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: disabled value has no supplying scope"
-    raise ForcedReproGateError(msg)
+    return resolved.scope or "global"
 
 
 def forced_repro_gate_enabled(ticket: "Ticket") -> bool:
@@ -89,8 +77,8 @@ def audit_repro_exemption(ticket: "Ticket", *, evidence: Literal["red", "pair"] 
     scope = repro_disabled_scope(ticket)
     if scope is None:
         return False
-    logger.warning("forced_repro_gate_enabled is off for ticket %s in scope %s", ticket.pk, scope)
     if scope not in (ticket.extra or {}).get("forced_repro_disabled_scopes", []):
+        logger.warning("forced_repro_gate_enabled is off for ticket %s in scope %s", ticket.pk, scope)
         ticket.merge_extra(append_to_lists={"forced_repro_disabled_scopes": [scope]})
     return True
 

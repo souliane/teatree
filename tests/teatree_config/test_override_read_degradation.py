@@ -42,6 +42,7 @@ from teatree.config.override_read_health import (
     note_healthy_read,
     record_degraded_read,
 )
+from teatree.config.override_reader import OverlayRows
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.resolution import fail_closed_overrides, read_setting_layers
 from teatree.core.gates.repro_gate import ForcedReproGateError, check_red_repro
@@ -366,7 +367,7 @@ class TestTheFailClosedTableIsAppliedRatherThanAssumed(TestCase):
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
         ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
         with (
-            mock.patch("teatree.config.resolution.load_overlay_rows", return_value=({}, True)),
+            mock.patch("teatree.config.resolution.load_overlay_rows", return_value=(OverlayRows({}, {}), True)),
             pytest.raises(ForcedReproGateError),
         ):
             check_red_repro(ticket)
