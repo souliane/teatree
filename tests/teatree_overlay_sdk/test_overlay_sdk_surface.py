@@ -185,6 +185,7 @@ EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
     "mandatory_e2e_exempt_repo_slugs": "(self) -> tuple[str, ...]",
     "merge_candidate_repo_slugs": "(self) -> list[str]",
     "repo_owner_for_slug": "(self, slug: str) -> teatree.core.review.mr_triage.RepoOwner",
+    "select_work_item_repo": "(self, title: str, body: str, repos: tuple[str, ...]) -> str | None",
     "review_exempt_repo_slugs": "(self) -> tuple[str, ...]",
     "visual_qa_targets": "(self, changed_files: list[str]) -> list[str]",
 }
