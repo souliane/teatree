@@ -51,10 +51,11 @@ def test_requested_reviewers_are_read_from_the_merge_request() -> None:
         {
             "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
             "projects/42/merge_requests/5": {"reviewers": [{"username": "peer"}]},
+            "projects/42/merge_requests/5/approvals": {"approved_by": [], "approvals_left": 1},
         }
     )
 
-    reviewers = GitLabCodeHost(client=wire).get_pr_requested_reviewers(repo="org/repo", pr_iid=5)
+    reviewers = GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5)
 
     assert reviewers == ["peer"]
     assert "projects/42/merge_requests/5" in wire.paths
@@ -69,7 +70,22 @@ def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
     )
 
     with pytest.raises(TypeError, match="Could not read requested reviewers"):
-        GitLabCodeHost(client=wire).get_pr_requested_reviewers(repo="org/repo", pr_iid=5)
+        GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5)
+
+
+def test_approved_and_requested_reviewers_are_both_engaged() -> None:
+    wire = GitLabWire(
+        {
+            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+            "projects/42/merge_requests/5": {"reviewers": [{"username": "peer"}]},
+            "projects/42/merge_requests/5/approvals": {
+                "approved_by": [{"user": {"username": "approver"}}],
+                "approvals_left": 1,
+            },
+        }
+    )
+
+    assert GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5) == ["peer", "approver"]
 
 
 def test_get_pr_diff_hits_diffs_endpoint() -> None:

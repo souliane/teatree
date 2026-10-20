@@ -131,7 +131,7 @@ class _FakeCodeHost:
         _ = (repo, pr_iid)
         return []
 
-    def get_pr_requested_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
         _ = (repo, pr_iid)
         return []
 

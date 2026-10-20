@@ -225,9 +225,10 @@ class FakeHost:
         _ = (repo, state, author)
         return self.prs
 
-    def get_pr_requested_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
         _ = (repo, pr_iid)
-        return [str(pr["username"]) for pr in self.prs if isinstance(pr.get("username"), str)]
+        requested = [str(pr["username"]) for pr in self.prs if isinstance(pr.get("username"), str)]
+        return sorted(set(requested + self.approved_by))
 
 
 def _seed(

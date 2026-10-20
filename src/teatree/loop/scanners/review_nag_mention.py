@@ -52,9 +52,8 @@ def engaged_reask_mention(
             if ref is None:
                 continue
             comments = host.list_pr_comments(repo=ref.slug, pr_iid=ref.pr_id)
-            approvals = host.get_mr_approvals(repo=ref.slug, pr_iid=ref.pr_id)
-            requested = host.get_pr_requested_reviewers(repo=ref.slug, pr_iid=ref.pr_id)
-            forge_names.update(_forge_engagers(comments, approvals.get("approved_by"), requested))
+            reviewers = host.get_pr_engaged_reviewers(repo=ref.slug, pr_iid=ref.pr_id)
+            forge_names.update(_forge_engagers(comments, reviewers))
         for name in forge_names - set(requester.aliases):
             if user_id := messaging.resolve_unique_active_user_id(name):
                 slack_ids.add(user_id)
@@ -65,11 +64,10 @@ def engaged_reask_mention(
     return " ".join(f"<@{user_id}>" for user_id in sorted(slack_ids)) or fallback
 
 
-def _forge_engagers(comments: object, approved: object, requested: object) -> set[str]:
+def _forge_engagers(comments: object, reviewers: object) -> set[str]:
     names: set[str] = set()
-    for source in (approved, requested):
-        if isinstance(source, list):
-            names.update(name for name in source if isinstance(name, str))
+    if isinstance(reviewers, list):
+        names.update(name for name in reviewers if isinstance(name, str))
     if not isinstance(comments, list):
         return names
     for comment in comments:

@@ -81,6 +81,9 @@ class _RouteAwareFake:
     def resolve_user_id(self, handle: str) -> str:
         return ""
 
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return "S0REVIEWERS" if handle == "reviewers-team" else ""
+
     def get_permalink(self, *, channel: str, ts: str) -> str:
         return "https://slack.example/p1"
 
@@ -215,6 +218,7 @@ class TestNagPostBypassClosed(TestCase):
 
     def test_no_post_and_release_claim_under_ask(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         post = _seed()
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
@@ -229,6 +233,7 @@ class TestNagPostBypassClosed(TestCase):
 
     def test_posts_with_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         OnBehalfApproval.record(target=_MR, action="review_nag_post", approver_id=_APPROVER)
         post = _seed()
         fake = _RouteAwareFake()

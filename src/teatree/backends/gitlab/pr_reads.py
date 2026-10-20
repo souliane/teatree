@@ -98,7 +98,7 @@ def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, p
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/commits?per_page=100")
 
 
-def project_requested_reviewers(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, pr_iid: int) -> list[str]:
+def project_engaged_reviewers(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, pr_iid: int) -> list[str]:
     if project is None:
         msg = f"Could not resolve project: {repo}"
         raise ValueError(msg)
@@ -107,7 +107,19 @@ def project_requested_reviewers(client: GitLabAPI, project: ProjectInfo | None, 
     if not isinstance(reviewers, list):
         msg = f"Could not read requested reviewers for {repo}#{pr_iid}"
         raise TypeError(msg)
-    return [name for item in reviewers if isinstance(item, dict) if isinstance(name := item.get("username"), str)]
+    names = list(
+        dict.fromkeys(
+            name for item in reviewers if isinstance(item, dict) if isinstance(name := item.get("username"), str)
+        )
+    )
+    approved = client.get_mr_approvals(project.project_id, pr_iid).get("approved_by")
+    if not isinstance(approved, list):
+        msg = f"Could not read approvers for {repo}#{pr_iid}"
+        raise TypeError(msg)
+    for name in approved:
+        if isinstance(name, str) and name not in names:
+            names.append(name)
+    return names
 
 
 def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:

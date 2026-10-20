@@ -128,6 +128,9 @@ dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
 [teatree.Loops.dream]
 dream_memory_promote = true # bool — let the dream pass promote a core-gap memory to a fix
 
+[teatree.Loops.followup]
+review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
+
 [teatree.Loops.housekeeping]
 auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
 pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
@@ -198,7 +201,6 @@ mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|tes
 orchestrator_bash_gate_enabled = true # bool — refuse heavy shell commands run directly by the orchestrator
 review_exempt_repos = [] # list — repos whose merge requests need no review request (a `!` prefix un-exempts one)
 review_exempt_repos_count_toward_group_readiness = true # bool — let review-exempt merge requests still hold their work group
-review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
 snapshot_baseline_gate_enabled = true # bool — refuse a snapshot diff taken against a stale baseline
 solo_repo_url_pattern = "" # str — regex matching repos the operator works on alone
 

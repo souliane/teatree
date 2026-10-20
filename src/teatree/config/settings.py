@@ -20,6 +20,7 @@ from teatree.config.settings_loop_owned import (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
     _InboxLoopSettings,
     _IssueImplementerLoopSettings,
@@ -818,12 +819,6 @@ class _PrePublishGateSettings:
     # ``t3 <overlay> config_setting set ban_close_trailers_on_namespaces``;
     # the TOML value is ignored on read.
     ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
-    # Ceiling for the nag's Fibonacci re-ask backoff. Uncapped, the sequence runs past
-    # the point where a reminder still reads as one — a request nobody answered would
-    # go quiet for months instead of settling into a monthly rhythm.
-    review_nag_max_interval_days: int = 30
-    # A Slack user-group id, or a handle resolved as a user group then a user. Empty re-asks with no mention.
-    review_nag_reask_mention: str = ""
     # Repo patterns whose merge requests need no review request: the user asks for
     # review in person there, so a posted request is noise a colleague has to dismiss.
     # Matched by ``teatree.core.review.repo_exemption`` on the same host-stripped
@@ -915,6 +910,7 @@ class UserSettings(
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
     _InboxLoopSettings,
     _IssueImplementerLoopSettings,
