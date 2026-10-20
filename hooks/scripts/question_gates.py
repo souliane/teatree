@@ -527,7 +527,7 @@ _OWNER_CHOICE_CUE_RE = re.compile(
 )
 _OWNER_CHOICE_ASK_RE = re.compile(
     r"(?:^|[.!]\s+)(?:do you|would you|could you|should i|shall i|can i|may i|want me to|"
-    r"(?:which|what|how)\b.{0,60}\b(?:do you|would you|should i|shall i|choose|pick|prefer))\b",
+    r"(?:which|what|how)\b.{0,60}\b(?:do you|would you|should i|shall i))\b",
     re.IGNORECASE,
 )
 _CHOICE_VERB_RE = re.compile(r"^(?:approve|confirm|decide|choose|pick|select|sign off)\b", re.IGNORECASE)
@@ -566,15 +566,15 @@ def find_decision_prose(text: str) -> str | None:
         if not candidate:
             continue
         empty = _NO_DECISION_RE.match(candidate)
-        if empty and (
-            not candidate[empty.end() :].strip(". ")
-            or (
-                candidate[empty.end() :].startswith(". ")
-                and "?" not in candidate[empty.end() :]
-                and not _OWNER_CHOICE_CUE_RE.search(candidate[empty.end() :])
-            )
-        ):
-            continue
+        if empty:
+            tail = candidate[empty.end() :]
+            directive = re.sub(r"(?i)^please\s+", "", tail.lstrip(" .,:;()—\u2013-"))
+            if (
+                "?" not in tail
+                and not _OWNER_CHOICE_CUE_RE.search(tail)
+                and (tail.startswith(". ") or not _CHOICE_VERB_RE.match(directive))
+            ):
+                continue
         if _RECAP_RE.search(rest) and "?" not in rest and not _OWNER_CHOICE_CUE_RE.search(rest):
             continue
         return line

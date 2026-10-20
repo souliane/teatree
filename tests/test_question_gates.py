@@ -178,6 +178,9 @@ class TestTheTranscriptReadNewestFirst:
         "**Needs you**\n- Merge the release branch now?",
         "Run `make first.\nNeeds you:\n- Which branch should I use?\n- Should I merge now?\nThen `ok` is done.",
         "Do you want me to:\n\n- merge now\n\n- wait for review",
+        "Needs you: none; should I merge now?",
+        "Needs you: nothing — do you want me to merge?",
+        "How would you choose:\n- Merge now\n- Wait for review",
     ],
 )
 def test_decision_prose_detects_owner_asks(text: str) -> None:
@@ -189,6 +192,16 @@ def test_decision_prose_detects_owner_asks(text: str) -> None:
     [
         "The build passed. Next steps:\n1. Check the logs.\n2. Merge after review.",
         "Needs you: none. The build is green.",
+        "Needs you: none - CI is green.",
+        "Needs you: none — CI is green.",
+        "Needs you: none, CI is green.",
+        "Needs you: none (CI is green).",
+        "Needs you: none; all checks pass.",
+        "Waiting on you: nothing - all PRs are with reviewers.",
+        "Needs you: none for now.",
+        "Needs you: nothing today.",
+        "How to choose a shard:\n- Compare the runtime.\n- Check the test count.",
+        "What I would pick:\n- The faster shard.\n- The smaller shard.",
         "Needs you:\nNothing right now.",
         "Nothing needs you; I will proceed.",
         "I asked you:\n- Which branch?\n- Merge after review?",

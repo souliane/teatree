@@ -535,6 +535,14 @@ def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path)
         "Needs you: nothing pending",
         "Needs you: no outstanding decisions",
         "Waiting on you: zero",
+        "Needs you: none - CI is green.",
+        "Needs you: none — CI is green.",
+        "Needs you: none, CI is green.",
+        "Needs you: none (CI is green).",
+        "Needs you: none; all checks pass.",
+        "Waiting on you: nothing - all PRs are with reviewers.",
+        "Needs you: none for now.",
+        "Needs you: nothing today.",
     ],
 )
 def test_empty_owner_labels_pass_through_router(tmp_path: Path, text: str) -> None:
@@ -557,6 +565,8 @@ def test_empty_owner_labels_pass_through_router(tmp_path: Path, text: str) -> No
         "Files that are ok to delete:\n- First\n- Second",
         "If you want me to look later, here are the logs:\n- First\n- Second",
         "What we changed:\n- First\n- Second",
+        "How to choose a shard:\n- Compare the runtime.\n- Check the test count.",
+        "What I would pick:\n- The faster shard.\n- The smaller shard.",
     ],
 )
 def test_status_intro_with_two_bullets_passes_router(tmp_path: Path, text: str) -> None:
@@ -606,6 +616,8 @@ def test_label_recaps_pass_router(tmp_path: Path, text: str) -> None:
     [
         "Needs you: nothing blocking, but should I merge the hotfix now?",
         "Needs you: none yet. Should I merge the hotfix now or wait?",
+        "Needs you: none; choose the branch.",
+        "Needs you: none; please choose the branch.",
         "Needs you \u2013 pick one:\n- Merge now\n- Wait for review",
     ],
 )
