@@ -134,6 +134,7 @@ class PlanningHandoff(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
+    forced_repro_disabled_scopes: list[str]
     # Self-improvement repair tickets need this marker to classify their own
     # task failures separately from the incidents they are investigating.
     source: str
