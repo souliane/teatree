@@ -1,7 +1,7 @@
 """The ``TaskCreated`` deny surface — the reason the caller actually reads (#4216).
 
 Split out of ``hook_router.py`` by concern (module health; the router is
-shrink-only). Every ``TaskCreated`` gate denies through this one emitter.
+shrink-only). The router's quote gate uses its own visible ``systemMessage`` emitter.
 
 The harness's task-creation consumer reads exactly ONE field of a hook result:
 the ``blockingError`` its runner derives. ``{"continue": false, "stopReason":

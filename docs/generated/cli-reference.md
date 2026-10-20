@@ -14656,7 +14656,7 @@ Usage: t3 teatree retro finding [OPTIONS]
  This is what retro persists a lesson WITH: the finding becomes a VERIFIED
  core-gap ledger row queued on the umbrella host's pending ledger — the same
  drain dreaming Pass 2 uses, so the prose retires itself once the host that
- absorbs it merges. With ``memory_promote`` off the row is
+ absorbs it merges. With ``dream_memory_promote`` off the row is
  still recorded and the promotion reported ``deferred``, reaching no umbrella.
  Emits the result as JSON; a refusal prints its payload and raises
  ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real

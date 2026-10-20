@@ -80,7 +80,7 @@ Action-needed lines are bright red, in-flight bright cyan. If a
 `STATUSLINE_ZONE_BY_KIND` in `src/teatree/loop/dispatch_tables.py`.
 
 Multi-overlay ticks prefix lines with `[<overlay>]`. A signal with
-`payload.overlay = "teatree"` and no `[teatree]` prefix is a `_zones_for` bug.
+`payload.overlay = "teatree"` and no `[teatree]` prefix is a `zones_for` bug (`src/teatree/loop/rendering.py`).
 
 ### OSC 8 hyperlinks
 
@@ -119,15 +119,8 @@ doesn't change) but isn't. Symptom: edits look gone, or tests run against an
 in-memory version while disk has older content. Fix: always use separate
 worktrees, never `git stash`.
 
-**`discover_active_overlay()` returns the wrong name in worktrees.** The
-function walks cwd looking for `manage.py` and returns the directory name.
-In worktrees, this gives names like `ac-teatree-541-follow-up-...` instead
-of `teatree`. The `_resolve_overlay_for_server()` function in `cli/__init__.py`
-works around this by preferring entry-point overlays. Always test from a
-worktree path so this code path actually runs.
-
 **Single-overlay tick caches.** `code_host_from_overlay()` and
-`messaging_from_overlay()` are `lru_cache`d for the whole process. After
+`messaging_from_overlay()` are cached for the whole process. After
 swapping overlay credentials in tests or local config, call
 `reset_backend_caches()` (or restart the process) — otherwise the next tick
 reuses the stale client and you'll think your edit didn't take.

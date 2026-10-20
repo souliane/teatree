@@ -283,9 +283,9 @@ def _preflight_result(
     """Resolve the pre-delivery short-circuits — an outcome to stop, ``None`` to proceed.
 
     An INTERNAL audience is logged and terminally recorded (never DM'd, deny-by-
-    default), and a settings-disabled feature is skipped — both return a named
-    not-sent outcome. ``None`` means the notification is owner-audience and
-    enabled, so delivery proceeds.
+    default), and one the push/pull classifier routes to PULL is recorded there —
+    both return a named not-sent outcome. ``None`` means the notification is
+    owner-audience and pushed, so delivery proceeds.
 
     ``requested_push`` carries the caller's stated intent into the push/pull
     classifier — see :mod:`teatree.core.modelkit.dm_channel_policy`.
