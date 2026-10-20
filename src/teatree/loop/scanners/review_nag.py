@@ -65,9 +65,10 @@ from teatree.core.review.mr_state_question import ask_mr_state
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner, TriageThresholds
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
-from teatree.core.review.review_pause import PauseState, read_pause_state
+from teatree.core.review.review_pause import PauseState
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.review_nag_activity import thread_activity
+from teatree.loop.scanners.review_nag_activity import pause_skip as _pause_skip
+from teatree.loop.scanners.review_nag_activity import paused_signal, root_pause_visible, thread_activity
 from teatree.loop.scanners.review_nag_claim import ReviewNagPostReconciliationError, _NagClaim
 from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
@@ -171,8 +172,8 @@ class ReviewNagScanner:
         if exempt is not None:
             return exempt
         window = self._thread_due_window(post, messaging, right_now, thresholds)
-        if window is None:
-            return None
+        if window is None or isinstance(window, ScanSignal):
+            return window
         interval, peers = window
         blocked = self._mr_not_naggable(post, messaging, right_now)
         if blocked is not None:
@@ -187,7 +188,7 @@ class ReviewNagScanner:
         messaging: MessagingBackend,
         right_now: dt.datetime,
         thresholds: TriageThresholds,
-    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]]] | None:
+    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]]] | ScanSignal | None:
         peers = list(
             ReviewRequestPost.objects.filter(
                 overlay=post.overlay,
@@ -202,7 +203,10 @@ class ReviewNagScanner:
         interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
         if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
             return None
-        return (interval, owned_peers) if self._due_for_a_re_ask(post, messaging, right_now, interval) else None
+        due = self._due_for_a_re_ask(post, messaging, right_now, interval)
+        if isinstance(due, ScanSignal):
+            return due
+        return (interval, owned_peers) if due else None
 
     def _due_for_a_re_ask(
         self,
@@ -210,7 +214,7 @@ class ReviewNagScanner:
         messaging: MessagingBackend,
         right_now: dt.datetime,
         interval: dt.timedelta,
-    ) -> bool:
+    ) -> bool | ScanSignal:
         """Whether this row's re-ask window has lapsed with no thread activity inside it.
 
         An unreadable activity read answers NOT due, so a Slack outage costs a
@@ -218,9 +222,12 @@ class ReviewNagScanner:
         """
         if post.last_nag_at is not None and right_now - post.last_nag_at < interval:
             return False
-        last_activity = self._last_activity(post, messaging, right_now)
-        if last_activity is None:
+        observation = self._last_activity(post, messaging, right_now)
+        if observation is None:
             return False
+        last_activity, root_paused = observation
+        if root_paused:
+            return paused_signal(post, PauseState.PAUSED)
         return right_now - last_activity > interval
 
     def _repo_owner_for(self, post: ReviewRequestPost) -> RepoOwner:
@@ -233,14 +240,17 @@ class ReviewNagScanner:
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
-    ) -> dt.datetime | None:
+    ) -> tuple[dt.datetime, bool] | None:
         """Return last review activity, or ``None`` when the thread read fails."""
         try:
             replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
         except Exception as exc:  # noqa: BLE001 — a thread read must never crash a tick.
             logger.warning("review_nag: thread read failed for %s: %s", post.mr_url, exc)
             return None
-        return thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id)
+        return (
+            thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id),
+            root_pause_visible(post, replies),
+        )
 
     def _mr_not_naggable(
         self,
@@ -462,24 +472,6 @@ def _unreadable_state_skip(post: ReviewRequestPost, why: str) -> ScanSignal:
         kind="review_nag.mr_state_unreadable",
         summary=f"Skipping nag for {post.mr_url} — {why}",
         payload={"mr_url": post.mr_url, "post_id": post.pk, "reason": why},
-    )
-
-
-def _pause_skip(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
-    """A skip-signal when the owner is holding this request, or when that cannot be read.
-
-    The hold is the owner's own reaction on the thread root; escalating past it
-    would @-mention a group about work its author has said is not ready. An
-    ``UNKNOWN`` pause state is treated the same way, since a hold nobody can read
-    is exactly the case where the mechanism would silently stop working.
-    """
-    state = read_pause_state(post, messaging)
-    if state is PauseState.NOT_PAUSED:
-        return None
-    return ScanSignal(
-        kind="review_nag.mr_paused",
-        summary=f"Skipping nag for {post.mr_url} — pause state is {state.value}",
-        payload={"mr_url": post.mr_url, "post_id": post.pk, "pause_state": state.value},
     )
 
 

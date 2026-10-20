@@ -878,6 +878,33 @@ class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
         assert slack.posts == []
         assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
 
+    def test_visible_root_pause_skips_duplicate_state_reads(self) -> None:
+        _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}], root_reactions=[pause])
+        host = FakeHost()
+
+        with (
+            patch.object(host, "get_pr_open_state", wraps=host.get_pr_open_state) as open_read,
+            patch.object(slack, "fetch_message", wraps=slack.fetch_message) as root_read,
+        ):
+            signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
+        open_read.assert_not_called()
+        root_read.assert_not_called()
+
+    def test_pause_on_a_reply_still_checks_the_root(self) -> None:
+        _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.2", "reactions": [pause]}])
+
+        with patch.object(slack, "fetch_message", wraps=slack.fetch_message) as root_read:
+            signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        root_read.assert_called_once()
+
     def test_a_paused_request_is_not_nagged(self) -> None:
         post = _seed(days_old=10.0)
         slack = FakeSlack(root_reactions=[{"name": "double_vertical_bar", "count": 1}])
