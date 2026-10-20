@@ -16,6 +16,7 @@ from teatree.core.modelkit.question_card import (
     counted,
     internal_shorthand,
     plain_text,
+    shown_problems,
     word_count,
 )
 
@@ -368,6 +369,12 @@ def test_a_count_agrees_with_its_noun(count: int, expected: str) -> None:
 
 
 class TestInClientQuestionCard:
+    def test_file_name_stays_shorthand_for_slack_card(self) -> None:
+        question = "Can you open settings.toml today?"
+
+        assert CardView.ask_problems({"header": "Open", "question": question, "options": []}) == []
+        assert any("settings.toml" in problem for problem in shown_problems(SAMPLE_CARD.view(question)))
+
     @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?", "Set widget_mode?"])
     def test_plain_words_check_names_shorthand(self, question: str) -> None:
         problems = CardView.ask_problems({"header": "Merge", "question": question, "options": []})
