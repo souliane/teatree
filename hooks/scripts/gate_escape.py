@@ -7,7 +7,7 @@ from pathlib import Path
 from hooks.scripts.foreign_branch_push_git import git_probe
 from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
-from hooks.scripts.t3_invocation import run_t3
+from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 _NOT_A_REPOSITORY_EXIT_CODE = 128
 
@@ -75,8 +75,12 @@ def escape_allows(data: dict, gate_id: str, *, turn_text: str | None = None) -> 
                 "session_id": session_id,
                 "call_id": str(data.get("tool_use_id") or ""),
             }
+        argv = t3_argv("tool", "gate-escape")
+        if argv is None:
+            sys.stderr.write(f"Gate {gate_id} escape refused: t3 is not on PATH, so the audit cannot be written.\n")
+            return False
         result = run_t3(
-            ["t3", "tool", "gate-escape"],
+            argv,
             timeout=20,
             stdin_text=json.dumps(scope),
             budget=remaining_timeout_s,

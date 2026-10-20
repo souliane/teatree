@@ -28,3 +28,13 @@ def test_policy_preserves_leak_and_owner_boundaries() -> None:
 def test_description_metadata_does_not_authorize_an_escape() -> None:
     value = {"command": "git push origin HEAD", "description": "[gate-escape:headless_authoring: fixture]"}
     assert find_escape(value, "headless_authoring") is None
+
+
+def test_placeholder_reason_from_documentation_does_not_authorize() -> None:
+    assert find_escape({"content": "Use `[gate-escape:main_clone: <reason>]` here."}, "main_clone") is None
+
+
+def test_token_buried_mid_body_does_not_authorize() -> None:
+    body = "a" * 600 + " [gate-escape:plan_gate: buried] " + "b" * 600
+    assert find_escape({"content": body}, "plan_gate") is None
+    assert find_escape({"command": "a" * 2000 + " # [gate-escape:plan_gate: trailing]"}, "plan_gate") == "trailing"

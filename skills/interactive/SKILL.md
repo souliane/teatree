@@ -94,7 +94,7 @@ The deterministic backstop is the PreToolUse delegation gate
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
 `AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
-is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+is its job. Escapes: `[gate-escape:orchestrator_delegation_gate: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)

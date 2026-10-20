@@ -11,6 +11,7 @@ _STOP_LEGACY_RE = re.compile(
     r"\[(?:skip-answer-gate|skip-completion-gate|skip-evidence-gate|standing-goal-hold):[^\]]*\]"
 )
 _MAX_NESTING = 3
+_SCAN_WINDOW = 512
 
 
 class EscapePolicy(StrEnum):
@@ -87,7 +88,7 @@ def _text_values(value: object, depth: int = 0) -> list[str]:
     if depth > _MAX_NESTING:
         return []
     if isinstance(value, str):
-        return [value]
+        return [value] if len(value) <= 2 * _SCAN_WINDOW else [value[:_SCAN_WINDOW], value[-_SCAN_WINDOW:]]
     if isinstance(value, dict):
         return [text for key, child in value.items() if key != "description" for text in _text_values(child, depth + 1)]
     if isinstance(value, list):
@@ -98,8 +99,9 @@ def _text_values(value: object, depth: int = 0) -> list[str]:
 def find_escape(value: object, gate_id: str) -> str | None:
     for text in _text_values(value):
         for match in _TOKEN_RE.finditer(text):
-            if match.group(1) == gate_id:
-                return match.group(2).strip()
+            reason = match.group(2).strip()
+            if match.group(1) == gate_id and not (reason.startswith("<") and reason.endswith(">")):
+                return reason
     return None
 
 

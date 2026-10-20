@@ -29,6 +29,7 @@ def test_matching_token_audits_the_exact_call_before_allow() -> None:
         patch.object(
             hook_escape, "run_t3", return_value=subprocess.CompletedProcess([], 0, '{"allowed": true}', "")
         ) as run,
+        patch.object(hook_escape, "t3_argv", return_value=["/usr/local/bin/t3", "tool", "gate-escape"]),
         patch.object(hook_escape, "_head", return_value="a" * 40),
     ):
         assert hook_escape.escape_requested(data, "main_clone") is True
@@ -42,8 +43,13 @@ def test_matching_token_audits_the_exact_call_before_allow() -> None:
 
 def test_audit_failure_preserves_the_deny() -> None:
     data = _data("git status # [gate-escape:main_clone: fixture]")
-    with patch.object(hook_escape, "run_t3", side_effect=OSError("unreachable")):
+    with (
+        patch.object(hook_escape, "t3_argv", return_value=["/usr/local/bin/t3", "tool", "gate-escape"]),
+        patch.object(hook_escape, "_head", return_value=""),
+        patch.object(hook_escape, "run_t3", side_effect=OSError("unreachable")) as run,
+    ):
         assert hook_escape.escape_allows(data, "main_clone") is False
+    run.assert_called_once()
 
 
 def test_shared_deny_writer_uses_escape_before_breaker() -> None:
@@ -75,3 +81,15 @@ def test_unreadable_parser_keeps_escape_request_in_deny_path() -> None:
     data = _data("git status # [gate-escape:main_clone: fixture]")
     with patch.object(hook_escape, "teatree_src_on_path", side_effect=OSError("unavailable")):
         assert hook_escape.escape_requested(data, "main_clone") is True
+
+
+def test_missing_t3_refuses_and_names_the_cause(capsys) -> None:
+    data = _data("git status # [gate-escape:main_clone: fixture]")
+    with (
+        patch.object(hook_escape, "t3_argv", return_value=None),
+        patch.object(hook_escape, "run_t3") as run,
+        patch.object(hook_escape, "_head", return_value=""),
+    ):
+        assert hook_escape.escape_allows(data, "main_clone") is False
+    run.assert_not_called()
+    assert "t3 is not on PATH" in capsys.readouterr().err
