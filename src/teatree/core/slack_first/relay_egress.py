@@ -13,6 +13,7 @@ from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions
 from teatree.core.slack_first.factory_slack_liveness import SlackLiveVerdict
 from teatree.hooks.publish_surface import contains_secret
+from teatree.slack_mrkdwn import wrap_slack_message
 
 
 def post_relay(verdict: SlackLiveVerdict, text: str, *, key: str) -> RelayPosted | RelayRefusal:
@@ -37,8 +38,11 @@ def post_relay(verdict: SlackLiveVerdict, text: str, *, key: str) -> RelayPosted
     if ping is None or not ping.posted_ts:
         return RelayRefusal("delivery_failed: no delivered ping recorded", delivery_failed=True)
     message = verdict.backend.fetch_message(channel=ping.channel_ref, ts=ping.posted_ts) if verdict.backend else {}
-    if str(message.get("ts", "")) != ping.posted_ts or html.unescape(text) not in html.unescape(
-        str(message.get("text", ""))
-    ):
+    if str(message.get("ts", "")) != ping.posted_ts or not _landed(text, str(message.get("text", ""))):
         return RelayRefusal("delivery_failed: the post did not read back from Slack", delivery_failed=True)
     return RelayPosted(channel=ping.channel_ref, ts=ping.posted_ts, permalink=ping.permalink)
+
+
+def _landed(text: str, posted: str) -> bool:
+    # The bot transport wraps lines past 90 chars before sending, so the stored post may be the wrapped form.
+    return any(html.unescape(form) in html.unescape(posted) for form in (text, wrap_slack_message(text)))

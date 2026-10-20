@@ -11,9 +11,11 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.management.commands.pending_chat import Command
 from teatree.core.models import DmContext, PendingChatInjection
-from tests._factory_slack import SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
+from teatree.types import RawAPIDict
+from tests._factory_slack import OWNER_DM, OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -228,6 +230,7 @@ class TestRelaySubcommand:
             f"permalink=https://slack.test/archives/{dm.channel}/p{post['ts'].replace('.', '')}"
         )
         assert (row.relayed_by_session, row.text, row.overlay) == ("sess-env", PROMPT, SLACK_OVERLAY)
+        assert (row.slack_ts, row.channel, row.user_id) == (post["ts"], dm.channel, OWNER_ID)
         wake.enqueue.assert_called_once_with()
 
     def test_the_prompt_can_come_from_a_file_verbatim(self, tmp_path: Path) -> None:
@@ -281,6 +284,30 @@ class TestRelaySubcommand:
         assert PendingChatInjection.objects.count() == 0
         wake.enqueue.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("prompt", "dm_options", "exit_code", "marker"),
+        [
+            pytest.param("  \n ", {}, 3, "t3-relay-refused: blank", id="blank"),
+            pytest.param("x" * 38_001, {}, 3, "t3-relay-refused: over 38000", id="over-the-slack-limit"),
+            pytest.param(PROMPT, {"read_back": False}, 4, "t3-relay-refused: delivery_failed", id="not-read-back"),
+        ],
+    )
+    def test_an_unrelayable_or_unconfirmed_prompt_exits_with_its_code_leaving_no_row_and_no_wake(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        prompt: str,
+        dm_options: dict[str, bool],
+        exit_code: int,
+        marker: str,
+    ) -> None:
+        with live_factory_slack(FakeOwnerDm(**dm_options)), patch(_WAKE) as wake:
+            code = _relay_argv("--relay-id", "r1", "--text", prompt)
+
+        assert code == exit_code
+        assert capsys.readouterr().out.startswith(marker)
+        assert PendingChatInjection.objects.count() == 0
+        wake.enqueue.assert_not_called()
+
     def test_a_missing_relay_id_or_prompt_is_a_usage_error(self) -> None:
         assert _relay_argv("--text", PROMPT) == 2
         assert _relay_argv("--relay-id", "r1") == 2
@@ -326,3 +353,56 @@ class TestRelaysSubcommand:
         row = self._relay_row("1.0", "s1")
 
         assert f"#{row.pk}" in _call_stderr("pending_chat", "relays", "--session", "s1")
+
+
+class _SlackWebApi:
+    """The Slack Web API behind the bot's HTTP client, for one owner DM: only what a relay calls, each call recorded."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.messages: dict[str, RawAPIDict] = {}
+
+    def post(self, method: str, *, token: str, json: RawAPIDict, idempotent: bool = True) -> RawAPIDict:
+        _ = (token, idempotent)
+        self.calls.append(method)
+        assert method == "chat.postMessage", method
+        ts = f"1700000000.{len(self.messages) + 1:06d}"
+        self.messages[ts] = {"ts": ts, "text": json["text"], "channel": json["channel"]}
+        return {"ok": True, "ts": ts, "channel": json["channel"]}
+
+    def get(self, method: str, *, token: str, params: RawAPIDict) -> RawAPIDict:
+        _ = token
+        self.calls.append(method)
+        if method == "conversations.history":
+            message = self.messages.get(str(params["latest"]))
+            return {"ok": True, "messages": [message] if message else []}
+        assert method == "chat.getPermalink", method
+        return {"ok": True, "permalink": f"https://slack.test/archives/{params['channel']}/p{params['message_ts']}"}
+
+
+LONG_PROMPT = (
+    "Should I deploy the hotfix to production right now, or wait for the nightly window so that the on-call "
+    "engineer can watch the rollout and roll it back if the error rate moves?"
+)
+
+
+class TestRelayThroughTheRealSlackBot:
+    def test_a_long_prompt_lands_in_the_owner_dm_verbatim_with_only_http_stubbed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api = _SlackWebApi()
+        bot = SlackBotBackend(bot_token="xoxb-bot", user_id=OWNER_ID, dm_channel_id=OWNER_DM)
+        with (
+            patch.object(bot._http, "post", side_effect=api.post),
+            patch.object(bot._http, "get", side_effect=api.get),
+            live_factory_slack(bot),
+            patch(_WAKE),
+        ):
+            code = _relay_argv("--relay-id", "r1", "--text", LONG_PROMPT)
+
+        row = PendingChatInjection.objects.get()
+        assert code is None
+        assert capsys.readouterr().out.startswith(f"t3-relay-receipt: pending_chat={row.pk} ts={row.slack_ts} ")
+        assert api.calls.count("chat.postMessage") == 1
+        assert (row.channel, row.user_id, row.text) == (OWNER_DM, OWNER_ID, LONG_PROMPT)
+        assert row.slack_ts in api.messages
