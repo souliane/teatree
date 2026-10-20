@@ -24,6 +24,7 @@ from django.test import TestCase
 
 from teatree.config import get_effective_settings
 from teatree.config.override_reader import OverlayRows, load_global_rows, load_overlay_rows
+from teatree.config.provenance import resolve_settings
 from teatree.config.resolution import env_setting_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
 
@@ -153,6 +154,13 @@ class TestPerOverlayDbScope(TestCase):
         ConfigSetting.objects.set_value("autoload", value=True, scope="t3-my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert get_effective_settings().autoload is True
+
+    def test_exact_overlay_row_beats_alias_and_owns_the_scope(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, scope="t3-my-overlay")
+        ConfigSetting.objects.set_value("autoload", value=False, scope="my-overlay")
+        resolved = resolve_settings(["autoload"], scope="my-overlay")["autoload"]
+        assert (resolved.value, resolved.scope) == (False, "my-overlay")
+        assert get_effective_settings("my-overlay").autoload is False
 
     def test_empty_overlay_scope_is_still_a_no_op(self) -> None:
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")

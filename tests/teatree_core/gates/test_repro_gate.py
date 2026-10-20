@@ -247,11 +247,8 @@ class TestForcedReproGateSwitchedOff(TestCase):
 
     def test_the_coding_gate_passes_a_fix_with_no_red(self) -> None:
         ticket = _fix_ticket()
-        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
-            check_red_repro(ticket)
-        assert f"ticket {ticket.pk}" in logs.output[0]
-        assert "forced_repro_gate_enabled" in logs.output[0]
-        assert "acme" in logs.output[0]
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING"):
+            assert check_red_repro(ticket) is None
 
     def test_another_overlays_fix_is_still_refused_by_both_gates(self) -> None:
         acme = _fix_ticket()

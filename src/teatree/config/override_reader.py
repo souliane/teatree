@@ -154,7 +154,9 @@ _READ_RETRY_BACKOFF: tuple[float, ...] = (0.05, 0.15)
 def _read_scope_rows[T](scope_label: str, read: "Callable[[], T]", empty: T, *, log_label: str = "") -> tuple[T, bool]:
     """Run *read* with the bounded retry, returning ``(rows, degraded)``.
 
-    ``degraded`` distinguishes a healthy empty tier from an unreadable one.
+    ``degraded`` is the distinction #3873 exists for: ``(empty, False)`` is a healthy read
+    of a tier with no rows, ``(empty, True)`` is a tier whose content could not be
+    determined. They share the same empty value and must never be the same answer.
 
     A genuine bootstrap state (:func:`_override_read_degrades_silently`) is neither retried
     nor reported — it is a no-op by construction, and retrying it would put the backoff on

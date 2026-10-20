@@ -171,6 +171,7 @@ class TestReproCliRealGit(TestCase):
         assert "disabled scopes recorded: global" in output
 
     def test_status_reports_a_feature_as_gate_satisfied_without_evidence(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="t3-teatree")
         feature = Ticket.objects.create(overlay="t3-teatree", kind=Ticket.Kind.FEATURE)
         output = cast("str", call_command("repro", "status", str(feature.pk)))
         assert "gate-satisfied: True" in output

@@ -163,13 +163,13 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     # on read (that field's authoritative override tier is the DB store below). The drop
     # is LOUD (never silent) so an operator who set a DB-home key in their
     # overlays-registry entry is told the value had no effect.
-    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
+    overrides = drop_db_home_overlay_keys(overrides, resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
     # including for ``mode``) is the per-overlay override layer so far. DB-home fields
     # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
-    resolved_overlay = _resolved_overlay_name(overlay_name)
+    resolved_overlay = resolved_overlay_name(overlay_name)
     layers = read_setting_layers(resolved_overlay)
     # The overlay-code-default tier (#36): promoted constants the active overlay
     # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE the
@@ -204,7 +204,12 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
 
 
 def read_setting_layers(overlay_name: str) -> SettingLayers:
-    """Read both persisted tiers once for settings resolution and provenance."""
+    """Read both persisted tiers and their source scopes once.
+
+    Public because it is the ONE place the persisted tiers are read: the resolver folds
+    them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
+    WHICH one supplied a value. A second reader would be a second resolution path.
+    """
     global_rows, global_degraded = load_global_rows()
     overlay, overlay_degraded = load_overlay_rows(overlay_name)
     db_rows = (global_rows, overlay.rows)
@@ -249,8 +254,8 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
-    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
-    overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
+    overrides = drop_db_home_overlay_keys(overrides, resolved_overlay_name(None))
+    overrides.update(_db_setting_overrides(resolved_overlay_name(None)))
     overrides.update(env_setting_overrides())
     return overrides
 
@@ -311,7 +316,7 @@ def env_setting_overrides() -> dict[str, Any]:
     return read.values
 
 
-def _resolved_overlay_name(overlay_name: str | None) -> str:
+def resolved_overlay_name(overlay_name: str | None) -> str:
     """The overlay name whose per-overlay DB rows the resolver should layer.
 
     For the named-overlay path this is the explicit ``overlay_name``; for the

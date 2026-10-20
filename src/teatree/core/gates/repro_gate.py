@@ -32,7 +32,7 @@ import logging
 from typing import TYPE_CHECKING, Literal
 
 from teatree.config.provenance import resolve_settings
-from teatree.config.resolution import _resolved_overlay_name
+from teatree.config.resolution import resolved_overlay_name
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
@@ -43,13 +43,14 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+_FORCED_REPRO_GATE_ENABLED_KEY = "forced_repro_gate_enabled"
 
 
 def repro_disabled_scope(ticket: "Ticket") -> str | None:
     try:
         resolved = resolve_settings(
-            ["forced_repro_gate_enabled"], scope=_resolved_overlay_name(ticket.overlay or None)
-        )["forced_repro_gate_enabled"]
+            [_FORCED_REPRO_GATE_ENABLED_KEY], scope=resolved_overlay_name(ticket.overlay or None)
+        )[_FORCED_REPRO_GATE_ENABLED_KEY]
     except ValueError as exc:
         msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: {exc}"
         raise ForcedReproGateError(msg) from exc
