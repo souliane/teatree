@@ -31,7 +31,7 @@ class QuoteGateSurface:
 #: The ``Agent``/``Task`` ``PreToolUse`` arm (#1401) — the only interception point a
 #: sub-agent dispatch has. Kept only so :class:`TestTheSurfacesAreDistinct` can prove
 #: no two arms share a clause set; the ACTUAL dispatch message is rendered by
-#: :mod:`teatree.hooks._dispatch_quote_ok` (:func:`format_dispatch_block_message`),
+#: the local :func:`format_dispatch_block_message`,
 #: whose wording is byte-frozen and ridden by the never-lockout contract, the
 #: liveness corpus and the deny-circuit leak family.
 DISPATCH_SURFACE: Final[QuoteGateSurface] = QuoteGateSurface(

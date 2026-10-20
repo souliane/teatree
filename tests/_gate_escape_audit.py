@@ -32,6 +32,7 @@ def audited_escape(
         return subprocess.CompletedProcess(argv, 0 if recorded else 1, json.dumps({"allowed": recorded}), "")
 
     data.setdefault("cwd", "/work/repo")
+    data.setdefault("session_id", "sess-audit")
     with (
         patch.object(router, "_CURRENT_EVENT", event),
         patch.object(router, "_CURRENT_DATA", data),

@@ -82,7 +82,7 @@ class TestEscapeMarkerReferenceComplete:
     def test_every_implemented_marker_is_documented(self) -> None:
         section = _canonical_section()
         markers = _implemented_markers()
-        assert len(markers) > 15, "a shrunken walk would make the assertion below trivially true"
+        assert markers == {"gate-escape"}, "each gate must use the one canonical escape token"
         missing = sorted(t for t in markers if f"[{t}:" not in section)
         assert not missing, (
             "The canonical escape-marker reference in hooks/CLAUDE.md is missing "

@@ -39,7 +39,6 @@ import sys
 from pathlib import Path
 
 from hooks.scripts.gate_escape import escape_allows
-from teatree.hooks.gate_escape import strip_stop_control_tokens
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -104,7 +103,7 @@ def _gate_is_out_of_scope(data: dict) -> bool:
 
 def _run_completion_claim_gate(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import completion_claim_scanner  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks import completion_claim_scanner, gate_escape  # noqa: PLC0415 — deferred: cold-hook import
 
     if _gate_is_out_of_scope(data):
         return None
@@ -112,7 +111,7 @@ def _run_completion_claim_gate(data: dict) -> bool | None:
     if turn is None:
         return None
     text = turn[0]
-    verdict = completion_claim_scanner.find_completion_block(strip_stop_control_tokens(text))
+    verdict = completion_claim_scanner.find_completion_block(gate_escape.strip_stop_control_tokens(text))
     if verdict is None:
         return None
     if escape_allows(data, "completion_claim", turn_text=text):

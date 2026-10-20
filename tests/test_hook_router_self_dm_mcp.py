@@ -435,7 +435,6 @@ def _run_router(payload: dict, settings: dict[str, object], tmp_path: Path) -> s
 
 _LIFTS_THE_WRITE_GUARD: dict[str, tuple[dict[str, object], str]] = {
     "fail-open switch stored true": ({"danger_gate_fail_open": True}, "status"),
-    "per-call token an agent can add": ({}, "status [slack-mcp-ok: vetted one-off]"),
     "write guard switched off": ({"mcp_slack_write_gate_enabled": False}, "status"),
 }
 
