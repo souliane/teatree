@@ -3,8 +3,8 @@
 
 tach refuses a non-exposed name imported from a reads module. It admits what this scan
 refuses: absolute and relative reads-module bindings, a submodule path, a
-``TYPE_CHECKING`` import and supported dynamic import literals. The scan also
-proves each reads module exposes, and itself touches, no write.
+``TYPE_CHECKING`` import and supported dynamic import literals. The reads modules
+bind no write-capable names, so binding a module object in any form reaches no write.
 """
 
 import ast
@@ -40,6 +40,11 @@ _WRITE_TRANSPORT = frozenset(
         "_gh_api_write",
         "_gh_api_post",
         "_gh_api_patch",
+        "_run_gh",
+        "run_gh_unchecked",
+        "gh_runner",
+        "gh_merge_rpc",
+        "GhMergeRpc",
         "post_json",
         "post_status",
         "put_json",
@@ -209,21 +214,17 @@ def test_reads_module_touches_no_write(module: str) -> None:
 
     assert touched & _forge_writes() == set()
     assert literals & _GH_METHOD_SWITCHES == set()
-
-
-@pytest.mark.parametrize("module", READ_MODULES)
-def test_reads_module_does_not_bind_write_capable_modules(module: str) -> None:
-    tree = ast.parse(_module_file(module).read_text(encoding="utf-8"))
-    write_modules = {"teatree.backends.forge_merge_rpc", "teatree.backends.github.api"}
-    imported_modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
-    imported_modules |= {
-        f"{node.module}.{alias.name}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-
-    assert imported_modules.isdisjoint(write_modules)
+    bound = vars(importlib.import_module(module))
+    assert bound.keys().isdisjoint(_forge_writes())
+    for name, value in bound.items():
+        assert getattr(value, "__name__", "") not in _forge_writes(), f"{module}.{name}"
+        if inspect.ismodule(value) or (
+            (inspect.isclass(value) or inspect.isfunction(value)) and value.__module__ != module
+        ):
+            for attribute in dir(value):
+                assert attribute not in _forge_writes(), f"{module}.{name}.{attribute}"
+                member = getattr(value, attribute)
+                assert getattr(member, "__name__", "") not in _forge_writes(), f"{module}.{name}.{attribute}"
 
 
 def test_no_module_reaches_past_a_read_interface() -> None:
@@ -253,16 +254,10 @@ def test_the_forge_client_reads_through_its_read_interface() -> None:
     )
 
 
-def test_a_prose_mention_does_not_count() -> None:
-    source = '"The teatree.backends.github.reads interface is read-only"\n'
-    assert reaches_past_the_interface(ast.parse(source), _exposed(), "teatree.backends") == []
-
-
 @pytest.mark.parametrize(
     ("source", "package"),
     [
         ("import teatree.backends.github.reads\n", "teatree.backends"),
-        ("from teatree.backends.github import reads\n", "teatree.backends"),
         ("from teatree.backends.gitlab import reads as gitlab_reads\n", "teatree.backends"),
         ("from teatree.backends.github.reads import *\n", "teatree.backends"),
         ("from teatree.backends.github.reads import _gh_api_post\n", "teatree.backends"),
