@@ -7,13 +7,15 @@ symbol has no Python import to break and no test to turn red, so nothing catches
 it. This walk does: every teatree-shaped reference a skill makes must resolve
 against the live tree.
 
-Six reference shapes are extracted:
+Seven reference shapes are extracted:
 
 - a repo path under ``src/teatree/`` — must exist on disk.
 - a repo path under any other top-level directory of the tree — checked only
     when it names a file under a directory that exists, because outside
     ``src/teatree/`` those top-level names recur in prose (``dev/staging``) and
     in stand-in namespaces (``src/acme/billing/sweep.py``).
+- a backtick-quoted package-relative path in charter mode — expanded through
+    an indexed ``src/teatree/`` package root when that root is unique.
 - a dotted ``teatree.<...>`` name — the longest importable module prefix is
     imported and the remaining segments are walked with ``getattr``.
 - a bare module-local ``<module>.<SYMBOL>`` name (``phase_tools.PHASE_TOOLS``,
@@ -161,7 +163,7 @@ def _ensure_repo_root_importable(repo_root: Path) -> None:
 
 
 def resolve_repo_path(ref: str, repo_root: Path, *, charter: bool = False) -> str | None:
-    """Return ``None`` when ``ref`` names an existing path, else why not."""
+    """Accept existing paths and, in charter mode, suffixless ``.py`` and app ``templates``/``static`` paths."""
     path = repo_root / ref
     if path.exists():
         return None

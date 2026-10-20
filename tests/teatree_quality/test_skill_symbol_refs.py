@@ -291,17 +291,6 @@ class TestResolver:
     def test_absent_path_is_unresolved(self) -> None:
         assert resolve_repo_path("src/teatree/core/session.py", _REPO_ROOT) is not None
 
-    def test_package_citation_does_not_emit_an_unresolved_bare_path(self) -> None:
-        findings = scan_source(
-            "`hooks/privacy_diff_comment_density.py`",
-            Path("BLUEPRINT.md"),
-            _REPO_ROOT,
-            charter=True,
-        )
-        assert [(finding.ref, finding.reason) for finding in findings] == [
-            ("src/teatree/hooks/privacy_diff_comment_density.py", None)
-        ]
-
     def test_a_claimed_package_citation_does_not_hide_a_separate_stale_path(self) -> None:
         package_ref = "`hooks/privacy_diff_comment_density.py`"
         stale_ref = "`src/teatree/core/vanished_module.py`"
