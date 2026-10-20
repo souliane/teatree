@@ -147,6 +147,7 @@ class RetentionPruneCommandTestCase(TestCase):
             "Task (failed)",
             "Task (completed)",
             "BotPing (payload)",
+            "IncomingEvent (forge)",
             "IncomingEvent",
             "TicketTransition",
             "PendingChatInjection",

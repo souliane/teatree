@@ -1,12 +1,28 @@
 """Total field extraction from a GitHub delivery: an unexpected shape yields empty fields, never an exception."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Self
+
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from teatree.types import RawAPIDict
 
 _PULL_REQUEST_EVENTS = frozenset({"pull_request", "pull_request_review", "pull_request_review_comment"})
 _CHECK_EVENTS = frozenset({"check_run", "check_suite"})
+_TIMESTAMP_PATHS = {
+    "pull_request_review": ("review", "submitted_at"),
+    "pull_request_review_comment": ("comment", "updated_at"),
+    "issue_comment": ("comment", "updated_at"),
+    "commit_comment": ("comment", "updated_at"),
+    "pull_request": ("pull_request", "updated_at"),
+    "issues": ("issue", "updated_at"),
+    "check_suite": ("check_suite", "updated_at"),
+    "check_run": ("check_run", "completed_at"),
+    "workflow_run": ("workflow_run", "updated_at"),
+    "push": ("head_commit", "timestamp"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +31,8 @@ class GitHubPayloadFields:
     channel_ref: str
     thread_ref: str
     body: str
+    repo_key: str = ""
+    occurred_at: datetime | None = None
 
     @classmethod
     def from_payload(cls, event: str, payload: RawAPIDict) -> Self:
@@ -24,7 +42,28 @@ class GitHubPayloadFields:
             channel_ref=_str(_dict(payload, "repository"), "full_name"),
             thread_ref=thread_ref,
             body=body,
+            repo_key=_repo_key(payload),
+            occurred_at=_occurred_at(event, payload),
         )
+
+
+def _repo_key(payload: RawAPIDict) -> str:
+    repo_id = _number(_dict(payload, "repository"), "id")
+    return f"github:{repo_id}" if repo_id else ""
+
+
+def _occurred_at(event: str, payload: RawAPIDict) -> datetime | None:
+    path = _TIMESTAMP_PATHS.get(event)
+    if path is None:
+        return None
+    stamp = _str(_dict(payload, path[0]), path[1])
+    if not stamp:
+        return None
+    try:
+        parsed = parse_datetime(stamp)
+    except ValueError:
+        return None
+    return parsed if parsed is not None and timezone.is_aware(parsed) else None
 
 
 def _thread_and_body(event: str, payload: RawAPIDict) -> tuple[str, str]:

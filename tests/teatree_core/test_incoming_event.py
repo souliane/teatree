@@ -14,7 +14,7 @@ from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import IncomingEvent
+from teatree.core.models import IncomingEvent, webhooks_verified_for
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 
 
@@ -69,6 +69,73 @@ class TestIncomingEvent(TestCase):
 
         event.refresh_from_db()
         assert event.processed_at is not None
+
+    def test_mark_processed_clears_forge_payload(self) -> None:
+        event = IncomingEvent.objects.create(
+            **self._payload(source=IncomingEvent.Source.GITHUB, idempotency_key="github:drained")
+        )
+
+        event.mark_processed()
+        event.refresh_from_db()
+
+        assert (event.body, event.payload_json) == ("", {})
+
+    def test_evidence_is_per_repository_and_event_type(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:push",
+                origin="webhook",
+                repo_key="github:101",
+                event_name="push",
+            )
+        )
+
+        assert webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+        assert not webhooks_verified_for("github", "github:101", "pull_request_review", timedelta(days=1))
+        assert not webhooks_verified_for("github", "github:202", "push", timedelta(days=1))
+
+    def test_poll_rows_are_not_webhook_evidence(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:polled",
+                origin="poll",
+                repo_key="github:101",
+                event_name="push",
+            )
+        )
+
+        assert not webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+
+    def test_webhook_evidence_respects_the_window(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:old-push",
+                origin="webhook",
+                repo_key="github:101",
+                event_name="push",
+                received_at=timezone.now() - timedelta(days=2),
+            )
+        )
+
+        assert not webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+
+    def test_relay_is_evidence_but_empty_repository_is_not(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITLAB,
+                idempotency_key="gitlab:relay",
+                origin="relay",
+                repo_key="gitlab:101",
+                event_name="merge_request",
+            )
+        )
+
+        assert webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
+        assert not webhooks_verified_for("gitlab", "", "merge_request", timedelta(days=1))
+        assert not webhooks_verified_for("gitlab", "gitlab:101", "", timedelta(days=1))
 
     def test_unprocessed_manager_excludes_completed_events(self) -> None:
         unprocessed = IncomingEvent.objects.create(**self._payload())

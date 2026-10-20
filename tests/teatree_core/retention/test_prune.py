@@ -58,6 +58,7 @@ _LANE_ORDER = [
     "Task (failed)",
     "Task (completed)",
     "BotPing (payload)",
+    "IncomingEvent (forge)",
     "IncomingEvent",
     "TicketTransition",
     "PendingChatInjection",
@@ -161,6 +162,42 @@ def _exists(row: Task | TaskAttempt) -> bool:
 
 
 class IncomingEventPrunableGuardTestCase(TestCase):
+    def test_forge_identity_rows_pruned_after_8_days(self) -> None:
+        old = IncomingEvent.objects.create(
+            source="github",
+            idempotency_key="github:old",
+            received_at=timezone.now() - dt.timedelta(days=9),
+            processed_at=timezone.now(),
+        )
+        recent = IncomingEvent.objects.create(
+            source="github",
+            idempotency_key="github:recent",
+            received_at=timezone.now() - dt.timedelta(days=7),
+            processed_at=timezone.now(),
+        )
+
+        plan = plan_retention()
+
+        assert _lane(plan, "IncomingEvent (forge)").retention_days == 8
+        assert _lane(plan, "IncomingEvent (forge)").rows == 1
+        apply_retention()
+        assert not IncomingEvent.objects.filter(pk=old.pk).exists()
+        assert IncomingEvent.objects.filter(pk=recent.pk).exists()
+
+    def test_forge_dead_letter_keeps_payload_until_the_long_window(self) -> None:
+        dead = IncomingEvent.objects.create(
+            source="gitlab",
+            idempotency_key="gitlab:dead",
+            received_at=timezone.now() - dt.timedelta(days=9),
+            dead_lettered_at=timezone.now(),
+            payload_json={"retry": "needed"},
+        )
+
+        apply_retention()
+
+        dead.refresh_from_db()
+        assert dead.payload_json == {"retry": "needed"}
+
     def test_old_processed_event_is_prunable(self) -> None:
         event = _event(idempotency_key="k-processed")
         prunable = IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30))

@@ -58,3 +58,33 @@ def test_fields_follow_the_event_family(event: str, payload: RawAPIDict, expecte
 )
 def test_odd_shapes_yield_empty_fields(payload: RawAPIDict) -> None:
     assert GitHubPayloadFields.from_payload("pull_request_review", payload) == GitHubPayloadFields("", "", "", "")
+
+
+@pytest.mark.parametrize(
+    ("event", "object_name", "field"),
+    [
+        ("pull_request_review", "review", "submitted_at"),
+        ("pull_request_review_comment", "comment", "updated_at"),
+        ("issue_comment", "comment", "updated_at"),
+        ("pull_request", "pull_request", "updated_at"),
+        ("issues", "issue", "updated_at"),
+        ("check_suite", "check_suite", "updated_at"),
+        ("check_run", "check_run", "completed_at"),
+        ("workflow_run", "workflow_run", "updated_at"),
+        ("push", "head_commit", "timestamp"),
+    ],
+)
+def test_event_timestamp_uses_its_own_source(event: str, object_name: str, field: str) -> None:
+    payload: RawAPIDict = {object_name: {field: "2026-10-20T09:00:00Z"}, "repository": {"id": 101}}
+
+    fields = GitHubPayloadFields.from_payload(event, payload)
+
+    assert fields.occurred_at is not None
+    assert fields.occurred_at.isoformat() == "2026-10-20T09:00:00+00:00"
+    assert fields.repo_key == "github:101"
+
+
+def test_invalid_or_naive_timestamp_is_unknown() -> None:
+    for stamp in ("not-a-time", "2026-13-40T09:00:00Z", "2026-10-20T09:00:00"):
+        fields = GitHubPayloadFields.from_payload("push", {"head_commit": {"timestamp": stamp}})
+        assert fields.occurred_at is None

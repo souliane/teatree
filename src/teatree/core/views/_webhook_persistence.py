@@ -1,14 +1,9 @@
-"""Shared persistence helper for inbound webhook receivers (#654).
-
-Each platform view extracts a normalized record from its payload and calls
-:func:`persist_incoming_event`. The helper wraps the
-``IncomingEvent.objects.create()`` call in a nested ``transaction.atomic()``
-so a duplicate insert under Django's test transaction doesn't poison the
-outer block — it just lets the platform-specific replay path no-op.
-"""
+"""Atomic ingest of normalized inbound records with duplicate suppression."""
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -17,6 +12,11 @@ from teatree.core.models import IncomingEvent
 from teatree.core.models.provenance import classify_provenance
 
 logger = logging.getLogger(__name__)
+
+
+class IngestOutcome(StrEnum):
+    NEW = "new"
+    DUPLICATE = "duplicate"
 
 
 @dataclass(slots=True)
@@ -31,30 +31,48 @@ class IngestionRecord:
     dead_letter_reason: str = ""
     settled: bool = False
     event_name: str = ""
+    signer: str = ""
+    origin: str = ""
+    repo_key: str = ""
+    action: str = ""
+    occurred_at: datetime | None = None
 
 
-def persist_incoming_event(record: IngestionRecord) -> bool:
+def ingest(record: IngestionRecord) -> IngestOutcome:
     # The single ingestion chokepoint every inbound flow passes through (both webhook
     # views + the GitLab Pub/Sub scanner), so the #116 provenance is stamped ONCE
     # here from (source, actor) — the views need no change.
     provenance = classify_provenance(record.source, record.actor)
+    moment = timezone.now()
+    trim = record.settled and record.source in {IncomingEvent.Source.GITHUB, IncomingEvent.Source.GITLAB}
     try:
         with transaction.atomic():
             IncomingEvent.objects.create(
                 source=record.source,
+                signer=record.signer,
+                origin=record.origin,
+                repo_key=record.repo_key,
+                action=record.action,
+                occurred_at=record.occurred_at or moment,
+                occurred_at_unknown=record.occurred_at is None,
+                received_at=moment,
                 actor=record.actor,
                 channel_ref=record.channel_ref,
                 thread_ref=record.thread_ref,
-                body=record.body,
-                payload_json=record.payload_json or {},
+                body="" if trim else record.body,
+                payload_json={} if trim else record.payload_json or {},
                 idempotency_key=record.idempotency_key,
                 event_name=record.event_name,
                 provenance=provenance,
                 last_error=record.dead_letter_reason,
-                dead_lettered_at=timezone.now() if record.dead_letter_reason else None,
-                processed_at=timezone.now() if record.settled else None,
+                dead_lettered_at=moment if record.dead_letter_reason else None,
+                processed_at=moment if record.settled else None,
             )
     except IntegrityError:
         logger.debug("%s already ingested — replay suppressed", record.idempotency_key)
-        return False
-    return True
+        return IngestOutcome.DUPLICATE
+    return IngestOutcome.NEW
+
+
+def persist_incoming_event(record: IngestionRecord) -> bool:
+    return ingest(record) is IngestOutcome.NEW

@@ -5,11 +5,14 @@ is classified once here from ``(source, actor)`` — a trusted operator handle �
 everyone else → the fail-closed ``public``.
 """
 
+from datetime import timedelta
+
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import IncomingEvent, TrustedIdentity
 from teatree.core.models.provenance import Provenance
-from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
+from teatree.core.views._webhook_persistence import IngestionRecord, IngestOutcome, ingest, persist_incoming_event
 
 
 class TestProvenanceStamping(TestCase):
@@ -58,6 +61,55 @@ class TestDeadLetteringAtIngestion(TestCase):
 
 
 class TestSettledAtIngestion(TestCase):
+    def test_settled_forge_row_keeps_no_payload(self) -> None:
+        ingest(
+            IngestionRecord(
+                source="github", idempotency_key="github:trim", body="secret", payload_json={"secret": 1}, settled=True
+            )
+        )
+
+        row = IncomingEvent.objects.get(idempotency_key="github:trim")
+        assert (row.body, row.payload_json) == ("", {})
+
+    def test_pending_row_keeps_payload(self) -> None:
+        ingest(
+            IngestionRecord(source="gitlab", idempotency_key="gitlab:pending", body="retry", payload_json={"retry": 1})
+        )
+
+        row = IncomingEvent.objects.get(idempotency_key="gitlab:pending")
+        assert (row.body, row.payload_json) == ("retry", {"retry": 1})
+
+    def test_ingest_duplicate_outcome(self) -> None:
+        record = IngestionRecord(source="github", idempotency_key="github:once", settled=True)
+
+        assert ingest(record) is IngestOutcome.NEW
+        assert ingest(record) is IngestOutcome.DUPLICATE
+        assert IncomingEvent.objects.count() == 1
+
+    def test_record_identity_fields_survive_ingest(self) -> None:
+        occurred = timezone.now() - timedelta(hours=1)
+        ingest(
+            IngestionRecord(
+                source="github",
+                idempotency_key="github:identity",
+                signer="repository-101",
+                origin="webhook",
+                repo_key="github:101",
+                action="opened",
+                occurred_at=occurred,
+                settled=True,
+            )
+        )
+
+        row = IncomingEvent.objects.get()
+        assert (row.signer, row.origin, row.repo_key, row.action, row.occurred_at) == (
+            "repository-101",
+            "webhook",
+            "github:101",
+            "opened",
+            occurred,
+        )
+
     def test_a_settled_record_is_stored_processed_and_never_waits_for_a_drain(self) -> None:
         persist_incoming_event(IngestionRecord(source="gitlab", idempotency_key="gitlab:s1", settled=True))
 

@@ -56,7 +56,7 @@ from teatree.core.models.implemented_issue_marker import (
     ImplementedIssueMarker,
     MarkerReconcileResult,
 )
-from teatree.core.models.incoming_event import IncomingEvent
+from teatree.core.models.incoming_event import IncomingEvent, webhooks_verified_for
 from teatree.core.models.intake_scan_cursor import INCOMPLETE_PASS_ALARM, IntakeScanCursor, IntakeScanCursorManager
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.interactive_dispatch import SEAT_WINDOW, InteractiveDispatch, InteractiveDispatchManager
@@ -362,4 +362,5 @@ __all__ = [
     "canonical_mr_scope",
     "normalize_reviewer_identity",
     "validated_ticket_extra",
+    "webhooks_verified_for",
 ]

@@ -21,13 +21,7 @@ _RETRY_CAP = timedelta(hours=1)
 
 
 class IncomingEvent(models.Model):
-    """One inbound webhook payload from an external platform.
-
-    The single ingestion record every later phase of issue #654 reads
-    from: the intent classifier, the dispatcher branch, and the reply
-    transport. Stored ahead of the platform receivers so the persistence
-    layer is stable before any HMAC-verifying view is wired up.
-    """
+    """Ledger row and retry outbox for an inbound event."""
 
     class Source(models.TextChoices):
         SLACK = "slack", "Slack"
@@ -36,8 +30,19 @@ class IncomingEvent(models.Model):
         NOTION = "notion", "Notion"
         CI = "ci", "CI"
 
+    class Origin(models.TextChoices):
+        WEBHOOK = "webhook", "Webhook"
+        RELAY = "relay", "Relay"
+        POLL = "poll", "Poll"
+
     source = models.CharField(max_length=16, choices=Source.choices)
     event_name = models.CharField(max_length=64, blank=True)
+    signer = models.CharField(max_length=64, blank=True)
+    origin = models.CharField(max_length=16, choices=Origin.choices, blank=True)
+    repo_key = models.CharField(max_length=64, blank=True)
+    action = models.CharField(max_length=64, blank=True)
+    occurred_at = models.DateTimeField(null=True, blank=True)
+    occurred_at_unknown = models.BooleanField(default=False)
     actor = models.CharField(max_length=255, blank=True)
     channel_ref = models.CharField(max_length=255, blank=True)
     thread_ref = models.CharField(max_length=255, blank=True)
@@ -64,6 +69,7 @@ class IncomingEvent(models.Model):
         ordering: ClassVar = ["-received_at"]
         indexes: ClassVar = [
             models.Index(fields=["source", "received_at"]),
+            models.Index(fields=["source", "repo_key", "event_name", "origin", "received_at"]),
             models.Index(fields=["processed_at"]),
             models.Index(fields=["dead_lettered_at"]),
         ]
@@ -78,7 +84,12 @@ class IncomingEvent(models.Model):
 
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
-        self.save(update_fields=["processed_at"])
+        update_fields = ["processed_at"]
+        if self.source in {self.Source.GITHUB, self.Source.GITLAB}:
+            self.body = ""
+            self.payload_json = {}
+            update_fields.extend(["body", "payload_json"])
+        self.save(update_fields=update_fields)
 
     def record_failure(
         self,
@@ -122,3 +133,15 @@ class IncomingEvent(models.Model):
         """Persist the resolved parent-message *text* (single-field write)."""
         self.parent_text = text
         self.save(update_fields=["parent_text"])
+
+
+def webhooks_verified_for(source: str, repo_key: str, event_name: str, window: timedelta) -> bool:
+    if not repo_key or not event_name:
+        return False
+    return IncomingEvent.objects.filter(
+        source=source,
+        repo_key=repo_key,
+        event_name=event_name,
+        origin__in=(IncomingEvent.Origin.WEBHOOK, IncomingEvent.Origin.RELAY),
+        received_at__gte=timezone.now() - window,
+    ).exists()

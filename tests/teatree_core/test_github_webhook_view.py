@@ -6,12 +6,14 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from teatree.core.models import IncomingEvent, Task
 from teatree.core.views import _webhook_secrets, github_webhook
@@ -100,6 +102,49 @@ class GitHubWebhookTestCase(TestCase):
 
 
 class TestAcceptedDelivery(GitHubWebhookTestCase):
+    def test_settled_github_row_keeps_no_payload(self) -> None:
+        body = _payload(repository={"id": 101}, pull_request={"number": 7, "title": "Private"})
+
+        assert self.deliver(body).status_code == 200
+        row = IncomingEvent.objects.get()
+        assert (row.body, row.payload_json) == ("", {})
+
+    def test_row_records_signer_origin_repo_key(self) -> None:
+        body = _payload(repository={"id": 101}, pull_request={"updated_at": "2026-10-20T09:00:00Z"})
+
+        assert self.deliver(body).status_code == 200
+        row = IncomingEvent.objects.get()
+        assert (row.signer, row.origin, row.repo_key, row.action) == (
+            "repository-101",
+            "webhook",
+            "github:101",
+            "opened",
+        )
+        assert row.occurred_at.isoformat() == "2026-10-20T09:00:00+00:00"
+        assert row.occurred_at_unknown is False
+
+    def test_old_delivery_settled_identity_only(self) -> None:
+        old = (timezone.now() - timedelta(days=8)).isoformat()
+        body = _payload(repository={"id": 101}, pull_request={"updated_at": old})
+
+        assert self.deliver(body).status_code == 200
+        row = IncomingEvent.objects.get()
+        assert row.processed_at is not None
+        assert (row.body, row.payload_json) == ("", {})
+        assert row.occurred_at < row.received_at - timedelta(days=7)
+
+    def test_missing_event_time_uses_receipt_and_marks_unknown(self) -> None:
+        assert self.deliver(_payload(repository={"id": 101})).status_code == 200
+
+        row = IncomingEvent.objects.get()
+        assert row.occurred_at == row.received_at
+        assert row.occurred_at_unknown is True
+
+    def test_non_string_action_is_not_stored(self) -> None:
+        assert self.deliver(_payload(action=3, repository={"id": 101})).status_code == 200
+
+        assert IncomingEvent.objects.get().action == ""
+
     def test_signed_delivery_stores_one_row_keyed_by_delivery_with_event_name(self) -> None:
         body = _payload(
             sender={"login": "bob"},
@@ -113,7 +158,7 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
         row = IncomingEvent.objects.get()
         assert (row.source, row.idempotency_key, row.event_name) == ("github", "github:abc-123", "pull_request_review")
         assert (row.actor, row.channel_ref, row.thread_ref) == ("bob", "owner/repo", "17")
-        assert row.payload_json == json.loads(body)
+        assert (row.body, row.payload_json) == ("", {})
 
     def test_row_is_stored_settled_so_the_drain_never_dispatches_it(self) -> None:
         body = _payload(pull_request={"number": 4, "title": "Handle the case where the cache is cold"})
