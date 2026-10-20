@@ -27,6 +27,7 @@ depend on a binary only an operator's host bind mount happens to supply.
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -182,22 +183,57 @@ def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     return _probe_open_pr([*_GH_OPEN_PR, "--head", branch], repo_dir, key="url")
 
 
-def github_pr_head_repository(repo_dir: str | Path, pr_url: str) -> tuple[str, str] | None:
-    output = _open_pr_stdout(["gh", "pr", "view", pr_url, "--json", "headRepository,headRefName"], repo_dir)
+def github_open_pr_head(repo_dir: str | Path, branch: str) -> tuple[str, str, str, str] | None:
+    output = _open_pr_stdout(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "url,headRepository,headRefName,headRefOid",
+            "--limit",
+            "1",
+            "--head",
+            branch,
+        ],
+        repo_dir,
+    )
+    if output is None:
+        return None
+    try:
+        rows = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    repository = row.get("headRepository")
+    branch = row.get("headRefName")
+    url = row.get("url")
+    head = row.get("headRefOid")
+    if not isinstance(repository, dict) or not isinstance(branch, str):
+        return None
+    slug = repository.get("nameWithOwner")
+    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug or not branch:
+        return None
+    return (url, slug, branch, head) if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) else None
+
+
+def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host: str) -> str | None:
+    output = _open_pr_stdout(["gh", "api", "--hostname", host, f"repos/{slug}/git/ref/heads/{branch}"], repo_dir)
     if output is None:
         return None
     try:
         row = json.loads(output)
     except (TypeError, ValueError):
         return None
-    if not isinstance(row, dict):
+    if not isinstance(row, dict) or row.get("ref") != f"refs/heads/{branch}":
         return None
-    repository = row.get("headRepository")
-    branch = row.get("headRefName")
-    if not isinstance(repository, dict) or not isinstance(branch, str):
-        return None
-    slug = repository.get("nameWithOwner")
-    return (slug, branch) if isinstance(slug, str) and slug and branch else None
+    object_data = row.get("object")
+    sha = object_data.get("sha") if isinstance(object_data, dict) else None
+    return sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:

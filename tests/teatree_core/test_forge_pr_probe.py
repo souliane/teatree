@@ -24,6 +24,8 @@ from teatree.core.forge_pr_probe import (
     PrProbeOutcome,
     find_open_pr_for_branch,
     forge_cli_env,
+    github_exact_branch_head,
+    github_open_pr_head,
     gitlab_cli_env,
     probe_github_open_pr,
     probe_gitlab_open_pr,
@@ -109,6 +111,65 @@ class TestPrProbeMappers:
         assert not PrProbe.none().is_found
         assert PrProbe.unknown().is_unknown
         assert not PrProbe.found(_GH_URL).is_unknown
+
+
+class TestGithubHeadProof:
+    def test_open_pr_head_uses_one_authenticated_list(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        head = "a" * 40
+        payload = [
+            {
+                "url": _GH_URL,
+                "headRepository": {"nameWithOwner": "acme/widgets"},
+                "headRefName": "feature",
+                "headRefOid": head,
+            }
+        ]
+        seen = _fake_cli(monkeypatch, _completed(json.dumps(payload)))
+        assert github_open_pr_head(tmp_path, "feature") == (_GH_URL, "acme/widgets", "feature", head)
+        assert seen == [
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--json",
+                "url,headRepository,headRefName,headRefOid",
+                "--limit",
+                "1",
+                "--head",
+                "feature",
+            ]
+        ]
+
+    @pytest.mark.parametrize("payload", ["garbage", "{}", "[]", '[{"url":"x"}]', '[{"headRefOid":"oops"}]'])
+    def test_open_pr_head_refuses_malformed_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        _fake_cli(monkeypatch, _completed(payload))
+        assert github_open_pr_head(tmp_path, "feature") is None
+
+    def test_exact_branch_ref_uses_routed_gh_api(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        head = "b" * 40
+        seen = _fake_cli(monkeypatch, _completed(json.dumps({"ref": "refs/heads/feature", "object": {"sha": head}})))
+        assert github_exact_branch_head(tmp_path, "acme/widgets", "feature", "github.com") == head
+        assert seen == [["gh", "api", "--hostname", "github.com", "repos/acme/widgets/git/ref/heads/feature"]]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "garbage",
+            "[]",
+            "{}",
+            '{"ref":"refs/heads/other","object":{"sha":"' + "a" * 40 + '"}}',
+            '{"ref":"refs/heads/feature","object":{"sha":"nope"}}',
+        ],
+    )
+    def test_exact_branch_ref_refuses_malformed_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        _fake_cli(monkeypatch, _completed(payload))
+        assert github_exact_branch_head(tmp_path, "acme/widgets", "feature", "github.com") is None
 
 
 class TestFindOpenPrForBranch:

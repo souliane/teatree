@@ -17,11 +17,11 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof, reattest_released_pr_head
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
-from teatree.utils.git import run_strict
+from teatree.utils.git import check, run_strict
 from tests._process_table_venue import nested_venue, table_with_unreadable_pid
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -396,13 +396,38 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         return Mock(spec=TaskAttempt)
 
     def claim(
-        self, table: ProcessTable | None = None, *, head_repo: str = "souliane/teatree", pr: PrProbe | None = None
+        self,
+        table: ProcessTable | None = None,
+        *,
+        head_repo: str = "souliane/teatree",
+        head_branch: str = "feature",
+        pr: PrProbe | None = None,
     ) -> TaskAttempt | None:
-        metadata = json.dumps({"headRepository": {"nameWithOwner": head_repo}, "headRefName": "feature"})
+        def forge_stdout(cmd: list[str], _repo: str) -> str | None:
+            if cmd[1:3] == ["pr", "list"]:
+                found = pr if pr is not None else PrProbe.found(self.pr.url)
+                if not found.is_found or cmd[-1] != "feature":
+                    return "[]"
+                return json.dumps(
+                    [
+                        {
+                            "url": found.url,
+                            "headRepository": {"nameWithOwner": head_repo},
+                            "headRefName": head_branch,
+                            "headRefOid": self.head,
+                        }
+                    ]
+                )
+            if run_strict(repo=str(self.path), args=["remote", "get-url", "origin"]) != str(self.origin):
+                return None
+            if not check(repo=str(self.origin), args=["show-ref", "--verify", "refs/heads/feature"]):
+                return None
+            remote = run_strict(repo=str(self.origin), args=["rev-parse", "refs/heads/feature"])
+            return json.dumps({"ref": "refs/heads/feature", "object": {"sha": remote}})
+
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
-            patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=pr or PrProbe.found(self.pr.url)),
-            patch.object(forge_pr_probe, "_open_pr_stdout", return_value=metadata),
+            patch.object(forge_pr_probe, "_open_pr_stdout", side_effect=forge_stdout),
             patch("teatree.utils.git.remote_slug", return_value="souliane/teatree"),
             patch("teatree.utils.git.remote_url", return_value="https://github.com/souliane/teatree.git"),
             patch("teatree.core.worktree.checkout_fence.ask_owner_to_attest") as card,
@@ -428,6 +453,92 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert self.claim(table, **kwargs) is not None
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] == recorded
+
+    def direct_recovery(self) -> bool:
+        with (
+            patch.object(
+                forge_pr_probe,
+                "github_open_pr_head",
+                return_value=(self.pr.url, "souliane/teatree", "feature", self.head),
+            ),
+            patch.object(forge_pr_probe, "github_exact_branch_head", return_value=self.head),
+            patch("teatree.utils.git.remote_slug", return_value="souliane/teatree"),
+            patch("teatree.utils.git.remote_url", return_value="https://github.com/souliane/teatree.git"),
+        ):
+            return reattest_released_pr_head(
+                self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), self.clear
+            )
+
+    def test_read_only_prior_tenures_do_not_attest(self) -> None:
+        Task.objects.filter(pk=self.shipping.pk).update(phase="reviewing")
+        self.assert_parked()
+
+    def test_single_released_writer_can_attest(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"].pop()
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        assert self.claim() is None
+
+    def test_second_state_read_must_match_first(self) -> None:
+        changed = CheckoutState("0" * 64, 0, 0, "feature")
+        with patch("teatree.core.worktree.checkout_recovery.checkout_state", return_value=changed):
+            self.assert_parked()
+
+    def test_current_tenure_must_name_claimant(self) -> None:
+        assert acquire(self.worktree, holder=task_holder_id(self.claimant))
+        self.worktree.refresh_from_db()
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][-1]["holder"] = task_holder_id(self.reviewer)
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        assert not self.direct_recovery()
+
+    def test_occupancy_must_name_claimant(self) -> None:
+        assert acquire(self.worktree, holder=task_holder_id(self.claimant))
+        self.worktree.refresh_from_db()
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupied_by=task_holder_id(self.reviewer))
+        self.worktree.refresh_from_db()
+        assert not self.direct_recovery()
+
+    def test_proven_head_must_bind_attested_digest(self) -> None:
+        real_run = run_strict
+
+        def substitute_head(*, repo: str, args: list[str]) -> str:
+            if args == ["rev-parse", "--verify", "HEAD"]:
+                return self.anchor_head
+            return real_run(repo=repo, args=args)
+
+        with (
+            patch("teatree.core.worktree.checkout_recovery.git.run_strict", side_effect=substitute_head),
+            patch.object(
+                forge_pr_probe,
+                "github_open_pr_head",
+                return_value=(self.pr.url, "souliane/teatree", "feature", self.anchor_head),
+            ),
+            patch.object(forge_pr_probe, "github_exact_branch_head", return_value=self.anchor_head),
+        ):
+            self.assert_parked()
+
+    def test_pr_repository_slug_must_equal_origin(self) -> None:
+        foreign = PullRequestFactory(
+            ticket=self.ticket, url="https://github.com/other/repo/pull/9001", repo="other/repo", iid="9001"
+        )
+        self.assert_parked(pr=PrProbe.found(foreign.url))
+
+    def test_pr_host_must_equal_origin(self) -> None:
+        other_host = PullRequestFactory(
+            ticket=self.ticket,
+            url="https://mirror.github.com/souliane/teatree/pull/9001",
+            repo="souliane/teatree",
+            iid="9001",
+        )
+        self.assert_parked(pr=PrProbe.found(other_host.url))
+
+    def test_reported_pr_source_branch_must_equal_checkout(self) -> None:
+        self.assert_parked(head_branch="other")
+
+    def test_recorded_branch_must_equal_checkout(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="other")
+        self.assert_parked()
 
     def test_t1_released_shipping_and_reviewer_claim_at_owned_pr_head(self) -> None:
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")

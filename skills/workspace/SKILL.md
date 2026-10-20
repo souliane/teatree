@@ -112,6 +112,14 @@ attestation, the next writer's fence can re-attest, including an in-session clai
 Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
 A writing run whose exit was deferred by a checkout process records that exit state;
 the next writer attests it only after the process is gone and the state is unchanged.
+A released writing run may leave a clean checkout ahead of its prior attestation.
+The next writing claim can re-attest a released same-ticket custody chain with at least
+one writer when its current holder and occupancy match, no process holds the checkout,
+the old clean digest resolves to a reflog ancestor, and the checkout HEAD matches both
+the ticket-owned GitHub pull request head and its exact live source branch ref.
+The proof reads the GitHub API with the overlay's routed token, checks the digest again,
+and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
+An unreadable or mismatched proof parks the task for the existing owner path.
 On completion, ordinary failure, lease-expiry reap, and attested park, checkout
 settlement waits two 60-second beats for descendants and marked children, sends
 SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
