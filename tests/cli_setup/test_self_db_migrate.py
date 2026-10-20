@@ -18,6 +18,7 @@ from django.test import TestCase
 
 from teatree.config import UserSettings, resolution
 from teatree.config.credential_pass_key import PassKeySource
+from teatree.config.override_reader import OverlayRows
 from teatree.core.overlay import OverlayConfig
 
 #: The two events whose ORDER is the contract — the migrate, and the first read of the
@@ -63,6 +64,11 @@ def _run_setup(
             order.append(_DB_TIER_READ)
         return {}, False
 
+    def _overlay_tier_read(_overlay_name: str) -> tuple[OverlayRows, bool]:
+        if order is not None:
+            order.append(_DB_TIER_READ)
+        return OverlayRows({}, {}), False
+
     def _provision_notion_route() -> int:
         if order is not None:
             order.append(_NOTION_ROUTE)
@@ -89,7 +95,7 @@ def _run_setup(
         # The resolver's OWN bindings, not ``override_reader``'s: ``resolution`` binds both
         # names at module level, so patching the defining module reaches neither.
         patch.object(resolution, "load_global_rows", _db_tier_read),
-        patch.object(resolution, "load_overlay_rows", _db_tier_read),
+        patch.object(resolution, "load_overlay_rows", _overlay_tier_read),
         patch("teatree.config.load_config") as mock_load,
     ):
         # A real dataclass, not a MagicMock attribute: the resolver `replace()`s the

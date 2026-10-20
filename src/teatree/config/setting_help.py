@@ -106,6 +106,7 @@ SETTING_HELP: dict[str, str] = {
         "(workflow names on a plan-restricted GitHub Free fallback — #4844)"
     ),
     "foreign_branch_push_gate_enabled": "refuse a push onto a branch another author owns",
+    "forced_repro_gate_enabled": "require an executed pre-fix failing run for fix tickets at coding, testing and ship",
     "gate_relaxation_gate_enabled": "refuse a change that weakens a safety gate without approval",
     "general_purpose_agent_gate_enabled": "refuse a blank general-purpose sub-agent for managed-repo work",
     "git_add_all_gate_enabled": "refuse a whole-tree `git add -A` / `git add .` stage",

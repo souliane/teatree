@@ -22,6 +22,8 @@ from teatree.agents.dispatch_preflight import (
 )
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
+from teatree.core.gates.fix_dod_gate import is_fix
+from teatree.core.gates.repro_gate import forced_repro_gate_enabled
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
@@ -532,10 +534,8 @@ _FIXING_PHASES = frozenset({"coding", "debugging"})
 
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
     """The FixRecord return directive for a fixing phase on a fix ticket, or the review of a fix PR, else ``()``."""
-    from teatree.core.gates.fix_dod_gate import is_fix  # noqa: PLC0415 — deferred: ORM/app-registry
-
     if phase in _FIXING_PHASES and is_fix(task.ticket):
-        return _FIX_RECORD_RETURN_LINES
+        return _FIX_RECORD_RETURN_LINES if forced_repro_gate_enabled(task.ticket) else _FIX_RECORD_FIELD_LINES
     if phase in ENVELOPE_VERDICT_PHASES and (gated := gated_ticket_for_review_task(task)) and is_fix(gated):
         return _FIX_RECORD_REVIEW_LINES
     return ()

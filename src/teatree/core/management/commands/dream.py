@@ -459,7 +459,7 @@ class Command(DreamGapCommands, TyperCommand):
 
         Runs unconditionally after every promoting phase has collected its gaps into
         *batch* — the batch may hold compliance/automation-ask gaps even when
-        ``memory_promote`` itself is off, so this is not gated on any one phase's
+        ``dream_memory_promote`` itself is off, so this is not gated on any one phase's
         toggle. A queued gap nudges the backlog sweep rather than waiting for its daily
         fire. A failure degrades to a WARN clause, never crashing the pass that already
         stamped its other work.

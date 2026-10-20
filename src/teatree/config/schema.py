@@ -214,6 +214,7 @@ class TeatreeSettingsSchema(BaseSettings):
     eval_local_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     excluded_skills: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     expected_required_contexts: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
+    forced_repro_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gate_relaxation_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gitlab_events_subscription: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY_BOX]
     handover_mirror_path: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
