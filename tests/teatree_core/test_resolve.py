@@ -215,6 +215,24 @@ class TestResolveWorktree(TestCase):
         self._monkeypatch = monkeypatch
         self._tmp_path = tmp_path
 
+    def test_auto_detect_refusal_quotes_an_unresolvable_declaration(self) -> None:
+        missing = self._tmp_path / "missing"
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(missing))
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+
+        with pytest.raises(WorktreeNotFoundError) as exc:
+            resolve_worktree()
+
+        assert f"{INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in str(exc.value)
+
+    def test_an_explicit_path_refusal_does_not_name_the_declaration(self) -> None:
+        self._monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+
+        with pytest.raises(WorktreeNotFoundError) as exc:
+            resolve_worktree(str(self._tmp_path))
+
+        assert INVOCATION_CWD_ENV not in str(exc.value)
+
     def test_from_env_worktree_file(self) -> None:
         wt_dir = self._tmp_path / "backend"
         ticket = Ticket.objects.create()
