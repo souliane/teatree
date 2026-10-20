@@ -68,5 +68,6 @@ def ingest_response(record: IngestionRecord) -> HttpResponse:
     except OperationalError as exc:
         if not is_locked_error(exc):
             raise
+        logger.warning("%s not stored: the database is locked, answered 503", record.idempotency_key)
         return HttpResponse(status=503)
     return HttpResponse(status=200)

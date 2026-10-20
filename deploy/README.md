@@ -97,7 +97,7 @@ carries — its revision label — not what the registry last recorded: a `deplo
 run replaces the containers without touching the registry, so every other active
 registry row is failed as displaced. It drains N (its own claims only; the global
 drain when N is the legacy source-mounted stack or a generation the registry does
-not list as serving), stops N's worker and listener, runs N+1's init (migrate,
+not list as serving), stops N's worker and both listeners, runs N+1's init (migrate,
 setup, seed — no fetch, no installs), brings N+1 up, verifies every runtime
 container's label, the worker's activation and the admin answering inside its
 container, then promotes N+1 (retags `teatree-headless:latest`) and retires N.
@@ -376,9 +376,9 @@ logs which branch it took. Notes:
 ### Staged convergence: the control plane never goes fully down (#4214)
 
 A single `up -d --build` recreates every service at once. `teatree-admin`,
-`teatree-worker` and `teatree-slack-listener` each `depends_on` init with
-`service_completed_successfully`, so compose creates all five container objects
-and holds three of them in `Created` until init exits — **67 seconds measured on
+`teatree-worker`, `teatree-slack-listener` and `teatree-webhooks` each `depends_on`
+init with `service_completed_successfully`, so compose creates every container
+object and holds those four in `Created` until init exits — **67 seconds measured on
 the box**, once per deploy. In that window the dashboard is gone, the only
 control-DB CLI route is gone, and the container logs a live diagnosis was reading
 have been destroyed with the container objects.

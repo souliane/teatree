@@ -1,5 +1,5 @@
-# teatree headless deployment — one image, five services
-# (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
+# teatree headless deployment — one image, six services
+# (init/worker/admin/webhook-listener/slack-listener/watchdog) sharing named volumes so init
 # installs teatree once and worker/admin run it.
 # Agent settings and plugin state live only in the dedicated named volumes (#3359);
 # host credentials are not reused by the factory runtimes.

@@ -1,5 +1,6 @@
 """Behaviour tests for the GitLab webhook receiver (#654 phase 6)."""
 
+import hashlib
 import json
 from unittest.mock import patch
 
@@ -26,15 +27,19 @@ def _post(client: Client, body: bytes, *, token: str | None = SHARED_SECRET, eve
 
 @override_settings(TEATREE_GITLAB_WEBHOOK_TOKEN=SHARED_SECRET)
 class TestGitLabWebhookView(TestCase):
-    def test_locked_database_answers_503(self) -> None:
+    def test_locked_database_answers_503_and_names_the_dropped_delivery(self) -> None:
         body = json.dumps({"object_kind": "merge_request"}).encode()
-        with patch(
-            "teatree.core.views._webhook_persistence.persist_incoming_event",
-            side_effect=OperationalError("database is locked"),
+        with (
+            patch(
+                "teatree.core.views._webhook_persistence.persist_incoming_event",
+                side_effect=OperationalError("database is locked"),
+            ),
+            self.assertLogs("teatree.core.views._webhook_persistence", level="WARNING") as logs,
         ):
             response = _post(self.client, body)
 
         assert response.status_code == 503
+        assert any(f"gitlab:{hashlib.sha256(body).hexdigest()[:16]}" in line for line in logs.output)
 
     def test_merge_request_approved_event_is_persisted(self) -> None:
         payload = {
