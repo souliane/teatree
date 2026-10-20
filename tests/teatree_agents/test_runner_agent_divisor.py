@@ -1,7 +1,7 @@
 # test-path: cross-cutting
 """The test-worker-budget divisor counts EVERY live headless agent (#3644 / F9).
 
-The per-agent pytest worker count is ``cores*2 // active_agents``; the divisor
+The per-agent pytest worker request is ``cores * TOTAL_TEST_WORKERS_PER_CORE // active_agents``; the divisor
 is the live-headless-agent count. The pre-fix divisor counted through
 ``Task.dispatchable_q()``, which selects only registered-phase pairs and so
 EXCLUDED the free-form headless phases (``architectural_review`` …) that go

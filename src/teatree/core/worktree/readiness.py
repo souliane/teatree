@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 _BACKOFF_BASE_SECONDS = 0.5
 _SLEEP: SleepFn = time.sleep
+PROBE_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +137,14 @@ def _check_closing_connections(probe: "Probe") -> ProbeResult:
         close_thread_db_connections()
 
 
-def run_probes(probes: "Iterable[Probe]", *, max_workers: int = 8) -> list[ProbeResult]:
+def run_probes(probes: "Iterable[Probe]", *, max_workers: int | None = None) -> list[ProbeResult]:
     """Run probes concurrently. Result order matches input order."""
     probes_list = list(probes)
     if not probes_list:
         return []
     results: dict[int, ProbeResult] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    workers = PROBE_WORKERS if max_workers is None else max_workers
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_check_closing_connections, p): i for i, p in enumerate(probes_list)}
         for fut in as_completed(futures):
             results[futures[fut]] = fut.result()
