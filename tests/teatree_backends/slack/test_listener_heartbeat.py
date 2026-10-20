@@ -2,12 +2,8 @@ import json
 import time
 from pathlib import Path
 
-from teatree.backends.slack.listener_heartbeat import (
-    HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat_is_stale,
-    read_heartbeat,
-    write_heartbeat,
-)
+from teatree.backends.slack.listener_heartbeat import write_heartbeat
+from teatree.core.slack_listener_heartbeat import HEARTBEAT_INTERVAL_SECONDS, heartbeat_is_stale, read_heartbeat
 
 
 def test_stamps_are_per_overlay(tmp_path: Path) -> None:

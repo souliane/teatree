@@ -20,9 +20,10 @@ from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.backends.slack.listener_heartbeat import ConnectionLiveness, read_heartbeat
+from teatree.backends.slack.listener_heartbeat import ConnectionLiveness
 from teatree.backends.slack.receiver import QueuePaths, _run_single_overlay
 from teatree.core.models import PendingChatInjection
+from teatree.core.slack_listener_heartbeat import read_heartbeat
 from teatree.loops import timer_reconciler
 from teatree.loops.slack_inbound import catch_up_on_connect
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, serve_history

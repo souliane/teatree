@@ -71,6 +71,7 @@ graph TD
     teatree.core --> teatree.core.admission_pressure
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.owner_question_message
+    teatree.core --> teatree.core.owner_identity
     teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
@@ -322,6 +323,7 @@ graph TD
     teatree.loop.inbound_reading --> teatree.agents
     teatree.loop.inbound_reading --> teatree.loop.inbound_classifier
     teatree.loop.question_binding --> teatree.core.models
+    teatree.loop.question_binding --> teatree.core.owner_identity
     teatree.loop.question_binding --> teatree.core.owner_question_message
     teatree.loop.question_binding --> teatree.loop.inbound_reading
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
@@ -506,6 +508,7 @@ graph TD
     teatree.core.admission_pressure
     teatree.core.modelkit
     teatree.core.forge_url
+    teatree.core.owner_identity
     teatree.core.models.errors
     teatree.core.session_identity
     teatree.core.repair_loop

@@ -257,6 +257,15 @@ class OwnerMessagingTransport:
     """Owner-DM transport resolution across every registered overlay (credentials, not count)."""
 
     @staticmethod
+    def credentialed() -> list[tuple[str, MessagingBackend]]:
+        """Every registered overlay that carries a real transport, with the overlay's name."""
+        return [
+            (name, backend)
+            for name in OverlayConfigResolver.all_names()
+            if (backend := configured_messaging_from_overlay(name)) is not None
+        ]
+
+    @staticmethod
     def credentialed_backends() -> list[MessagingBackend]:
         """One messaging backend per registered overlay that carries a real transport.
 
@@ -278,11 +287,7 @@ class OwnerMessagingTransport:
         parking every headless ``notify_user`` owner DM undelivered and reddening the
         doctor's ambient-egress gate from whichever cwd the noop overlay owned.
         """
-        return [
-            backend
-            for name in OverlayConfigResolver.all_names()
-            if (backend := configured_messaging_from_overlay(name)) is not None
-        ]
+        return [backend for _name, backend in OwnerMessagingTransport.credentialed()]
 
     @staticmethod
     def sole() -> MessagingBackend | None:

@@ -16,9 +16,10 @@ from unittest import mock
 
 from django.test import TestCase
 
-from teatree.backends.slack.listener_heartbeat import FILENAME
 from teatree.cli.doctor.self_heal_slack_listener import check_slack_listener_alive
+from teatree.core.factory_slack_liveness import factory_slack_live
 from teatree.core.models import ConfigSetting
+from teatree.core.slack_listener_heartbeat import FILENAME
 
 
 def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
@@ -31,7 +32,7 @@ def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
 class SlackListenerCheckTest(TestCase):
     def setUp(self) -> None:
         self._dir = Path(tempfile.mkdtemp())
-        self._patch = mock.patch("teatree.backends.slack.listener_heartbeat.DATA_DIR", self._dir)
+        self._patch = mock.patch("teatree.core.slack_listener_heartbeat.DATA_DIR", self._dir)
         self._patch.start()
         self.addCleanup(self._patch.stop)
 
@@ -110,3 +111,18 @@ class SlackListenerCheckTest(TestCase):
         assert ok is True
         assert "WARN" in out
         assert "crashed" in out
+
+
+def test_absent_heartbeat_still_passes_the_lenient_doctor_probe(db: None, tmp_path: Path) -> None:
+    ConfigSetting.objects.set_value("overlays", {"ov": {"messaging_backend": "noop"}})
+
+    with (
+        mock.patch("teatree.core.slack_listener_heartbeat.DATA_DIR", tmp_path),
+        mock.patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[]),
+    ):
+        doctor_ok, out = _echoes(check_slack_listener_alive)
+        verdict = factory_slack_live("ov")
+
+    assert doctor_ok is True
+    assert out == ""
+    assert not verdict.live

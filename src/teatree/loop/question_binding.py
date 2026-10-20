@@ -42,6 +42,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
+from teatree.core.owner_identity import configured_owner_id
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
     NO_LONGER_NEEDED,
@@ -70,10 +71,6 @@ class BoundAnswer:
     answer: str
     answered_by: str = ""
     from_click: bool = False
-
-
-def configured_owner_id(backend: object) -> str:
-    return str(getattr(backend, "user_id", "") or "")
 
 
 def _is_the_owner(user_id: str, owner_user_id: str) -> bool:

@@ -11,68 +11,38 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.paths import DATA_DIR
+from teatree.core.slack_listener_heartbeat import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    STALE_MULTIPLIER,
+    heartbeat_path,
+    read_heartbeat,
+)
 
 if TYPE_CHECKING:
     from teatree.backends.slack.receiver import DeliveredEvents
 
+__all__ = [
+    "HEARTBEAT_INTERVAL_SECONDS",
+    "RETRY_BACKOFF_SECONDS",
+    "STALE_MULTIPLIER",
+    "ConnectionLiveness",
+    "OnConnect",
+    "write_heartbeat",
+]
+
 logger = logging.getLogger(__name__)
 
-FILENAME = "slack-listener-heartbeat.json"
-HEARTBEAT_INTERVAL_SECONDS = 15
-STALE_MULTIPLIER = 4
-STALE_FLOOR_SECONDS = 120
 RETRY_BACKOFF_SECONDS = (5.0, 15.0, 45.0, 120.0)
 
 _write_lock = threading.Lock()
 
 #: Called with ``(overlay_name, alive_at, seen)`` while a hello's catch-up is owed; raising retries it.
 type OnConnect = Callable[[str, float, DeliveredEvents], None]
-
-
-def heartbeat_path() -> Path:
-    return DATA_DIR / FILENAME
-
-
-@dataclass(frozen=True, slots=True)
-class ListenerBeat:
-    """One parsed heartbeat; ``stamps is None`` is a payload written before stamps were per overlay."""
-
-    updated_at: float
-    interval_seconds: int
-    stamps: Mapping[str, float] | None = None
-    legacy_updated_at: float | None = None
-
-    @property
-    def stale_after(self) -> int:
-        return max(STALE_MULTIPLIER * self.interval_seconds, STALE_FLOOR_SECONDS)
-
-    def stamp_for(self, overlay: str) -> float | None:
-        if self.stamps is None:
-            return self.updated_at
-        return self.stamps.get(overlay, self.legacy_updated_at)
-
-
-def read_heartbeat(path: Path | None = None) -> ListenerBeat | None:
-    """The listener's last heartbeat, or ``None`` when absent or unparsable."""
-    path = path or heartbeat_path()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        overlays = raw.get("overlays")
-        stamps = {str(name): float(at) for name, at in overlays.items()} if isinstance(overlays, dict) else None
-        return ListenerBeat(
-            updated_at=float(raw["updated_at"]),
-            interval_seconds=int(raw.get("interval_seconds", 0)),
-            stamps=stamps,
-            legacy_updated_at=float(raw["legacy_updated_at"]) if "legacy_updated_at" in raw else None,
-        )
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return None
 
 
 def write_heartbeat(overlay: str, path: Path | None = None) -> float:
@@ -100,14 +70,6 @@ def write_heartbeat(overlay: str, path: Path | None = None) -> float:
         except OSError:
             logger.warning("Could not stamp the slack-listener heartbeat at %s", path, exc_info=True)
     return at
-
-
-def heartbeat_is_stale(beat: ListenerBeat | None, overlay: str, *, now: float) -> bool:
-    """No file, no stamp for *overlay*, or a stamp older than the beat's staleness bound."""
-    stamp = beat.stamp_for(overlay) if beat is not None else None
-    if beat is None or stamp is None:
-        return True
-    return now - stamp > beat.stale_after
 
 
 @dataclass(slots=True)

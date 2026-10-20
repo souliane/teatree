@@ -38,7 +38,7 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> FakeSlackTransport:
 @pytest.fixture
 def heartbeat(tmp_path: Path) -> Iterator[Path]:
     with (
-        patch("teatree.backends.slack.listener_heartbeat.DATA_DIR", tmp_path),
+        patch("teatree.core.slack_listener_heartbeat.DATA_DIR", tmp_path),
         patch("teatree.paths.DATA_DIR", tmp_path),
     ):
         yield tmp_path / "slack-listener-heartbeat.json"
