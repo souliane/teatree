@@ -15,6 +15,7 @@ Django-free and pydantic-free — ``teatree.config``'s package init imports
 """
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -37,7 +38,7 @@ class SettingLayers:
     coerced, driving the generic ``dataclasses.replace``.
     """
 
-    db_rows: tuple[dict[str, Any], ...]
+    db_rows: tuple[Mapping[str, Any], ...]
     global_db: dict[str, Any]
     overlay_db: dict[str, Any]
     #: The DB scopes whose override read FAILED — ``"global"`` and/or ``"overlay"`` (#3873).
@@ -59,7 +60,7 @@ def stored_form(value: object) -> object:
 
 def apply_structured_settings(
     settings: UserSettings,
-    row_layers: tuple[dict[str, Any], ...],
+    row_layers: tuple[Mapping[str, Any], ...],
     base_speak: SpeakConfig,
 ) -> UserSettings:
     """Resolve the nested-table fields from *row_layers*, LOWEST precedence first (#1775).
@@ -78,7 +79,7 @@ def apply_structured_settings(
     return settings
 
 
-def _merge_speak_layers(row_layers: tuple[dict[str, Any], ...], base: SpeakConfig) -> SpeakConfig | None:
+def _merge_speak_layers(row_layers: tuple[Mapping[str, Any], ...], base: SpeakConfig) -> SpeakConfig | None:
     """Merge each layer's ``speak`` table onto the one below it (#2050 semantics).
 
     ``None`` (no ``speak`` table in any layer) → the dataclass default stands.

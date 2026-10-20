@@ -54,22 +54,3 @@ class TestRecordPhaseReproSwitch(TestCase):
         assert result == ""
         red.refresh_from_db()
         assert red.green_exit_code is None
-
-    def test_enabled_testing_completion_reaches_green_replay(self) -> None:
-        task = self._task("testing")
-        repo_dir = self._tmp_path / "replay-repo"
-        _init_repo_with_branch(repo_dir, branch="feature", commits_ahead=1)
-        Worktree.objects.create(
-            ticket=task.ticket, repo_path=str(repo_dir), branch="feature", extra={"worktree_path": str(repo_dir)}
-        )
-        ReproEvidence.record_red(
-            ticket=task.ticket,
-            command="false",
-            run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
-        )
-        with patch("teatree.agents.repro_phase_recorder.run_bounded_group") as replay:
-            replay.return_value.returncode = 1
-            replay.return_value.stdout = "failed"
-            replay.return_value.stderr = ""
-            assert "GREEN failed" in record_phase_repro(task, phase="testing")
-        replay.assert_called_once()

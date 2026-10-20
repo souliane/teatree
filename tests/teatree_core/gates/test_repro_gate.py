@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents.repro_phase_recorder import GREEN_REPLAY_OUTPUT_MAX_BYTES, _run_green_replay, record_phase_repro
@@ -215,6 +216,17 @@ class TestForcedReproGateSwitchedOff(TestCase):
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
 
+    def test_alias_scope_is_reported_by_audit_and_status(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-acme", kind=Ticket.Kind.FIX)
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+            check_red_repro(ticket)
+        ticket.refresh_from_db()
+        assert "scope acme" in logs.output[0]
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+        status = call_command("repro", "status", str(ticket.pk))
+        assert "forced-repro disabled by: acme" in status
+        assert "disabled scopes recorded: acme" in status
+
     def test_the_ship_gate_passes_a_fix_with_no_repro(self) -> None:
         ticket = _fix_ticket()
         with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
@@ -260,7 +272,7 @@ class TestForcedReproGateSwitchedOff(TestCase):
         assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
 
     def test_the_unattended_loop_cannot_switch_it_off(self) -> None:
-        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorized"):
             ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="other")
         assert not ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="other").exists()
 

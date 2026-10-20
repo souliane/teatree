@@ -20,6 +20,7 @@ call-time import.
 import logging
 import time
 import traceback
+from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +28,7 @@ from teatree.config.override_read_health import note_healthy_read, record_degrad
 from teatree.config.settings import OverlayEntry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, MutableMapping
 
 _logger = logging.getLogger("teatree.config")
 
@@ -36,6 +37,13 @@ _logger = logging.getLogger("teatree.config")
 #: label carries no overlay NAME (the name goes in the log line instead).
 GLOBAL_SCOPE_LABEL = "global"
 OVERLAY_SCOPE_LABEL = "overlay"
+
+
+class OverlayRows(UserDict[str, Any]):
+    def __init__(self, values: "Mapping[str, Any]", scopes: dict[str, str]) -> None:
+        super().__init__(values)
+        self.scopes = scopes
+
 
 #: Frames of :func:`_calling_context`. One frame is often a memo shim or a settings helper that
 #: merely forwards; three reach the site that actually decided to read the config tier.
@@ -140,8 +148,8 @@ _READ_RETRY_BACKOFF: tuple[float, ...] = (0.05, 0.15)
 
 
 def _read_scope_rows(
-    scope_label: str, read: "Callable[[], dict[str, Any]]", *, log_label: str = ""
-) -> tuple[dict[str, Any], bool]:
+    scope_label: str, read: "Callable[[], MutableMapping[str, Any]]", *, log_label: str = ""
+) -> tuple["MutableMapping[str, Any]", bool]:
     """Run *read* with the bounded retry, returning ``(rows, degraded)``.
 
     ``degraded`` is the distinction #3873 exists for: ``({}, False)`` is a healthy read of
@@ -213,10 +221,11 @@ def load_global_rows() -> tuple[dict[str, Any], bool]:
         model = apps.get_model("core", "ConfigSetting")
         return dict(model.objects.overrides_for_scope(""))
 
-    return _read_scope_rows(GLOBAL_SCOPE_LABEL, read)
+    rows, degraded = _read_scope_rows(GLOBAL_SCOPE_LABEL, read)
+    return dict(rows), degraded
 
 
-def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
+def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
     """Read the active overlay's ``{key: value}`` rows, alias-tolerant, or ``{}``.
 
     Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
@@ -229,10 +238,10 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
     (incl. a ready-registry ``OperationalError`` / ``ProgrammingError``) logs loud.
     """
     if not overlay_name:
-        return {}, False
+        return OverlayRows({}, {}), False
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    def read() -> dict[str, Any]:
+    def read() -> OverlayRows:
         model = apps.get_model("core", "ConfigSetting")
         canonical = OverlayEntry.canonical_overlay_name(overlay_name)
         scope_values: dict[str, dict[str, Any]] = {}
@@ -240,13 +249,17 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
             if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
                 scope_values.setdefault(scope, {})[key] = value
         merged: dict[str, Any] = {}
+        scopes: dict[str, str] = {}
         for scope in sorted(scope_values):
             if scope != overlay_name:
                 merged.update(scope_values[scope])
+                scopes.update(dict.fromkeys(scope_values[scope], scope))
         merged.update(scope_values.get(overlay_name, {}))
-        return merged
+        scopes.update(dict.fromkeys(scope_values.get(overlay_name, {}), overlay_name))
+        return OverlayRows(merged, scopes)
 
-    return _read_scope_rows(OVERLAY_SCOPE_LABEL, read, log_label=f"overlay {overlay_name!r}")
+    rows, degraded = _read_scope_rows(OVERLAY_SCOPE_LABEL, read, log_label=f"overlay {overlay_name!r}")
+    return OverlayRows(rows, rows.scopes if isinstance(rows, OverlayRows) else {}), degraded
 
 
 __all__ = [

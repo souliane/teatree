@@ -147,8 +147,7 @@ def reject_unattended_governed_write(key: str, *, authorized_by: str) -> None:
     if not reason or not is_unattended_unauthorized_write(authorized_by=authorized_by):
         return
     msg = (
-        f"{key!r} is not an unattended write: {reason}. Set it from a session, "
-        "or pass the identity that granted authorization."
+        f"{key!r} is not an unattended write: {reason}. Set it from a session, or pass the identity that authorized it."
     )
     raise ValidationError(msg)
 

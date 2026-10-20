@@ -27,6 +27,7 @@ would put ~110ms on every hook invocation.
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -203,12 +204,7 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
 
 
 def read_setting_layers(overlay_name: str) -> SettingLayers:
-    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once.
-
-    Public because it is the ONE place the persisted tiers are read: the resolver folds
-    them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
-    WHICH one supplied a value. A second reader would be a second resolution path.
-    """
+    """Read both persisted tiers once for settings resolution and provenance."""
     global_rows, global_degraded = load_global_rows()
     overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
     db_rows = (global_rows, overlay_rows)
@@ -369,7 +365,7 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
 
 
-def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
+def _coerce_setting_rows(rows: Mapping[str, Any]) -> dict[str, Any]:
     """Coerce a ``{key: stored value}`` table via the DB-home parser registry.
 
     Shared by every tier that arrives in stored form: the ``ConfigSetting`` rows of

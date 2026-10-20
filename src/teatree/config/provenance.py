@@ -28,6 +28,7 @@ from typing import Any
 
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES, ConfigOverrideReadError
+from teatree.config.override_reader import OverlayRows
 from teatree.config.resolution import (
     NO_EFFECTIVE_DEFAULT,
     EnvOverrideRejection,
@@ -79,6 +80,7 @@ class ResolvedSetting:
     key: str
     value: Any
     source: ValueSource
+    scope: str | None = None
 
     @property
     def is_overridden(self) -> bool:
@@ -92,6 +94,7 @@ class _Tiers:
 
     env: Mapping[str, Any]
     db_overlay: Mapping[str, Any]
+    db_overlay_scopes: Mapping[str, str]
     db_global: Mapping[str, Any]
     code_default: Mapping[str, Any]
     #: True when a DB scope's read FAILED (#3873) — the tiers below ``env`` are then
@@ -118,7 +121,8 @@ class _Tiers:
         ):
             value = tier.get(key, _ABSENT)
             if value is not _ABSENT:
-                return ResolvedSetting(key, value, source)
+                scope = self.db_overlay_scopes.get(key) if source is ValueSource.DB_OVERLAY else None
+                return ResolvedSetting(key, value, source, scope)
         return ResolvedSetting(key, _declared_default(key), ValueSource.CODE_DEFAULT)
 
 
@@ -158,6 +162,7 @@ def _tiers(scope: str, *, persisted_only: bool) -> _Tiers:
     return _Tiers(
         env={} if persisted_only else env.values,
         db_overlay=overlay_rows,
+        db_overlay_scopes=overlay_rows.scopes if isinstance(overlay_rows, OverlayRows) else {},
         db_global=global_rows,
         code_default={} if persisted_only else overlay_code_defaults(scope),
         degraded=bool(layers.degraded_scopes),

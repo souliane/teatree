@@ -32,9 +32,10 @@ import logging
 from typing import TYPE_CHECKING, Literal
 
 from teatree.config import get_effective_settings
+from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.config.resolution import _resolved_overlay_name
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.repro_evidence import ReproEvidence
 from teatree.core.models.repro_waiver import ReproWaiver
@@ -47,22 +48,33 @@ logger = logging.getLogger(__name__)
 
 def repro_disabled_scope(ticket: "Ticket") -> str | None:
     try:
-        enabled = get_effective_settings(ticket.overlay).forced_repro_gate_enabled
+        enabled = get_effective_settings(ticket.overlay or None).forced_repro_gate_enabled
+        resolved = (
+            resolve_settings(["forced_repro_gate_enabled"], scope=_resolved_overlay_name(ticket.overlay or None))[
+                "forced_repro_gate_enabled"
+            ]
+            if not enabled
+            else None
+        )
     except ValueError as exc:
         msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: {exc}"
         raise ForcedReproGateError(msg) from exc
     if enabled:
         return None
-    if ticket.overlay and ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope=ticket.overlay).exists():
-        return ticket.overlay
-    return "global"
+    if resolved is not None and resolved.value is False:
+        if resolved.source is ValueSource.DB_OVERLAY and resolved.scope:
+            return resolved.scope
+        if resolved.source is ValueSource.DB_GLOBAL:
+            return "global"
+    msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: disabled value has no supplying scope"
+    raise ForcedReproGateError(msg)
 
 
 def forced_repro_gate_enabled(ticket: "Ticket") -> bool:
     return repro_disabled_scope(ticket) is None
 
 
-def repro_exempt(ticket: "Ticket", *, evidence: Literal["red", "pair"] = "pair") -> bool:
+def audit_repro_exemption(ticket: "Ticket", *, evidence: Literal["red", "pair"] = "pair") -> bool:
     if not is_fix(ticket):
         return True
     if ReproWaiver.objects.filter(ticket=ticket).exists():
@@ -110,14 +122,14 @@ def _deny_message(ticket: "Ticket") -> str:
 
 def check_forced_repro(ticket: "Ticket") -> None:
     """Refuse the ship transition when a FIX ticket lacks an executed repro (#118)."""
-    if repro_exempt(ticket):
+    if audit_repro_exemption(ticket):
         return
     raise ForcedReproGateError(_deny_message(ticket))
 
 
 def check_red_repro(ticket: "Ticket") -> None:
     """Refuse FIX coding completion unless the pre-fix failing run was recorded."""
-    if repro_exempt(ticket, evidence="red"):
+    if audit_repro_exemption(ticket, evidence="red"):
         return
     msg = (
         f"Refusing to complete coding for FIX ticket {ticket.pk}: record an executed RED reproduction "
