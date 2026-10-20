@@ -264,6 +264,21 @@ def test_codex_question_tool_uses_same_plain_words_check(tmp_path: Path) -> None
 
     assert result.returncode == 0
     assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ticket 42" in result.stdout
+
+    plain_result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "tool_name": "request_user_input_async",
+            "tool_input": {"questions": [{"title": "Merge this now?", "options": ["Merge", "Wait"]}]},
+        },
+        adapter=True,
+    )
+
+    assert plain_result.returncode == 0
+    assert not plain_result.stdout
 
 
 def test_stop_refire_does_not_block_again(tmp_path: Path) -> None:
