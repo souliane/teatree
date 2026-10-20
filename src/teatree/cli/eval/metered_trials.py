@@ -58,7 +58,7 @@ def _run_scenario_with_progress(
     return result
 
 
-def park_on_usage_limit(
+def exit_on_usage_limit_or_prior_red(
     *, summary_md: Path | None = None, html_out: Path | None = None, failed_before_limit: bool = False
 ) -> Never:
     message = (
@@ -92,5 +92,5 @@ def run_pass_at_k_results(
             failed = (isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)) or any(
                 result.verdict == "fail" and not is_advisory(specs[position]) for position, result in enumerate(results)
             )
-            park_on_usage_limit(summary_md=summary_md, failed_before_limit=failed)
+            exit_on_usage_limit_or_prior_red(summary_md=summary_md, failed_before_limit=failed)
     return results

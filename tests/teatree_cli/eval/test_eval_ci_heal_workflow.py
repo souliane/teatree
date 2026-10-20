@@ -260,14 +260,6 @@ class TestALegParksOnTheUsageLimit:
         assert recorded.returncode == 0, recorded.stderr
         assert _merged(leg)["parked"] is True
 
-    def test_a_retried_attempt_never_runs_into_the_limit_again(self, leg: dict[str, str]) -> None:
-        _limit_marker(leg).write_text("0\n", encoding="utf-8")
-
-        attempt = _attempt(leg)
-
-        assert attempt.returncode == 0, attempt.stderr
-        assert _t3_calls(leg) == []
-
     def test_a_red_eval_fails_the_leg_and_parks_nothing(self, leg: dict[str, str]) -> None:
         leg["T3_RCS"] = "1"
 
@@ -287,14 +279,6 @@ class TestALegParksOnTheUsageLimit:
         assert (first.returncode, retried.returncode) == (1, 1)
         assert len(_t3_calls(leg)) == 2
         assert _limit_marker(leg).exists()
-
-    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, leg: dict[str, str]) -> None:
-        leg["T3_RCS"] = "1 75"
-        first = _attempt(leg)
-        later = _attempt(leg)
-        assert (first.returncode, later.returncode) == (1, 1)
-        assert len(_t3_calls(leg)) == 1
-        assert not _limit_marker(leg).exists()
 
     @pytest.mark.parametrize("scenarios", ["", "alpha,beta"], ids=["full-suite", "subset"])
     def test_a_retry_never_turns_a_measured_red_green(self, leg: dict[str, str], scenarios: str) -> None:

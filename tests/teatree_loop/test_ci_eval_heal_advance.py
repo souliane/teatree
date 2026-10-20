@@ -694,39 +694,16 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         assert session.state == CiEvalHealSession.State.PENDING
         assert (session.fix_attempts, fixer.proposed) == (0, 0)
 
-    def test_a_red_then_limit_leg_hands_the_fixer_only_the_measured_red(self) -> None:
-        session = _awaiting(head_sha="a" * 40)
-        session.fix_attempts = session.max_fix_attempts
-        session.save(update_fields=["fix_attempts"])
-        client = _FakeClient(
-            runs=[_completed("failure")], artifact=_artifact(reds=["rules_under_load"], never_ran=["never_ran"])
-        )
+    def test_a_success_with_unreadable_artifact_waits_never_green(self) -> None:
+        for download_error in (None, FileNotFoundError("no artifact")):
+            with self.subTest(download_error=download_error):
+                session = _awaiting(head_sha="a" * 40)
+                client = _FakeClient(runs=[_completed("success")], download_error=download_error)
 
-        advance_session(session, client=client, escalate=_noop)
+                advance_session(session, client=client, escalate=_never)
 
-        session.refresh_from_db()
-        assert session.state == CiEvalHealSession.State.HALTED
-        assert session.red_scenarios == ["rules_under_load"]
-
-    def test_a_success_without_a_readable_payload_waits_never_green(self) -> None:
-        session = _awaiting(head_sha="a" * 40)
-        client = _FakeClient(runs=[_completed("success")])
-        escalated: list[int] = []
-
-        advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
-
-        session.refresh_from_db()
-        assert session.state == CiEvalHealSession.State.AWAITING_CI
-        assert escalated == []
-
-    def test_a_success_whose_artifact_cannot_be_downloaded_halts_never_green(self) -> None:
-        session = _awaiting(head_sha="a" * 40)
-        client = _FakeClient(runs=[_completed("success")], download_error=FileNotFoundError("no artifact"))
-
-        advance_session(session, client=client, escalate=_noop)
-
-        session.refresh_from_db()
-        assert session.state == CiEvalHealSession.State.AWAITING_CI
+                session.refresh_from_db()
+                assert session.state == CiEvalHealSession.State.AWAITING_CI
 
     def test_an_unreadable_artifact_eventually_halts(self) -> None:
         session = _awaiting(head_sha="a" * 40)

@@ -16,9 +16,12 @@ import typer
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.app_helpers import RunReportPaths
-from teatree.cli.eval.metered_trials import UsageLimitAfterFailureError, run_trials_with_limit_evidence
-from teatree.cli.eval.metered_trials import park_on_usage_limit as _park_on_usage_limit
-from teatree.cli.eval.metered_trials import run_pass_at_k_results as _run_pass_at_k_results
+from teatree.cli.eval.metered_trials import (
+    UsageLimitAfterFailureError,
+    exit_on_usage_limit_or_prior_red,
+    run_pass_at_k_results,
+    run_trials_with_limit_evidence,
+)
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     CostBoundsGate,
@@ -128,7 +131,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         return evaluate(spec, runner.run(spec), judge=grader)
 
     effective_specs = [with_model(spec, model_override) for spec in specs] if model_override else specs
-    results = _run_pass_at_k_results(effective_specs, _trial, trials=trials, require=require, summary_md=summary_md)
+    results = run_pass_at_k_results(effective_specs, _trial, trials=trials, require=require, summary_md=summary_md)
     if output_format == "json":
         typer.echo(
             json.dumps(
@@ -266,7 +269,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         failed = exc.failed_within_cell or any(
             row.errored or (not row.passed and not row.skipped and row.scenario not in advisory) for row in exc.rows
         )
-        _park_on_usage_limit(html_out=html_out, failed_before_limit=failed)
+        exit_on_usage_limit_or_prior_red(html_out=html_out, failed_before_limit=failed)
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:

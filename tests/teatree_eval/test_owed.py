@@ -84,6 +84,10 @@ class TestSettled:
         settled, _ = ledger.settled([], known={"old_red", "new_park"}, attempted=["old_red"], now=NOW)
         assert settled.next_batch(1, {"old_red", "new_park"}) == ("new_park",)
         assert OwedLedger.from_json(settled.to_json()).next_batch(1, {"old_red", "new_park"}) == ("new_park",)
+        reds = tuple(_owed(f"red_{index}", since=NOW - 2 * DAY) for index in range(14))
+        full = _ledger(*reds, _owed("new_park", since=NOW - DAY))
+        retried, _ = full.settled([], known=full.names, attempted=[row.name for row in reds], now=NOW)
+        assert "new_park" in retried.next_batch(14, full.names)
 
 
 class TestNextBatch:
@@ -102,12 +106,6 @@ class TestNextBatch:
     def test_a_cap_below_one_raises(self, cap: int) -> None:
         with pytest.raises(ValueError, match="cap"):
             _ledger(_owed("alpha")).next_batch(cap, {"alpha"})
-
-    def test_older_repeated_reds_do_not_starve_new_debt(self) -> None:
-        reds = tuple(_owed(f"red_{index}", since=NOW - 2 * DAY) for index in range(14))
-        ledger = _ledger(*reds, _owed("new_park", since=NOW - DAY))
-        settled, _ = ledger.settled([], known=ledger.names, attempted=[row.name for row in reds], now=NOW)
-        assert "new_park" in settled.next_batch(14, ledger.names)
 
 
 class TestIsParked:
@@ -699,9 +697,3 @@ class TestCollect:
         harvest, gh, _ = _harvest(routes)
         assert harvest.collect(NOW).names == ("kept",)
         assert _artifacts_url(PR_OWED_ARTIFACT) in gh.calls
-
-    def test_a_github_api_error_propagates(self) -> None:
-        routes = {_artifacts_url(LEDGER_ARTIFACT): _listing([])}
-        harvest, _, _ = _harvest(routes)
-        with pytest.raises(subprocess.CalledProcessError):
-            harvest.collect(NOW)

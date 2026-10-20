@@ -142,6 +142,14 @@ class TestSelectFreshest:
         assert selection.winner is None
         assert selection.candidates[0].status is TokenProbeStatus.BELOW_RESERVE
 
+    def test_account_outside_sweep_window_is_ineligible(self) -> None:
+        reader = _MockReader({FRESH: _snapshot(u5h=0.1, u7d=0.1)})
+
+        selection = select_freshest([FRESH], reader=reader, now=RUN_START, sweep_within_hours=24)
+
+        assert selection.winner is None
+        assert selection.candidates[0].reason == "outside sweep window"
+
     def test_unmeasured_window_is_ineligible(self) -> None:
         reader = _MockReader({FRESH: replace(_snapshot(u5h=0.1, u7d=0.1), unified_7d_utilization=None)})
         selection = select_freshest([FRESH], reader=reader, now=RUN_START)

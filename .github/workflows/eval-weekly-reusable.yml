@@ -242,7 +242,6 @@ jobs:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
-          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Compute the lane+shard+effort matrix
         id: matrix
@@ -407,8 +406,7 @@ jobs:
       # $GITHUB_ENV, which the eval step below reads. With the secret unset/empty it
       # probes the existing single `subscription-oauth-token` against the reserve.
       # This step OWNS the credential decision, so it also exports
-      # T3_AGENT_HARNESS_PROVIDER (an ineligible set flips to api_key ONLY when the
-      # opt-in EVAL_API_KEY_FALLBACK repo variable is set, else it parks). NOTE: on a
+      # T3_AGENT_HARNESS_PROVIDER (an ineligible set parks). NOTE: on a
       # dynamic multi-account run the selected account is in this step's log, not the
       # cost-basis var above (which tracks the single-secret host switcher).
       - name: Select the freshest eval OAuth account
@@ -417,7 +415,6 @@ jobs:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
-          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Mark a benchmark parked by the reserve
         if: steps.select.outputs.parked == 'true'

@@ -52,7 +52,6 @@ from functools import partial
 from typing import Protocol
 
 from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, rank
-from teatree.config import get_effective_settings
 from teatree.credential_config import TokenKind
 from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.llm.rate_limits import used_fraction
@@ -106,6 +105,13 @@ class NoEligibleAccountError(CiAccountSwitchError):
     def __init__(self, message: str, *, rejected: tuple["Rejection", ...] = ()) -> None:
         super().__init__(message)
         self.rejected = rejected
+
+
+def _allowed_accounts(allowlist: Sequence[str]) -> set[str]:
+    if not allowlist:
+        message = "eval CI account allowlist is empty; CI credentials were left untouched"
+        raise NoEligibleAccountError(message)
+    return set(allowlist)
 
 
 @dataclass(frozen=True)
@@ -255,11 +261,9 @@ class CiAccountSwitcher:
         silently shrink the pool. A readable identity variable is written only after
         the secret succeeds, letting doctor detect configuration drift.
         """
-        if not allowlist:
-            message = "eval CI account allowlist is empty; pool was left untouched"
-            raise CiAccountSwitchError(message)
+        allowed = _allowed_accounts(allowlist)
         configured = {row.account for row in rows if _is_candidate(row)}
-        accounts = tuple(sorted(set(allowlist)))
+        accounts = tuple(sorted(allowed))
         missing = set(accounts) - configured
         if missing:
             message = f"allowlisted accounts are not configured: {sorted(missing)}"
@@ -297,7 +301,12 @@ class CiAccountSwitcher:
         return accounts
 
     def switch(
-        self, rows: Sequence[TokenAccountRow], *, run_start: dt.datetime, dry_run: bool = False
+        self,
+        rows: Sequence[TokenAccountRow],
+        *,
+        run_start: dt.datetime,
+        allowlist: Sequence[str] = (),
+        dry_run: bool = False,
     ) -> SwitchOutcome:
         """Select from *rows* and point the CI secret at the winner.
 
@@ -305,11 +314,8 @@ class CiAccountSwitcher:
         rejected — rather than leaving a spent account in place and reporting success.
         A *dry_run*, and an already-optimal secret, both leave the forge untouched.
         """
-        allowlist = set(get_effective_settings().eval_ci_account_allowlist)
-        if not allowlist:
-            message = "eval CI account allowlist is empty; the secret was left untouched"
-            raise NoEligibleAccountError(message)
-        selection = select_account([row for row in rows if row.account in allowlist], run_start=run_start)
+        allowed = _allowed_accounts(allowlist)
+        selection = select_account([row for row in rows if row.account in allowed], run_start=run_start)
         best = selection.best
         if best is None:
             raise NoEligibleAccountError(self._no_eligible_message(selection), rejected=selection.rejected)

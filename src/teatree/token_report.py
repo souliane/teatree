@@ -320,12 +320,13 @@ def _band(reported: float | None, shipped: float) -> float:
 
 
 def cached_local_eval_reserve_met() -> bool:
-    rows = _eval_reserve_rows()
+    report = TokenReport(from_cache=True)
+    rows = report.rows()
     try:
         selected = PassPathSelector().select(TokenKind.OAUTH)
     except AllTokensExhaustedError:
         return False
-    return TokenReport(from_cache=True).eval_reserve_met(
+    return report.eval_reserve_met(
         WindowReserve.from_environment(os.environ), accounts=(selected,) if selected else (), rows=rows
     )
 
@@ -334,13 +335,8 @@ def cached_ci_eval_reserve_met() -> bool:
     accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
     if not accounts:
         return False
-    return TokenReport(from_cache=True).eval_reserve_met(
-        WindowReserve.from_environment(os.environ), accounts=accounts, rows=_eval_reserve_rows()
-    )
-
-
-def _eval_reserve_rows() -> list[TokenAccountRow]:
-    return TokenReport(from_cache=True).rows()
+    report = TokenReport(from_cache=True)
+    return report.eval_reserve_met(WindowReserve.from_environment(os.environ), accounts=accounts, rows=report.rows())
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

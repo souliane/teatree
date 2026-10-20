@@ -251,7 +251,8 @@ t3 eval owed record --out eval-owed.json --reason limit --source pr#N@<sha> --na
 t3 eval owed outputs eval-owed.json           # CI primitive: print parked=/owed= lines for $GITHUB_OUTPUT
 t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since + weekly/heal leg eval-owed-<leg> artifacts (fails loud on a GitHub API error)
 t3 eval owed next eval-owed-ledger.json --cap 14  # nightly: the oldest owed scenarios the catalog still defines
-t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # nightly: clear the owed scenarios that passed
+t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt --attempted-file attempted.txt  # nightly: clear only attempted scenarios that passed
+t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt --all-covered  # full benchmark: every owed scenario was measured; clear passing scenarios
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); 1 on any red or an empty run, 75 when a leg parked or the usage limit skipped a scenario
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)

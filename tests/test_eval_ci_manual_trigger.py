@@ -40,12 +40,14 @@ class TestGitHubEvalTriggers:
         on = _gh_on()
         crons = [entry["cron"] for entry in cast("list[dict[str, Any]]", on["schedule"])]
         jobs = cast("dict[str, Any]", _gh_eval_workflow()["jobs"])
+        gate = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "gate")
         sweep = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "sweep")
         daily = [cron for cron in crons if cron.split()[4] == "*"]
         assert not daily or (
             sweep["env"]["EVAL_SWEEP_WITHIN_HOURS"] == "24"
             and "EVAL_API_KEY_FALLBACK" not in sweep["env"]
             and "needs.prepare.outputs.parked != 'true'" in jobs["eval"]["if"]
+            and "--days 7" in gate["run"]
         ), f"A daily eval cron must be gated to the 24h before a 7-day reset; got {crons}."
 
     def test_backend_input_defaults_to_api_and_command_threads_it(self) -> None:

@@ -61,11 +61,6 @@ def test_pool_membership_checks_allowlist_instead_of_all_stored_accounts(capsys)
     assert "FAIL" not in capsys.readouterr().out
 
 
-def test_pool_membership_rejects_empty_allowlist(capsys) -> None:
-    assert check_ci_oauth_pool_membership([_row("primary", TokenStatus.HEALTHY)], (), allowlist=()) is False
-    assert "FAIL" in capsys.readouterr().out
-
-
 class LiveDoctorAllowlistTest(TestCase):
     def test_an_install_with_no_oauth_account_stays_green_without_an_allowlist(self) -> None:
         assert check_ci_oauth_pool() is True

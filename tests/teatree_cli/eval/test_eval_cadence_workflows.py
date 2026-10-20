@@ -246,16 +246,6 @@ class TestNightlySmokeLane:
         assert "scripts/eval/select_oauth.py" in text
 
 
-class TestWeeklyCatalogUntouched:
-    def test_weekly_sweep_is_checked_daily_but_runs_once_per_reset_window(self) -> None:
-        # The full-catalog sweep keeps its own 06:00 cron beside the PER-PR + NIGHTLY
-        # tiers; the daily tick runs only inside the 24h before a 7-day reset.
-        text = _WEEKLY.read_text(encoding="utf-8")
-        assert 'cron: "0 6 * * *"' in text
-        assert 'EVAL_SWEEP_WITHIN_HOURS: "24"' in text
-        assert "--days 7" in text
-
-
 def test_scheduled_sweep_window_reaches_each_credential_selector() -> None:
     text = _WEEKLY.read_text(encoding="utf-8")
     sections = text.split("- name: Select the freshest eval OAuth account")
@@ -264,25 +254,42 @@ def test_scheduled_sweep_window_reaches_each_credential_selector() -> None:
 
 
 def test_nightly_ledger_steps_are_main_only_and_retries_skip_passed_debt() -> None:
-    text = _NIGHTLY.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(_NIGHTLY.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]
     for name in (
         "Harvest the owed-scenario ledger",
         "Upload the owed-scenario ledger",
         "Settle the owed-scenario ledger",
         "Upload the settled owed-scenario ledger",
     ):
-        section = text.split(f"- name: {name}", 1)[1].split("\n      -", 1)[0]
-        assert "github.ref == 'refs/heads/main'" in section
-    assert 'grep -Fxq -- "$name" "$PASSED"' in text
-    assert '--attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"' in text
+        step = next(step for job in steps.values() for step in job.get("steps", []) if step.get("name") == name)
+        assert "github.ref == 'refs/heads/main'" in step["if"]
+    settle = next(step for step in steps["eval"]["steps"] if step.get("name") == "Settle the owed-scenario ledger")
+    owed = next(step for step in steps["eval"]["steps"] if step.get("name") == "Owed scenarios (in Docker)")
+    assert 'grep -Fxq -- "$name" "$PASSED"' in owed["with"]["command"]
+    assert '--attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"' in settle["run"]
 
 
 def test_reusable_parked_lanes_keep_durable_owed_artifacts() -> None:
-    pr = _PR_REUSABLE.read_text(encoding="utf-8")
-    assert "t3 eval owed record" in pr
-    assert "name: eval-owed" in pr
-    weekly = _WEEKLY_REUSABLE.read_text(encoding="utf-8")
-    assert 'scripts/eval/select_oauth.py || [ "$?" -eq 75 ]' in weekly
-    assert "t3 eval owed collect" in weekly
-    assert "t3 eval owed settle" in weekly
-    assert "name: eval-owed-ledger" in weekly
+    pr = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
+    record = next(step for step in pr if step.get("name") == "Record owed scenarios")
+    upload = next(step for step in pr if step.get("name") == "Upload the owed scenarios")
+    assert "t3 eval owed record" in record["run"]
+    assert upload["with"]["name"] == "eval-owed"
+    assert "always()" in upload["if"]
+
+    weekly = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    prepare = weekly["prepare"]["steps"]
+    select = next(step for step in weekly["eval"]["steps"] if step.get("id") == "select")
+    settle = next(step for step in weekly["publish"]["steps"] if step.get("id") == "settle")
+    uploads = [
+        step
+        for job in weekly.values()
+        for step in job.get("steps", [])
+        if step.get("with", {}).get("name") == "eval-owed-ledger"
+        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert "t3 eval owed collect" in next(step for step in prepare if step.get("id") == "owed")["run"]
+    assert select["run"] == 'uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]'
+    assert "t3 eval owed settle" in settle["run"]
+    assert uploads

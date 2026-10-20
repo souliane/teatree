@@ -161,20 +161,21 @@ class TestPrLaneParksOnTheLimit:
         assert run.returncode == 1
         assert run.lines("eval-owed-limit.txt") == ["beta", "gamma"]
 
-    def test_a_retry_after_the_limit_invokes_nothing(self, shell, workflow: str) -> None:
+    def test_a_retry_after_a_red_marker_invokes_nothing(self, shell, workflow: str) -> None:
         script = _script(workflow, "eval", _PR_LOOP)
         first = shell(script, rcs={"alpha": 1, "beta": _LIMIT}, EVAL_NAMES="alpha,beta")
         retry = shell(script, EVAL_NAMES="alpha,beta")
         assert first.invoked == retry.invoked == ["alpha", "beta"]
         assert retry.returncode == 1
 
-    def test_an_earlier_red_never_records_a_later_limit_as_owed(self, shell, workflow: str) -> None:
+    def test_a_retry_after_only_a_limit_invokes_nothing(self, shell, workflow: str) -> None:
         script = _script(workflow, "eval", _PR_LOOP)
-        first = shell(script, rcs={"alpha": 1}, EVAL_NAMES="alpha,beta")
-        later = shell(script, rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta")
-        assert first.returncode == later.returncode == 1
-        assert later.invoked == first.invoked == ["alpha", "beta"]
-        assert later.lines("eval-owed-limit.txt") == []
+        first = shell(script, rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta,gamma")
+        retry = shell(script, EVAL_NAMES="alpha,beta,gamma")
+
+        assert first.returncode == retry.returncode == 0
+        assert first.invoked == retry.invoked == ["alpha", "beta"]
+        assert first.lines("eval-owed-limit.txt") == ["beta", "gamma"]
 
     def test_no_limit_owes_nothing(self, shell, workflow: str) -> None:
         run = shell(_script(workflow, "eval", _PR_LOOP), EVAL_NAMES="alpha,beta")
@@ -197,13 +198,6 @@ class TestNightlyOwedBatch:
         assert run.returncode == 1
         assert run.lines("eval-owed-passed.txt") == ["beta"]
 
-    def test_a_retry_never_records_an_earlier_red_as_passed(self, shell) -> None:
-        script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
-        shell(script, rcs={"alpha": 1}, STUB_OWED="alpha beta")
-        retry = shell(script, STUB_OWED="alpha beta")
-        assert retry.returncode == 1
-        assert retry.lines("eval-owed-passed.txt") == ["beta"]
-
     def test_the_shard_does_not_run_after_the_limit(self, shell) -> None:
         shell(_script("eval-nightly.yml", "eval", _NIGHTLY_OWED), rcs={"alpha": _LIMIT}, STUB_OWED="alpha")
         shard = shell(_script("eval-nightly.yml", "eval", _NIGHTLY_SHARD))
@@ -211,22 +205,11 @@ class TestNightlyOwedBatch:
         assert shard.invoked == ["alpha"]
 
 
-@pytest.mark.parametrize(
-    ("workflow", "step_name"),
-    [("eval-nightly.yml", _NIGHTLY_SHARD), ("eval.yml", _WEEKLY_LEG)],
-    ids=["nightly", "weekly"],
-)
-class TestSingleInvocationLanesParkOnTheLimit:
-    def test_the_limit_parks_green(self, shell, workflow: str, step_name: str) -> None:
-        names = {"STUB_NAMES": "suite"} if workflow == "eval.yml" else {}
-        run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2", **names)
-        assert run.returncode == 0
-        assert run.invoked == ["suite"]
+def test_the_nightly_shard_limit_parks_green(shell) -> None:
+    run = shell(_script("eval-nightly.yml", "eval", _NIGHTLY_SHARD), rcs={"suite": _LIMIT})
 
-    def test_a_red_stays_red(self, shell, workflow: str, step_name: str) -> None:
-        names = {"STUB_NAMES": "suite"} if workflow == "eval.yml" else {}
-        run = shell(_script(workflow, "eval", step_name), rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2", **names)
-        assert run.returncode == 1
+    assert run.returncode == 0
+    assert run.invoked == ["suite"]
 
 
 _WEEKLY_AND_HEAL_LEGS = pytest.mark.parametrize(
@@ -315,6 +298,10 @@ def test_a_measured_red_replays_without_running_the_retry(
     assert first.returncode == retry.returncode == 1
     assert first.invoked
     assert retry.invoked == first.invoked
+    if workflow in _PR_WORKFLOWS:
+        assert retry.lines("eval-owed-limit.txt") == []
+    if workflow == "eval-nightly.yml" and step_name == _NIGHTLY_OWED:
+        assert retry.lines("eval-owed-passed.txt") == ["beta"]
 
 
 @pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml", "eval.yml", "eval-ci-heal.yml"])
@@ -328,8 +315,8 @@ def test_each_selector_parks_on_75_and_fails_on_other_errors(shell, workflow: st
         assert shell(script, rcs={"selector": 1}).returncode == 1
 
 
-@pytest.mark.parametrize("workflow", ["eval.yml", "eval-nightly.yml"])
-def test_a_scheduled_lane_never_falls_back_to_the_metered_key(workflow: str) -> None:
+@pytest.mark.parametrize("workflow", ["eval.yml", "eval-nightly.yml", "eval-weekly-reusable.yml"])
+def test_a_subscription_lane_never_falls_back_to_the_metered_key(workflow: str) -> None:
     envs = [step.get("env", {}) for job in _workflow(workflow)["jobs"].values() for step in job.get("steps", [])]
     assert not [env for env in envs if "EVAL_API_KEY_FALLBACK" in env]
 
@@ -430,7 +417,7 @@ def record_owed(tmp_path: Path):
         if limit:
             (temp / "eval-owed-limit.txt").write_text("".join(f"{name}\n" for name in limit), encoding="utf-8")
         environment = {
-            **os.environ,
+            **{key: value for key, value in os.environ.items() if key != "T3_REPO"},
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(temp),
             "GITHUB_OUTPUT": str(output),

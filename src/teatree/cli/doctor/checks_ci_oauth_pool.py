@@ -75,9 +75,6 @@ def check_ci_oauth_pool_membership(
 
     configured = {row.account for row in rows if row.kind is TokenKind.OAUTH and row.source is TokenSource.STORE}
     if allowlist is not None:
-        if not allowlist:
-            typer.echo("FAIL  CI eval account allowlist is empty.")
-            return False
         configured = set(allowlist)
     if not configured:
         return True

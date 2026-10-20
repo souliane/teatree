@@ -192,6 +192,27 @@ class TestNonOauthCredentialIsNoOp:
 
 
 class TestAllExhausted:
+    def test_sweep_window_is_forwarded_to_selection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[float | None] = []
+
+        def select(tokens: list[str], **kwargs: object) -> OAuthSelection:
+            seen.append(kwargs["sweep_within_hours"])
+            return OAuthSelection(candidates=(_exhausted(0),), ranked=())
+
+        monkeypatch.setattr(_MOD, "select_freshest", select)
+        code = main(
+            {"EVAL_OAUTH_TOKENS": TOK_A, "EVAL_SWEEP_WITHIN_HOURS": "24", "GITHUB_OUTPUT": str(tmp_path / "out")}
+        )
+
+        assert code == 75
+        assert seen == [24.0]
+
+    def test_negative_sweep_window_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_MOD, "select_freshest", lambda tokens, **kwargs: pytest.fail("selector was called"))
+
+        with pytest.raises(ValueError, match="EVAL_SWEEP_WITHIN_HOURS must be nonnegative"):
+            main({"EVAL_OAUTH_TOKENS": TOK_A, "EVAL_SWEEP_WITHIN_HOURS": "-1"})
+
     @pytest.mark.parametrize(
         "status", [TokenProbeStatus.BELOW_RESERVE, TokenProbeStatus.UNKNOWN, TokenProbeStatus.UNREACHABLE]
     )
@@ -218,30 +239,24 @@ class TestAllExhausted:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
         _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0), _exhausted(1)), ranked=()))
         code = main(
             {
                 "EVAL_CREDENTIAL": "subscription_oauth",
                 "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}",
                 "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
             }
         )
         assert code == 75
+        assert "parked=true" in _env_lines(output_file)
         assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
         out = capsys.readouterr().out
         assert "no eligible OAuth account" in out
         # No token value leaks even in the all-exhausted report.
         assert TOK_A not in out
         assert TOK_B not in out
-
-    def test_no_account_parks_and_writes_no_token(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        env_file = tmp_path / "gh_env"
-        output_file = tmp_path / "gh_output"
-        _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0),), ranked=()))
-        code = main({"EVAL_OAUTH_TOKENS": TOK_A, "GITHUB_ENV": str(env_file), "GITHUB_OUTPUT": str(output_file)})
-        assert code == 75
-        assert "parked=true" in _env_lines(output_file)
-        assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
 
     def test_flips_to_api_key_when_fallback_opted_in(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

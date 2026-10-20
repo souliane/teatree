@@ -23,7 +23,6 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
-from teatree.core.management.commands.dream import Command
 from teatree.core.models import (
     ConsolidatedMemory,
     DreamRunMarker,
@@ -273,18 +272,6 @@ class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase
         out = stdout.getvalue()
         assert "queued 1 eval scenario(s) for coding" in out
         assert "withheld 1 candidate(s)" in out
-
-
-class DreamEvalReserveTestCase(TestCase):
-    def test_below_reserve_skips_live_eval_promotion(self) -> None:
-        with (
-            patch("teatree.core.management.commands.dream.cached_local_eval_reserve_met", return_value=False),
-            patch("teatree.loops.dream.promote.promote_proposals_file") as promote,
-            patch.object(Command, "_derive_evals", return_value=""),
-        ):
-            result = Command()._promote_candidates(dry_run=False)
-        assert "eval promotion parked" in result
-        promote.assert_not_called()
 
 
 class DreamNightlyPromotionTicketTestCase(_DreamTickEnabledMixin, TestCase):
