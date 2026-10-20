@@ -67,16 +67,12 @@ from teatree.core.admission_pressure import (
     resume_ceiling_conflict,
     weekly_pace,
 )
+from teatree.quality.pytest_resource_contract import TOTAL_TEST_WORKERS_PER_CORE
 from teatree.utils import host_pressure, ram_probe, ram_scope
 
 logger = logging.getLogger(__name__)
 
 _MIB_PER_GB = 1024.0
-
-#: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
-#: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
-#: per-agent expansion is the melt driver, not the agent count.
-TOTAL_TEST_WORKERS_PER_CORE = 2
 
 #: TOTAL host agent population per core — deliberately its own constant rather than the
 #: per-lane :data:`~teatree.config.settings.WRITE_CONCURRENCY_PER_CORE`. A
@@ -188,20 +184,15 @@ def per_agent_test_workers(
     ram_available_gb: float | None = None,
     per_worker_gb: float = 0.0,
 ) -> int:
-    """Per-agent pytest worker count, so the TOTAL stays bounded however many agents run.
+    """Per-agent pytest worker request; the shared pool enforces the box total.
 
     Exported to a child agent as ``PYTEST_XDIST_AUTO_NUM_WORKERS``, which is how
-    pytest-xdist resolves ``-n auto`` — so the addopts stay untouched and a human
-    running the suite alone still gets the whole box.
+    pytest-xdist resolves ``-n auto``. The addopts stay untouched and every run
+    takes slots from the shared pool before workers start.
 
-    Cores alone sized the TOTAL at ``cores * 2``, which on 8 cores is 16 workers — 10.4 GB
-    at the measured p50 worker RSS but 19.8 GB at the p90, against 19.7 GB usable (#4163).
-    The bound is safe at the median and over the line at the tail, which is why the OOMs
-    were relentless but intermittent. *ram_available_gb* (the live cgroup-aware reading)
-    and *per_worker_gb* (the operator's ``test_worker_ram_gb``) add the term that makes
-    the total respond to the resource that actually saturates: whichever of the two totals
-    is smaller wins. Both are applied to the TOTAL, never to the per-agent share — a
-    per-agent memory budget would hand each of N agents the whole box.
+    *ram_available_gb* is the live cgroup-aware reading and *per_worker_gb* is
+    the operator's ``test_worker_ram_gb``. The smaller of the CPU and memory
+    totals wins. Both constrain the total before it is divided among agents.
 
     Omitting either is the fail-safe path, and it is BOUNDED rather than closed: the
     result is exactly the cores-derived bound, never a manufactured clamp to 1. Denying
@@ -209,11 +200,9 @@ def per_agent_test_workers(
     and the pure function is deliberately config-free — the consumer resolves the setting
     and passes it in.
 
-    The share floors at 1 (an agent with zero test workers cannot run its suite), so the
-    total bound holds while *active_agents* stays within the total. The admission ceiling,
-    the other half of the same governor, reaches ``cores * 2`` only at the per-core
-    factor's upper clamp. Past the total the floor wins: a 50-agent box is already a
-    governor failure, not a division problem.
+    The share floors at 1 (an agent with zero test workers cannot run its suite).
+    At high agent counts these requests can sum past the total, so the shared pool
+    arbitrates the actual workers.
     """
     total = max(1, int(cores)) * TOTAL_TEST_WORKERS_PER_CORE
     if ram_available_gb is not None and per_worker_gb > 0:
