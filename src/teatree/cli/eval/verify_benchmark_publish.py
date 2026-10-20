@@ -15,12 +15,15 @@ from pathlib import Path
 
 import typer
 
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.benchmark_publish_guard import (
     IncompleteDashboardError,
     UnmeteredShardError,
+    passed_scenarios,
     shard_paths,
     verify_publishable,
 )
+from teatree.eval.matrix_html_tally import MatrixTallyError
 
 
 def verify_benchmark_publish(
@@ -30,11 +33,14 @@ def verify_benchmark_publish(
         "--expected-shards",
         help="Matrix leg count the run planned; fewer collected artifacts refuses the publish.",
     ),
+    passed_file: Path | None = None,
 ) -> None:
     """Exit 1 when the collected dashboard is short a shard or not backed by metered spend."""
     try:
         verify_publishable(dashboard_dir, expected_shards=expected_shards)
-    except (IncompleteDashboardError, UnmeteredShardError) as exc:
+        if passed_file is not None:
+            write_artifact(passed_file, "".join(f"{name}\n" for name in passed_scenarios(dashboard_dir)))
+    except (IncompleteDashboardError, UnmeteredShardError, MatrixTallyError) as exc:
         typer.echo(f"::error::{exc}", err=True)
         raise SystemExit(1) from exc
     count = len(shard_paths(dashboard_dir))

@@ -2074,6 +2074,7 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                                      collected artifacts refuses the         │
 │                                      publish.                                │
 │                                      [required]                              │
+│    --passed-file            PATH                                             │
 │    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

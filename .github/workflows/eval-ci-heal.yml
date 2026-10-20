@@ -262,8 +262,8 @@ jobs:
               fi
             else
               IFS=',' read -ra NAMES <<< "$EVAL_SCENARIOS"
-              for name in "${NAMES[@]}"; do
-                name="$(echo "$name" | xargs)"
+              for index in "${!NAMES[@]}"; do
+                name="$(echo "${NAMES[$index]}" | xargs)"
                 [ -z "$name" ] && continue
                 scenario_rc=0
                 uv run t3 eval run "$name" --backend api --escalate-on-fail --judge \
@@ -273,6 +273,10 @@ jobs:
                   | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
                 if [ "$scenario_rc" -eq 75 ]; then
                   limit_hit=true
+                  printf '%s\n' "${NAMES[@]:index}" > "$RUNNER_TEMP/eval-owed-limit-$SUFFIX.txt"
+                  uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed-$SUFFIX.json" \
+                    --reason limit --source "heal@$GITHUB_RUN_ID:$SUFFIX" \
+                    --names-file "$RUNNER_TEMP/eval-owed-limit-$SUFFIX.txt" || exit $?
                   break
                 fi
                 if [ "$scenario_rc" -ne 0 ]; then
@@ -313,10 +317,12 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/heal/eval-heal*.json"
           "$RUNNER_TEMP/heal/eval-transcripts*.html"
+          "$RUNNER_TEMP/eval-owed-$SUFFIX.json"
       # This shard's PUBLISH-SAFE per-scenario JSON (triage class, no transcript) —
       # the combine job merges every shard's JSON into the one `eval-heal-<sha>`.
       # `if: always()` so a red shard still publishes it (a red run is precisely when
@@ -339,6 +345,14 @@ jobs:
           path: ${{ runner.temp }}/heal/eval-transcripts*.html
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload this shard's owed scenarios
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed-heal-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-owed-${{ steps.artifact.outputs.suffix }}.json
+          if-no-files-found: ignore
+          retention-days: 90
 
   # COMBINE: fold every shard's publish-safe per-scenario JSON into ONE
   # `eval-heal-<sha>.json` (totals summed, scenarios concatenated — the same §2.4

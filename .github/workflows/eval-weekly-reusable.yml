@@ -649,7 +649,8 @@ jobs:
             exit 0
           fi
           EXPECTED="$(printf '%s' "$EVAL_MATRIX" | python -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-          uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED"
+          uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED" \
+            --passed-file "$RUNNER_TEMP/eval-owed-passed.txt"
           echo "publish=true" >> "$GITHUB_OUTPUT"
       # Copy every shard's matrix HTML into the caller's public dashboard dir. The
       # per-shard HTML files keep their lane/shard/effort suffix, so parallel legs
@@ -685,7 +686,7 @@ jobs:
         if: steps.verify.outputs.publish == 'true' && needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
         env:
           XDG_DATA_HOME: ${{ runner.temp }}/xdg
-        run: uv run t3 eval owed settle --out "$RUNNER_TEMP/eval-owed-ledger.json" --all-covered
+        run: uv run t3 eval owed settle --out "$RUNNER_TEMP/eval-owed-ledger.json" --passed-file "$RUNNER_TEMP/eval-owed-passed.txt"
       - name: Redact the settled owed ledger in place
         id: redact
         if: always()

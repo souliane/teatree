@@ -98,6 +98,8 @@ def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
     assert steps[downloaded]["with"]["name"] == "eval-owed-ledger"
     assert steps[downloaded]["with"]["path"] == "${{ runner.temp }}"
     assert steps[settled]["env"]["XDG_DATA_HOME"] == "${{ runner.temp }}/xdg"
+    assert '--passed-file "$RUNNER_TEMP/eval-owed-passed.txt"' in steps[settled]["run"]
+    assert "--all-covered" not in steps[settled]["run"]
 
 
 def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:

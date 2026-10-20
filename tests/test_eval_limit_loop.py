@@ -32,6 +32,7 @@ _SELECTOR = 'uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]'
 _LIMIT = 75
 
 _STUB_UV = r"""#!/bin/bash
+if [ "$1 $2" = "run t3" ]; then echo "$*" >> "$STUB_T3_LOG"; fi
 if [ "$1 $2 $3 $4" = "run t3 eval run" ]; then
     name="$5"
     case "$name" in --*) name="suite" ;; esac
@@ -41,6 +42,18 @@ if [ "$1 $2 $3 $4" = "run t3 eval run" ]; then
 fi
 if [ "$1 $2 $3 $4 $5" = "run t3 eval owed next" ]; then
     printf '%s\n' $STUB_OWED
+    exit 0
+fi
+if [ "$1 $2 $3 $4 $5" = "run t3 eval owed record" ]; then
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--names-file" ]; then cat "$2" >> "$RUNNER_TEMP/recorded-owed.txt"; exit 0; fi
+        shift
+    done
+    exit 99
+fi
+if [ "$1 $2 $3" = "run python -c" ]; then
+    [ -n "${STUB_NAMES:-}" ] || exit 99
+    printf '%s\n' $STUB_NAMES
     exit 0
 fi
 if [ "$1 $2 $3" = "run python scripts/eval/select_oauth.py" ]; then
@@ -73,6 +86,7 @@ def _script(workflow: str, job: str, step_name: str) -> str:
 class _Run:
     returncode: int
     invoked: list[str]
+    t3_invoked: list[str]
     temp: Path
 
     def lines(self, name: str) -> list[str]:
@@ -90,19 +104,25 @@ def shell(tmp_path: Path):
     temp = tmp_path / "runner-temp"
     temp.mkdir()
     log = tmp_path / "invoked.log"
+    t3_log = tmp_path / "t3-invoked.log"
 
     def run(script: str, *, rcs: dict[str, int] | None = None, **env: str) -> _Run:
         environment = {
             "PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin",
             "RUNNER_TEMP": str(temp),
+            "HEAL_DIR": str(temp / "heal"),
             "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary"),
+            "GITHUB_RUN_ID": "7",
+            "GITHUB_SHA": "abc123",
             "STUB_LOG": str(log),
+            "STUB_T3_LOG": str(t3_log),
             **{f"STUB_RC_{name}": str(code) for name, code in (rcs or {}).items()},
             **env,
         }
         result = subprocess.run([_BASH, "-c", script], env=environment, capture_output=True, text=True, check=False)
         invoked = log.read_text(encoding="utf-8").split() if log.exists() else []
-        return _Run(result.returncode, invoked, temp)
+        t3_invoked = t3_log.read_text(encoding="utf-8").splitlines() if t3_log.exists() else []
+        return _Run(result.returncode, invoked, t3_invoked, temp)
 
     return run
 
@@ -182,13 +202,41 @@ class TestNightlyOwedBatch:
 )
 class TestSingleInvocationLanesParkOnTheLimit:
     def test_the_limit_parks_green(self, shell, workflow: str, step_name: str) -> None:
-        run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
+        names = {"STUB_NAMES": "suite"} if workflow == "eval.yml" else {}
+        run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2", **names)
         assert run.returncode == 0
         assert run.invoked == ["suite"]
 
     def test_a_red_stays_red(self, shell, workflow: str, step_name: str) -> None:
-        run = shell(_script(workflow, "eval", step_name), rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2")
+        names = {"STUB_NAMES": "suite"} if workflow == "eval.yml" else {}
+        run = shell(_script(workflow, "eval", step_name), rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2", **names)
         assert run.returncode == 1
+
+
+@pytest.mark.parametrize(
+    ("workflow", "step_name", "env"),
+    [
+        ("eval.yml", _WEEKLY_LEG, {"STUB_NAMES": "alpha beta gamma", "EVAL_SUFFIX": "clean_room-1-2"}),
+        (
+            "eval-ci-heal.yml",
+            "Behavioral eval — one shard (in Docker)",
+            {"EVAL_SCENARIOS": "alpha,beta,gamma", "SUFFIX": "subset"},
+        ),
+    ],
+)
+def test_weekly_and_heal_owe_the_cutoff_and_never_retry_it(
+    shell, workflow: str, step_name: str, env: dict[str, str]
+) -> None:
+    script = _script(workflow, "eval", step_name)
+    first = shell(script, rcs={"beta": _LIMIT}, **env)
+    assert first.returncode == 0
+    assert first.invoked == ["alpha", "beta"]
+    assert first.lines("recorded-owed.txt") == ["beta", "gamma"]
+    assert any("eval owed record" in call for call in first.t3_invoked)
+    retry = shell(script, **env)
+    assert retry.returncode == 0
+    assert retry.invoked == first.invoked
+    assert retry.t3_invoked == first.t3_invoked
 
 
 _RETRIED_BODIES = [
@@ -196,7 +244,9 @@ _RETRIED_BODIES = [
     pytest.param("eval-pr-reusable.yml", _PR_LOOP, {"alpha": 1}, {"EVAL_NAMES": "alpha,beta"}, id="eval-pr-reusable"),
     pytest.param("eval-nightly.yml", _NIGHTLY_OWED, {"alpha": 1}, {"STUB_OWED": "alpha beta"}, id="nightly-owed"),
     pytest.param("eval-nightly.yml", _NIGHTLY_SHARD, {"suite": 1}, {}, id="nightly-shard"),
-    pytest.param("eval.yml", _WEEKLY_LEG, {"suite": 1}, {"EVAL_SUFFIX": "clean_room-1-2"}, id="weekly-leg"),
+    pytest.param(
+        "eval.yml", _WEEKLY_LEG, {"suite": 1}, {"EVAL_SUFFIX": "clean_room-1-2", "STUB_NAMES": "suite"}, id="weekly-leg"
+    ),
     pytest.param(
         "eval-weekly-reusable.yml", _BENCHMARK_LEG, {"suite": 1}, {"EVAL_SUFFIX": "clean_room-1"}, id="benchmark-leg"
     ),

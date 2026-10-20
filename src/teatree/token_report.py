@@ -340,15 +340,7 @@ def cached_ci_eval_reserve_met() -> bool:
 
 
 def _eval_reserve_rows() -> list[TokenAccountRow]:
-    cached = TokenReport(from_cache=True).rows()
-    now = timezone.now()
-    if any(
-        row.kind is TokenKind.OAUTH
-        and (not row.status.is_measured or row.checked_at is None or now - row.checked_at > HEALTH_TTL)
-        for row in cached
-    ):
-        return TokenReport().rows()
-    return cached
+    return TokenReport(from_cache=True).rows()
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:
