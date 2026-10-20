@@ -253,7 +253,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
 class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
     """The attended arm sweeps through the SAME three narrowings as capture (#4721, #4673).
 
-    ``_supersede_pending_questions`` reaches the same rows ``_capture_and_defer_question``
+    ``supersede_pending_questions`` reaches the same rows ``_capture_and_defer_question``
     does, so an unnarrowed sweep here re-opens every way #4721 closed for the owner to lose
     a question. The last three cases below are RED without :meth:`DeferredQuestion.supersedable`;
     the first two pin the scope and the feature so the narrowing cannot become a disablement.
