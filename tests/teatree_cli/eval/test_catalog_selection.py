@@ -9,7 +9,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.eval.catalog_selection import select_specs
+from teatree.cli.eval.catalog_selection import print_selected_catalog, select_specs
 from teatree.eval.models import EvalSpec
 
 
@@ -41,10 +41,12 @@ def test_list_names_uses_the_run_catalog_selector() -> None:
     with (
         mock.patch("teatree.cli.eval.app.ensure_django") as bootstrap,
         mock.patch("teatree.cli.eval.app.discover_specs", return_value=_CATALOG),
+        mock.patch("teatree.cli.eval.app.print_selected_catalog", wraps=print_selected_catalog) as render,
     ):
         result = CliRunner().invoke(app, ["eval", "list", "--lane", "clean_room", "--shard", "1/1", "--names-only"])
     assert result.exit_code == 0, result.output
     bootstrap.assert_called_once_with()
+    render.assert_called_once()
     assert result.stdout.splitlines() == ["clean_headless", "clean_interactive"]
 
 
