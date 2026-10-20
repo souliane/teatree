@@ -25,7 +25,7 @@ radius = 400
 # The skill-loading kill-switch has no TaskCreated counterpart.
 "docs/blueprint/configuration.md" = ["fc8f72f58efdba5f"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
-"docs/blueprint/factory-architecture.md" = ["8fef355432273104"]
+"docs/blueprint/factory-architecture.md" = ["4563a0158e257724"]
 # 1: the harness's 27-event constant list.
 # 2: the task-event table, the optional fields, the ONE-producer fact, and that stopReason
 # sets preventContinuation the task-creation consumer never reads.
@@ -73,7 +73,7 @@ radius = 400
 # 1: the deny surface exists because the consumer reads one field.
 # 2: decision:block is that field; the deny never writes stderr.
 # 3: the envelope TypedDict, the exit-code contract, the systemMessage arm, and the fail-OPEN emitter.
-"hooks/scripts/task_created_deny.py" = ["9a8f7011ed5657ba", "dbfc220c35ae6007", "4f883d9d3a27ff2f"]
+"hooks/scripts/task_created_deny.py" = ["e38e2416dfe0a190", "dbfc220c35ae6007", "4f883d9d3a27ff2f"]
 # TaskCreated fires on creation only, so it is not the read/write surface /checking needs.
 "skills/checking/SKILL.md" = ["876e9c70a73e280c"]
 # The transcript attachment schema listing hookEvent values.
@@ -94,6 +94,6 @@ radius = 400
 "hooks/scripts/dispatch_admission_gate.py" = 811
 "hooks/scripts/hook_router.py" = 8232
 "hooks/scripts/run-hook.sh" = 811
-"hooks/scripts/task_created_deny.py" = 4156
+"hooks/scripts/task_created_deny.py" = 3985
 "skills/checking/SKILL.md" = 811
 "src/teatree/eval/session_transcript.py" = 811
