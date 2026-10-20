@@ -797,7 +797,7 @@
     },
     {
       "bom-ref": "requirements-L169",
-      "description": "requirements line 169: pillow==12.3.0",
+      "description": "requirements line 169: pillow==13.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -806,9 +806,9 @@
         }
       ],
       "name": "pillow",
-      "purl": "pkg:pypi/pillow@12.3.0",
+      "purl": "pkg:pypi/pillow@13.0.0",
       "type": "library",
-      "version": "12.3.0"
+      "version": "13.0.0"
     },
     {
       "bom-ref": "requirements-L171",
