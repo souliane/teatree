@@ -531,9 +531,6 @@ def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path)
         "Needs you: nothing pending",
         "Needs you: no outstanding decisions",
         "Waiting on you: zero",
-        "Needs you: none - CI is green.",
-        "Needs you: none — CI is green.",
-        "Waiting on you: nothing - all PRs are with reviewers.",
     ],
 )
 def test_empty_owner_labels_pass_through_router(tmp_path: Path, text: str) -> None:

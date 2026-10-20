@@ -3,7 +3,7 @@
 A bare sibling module (like ``unknown_repo_push_gate`` / ``mr_cli_fields``):
 ``hook_router`` is a god-module at its public-function / LOC cap, so the
 AskUserQuestion-decision logic lives here and is imported back into the router's
-chains rather than growing the router. Two cohesive concerns.
+chains rather than growing the router. Three cohesive concerns.
 
 ``is_user_directed_question`` is the #807 detection heuristic: does the final
 assistant prose pose a decision question directed at the user? Used by the Stop
