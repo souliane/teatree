@@ -137,6 +137,7 @@ def test_the_interactive_read_names_the_refusal(error_code: str) -> None:
     assert refused.value.error_code == error_code
     assert "NOT an empty channel" in str(refused.value)
     assert "invited" in str(refused.value)
+    assert "user token" in str(refused.value)
 
 
 @pytest.mark.parametrize("error_code", _REFUSALS)

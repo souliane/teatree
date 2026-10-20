@@ -143,3 +143,28 @@ def test_history_retry_global_failure_reaches_the_mcp_caller() -> None:
 
     assert "missing_scope" in str(refused.value)
     assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
+
+
+def test_history_instructions_condition_token_routing() -> None:
+    assert "When both tokens are configured" in services_slack.INSTRUCTIONS
+    assert "the user token" in services_slack.INSTRUCTIONS
+    assert "bot-only" in services_slack.INSTRUCTIONS
+    assert "user-only" in services_slack.INSTRUCTIONS
+
+
+def test_history_both_token_refusals_reach_the_mcp_caller() -> None:
+    class _Http:
+        def get(self, method: str, *, token: str, params: dict[str, str | int]) -> RawAPIDict:
+            if method == "auth.test":
+                return {"ok": False, "error": "unknown"}
+            assert method == "conversations.history"
+            assert params["channel"] == "D1"
+            return {"ok": False, "error": "not_in_channel" if token == "xoxb-bot" else "channel_not_found"}
+
+    with patch("teatree.backends.slack.bot.SlackHttpClient", return_value=_Http()):
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+    with patch.object(services_slack, "_client", return_value=backend), pytest.raises(ToolError) as refused:
+        asyncio.run(_server().call_tool("slack_channel_history", {"channel": "D1"}))
+
+    assert "not_in_channel" in str(refused.value)
+    assert "channel_not_found" in str(refused.value)
