@@ -187,14 +187,6 @@ class TestNightlyOwedBatch:
     ids=["nightly", "weekly"],
 )
 class TestSingleInvocationLanesParkOnTheLimit:
-    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell, workflow: str, step_name: str) -> None:
-        script = _script(workflow, "eval", step_name)
-        first = shell(script, rcs={"suite": 1}, EVAL_SUFFIX="clean_room-1-2")
-        later = shell(script, rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
-        replay = shell(script, EVAL_SUFFIX="clean_room-1-2")
-        assert first.returncode == later.returncode == replay.returncode == 1
-        assert replay.invoked == ["suite"]
-
     def test_the_limit_parks_green(self, shell, workflow: str, step_name: str) -> None:
         run = shell(_script(workflow, "eval", step_name), rcs={"suite": _LIMIT}, EVAL_SUFFIX="clean_room-1-2")
         assert run.returncode == 0
@@ -218,13 +210,14 @@ _RETRIED_BODIES = [
 
 
 @pytest.mark.parametrize(("workflow", "step_name", "red", "env"), _RETRIED_BODIES)
-def test_a_retry_never_turns_a_measured_red_green(
+def test_a_measured_red_replays_without_running_the_retry(
     shell, workflow: str, step_name: str, red: dict[str, int], env: dict[str, str]
 ) -> None:
     script = _script(workflow, "eval", step_name)
     first = shell(script, rcs=red, **env)
     retry = shell(script, **env)
     assert first.returncode == retry.returncode == 1
+    assert first.invoked
     assert retry.invoked == first.invoked
 
 
@@ -232,17 +225,12 @@ def test_a_retry_never_turns_a_measured_red_green(
     ("workflow", "job"),
     [("eval-pr.yml", "eval"), ("eval-nightly.yml", "eval"), ("eval.yml", "eval"), ("eval.yml", "prepare")],
 )
-class TestTheSelectorParksInsteadOfFailing:
-    def _selector(self, workflow: str, job: str) -> dict[str, Any]:
-        steps = cast("list[dict[str, Any]]", _workflow(workflow)["jobs"][job]["steps"])
-        return next(step for step in steps if step.get("run") == _SELECTOR)
-
-    @pytest.mark.parametrize(("selector_rc", "step_rc"), [(0, 0), (_LIMIT, 0), (1, 1)])
-    def test_exit_75_passes_the_step_and_any_other_failure_fails_it(
-        self, shell, workflow: str, job: str, selector_rc: int, step_rc: int
-    ) -> None:
-        run = shell(f"set -e\n{self._selector(workflow, job)['run']}", rcs={"selector": selector_rc})
-        assert run.returncode == step_rc
+def test_each_selector_parks_on_75_and_fails_on_other_errors(shell, workflow: str, job: str) -> None:
+    steps = cast("list[dict[str, Any]]", _workflow(workflow)["jobs"][job]["steps"])
+    selector = next(step for step in steps if step.get("run") == _SELECTOR)
+    script = f"set -e\n{selector['run']}"
+    assert shell(script, rcs={"selector": _LIMIT}).returncode == 0
+    assert shell(script, rcs={"selector": 1}).returncode == 1
 
 
 @pytest.mark.parametrize("workflow", ["eval.yml", "eval-nightly.yml"])

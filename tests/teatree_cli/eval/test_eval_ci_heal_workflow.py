@@ -1,23 +1,5 @@
 # test-path: cross-cutting — runs the eval-ci-heal.yml leg bodies then merges via teatree.eval.summary_json_merge.
-"""Static contract checks for the ``eval-ci-heal`` workflow.
-
-`eval-ci-heal.yml` is the workflow_dispatch-only workflow the CI-eval heal loop
-dispatches. These pin its contract: the trigger + inputs, the reserve-gated OAuth
-selector that parks a leg instead of spending into a usage limit, the no-silent-green
-enforcement, that it reuses the exact in-Docker `t3 eval run --backend api
---docker --require-executed` invocation and emits the publish-safe `--summary-json`
-artifact + the private transcript, and the injection-safe env-var pattern (no
-caller input inlined into a run line).
-
-The full suite (~231 scenarios) is FANNED OUT across a parallel matrix of shards
-(souliane/teatree#3202): a `prepare` job computes the `{shard}` matrix, the `eval`
-job runs one `--shard <index>/<total>` leg per matrix entry, and a `combine` job
-merges every shard's per-scenario JSON into ONE `eval-heal-<sha>.json`. The eval
-runs single-trial with `--escalate-on-fail` (the adaptive default) — the retired
-blanket `--trials 2` pass@2 must be gone. These assertions FAIL if the sharding,
-the combine job, or the adaptive single-trial invocation is missing. The park path
-runs the shipped shell bodies under `bash -eo pipefail` against a stub `uv`.
-"""
+"""Contract checks for the dispatched heal workflow and its shipped shell bodies."""
 
 import json
 import shutil
@@ -106,11 +88,89 @@ def _recorder() -> dict[str, Any]:
     return _eval_steps()[_step_index("eval-heal-parked-")]
 
 
+def _named_step(job: str, name: str) -> dict[str, Any]:
+    return next(step for step in _jobs()[job]["steps"] if step.get("name") == name)
+
+
+class TestHealWorkflowContract:
+    def test_no_silent_green(self) -> None:
+        assert "claude --version" in _named_step("eval", "Install and assert the Claude CLI")["run"]
+        command = _eval_step()["with"]["command"]
+        assert command.count("--require-executed") == 2
+        assert command.count("--escalate-on-fail --judge") == 2
+
+    def test_both_eval_branches_use_the_docker_api_and_emit_summaries(self) -> None:
+        command = _eval_step()["with"]["command"]
+        for argument in ("--backend api", "--docker", "--summary-json"):
+            assert command.count(argument) == 2
+
+    def test_adaptive_single_trial_does_not_reintroduce_blanket_pass_at_two(self) -> None:
+        command = _eval_step()["with"]["command"]
+        assert command.count("--escalate-on-fail") == 2
+        for retired in ("--trials 2", "--require any", "EVAL_TRIALS"):
+            assert retired not in command
+
+    def test_prepare_computes_the_matrix_and_checked_out_sha(self) -> None:
+        prepare = _jobs()["prepare"]
+        assert "scripts/eval/shard_matrix.py" in _named_step("prepare", "Compute the shard matrix")["run"]
+        assert {"matrix", "sha"} <= set(prepare["outputs"])
+
+    def test_eval_fans_out_without_cancelling_red_siblings(self) -> None:
+        eval_job = _jobs()["eval"]
+        assert eval_job["needs"] == "prepare"
+        assert eval_job["strategy"]["fail-fast"] is False
+        assert "fromJSON(needs.prepare.outputs.matrix)" in str(eval_job["strategy"]["matrix"]["include"])
+        assert '--shard "$EVAL_SHARD"' in _eval_step()["with"]["command"]
+        assert _eval_step()["env"]["EVAL_SHARD"] == "${{ matrix.shard }}"
+
+    @pytest.mark.parametrize("job", ["eval", "combine"])
+    def test_downstream_jobs_checkout_the_prepared_commit(self, job: str) -> None:
+        assert _jobs()[job]["steps"][0]["with"]["ref"] == "${{ needs.prepare.outputs.sha }}"
+
+    def test_combine_runs_after_a_red_shard(self) -> None:
+        combine = _jobs()["combine"]
+        assert set(combine["needs"]) == {"prepare", "eval"}
+        assert "always()" in combine["if"]
+
+    def test_combine_downloads_and_merges_only_shard_json(self) -> None:
+        download = _named_step("combine", "Download every shard's publish-safe JSON")
+        assert download["with"]["pattern"] == "eval-heal-shard-${{ needs.prepare.outputs.sha }}-*"
+        assert download["with"]["merge-multiple"] is True
+        merge = _named_step("combine", "Merge the shard JSONs into one eval-heal-<sha>.json")
+        assert "merge-summary-json" in merge["run"]
+
+    @pytest.mark.parametrize(
+        ("job", "name", "artifact"),
+        [
+            (
+                "eval",
+                "Upload this shard's publish-safe per-scenario JSON",
+                "eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+            ),
+            (
+                "eval",
+                "Upload this shard's private per-trial transcript",
+                "eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+            ),
+            ("combine", "Upload the merged publish-safe eval-heal JSON", "eval-heal-${{ needs.prepare.outputs.sha }}"),
+        ],
+    )
+    def test_artifact_names(self, job: str, name: str, artifact: str) -> None:
+        assert _named_step(job, name)["with"]["name"] == artifact
+
+    def test_inputs_reach_shell_bodies_only_through_env(self) -> None:
+        for job in _jobs().values():
+            for step in job.get("steps", []):
+                body = step.get("run") or step.get("with", {}).get("command", "")
+                assert "${{ inputs." not in body, step.get("name")
+
+
 class TestCredentialWiring:
     def test_the_selector_holds_the_account_pool_and_the_base_token(self) -> None:
         env = _selector()["env"]
         assert env["EVAL_OAUTH_TOKENS"] == "${{ secrets.EVAL_OAUTH_TOKENS }}"
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
+        assert _eval_step()["env"]["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
         assert env["EVAL_SHARD"] == "${{ matrix.shard }}"
         assert "subscription_oauth" in env["EVAL_CREDENTIAL"]
 

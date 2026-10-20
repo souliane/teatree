@@ -50,7 +50,6 @@ SETTING_HELP: dict[str, str] = {
     "agent_tier_models": "which model each cost tier resolves to",
     "anthropic_api_key_pass_paths": "password-store paths the Anthropic API key is read from",
     "anthropic_oauth_pass_paths": "password-store paths the Anthropic OAuth credential is read from",
-    "eval_ci_account_allowlist": "password-store OAuth accounts allowed in the CI eval pool",
     "approved_recipe_sha": "commit of the provisioning recipe the operator reviewed and approved",
     "architectural_review_after_merge_count": "merges that must land before another architectural review is due",
     "architectural_review_cadence_hours": "hours between architectural review runs",
@@ -96,6 +95,7 @@ SETTING_HELP: dict[str, str] = {
     "dream_umbrella_url": "issue whose ticket queues the dream pass's collected gaps for the backlog sweep",
     "e2e_repos": "external repositories containing Playwright test specs and their clone locations",
     "envelope_stop_gate_refusals": "refuse a turn that ends without the required result envelope",
+    "eval_ci_account_allowlist": "password-store OAuth accounts allowed in the CI eval pool",
     "eval_local_skill": "skill the local eval loop runs",
     "excluded_skills": "skills never offered to an agent, whatever the loader suggests",
     "harness_skill_exclusions": (
