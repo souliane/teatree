@@ -51,6 +51,7 @@ def populate_model_registries() -> None:
     """Import every gate (self-registering) and register the resolvers + cost factories."""
     # Importing a gate module runs its module-level ``register_gate(...)`` call.
     from teatree.core.cost import register_cost_factories  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.factory_slack_liveness import factory_slack_live  # noqa: PLC0415 — deferred: call-time import
     from teatree.core.gates import (  # noqa: F401, PLC0415 — deferred: call-time import, kept lazy; re-export
         critic_gate,
         design_critic_gate,
@@ -69,9 +70,12 @@ def populate_model_registries() -> None:
         register_gate,
         register_resolver,
     )
+    from teatree.core.relay_egress import post_relay  # noqa: PLC0415 — deferred: call-time import
 
     register_gate("self_review_hold", _self_review_holds)
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
     register_resolver("pr_open_state", _read_pr_open_state)
+    register_resolver("factory_slack_live", factory_slack_live)
+    register_resolver("relay_post", post_relay)
     register_cost_factories()

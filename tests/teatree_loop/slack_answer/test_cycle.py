@@ -23,9 +23,12 @@ import pytest
 from teatree.core.models import PendingChatInjection, Task, Ticket
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
+from tests._factory_slack import SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+
+@pytest.fixture(autouse=True)
+def _database(db: None) -> None:
+    """Every test here reads and writes the database."""
 
 
 _BOT_UID = "UBOT"
@@ -512,3 +515,22 @@ class TestIdleCycleIsSilent:
         assert backend.replies == []
         assert backend.reactions == []
         assert Task.objects.count() == 0
+
+
+def test_relayed_ask_is_answered_in_its_relay_thread() -> None:
+    dm = FakeOwnerDm()
+    with live_factory_slack(dm):
+        receipt = PendingChatInjection.objects.relay_attended_ask(
+            SLACK_OVERLAY, "what's the status?", "sess-1", relay_id="r1"
+        )
+    backend = RecordingBackend()
+
+    with patch("teatree.loop.slack_answer.simple_answer.statusline_for_slack", return_value="overlay=acme\n"):
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+    row = PendingChatInjection.objects.get()
+    assert [(channel, ts) for channel, ts, _text in backend.replies] == [(dm.channel, row.slack_ts)]
+    assert (row.pk, row.slack_ts) == (receipt.pk, receipt.ts)
+    assert row.answer_kind == "simple"
+    assert row.loop_response_confirmed_at is not None
+    assert report.answered_simple == 1

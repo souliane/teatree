@@ -1,13 +1,19 @@
 """Tests for ``t3 <overlay> pending_chat`` management command (#1063)."""
 
+import json
+import os
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from teatree.core.management.commands.pending_chat import Command
 from teatree.core.models import PendingChatInjection
+from tests._factory_slack import SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -180,3 +186,104 @@ class TestMarkAnsweredSubcommand:
 
         assert "stamped 1 row" in out
         assert PendingChatInjection.objects.get().answered_at is not None
+
+
+PROMPT = "  deploy it?\nsecond line  \n"
+_WAKE = "teatree.core.management.commands.pending_chat.wake_slack_answer"
+
+
+def _relay_argv(*args: str) -> int | None:
+    """Run ``pending-chat relay`` through the argv path; the exit code, ``None`` for a clean return."""
+    try:
+        Command().run_from_argv(["manage.py", "pending_chat", "relay", *args])
+    except SystemExit as exit_:
+        return exit_.code if isinstance(exit_.code, int) else 1
+    return None
+
+
+class TestRelaySubcommand:
+    def test_a_live_relay_prints_the_receipt_exits_zero_and_wakes_the_cycle_after_commit(
+        self, capsys: pytest.CaptureFixture[str], django_capture_on_commit_callbacks
+    ) -> None:
+        dm = FakeOwnerDm()
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-env"}),
+            live_factory_slack(dm),
+            patch(_WAKE) as wake,
+            django_capture_on_commit_callbacks(execute=True),
+        ):
+            code = _relay_argv("--relay-id", "r1", "--text", PROMPT)
+
+        row = PendingChatInjection.objects.get()
+        [post] = dm.posts
+        assert code is None
+        assert capsys.readouterr().out.strip() == (
+            f"t3-relay-receipt: pending_chat={row.pk} ts={post['ts']} "
+            f"permalink=https://slack.test/archives/{dm.channel}/p{post['ts'].replace('.', '')}"
+        )
+        assert (row.relayed_by_session, row.text, row.overlay) == ("sess-env", PROMPT, SLACK_OVERLAY)
+        wake.enqueue.assert_called_once_with()
+
+    def test_the_prompt_can_come_from_a_file_verbatim(self, tmp_path: Path) -> None:
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text(PROMPT, encoding="utf-8")
+        with live_factory_slack(FakeOwnerDm()), patch(_WAKE):
+            code = _relay_argv("--relay-id", "r1", "--text-file", str(prompt_file))
+
+        assert code is None
+        assert PendingChatInjection.objects.get().text == PROMPT
+
+    def test_a_retry_with_the_same_relay_id_prints_the_same_receipt_and_wakes_once(
+        self, capsys: pytest.CaptureFixture[str], django_capture_on_commit_callbacks
+    ) -> None:
+        with live_factory_slack(FakeOwnerDm()), patch(_WAKE) as wake, django_capture_on_commit_callbacks(execute=True):
+            _relay_argv("--relay-id", "r1", "--text", PROMPT)
+            first = capsys.readouterr().out
+            _relay_argv("--relay-id", "r1", "--text", PROMPT)
+            again = capsys.readouterr().out
+
+        assert first == again
+        assert PendingChatInjection.objects.count() == 1
+        wake.enqueue.assert_called_once_with()
+
+    def test_a_relay_refused_while_slack_is_not_live_exits_three_posting_nothing(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch(_WAKE) as wake:
+            code = _relay_argv("--relay-id", "r1", "--text", PROMPT)
+
+        assert code == 3
+        assert capsys.readouterr().out.startswith("t3-relay-refused: slack_not_live")
+        assert PendingChatInjection.objects.count() == 0
+        wake.enqueue.assert_not_called()
+
+    def test_a_pasted_credential_is_refused_with_exit_three(self, capsys: pytest.CaptureFixture[str]) -> None:
+        dm = FakeOwnerDm()
+        with live_factory_slack(dm), patch(_WAKE):
+            code = _relay_argv("--relay-id", "r1", "--text", "token sk-" + "ant-api03-" + "a" * 40)
+
+        assert code == 3
+        assert capsys.readouterr().out.startswith("t3-relay-refused: secret")
+        assert dm.posts == []
+
+    def test_a_post_that_does_not_land_exits_four_with_no_row(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with live_factory_slack(FakeOwnerDm(fail_post=True)), patch(_WAKE) as wake:
+            code = _relay_argv("--relay-id", "r1", "--text", PROMPT)
+
+        assert code == 4
+        assert capsys.readouterr().out.startswith("t3-relay-refused: delivery_failed")
+        assert PendingChatInjection.objects.count() == 0
+        wake.enqueue.assert_not_called()
+
+    def test_json_output_carries_the_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with live_factory_slack(FakeOwnerDm()), patch(_WAKE):
+            _relay_argv("--relay-id", "r1", "--text", PROMPT, "--json")
+
+        *_, last = capsys.readouterr().out.strip().splitlines()
+        payload = json.loads(last)
+        assert payload["status"] == "relayed"
+        assert payload["marker"].startswith("t3-relay-receipt: pending_chat=")
+
+    def test_a_missing_relay_id_or_prompt_is_a_usage_error(self) -> None:
+        assert _relay_argv("--text", PROMPT) == 2
+        assert _relay_argv("--relay-id", "r1") == 2

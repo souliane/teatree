@@ -18,9 +18,14 @@ _CHANNEL = "D-user"
 _SOMEONE_ELSE = "U2"
 
 
-def _reply(text: str, *, author: str, thread_ts: str = "") -> PendingChatInjection:
+def _reply(
+    text: str, *, author: str, thread_ts: str = "", slack_ts: str = "400.0", relayed_by: str | None = None
+) -> PendingChatInjection:
     row = PendingChatInjection.record(
-        channel=_CHANNEL, slack_ts="400.0", text=text, context=DmContext(user_id=author, thread_ts=thread_ts)
+        channel=_CHANNEL,
+        slack_ts=slack_ts,
+        text=text,
+        context=DmContext(user_id=author, thread_ts=thread_ts, relayed_by_session=relayed_by),
     )
     assert row is not None
     return row
@@ -117,3 +122,33 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
         question.refresh_from_db()
         assert report.answered_question == 0
         assert question.is_pending
+
+
+class TestARelayedRowNeverMintsOwnerAuthority(TestCase):
+    def test_a_relayed_yes_leaves_the_sole_question_pending_while_the_same_typed_dm_binds(self) -> None:
+        question = _question("Ship it?", slack_ts="100.0")
+        relayed = _reply("yes", author=OWNER_SLACK_ID, relayed_by="sess-1")
+
+        _scan(FakeMessaging())
+        question.refresh_from_db()
+        relayed.refresh_from_db()
+
+        assert question.is_pending
+        assert relayed.loop_replied_at is None
+
+        _reply("yes", author=OWNER_SLACK_ID, slack_ts="401.0")
+        _scan(FakeMessaging())
+        question.refresh_from_db()
+
+        assert question.answer_text == "yes"
+
+    def test_a_relayed_row_addressing_a_question_by_id_does_not_bind_it(self) -> None:
+        question = _question("Ship it?", slack_ts="100.0")
+        _question("Ship the other one?", slack_ts="200.0", generation=2)
+        relayed = _reply(f"#{question.pk} yes", author=OWNER_SLACK_ID, relayed_by="")
+
+        _scan(FakeMessaging())
+        question.refresh_from_db()
+
+        assert question.is_pending
+        assert bind_reply(relayed, reader=_statement, owner_user_id=OWNER_SLACK_ID) is None

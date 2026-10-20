@@ -58,6 +58,7 @@ _WRITE_TOOLS = {
     "task_complete",
     "task_fail",
     "notify_user",
+    "pending_chat_relay",
     "question_answer",
     "worktree_teardown",
     "review_post_comment",

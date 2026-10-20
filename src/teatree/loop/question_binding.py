@@ -23,6 +23,8 @@ whichever had been posted last, and ✅-acked the owner for it.
 
 Every rung binds only a reply whose recorded author is the owner's Slack user id;
 any other reply, or an unknown owner id, binds nothing and is left for the DM path.
+A row a session relayed from its terminal binds nothing either: any agent can relay, so its text
+carries no owner authority.
 
 A tap on an option button is the strongest evidence of all: :func:`answer_from_click` joins the
 tapped message onto its question by channel and root ``ts``, and records the option's label.
@@ -85,7 +87,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    if not _is_the_owner(reply.user_id, owner_user_id):
+    if reply.is_relayed or not _is_the_owner(reply.user_id, owner_user_id):
         return None
     body = text or reply.text
     addressed = _addressed(body)

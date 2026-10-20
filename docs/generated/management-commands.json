@@ -757,6 +757,10 @@
       "name": "pending_chat",
       "subcommands": [
         {
+          "help": "Relay an owner prompt verbatim into the owner's factory Slack DM; exit 3 or 4: answer in the terminal",
+          "name": "relay"
+        },
+        {
           "help": "List inbound Slack-DM rows; the last hour by default",
           "name": "list"
         },

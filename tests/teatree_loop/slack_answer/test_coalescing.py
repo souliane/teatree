@@ -84,6 +84,16 @@ class TestCoalesceGrouping:
 
         assert len(units) == 2
 
+    def test_a_relayed_row_never_coalesces_with_a_typed_row(self) -> None:
+        relayed = _seed("1.0", "yes", user="U1", channel="C1", secs_after_base=0)
+        PendingChatInjection.objects.filter(pk=relayed.pk).update(is_relayed=True, relayed_by_session="sess-1")
+        _seed("2.0", "typed follow-up", user="U1", channel="C1", secs_after_base=2)
+        _seed("3.0", "another typed one", user="U1", channel="C1", secs_after_base=4)
+
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
+
+        assert [[row.slack_ts for row in unit.rows] for unit in units] == [["1.0"], ["2.0", "3.0"]]
+
     def test_different_user_is_never_coalesced(self) -> None:
         _seed("1.0", "mine", user="U1", channel="C1", secs_after_base=0)
         _seed("2.0", "theirs", user="U2", channel="C1", secs_after_base=2)

@@ -191,6 +191,30 @@ class TestNotifySendSubcommand(TestCase):
 
         assert code == 2
 
+    def test_send_kind_relay_refused_because_only_pending_chat_relay_queues_its_row(self) -> None:
+        backend = _backend()
+        err = StringIO()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            call_command(
+                "notify",
+                "send",
+                "hi",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "relay",
+                "--idempotency-key",
+                "k-relay",
+                stderr=err,
+            )
+
+        assert exit_info.value.code == 2
+        assert "pending-chat relay" in err.getvalue()
+        backend.post_message.assert_not_called()
+
     def test_send_kind_question_refused(self) -> None:
         backend = _backend()
         for subcommand in ("send", "dm"):

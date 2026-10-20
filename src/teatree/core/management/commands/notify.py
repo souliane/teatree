@@ -235,12 +235,16 @@ class Command(TyperCommand):
         try:
             kind_value = NotifyKind(request.kind)
         except ValueError as exc:
-            self.stderr.write(
-                f"unknown --kind {request.kind!r}; expected one of: {', '.join(k.value for k in NotifyKind)}"
-            )
+            expected = ", ".join(k.value for k in NotifyKind if k is not NotifyKind.RELAY)
+            self.stderr.write(f"unknown --kind {request.kind!r}; expected one of: {expected}")
             raise SystemExit(2) from exc
         if kind_value is NotifyKind.QUESTION:
             self.stderr.write(OWNER_QUESTION_ROUTE)
+            raise SystemExit(2)
+        if kind_value is NotifyKind.RELAY:
+            self.stderr.write(
+                "--kind relay is posted only by `t3 <overlay> pending-chat relay`, which also queues the row"
+            )
             raise SystemExit(2)
 
         text = sys.stdin.read() if request.body == "-" else request.body

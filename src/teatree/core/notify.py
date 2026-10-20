@@ -64,6 +64,8 @@ from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
+RELAY_PREFIX = ":leftwards_arrow_with_hook: *from your terminal*"
+
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is a documented opt-in / test override.
@@ -182,8 +184,7 @@ def notify_user_outcome(
         resolved_backend,
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
-        blocks=options.blocks,
-        thread_ts=options.dm_thread,
+        options=options,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -317,12 +318,11 @@ def _deliver_dm(
     *,
     user_id: str,
     text: str,
-    blocks: list[RawAPIDict] | None = None,
-    thread_ts: str | None = None,
+    options: NotifyOptions,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
-    ``thread_ts`` is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
+    The thread is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
     ``""`` for the DM root (skipping the active-DM-thread lookup), or ``None`` to
     nest under whatever DM thread the owner is currently in. A caller stores the
     returned ``ts`` as a reply-binding identity only when it posted at root — see
@@ -371,14 +371,14 @@ def _deliver_dm(
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread = _active_dm_thread(channel) if thread_ts is None else thread_ts
+        thread = _active_dm_thread(channel) if options.dm_thread is None else options.dm_thread
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.
-        if blocks is None:
+        if options.blocks is None:
             response = backend.post_message(channel=channel, text=text, thread_ts=thread)
         else:
-            response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=blocks)
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=options.blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 
@@ -399,7 +399,8 @@ def _deliver_dm(
     # that re-attached, tripling the audio. The sidecar is best-effort and must
     # never undo a DM that has already landed.
     try:
-        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
+        if options.speak:
+            deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
     except Exception as exc:  # noqa: BLE001 — sidecar is best-effort; a delivered DM must never be undone by it
         logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
     return channel, posted_ts, ""
@@ -454,6 +455,8 @@ def format_notification(text: str, kind: NotifyKind) -> str:
     """Prefix the DM with a kind marker for easy scan-reading on mobile; a question card is sent as rendered."""
     if kind is NotifyKind.QUESTION:
         return text
+    if kind is NotifyKind.RELAY:
+        return f"{RELAY_PREFIX}\n{text}"
     prefix = {
         NotifyKind.ANSWER: ":speech_balloon: *answer*",
         NotifyKind.INFO: ":information_source: *info*",

@@ -19,11 +19,13 @@ import datetime as dt
 import re
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.gate_registry import get_resolver
+from teatree.core.modelkit.relay import RELAY_MAX_CHARS, LiveVerdict, RelayPosted, RelayReceipt, RelayRefusal
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 _QUESTION_WORDS: frozenset[str] = frozenset(
@@ -84,6 +86,7 @@ class DmContext:
 
     user_id: str = ""
     thread_ts: str = ""
+    relayed_by_session: str | None = None
 
 
 NO_DM_CONTEXT = DmContext()
@@ -95,6 +98,46 @@ class PendingChatInjectionQuerySet(models.QuerySet):
 
     def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
         return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
+
+    @staticmethod
+    def relay_required(overlay: str) -> bool:
+        """Whether an attended session must relay its owner prompts: factory Slack is live for *overlay*."""
+        return cast("LiveVerdict", get_resolver("factory_slack_live")(overlay)).live
+
+    def relay_attended_ask(
+        self, overlay: str, text: str, session_id: str, *, relay_id: str
+    ) -> RelayReceipt | RelayRefusal:
+        """Post *text* verbatim into the owner's factory DM and queue it like a typed DM.
+
+        The row carries the posted ``ts``, the transport's configured owner id and *session_id* in
+        ``relayed_by_session`` (``""`` for a session that has none). Nothing is posted or written
+        unless every check passes; a repeat under the same *relay_id* returns the first receipt.
+        """
+        if not text.strip():
+            return RelayRefusal("blank: there is nothing to relay")
+        if len(text) > RELAY_MAX_CHARS:
+            return RelayRefusal(f"over {RELAY_MAX_CHARS} characters: Slack would truncate it")
+        verdict = cast("LiveVerdict", get_resolver("factory_slack_live")(overlay))
+        if not verdict.live:
+            return RelayRefusal(f"slack_not_live: {verdict.reason}")
+        posted = cast(
+            "RelayPosted | RelayRefusal",
+            get_resolver("relay_post")(verdict, text, key=f"relay:{session_id or '-'}:{relay_id}"),
+        )
+        if isinstance(posted, RelayRefusal):
+            return posted
+        row = self.model.record(
+            channel=posted.channel,
+            slack_ts=posted.ts,
+            text=text,
+            overlay=verdict.overlay,
+            context=DmContext(user_id=verdict.owner_id, relayed_by_session=session_id),
+        )
+        created = row is not None
+        queued = row if row is not None else self.get(overlay=verdict.overlay, slack_ts=posted.ts)
+        return RelayReceipt(
+            pk=queued.pk, channel=posted.channel, ts=posted.ts, permalink=posted.permalink, created=created
+        )
 
 
 class PendingChatInjection(models.Model):
@@ -145,6 +188,9 @@ class PendingChatInjection(models.Model):
         choices=AnswerKind.choices,
     )
     eyes_reacted_at = models.DateTimeField(null=True, blank=True)
+    is_relayed = models.BooleanField(default=False)
+    # The session that relayed the prompt from its terminal; ``""`` for a typed DM or a session with no id.
+    relayed_by_session = models.CharField(max_length=255, blank=True, default="")
 
     objects = PendingChatInjectionQuerySet.as_manager()
 
@@ -203,6 +249,8 @@ class PendingChatInjection(models.Model):
                 "user_id": context.user_id,
                 "text": text,
                 "thread_ts": context.thread_ts,
+                "is_relayed": context.relayed_by_session is not None,
+                "relayed_by_session": context.relayed_by_session or "",
             },
         )
         if created:

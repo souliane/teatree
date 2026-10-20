@@ -20,6 +20,7 @@ class NotifyKind(enum.StrEnum):
     ANSWER = "answer"
     QUESTION = "question"
     INFO = "info"
+    RELAY = "relay"
 
 
 class NotifyReason(enum.StrEnum):
@@ -121,6 +122,8 @@ class NotifyOptions:
     #: the surfaces a person or agent invokes directly (`t3 <overlay> notify dm`, the
     #: MCP tool), whose one-off key nobody could have registered; never for an alarm.
     requested_push: bool = False
+    #: Whether the speech sidecar threads an audio copy under the DM; a relayed prompt must not read as its answer.
+    speak: bool = True
 
     @property
     def dm_thread(self) -> str | None:

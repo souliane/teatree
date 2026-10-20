@@ -37,6 +37,7 @@ from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions
+from teatree.mcp.relay_write_tool import pending_chat_relay
 from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
@@ -221,14 +222,12 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     delivered. An alarm still earns its DM by registering in
     :data:`~teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`.
     """
-    try:
-        kind_value = NotifyKind(kind)
-    except ValueError:
-        valid = " | ".join(member.value for member in NotifyKind if member is not NotifyKind.QUESTION)
-        msg = f"invalid kind {kind!r} — valid kinds: {valid}. {OWNER_QUESTION_ROUTE}"
-        raise ToolError(msg) from None
-    if kind_value is NotifyKind.QUESTION:
+    if kind == NotifyKind.QUESTION:
         raise ToolError(OWNER_QUESTION_ROUTE)
+    sendable = {m.value: m for m in NotifyKind if m not in {NotifyKind.QUESTION, NotifyKind.RELAY}}
+    if (kind_value := sendable.get(kind)) is None:
+        msg = f"invalid kind {kind!r} — valid kinds: {' | '.join(sendable)}. {OWNER_QUESTION_ROUTE}"
+        raise ToolError(msg)
     outcome = await sync_to_async(
         lambda: notify_user_outcome(
             text,
@@ -499,6 +498,15 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "object or its JSON string, every body gated exactly as review_post_comment, one "
         "authorization consume for the review. evidence / force_general / allow_bloat are "
         "per-COMMENT, because every gate they feed is. Prefer this over N single posts.",
+    ),
+    _WriteTool(
+        "pending_chat_relay",
+        pending_chat_relay,
+        _WRITE,
+        "call_command('pending_chat', 'relay', …) — bot post into the owner DM + PendingChatInjection row",
+        "- pending_chat_relay(text, relay_id, session_id): while factory Slack is live, relay the owner's "
+        "prompt verbatim into their factory DM; the result's `marker` is the receipt (or the refusal that "
+        "sends you back to the terminal). Reuse relay_id to retry.",
     ),
     _WriteTool(
         "review_request_check",

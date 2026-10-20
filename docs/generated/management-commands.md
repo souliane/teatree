@@ -392,6 +392,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 
 | Subcommand | Description |
 | --- | --- |
+| `relay` | Relay an owner prompt verbatim into the owner's factory Slack DM; exit 3 or 4: answer in the terminal |
 | `list` | List inbound Slack-DM rows; the last hour by default |
 | `mark-answered` | Stamp ``answered_at = now`` on rows matching ``slack_ts`` |
 

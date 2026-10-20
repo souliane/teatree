@@ -46,6 +46,7 @@ class BotPing(models.Model):
         ANSWER = "answer", "Answer"
         QUESTION = "question", "Question"
         INFO = "info", "Info"
+        RELAY = "relay", "Relay"
 
     class Status(models.TextChoices):
         SENDING = "sending", "Sending (delivery claimed, in flight)"

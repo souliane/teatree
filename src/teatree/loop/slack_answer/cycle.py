@@ -133,7 +133,12 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
 
 def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
     """True iff *nxt* is a follow-up of *prev* (same actor, same thread, within window)."""
-    if (prev.overlay, prev.channel, prev.user_id) != (nxt.overlay, nxt.channel, nxt.user_id):
+    if (prev.overlay, prev.channel, prev.user_id, prev.is_relayed) != (
+        nxt.overlay,
+        nxt.channel,
+        nxt.user_id,
+        nxt.is_relayed,
+    ):
         return False
     if prev.thread_ts != nxt.thread_ts:
         # Two threads are two conversations: a unit binds on its LEAD's thread,

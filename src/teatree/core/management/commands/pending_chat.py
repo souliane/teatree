@@ -19,14 +19,27 @@ The ``mark-answered`` path is also reachable via ``notify_user``'s
 idempotency-key convention (see :mod:`teatree.core.notify`).
 """
 
+import json
+import os
+from dataclasses import asdict
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated
 
 import typer
+from django.db import transaction
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.modelkit.relay import RelayRefusal
 from teatree.core.models import PendingChatInjection
+from teatree.core.session_identity import session_id_from_env
+from teatree.hooks.slack_first_scanner import RELAY_RECEIPT_MARKER, RELAY_REFUSED_MARKER
+from teatree.loops.timer_reconciler import wake_slack_answer
+
+EXIT_USAGE = 2
+EXIT_REFUSED = 3
+EXIT_DELIVERY_FAILED = 4
 
 
 def _loop_flag(row: PendingChatInjection) -> str:
@@ -98,3 +111,50 @@ class Command(TyperCommand):
             raise SystemExit(2)
         stamped = PendingChatInjection.agent_answered_question(slack_ts)
         return f"stamped {stamped} row(s) as answered (ts={slack_ts})."
+
+    @command()
+    def relay(
+        self,
+        *,
+        relay_id: Annotated[
+            str, typer.Option("--relay-id", help="Idempotency key for this prompt; a retry reuses it.")
+        ] = "",
+        text: Annotated[str, typer.Option("--text", help="The owner's prompt, verbatim.")] = "",
+        text_file: Annotated[str, typer.Option("--text-file", help="Read the prompt from this file instead.")] = "",
+        session_id: Annotated[
+            str, typer.Option("--session-id", help="The relaying session; defaults to the session env.")
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Also print the result as one JSON object.")] = False,
+    ) -> None:
+        """Relay an owner prompt verbatim into the owner's factory Slack DM; exit 3 or 4: answer in the terminal."""
+        if not relay_id.strip() or bool(text) == bool(text_file):
+            self.stderr.write("give --relay-id and exactly one of --text or --text-file")
+            raise SystemExit(EXIT_USAGE)
+        prompt = Path(text_file).read_text(encoding="utf-8") if text_file else text
+        result = PendingChatInjection.objects.relay_attended_ask(
+            os.environ.get("T3_OVERLAY_NAME", ""),
+            prompt,
+            session_id or session_id_from_env() or "",
+            relay_id=relay_id.strip(),
+        )
+        if isinstance(result, RelayRefusal):
+            self._report(
+                f"{RELAY_REFUSED_MARKER} {result.reason}",
+                json_output=json_output,
+                status="delivery_failed" if result.delivery_failed else "refused",
+                reason=result.reason,
+            )
+            raise SystemExit(EXIT_DELIVERY_FAILED if result.delivery_failed else EXIT_REFUSED)
+        if result.created:
+            transaction.on_commit(wake_slack_answer.enqueue, robust=True)
+        self._report(
+            f"{RELAY_RECEIPT_MARKER} pending_chat={result.pk} ts={result.ts} permalink={result.permalink}",
+            json_output=json_output,
+            status="relayed",
+            **asdict(result),
+        )
+
+    def _report(self, marker: str, *, json_output: bool, **fields: str | int | bool) -> None:
+        self.stdout.write(marker)
+        if json_output:
+            self.stdout.write(json.dumps({**fields, "marker": marker}))

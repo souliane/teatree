@@ -120,6 +120,15 @@ class TestNotifyUser(TestCase):
         assert "valid kinds: answer | info." in str(exc_info.value)
         assert OWNER_QUESTION_ROUTE in str(exc_info.value)
 
+    def test_notify_user_relay_kind_is_refused_because_only_the_relay_tool_queues_its_row(self) -> None:
+        with (
+            patch("teatree.mcp.write_tools.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
+            pytest.raises(Exception, match="valid kinds: answer \\| info\\."),
+        ):
+            _call("notify_user", {"text": "hi", "kind": "relay", "idempotency_key": "mcp-kind-r"})
+
+        seam.assert_not_called()
+
     def test_notify_user_question_kind_refused(self) -> None:
         with (
             patch("teatree.mcp.write_tools.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
