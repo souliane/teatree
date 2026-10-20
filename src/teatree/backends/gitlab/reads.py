@@ -12,12 +12,12 @@ __all__ = ["list_pr_commits"]
 
 
 class _ReadClient(Protocol):
-    def get_json_paginated(self, endpoint: str) -> list[RawAPIDict]: ...
+    def get_json_paginated(self, endpoint: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
 
 class _Project(Protocol):
     @property
-    def project_id(self) -> int: ...
+    def project_id(self) -> int: ...  # pragma: no branch
 
 
 def list_pr_commits(client: _ReadClient, project: _Project | None, *, pr_iid: int) -> list[RawAPIDict]:
