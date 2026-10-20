@@ -148,18 +148,26 @@ _RED_TRIAL_THEN_LIMIT = pytest.mark.parametrize(
 )
 
 
-@_RED_TRIAL_THEN_LIMIT
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param((("red",), 2, "all", 1, "failed before the usage limit"), id="red-trial-all"),
+        pytest.param((("red",), 2, "any", 75, "PARKED"), id="red-trial-any"),
+        pytest.param((("red", "unmeasured", "later"), 1, "any", 1, "failed before the usage limit"), id="prior-red"),
+    ],
+)
 def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(
-    tmp_path: Path, require: str, exit_code: int, message: str
+    tmp_path: Path, case: tuple[tuple[str, ...], int, str, int, str]
 ) -> None:
+    scenario_names, trials, require, exit_code, message = case
     runner = _LimitAfterRedRunner()
     summary = tmp_path / "summary.md"
     with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
         run_pass_at_k_lane(
-            [_spec("red")],
+            [_spec(name) for name in scenario_names],
             backend=API_BACKEND,
             max_turns=None,
-            trials=2,
+            trials=trials,
             require=require,
             output_format="text",
             summary_md=summary,

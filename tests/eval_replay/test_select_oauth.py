@@ -193,19 +193,26 @@ class TestNonOauthCredentialIsNoOp:
 
 class TestAllExhausted:
     def test_sweep_window_is_forwarded_to_selection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen: list[float | None] = []
+        seen: list[tuple[float | None, float, float]] = []
 
         def select(tokens: list[str], **kwargs: object) -> OAuthSelection:
-            seen.append(kwargs["sweep_within_hours"])
+            reserve = kwargs["reserve"]
+            seen.append((kwargs["sweep_within_hours"], reserve.min_5h_free, reserve.min_7d_free))
             return OAuthSelection(candidates=(_exhausted(0),), ranked=())
 
         monkeypatch.setattr(_MOD, "select_freshest", select)
         code = main(
-            {"EVAL_OAUTH_TOKENS": TOK_A, "EVAL_SWEEP_WITHIN_HOURS": "24", "GITHUB_OUTPUT": str(tmp_path / "out")}
+            {
+                "EVAL_OAUTH_TOKENS": TOK_A,
+                "EVAL_SWEEP_WITHIN_HOURS": "24",
+                "EVAL_RESERVE_5H_FREE": "0.65",
+                "EVAL_RESERVE_7D_FREE": "0.55",
+                "GITHUB_OUTPUT": str(tmp_path / "out"),
+            }
         )
 
         assert code == 75
-        assert seen == [24.0]
+        assert seen == [(24.0, 0.65, 0.55)]
 
     def test_negative_sweep_window_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_MOD, "select_freshest", lambda tokens, **kwargs: pytest.fail("selector was called"))

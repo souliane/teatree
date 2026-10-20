@@ -87,6 +87,9 @@ class TestVerifyBenchmarkPublish:
 
         assert result.exit_code == 0, result.output
         assert "publishable" in result.output
+        help_result = runner.invoke(app, ["eval", "verify-benchmark-publish", "--help"])
+        assert "--passed-file" in help_result.output
+        assert "Write scenario names that passed" in help_result.output
 
     def test_unmetered_shard_exits_one_and_names_the_shard(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)

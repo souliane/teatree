@@ -289,7 +289,7 @@ jobs:
             fi
             # A red measured before the limit stays red; the marker replays the verdict without re-running t3.
             if [ "$limit_hit" = true ]; then
-              echo "$rc" > "$limit_marker"
+              [ -f "$limit_marker" ] || echo "$rc" > "$limit_marker"
               echo "PARKED: the subscription usage limit refused scenarios; this leg parks instead of retrying into it."
             fi
             exit "$rc"

@@ -66,7 +66,7 @@ name: Scheduled · Nightly smoke eval
 
 on:
   schedule:
-    # Daily nightly smoke, 05:00 UTC — offset below the weekly Monday 06:00 run.
+    # Daily nightly smoke, 05:00 UTC — offset below the daily 06:00 sweep check.
     - cron: "0 5 * * *"
   workflow_dispatch:
     inputs:
@@ -364,7 +364,6 @@ jobs:
               --summary-json "$RUNNER_TEMP/eval-verdict-rows-nightly.json" \
               --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee || rc=$?
             if [ "$rc" -eq 75 ]; then
-              touch "$LIMIT_MARKER"
               echo "::warning title=eval PARKED::usage limit reached in the smoke shard"
               exit 0
             fi

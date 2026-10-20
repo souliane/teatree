@@ -1,6 +1,7 @@
 """A depleted CI OAuth fleet must not leave doctor green."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -60,6 +61,18 @@ def test_pool_membership_checks_allowlist_instead_of_all_stored_accounts(capsys)
     assert check_ci_oauth_pool_membership(rows, ("primary",), allowlist=("primary",)) is True
     assert "FAIL" not in capsys.readouterr().out
 
+    rows = [_row("primary", TokenStatus.EXHAUSTED), _row("spare", TokenStatus.HEALTHY)]
+    with (
+        patch("teatree.token_report.TokenReport.rows", return_value=rows),
+        patch(
+            "teatree.cli.doctor.checks_ci_oauth_pool.get_effective_settings",
+            return_value=SimpleNamespace(eval_ci_account_allowlist=("primary",)),
+        ),
+        patch("teatree.ci_oauth_switch.CiAccountSwitcher.active_pool_accounts", return_value=("primary",)),
+    ):
+        assert check_ci_oauth_pool() is False
+    assert "primary" in capsys.readouterr().out
+
 
 class LiveDoctorAllowlistTest(TestCase):
     def test_an_install_with_no_oauth_account_stays_green_without_an_allowlist(self) -> None:
@@ -67,4 +80,6 @@ class LiveDoctorAllowlistTest(TestCase):
 
     def test_oauth_accounts_without_an_allowlist_fail(self) -> None:
         ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], ["anthropic/oauth/a"])
-        assert check_ci_oauth_pool() is False
+        with patch("teatree.cli.doctor.checks_ci_oauth_pool.typer.echo") as echo:
+            assert check_ci_oauth_pool() is False
+        assert any("allowlist is empty" in call.args[0] for call in echo.call_args_list)

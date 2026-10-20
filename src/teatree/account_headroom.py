@@ -22,7 +22,6 @@ a token value.
 """
 
 import datetime as dt
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -86,7 +85,7 @@ class WindowReserve:
 
     def __post_init__(self) -> None:
         for value in (self.min_5h_free, self.min_7d_free):
-            if not math.isfinite(value) or not 0 <= value <= 1:
+            if not 0 <= value <= 1:
                 msg = "eval reserve fractions must be finite values in [0, 1]"
                 raise ValueError(msg)
 

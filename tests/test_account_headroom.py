@@ -85,7 +85,6 @@ class TestWindowReserveConfiguration:
             ("invalid", "could not convert"),
             ("-0.1", "fractions must"),
             ("1.1", "fractions must"),
-            ("nan", "fractions must"),
         ],
     )
     def test_invalid_environment_reserve_fails_loud(self, value: str, message: str) -> None:

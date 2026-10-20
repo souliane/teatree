@@ -12,6 +12,7 @@ whole publish is refused (exit 1). The policy lives in
 """
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -33,9 +34,11 @@ def verify_benchmark_publish(
         "--expected-shards",
         help="Matrix leg count the run planned; fewer collected artifacts refuses the publish.",
     ),
-    passed_file: Path | None = None,
+    passed_file: Annotated[
+        Path | None, typer.Option(help="Write scenario names that passed every collected matrix cell.")
+    ] = None,
 ) -> None:
-    """Exit 1 when the collected dashboard is short a shard or not backed by metered spend."""
+    """Verify complete metered shards and optionally write the passing scenario names."""
     try:
         verify_publishable(dashboard_dir, expected_shards=expected_shards)
         if passed_file is not None:

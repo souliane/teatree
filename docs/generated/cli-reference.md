@@ -1613,8 +1613,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
-│                           shard or not backed by metered spend.              │
+│ verify-benchmark-publish  Verify complete metered shards and optionally      │
+│                           write the passing scenario names.                  │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -2061,8 +2061,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when the collected dashboard is short a shard or not backed by metered
- spend.
+ Verify complete metered shards and optionally write the passing scenario
+ names.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2074,7 +2074,8 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                                      collected artifacts refuses the         │
 │                                      publish.                                │
 │                                      [required]                              │
-│    --passed-file            PATH                                             │
+│    --passed-file            PATH     Write scenario names that passed every  │
+│                                      collected matrix cell.                  │
 │    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

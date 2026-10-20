@@ -143,9 +143,7 @@ class CiEvalHealSession(models.Model):
         self.fix_attempts += 1
         self.last_fix_paths = list(changed_paths)
 
-    @transition(
-        field="state", source=[State.PENDING, State.AWAITING_CI, State.TRIAGING, State.FIXING], target=State.HALTED
-    )
+    @transition(field="state", source=[State.AWAITING_CI, State.TRIAGING, State.FIXING], target=State.HALTED)
     def halt(self, *, reason: str) -> None:
         """Terminal escalation — an un-greenable red or an un-retryable infra failure.
 

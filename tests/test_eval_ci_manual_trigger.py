@@ -43,6 +43,7 @@ class TestGitHubEvalTriggers:
         gate = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "gate")
         sweep = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "sweep")
         daily = [cron for cron in crons if cron.split()[4] == "*"]
+        assert crons == ["0 6 * * *"]
         assert not daily or (
             sweep["env"]["EVAL_SWEEP_WITHIN_HOURS"] == "24"
             and "EVAL_API_KEY_FALLBACK" not in sweep["env"]

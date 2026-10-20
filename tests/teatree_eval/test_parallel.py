@@ -96,22 +96,30 @@ class TestRunSpecs:
         assert runner.peak_in_flight == 1
         assert [r.spec_name for r in runs] == [s.name for s in specs]
 
-    def test_subscription_limit_parks_remaining_serial_scenarios(self, tmp_path: Path) -> None:
-        specs = [_spec(tmp_path, name=name) for name in ("first", "limited", "remaining")]
+    @pytest.mark.parametrize("parallel", [1, 2])
+    def test_subscription_limit_parks_remaining_serial_scenarios(self, tmp_path: Path, parallel: int) -> None:
+        names = ("first", "limited", "remaining") if parallel == 1 else ("limited", "inflight", "remaining")
+        specs = [_spec(tmp_path, name=name) for name in names]
         called: list[str] = []
+        sibling_started = threading.Event()
 
         class _LimitRunner:
             def run(self, spec: EvalSpec) -> EvalRun:
                 called.append(spec.name)
                 if spec.name == "limited":
+                    if parallel == 2:
+                        assert sibling_started.wait(5)
                     msg = "weekly limit reached"
                     raise UsageLimitReachedError(msg)
+                if spec.name == "inflight":
+                    sibling_started.set()
+                    time.sleep(0.05)
                 return EvalRun.skipped(spec.name, "other")
 
-        runs = run_specs(_LimitRunner(), specs, parallel=1)
-        assert called == ["first", "limited"]
+        runs = run_specs(_LimitRunner(), specs, parallel=parallel)
+        assert set(called) == (set(names[:2]) if parallel == 2 else {"first", "limited"})
         assert [run.spec_name for run in runs] == [spec.name for spec in specs]
-        assert all(run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}") for run in runs[1:])
+        assert all(is_usage_limit_skip(run) for run in runs[(1 if parallel == 1 else 2) :])
 
     def test_empty_specs_yields_empty(self) -> None:
         assert run_specs(_RecordingRunner(), [], parallel=4) == []

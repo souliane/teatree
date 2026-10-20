@@ -194,8 +194,6 @@ def _guarded_run(
 ) -> EvalRun:
     try:
         _refuse_if_aborted(aborted)
-        if limited.is_set():
-            return usage_limit_skip(spec.name)
         with governor.slot():
             # Re-checked UNDER the permit: a worker parked here while the ceiling was
             # shrunken can wait out the sibling scenario that kills the key.
