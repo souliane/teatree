@@ -146,10 +146,11 @@ def test_history_retry_global_failure_reaches_the_mcp_caller() -> None:
 
 
 def test_history_instructions_condition_token_routing() -> None:
-    assert "When both tokens are configured" in services_slack.INSTRUCTIONS
-    assert "the user token" in services_slack.INSTRUCTIONS
-    assert "bot-only" in services_slack.INSTRUCTIONS
-    assert "user-only" in services_slack.INSTRUCTIONS
+    history = services_slack.INSTRUCTIONS.split("- slack_channel_history", 1)[1].split("- slack_thread_replies", 1)[0]
+    assert "When both tokens are configured" in history
+    assert "the user token" in history
+    assert "bot-only" in history
+    assert "user-only" in history
 
 
 def test_history_both_token_refusals_reach_the_mcp_caller() -> None:
