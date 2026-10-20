@@ -57,6 +57,10 @@ def test_a_full_verdict_without_a_database_change_runs_the_whole_tree(tmp_path: 
     assert "--teatree-selected-full" in _pytest_argv(tmp_path, selection=_MODEL_FULL)
 
 
+def test_explicit_full_lane_declares_itself_to_the_whole_tree_guard(tmp_path: Path) -> None:
+    assert "--teatree-selected-full" in _pytest_argv(tmp_path, "--full", selection="")
+
+
 def test_a_scoped_selection_stays_under_the_whole_tree_guard(tmp_path: Path) -> None:
     argv = _pytest_argv(tmp_path, selection=_SCOPED)
     assert "--tach" in argv

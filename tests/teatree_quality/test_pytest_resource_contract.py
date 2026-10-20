@@ -206,8 +206,57 @@ class TestWorkerSlotPool:
             WorkerSlotPool(root, capacity=1).acquire(1)
         assert str(path / "slot-0000.lock" if obstruction == "slot-is-a-directory" else path) in str(error.value)
 
+    @pytest.mark.timeout(15)
+    def test_a_smaller_participant_can_take_a_free_shared_slot(self, tmp_path: Path) -> None:
+        script = (
+            "import sys,time; from pathlib import Path; "
+            "from teatree.quality.pytest_resource_contract import WorkerSlotPool; "
+            "pool=WorkerSlotPool(Path(sys.argv[1]),capacity=int(sys.argv[2])); "
+            "lease=pool.acquire(1); print(lease.workers,flush=True); time.sleep(float(sys.argv[3]))"
+        )
+        with subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path), "8", "10"],
+            stdout=subprocess.PIPE,
+            text=True,
+        ) as holder:
+            try:
+                assert holder.stdout is not None
+                assert holder.stdout.readline().strip() == "1"
+                caller = subprocess.run(
+                    [sys.executable, "-c", script, str(tmp_path), "1", "0"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                assert caller.returncode == 0, caller.stderr
+                assert caller.stdout.strip() == "1"
+            finally:
+                holder.kill()
+
 
 class TestRealPytestRunsDrawFromOneBoxPool:
+    @pytest.mark.timeout(60)
+    @pytest.mark.parametrize("capacity_state", ["corrupt", "unreadable"])
+    def test_real_pytest_rebuilds_an_unusable_capacity_file(self, real_pytest_root: Path, capacity_state: str) -> None:
+        slot_dir = real_pytest_root / "pytest-worker-slots"
+        slot_dir.mkdir()
+        capacity_file = slot_dir / "capacity.lock"
+        capacity_file.write_text("corrupt" if capacity_state == "corrupt" else "3", encoding="utf-8")
+        if capacity_state == "unreadable":
+            capacity_file.chmod(0)
+        result = subprocess.run(
+            pytest_command("-n", "1", "-q", _BOUNDED_NODE),
+            cwd=REPO,
+            env=standalone_pytest_env(real_pytest_root),
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert capacity_file.read_text(encoding="utf-8").strip() == str(_BOX_CAPACITY)
+
     @pytest.mark.timeout(300)
     def test_four_overlapping_runs_never_exceed_the_free_slots_and_each_waits_saying_why(
         self, real_pytest_root: Path
