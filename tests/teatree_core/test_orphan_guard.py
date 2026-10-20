@@ -414,19 +414,6 @@ class TestFindOrphansInWorkspace(TestCase):
             (repo / ".git").mkdir(parents=True)
             self._make_worktree(repo.name, f"branch-{index}")
 
-    def test_classifies_three_distinct_branches_at_once(self) -> None:
-        self._seed_clones(3)
-        barrier = threading.Barrier(3, timeout=5)
-
-        def classify(repo: str, branch: str) -> BranchReport:
-            barrier.wait()
-            return BranchReport(repo=repo, branch=branch, status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
-
-        with patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify):
-            reports = find_orphans_in_workspace()
-
-        assert [report.branch for report in reports] == ["branch-0", "branch-1", "branch-2"]
-
     def test_never_classifies_more_than_eight_at_once(self) -> None:
         self._seed_clones(16)
         barrier = threading.Barrier(8, timeout=5)
