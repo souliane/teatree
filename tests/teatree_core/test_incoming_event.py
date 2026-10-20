@@ -123,15 +123,20 @@ class TestIncomingEvent(TestCase):
         assert not webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
 
     def test_relay_is_evidence_but_empty_repository_is_not(self) -> None:
-        IncomingEvent.objects.create(
-            **self._payload(
-                source=IncomingEvent.Source.GITLAB,
-                idempotency_key="gitlab:relay",
-                origin="relay",
-                repo_key="gitlab:101",
-                event_name="merge_request",
+        for key, repo_key, event_name in (
+            ("gitlab:relay", "gitlab:101", "merge_request"),
+            ("gitlab:no-repo", "", "merge_request"),
+            ("gitlab:no-event", "gitlab:101", ""),
+        ):
+            IncomingEvent.objects.create(
+                **self._payload(
+                    source=IncomingEvent.Source.GITLAB,
+                    idempotency_key=key,
+                    origin="relay",
+                    repo_key=repo_key,
+                    event_name=event_name,
+                )
             )
-        )
 
         assert webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
         assert not webhooks_verified_for("gitlab", "", "merge_request", timedelta(days=1))
