@@ -164,7 +164,7 @@ class SessionHandoverQuerySet(models.QuerySet):
             msg = (
                 f"session {from_session!r} cannot hand off to itself — a self-addressed hand-off is "
                 "claimable by no session (the target is excluded as its own author). "
-                "Name a different target, or omit it to park the hand-off for the next session."
+                "Name a different target, or park the hand-off for the next session."
             )
             raise SelfAddressedHandoverError(msg)
         existing = self._unclaimed_for(from_session)
