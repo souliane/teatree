@@ -1,4 +1,7 @@
 import json
+import os
+import shlex
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -198,15 +201,30 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert not self.direct_recovery()
 
     def test_proven_head_must_bind_attested_digest(self) -> None:
-        real_run = run_strict
-
-        def substitute_head(*, repo: str, args: list[str]) -> str:
-            if args == ["rev-parse", "--verify", "HEAD"]:
-                return self.anchor_head
-            return real_run(repo=repo, args=args)
+        real_git = shutil.which("git")
+        assert real_git is not None
+        bin_dir = self.path.parent / "git-bin"
+        bin_dir.mkdir()
+        first_read = bin_dir / "first-head-read"
+        substituted = bin_dir / "substituted-head-read"
+        wrapper = bin_dir / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "HEAD" ]; then\n'
+            f"  if [ -f {shlex.quote(str(first_read))} ]; then\n"
+            f"    rm {shlex.quote(str(first_read))}\n"
+            f"    touch {shlex.quote(str(substituted))}\n"
+            f"    printf '%s\\n' {shlex.quote(self.anchor_head)}\n"
+            "    exit 0\n"
+            "  fi\n"
+            f"  touch {shlex.quote(str(first_read))}\n"
+            "fi\n"
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        wrapper.chmod(0o755)
 
         with (
-            patch("teatree.core.worktree.checkout_released.git.run_strict", side_effect=substitute_head),
+            patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}),
             patch.object(
                 forge_pr_probe,
                 "github_open_pr_head",
@@ -215,6 +233,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             patch.object(forge_pr_probe, "github_exact_branch_head", return_value=self.anchor_head),
         ):
             self.assert_parked()
+        assert substituted.exists()
 
     def test_pr_repository_slug_must_equal_origin(self) -> None:
         foreign = PullRequestFactory(
