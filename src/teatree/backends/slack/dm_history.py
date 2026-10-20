@@ -15,6 +15,7 @@ from typing import cast
 from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.pagination import next_cursor
 from teatree.backends.slack.web_reads import Getter as TokenGetter
+from teatree.backends.slack.web_reads import read_with_user_token_fallback
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -32,9 +33,6 @@ class PageLimit:
 # 40 pages * 200 replies bounds a runaway walk at ~8000 replies; a hit is logged,
 # never silently truncated, so a dedup caller can trust a full read below the cap.
 _MAX_THREAD_PAGES = 40
-
-# The refusals a bot gets for a channel it was never invited to, which the user's xoxp may still read.
-_BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
 def _messages(data: RawAPIDict, key: str = "messages") -> list[RawAPIDict]:
@@ -116,16 +114,16 @@ def read_thread_replies(*, get: TokenGetter, channel: str, thread_ts: str, user_
     a read-back keyed on a non-root user-message ts misses it. A read Slack
     refuses raises :class:`SlackReadRefusedError` — ``[]`` only ever means an
     empty thread — and each caller decides what a refusal means to it. A
-    channel the bot was never invited to is re-read through *user_token*.
+    channel the bot was never invited to is re-read through *user_token* when configured.
     """
     if not channel or not thread_ts:
         return []
-    try:
-        replies = _walk_thread(get, channel, thread_ts)
-    except SlackReadRefusedError as refused:
-        if not user_token or refused.error_code not in _BOT_NOT_A_MEMBER:
-            raise
-        replies = _walk_thread(partial(get, token=user_token), channel, thread_ts)
+    replies = read_with_user_token_fallback(
+        # Some bot-path getters accept no token keyword; the retry must supply one.
+        lambda auth: _walk_thread(get if not auth else partial(get, token=auth), channel, thread_ts),
+        token="",
+        user_token=user_token,
+    )
     for reply in replies:
         reply.setdefault("channel", channel)
     return replies
