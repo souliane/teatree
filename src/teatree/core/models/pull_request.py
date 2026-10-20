@@ -8,6 +8,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
+from teatree.core.modelkit.admission_clock import earliest_admission_stamp
 from teatree.core.models.merge_void import MergeVoid
 from teatree.url_classify import repo_and_iid
 from teatree.utils.pr_ref import PrRef
@@ -23,21 +24,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def pull_request_start_expression(*, ticket_ref: str = "ticket_id") -> models.Expression:
+def pull_request_start_expression() -> models.Expression:
     task = apps.get_model("core", "Task")
     transition_row = apps.get_model("core", "TicketTransition")
     first_admission = (
-        task.objects.filter(ticket_id=models.OuterRef(ticket_ref), admitted_at__isnull=False)
-        .order_by("admitted_at", "pk")
-        .values("admitted_at")[:1]
+        task.objects.filter(ticket_id=models.OuterRef("ticket_id"))
+        .annotate(first_stamp=earliest_admission_stamp())
+        .filter(first_stamp__isnull=False)
+        .order_by("first_stamp", "pk")
+        .values("first_stamp")[:1]
     )
     first_transition = (
-        transition_row.objects.filter(ticket_id=models.OuterRef(ticket_ref))
+        transition_row.objects.filter(ticket_id=models.OuterRef("ticket_id"))
         .order_by("created_at", "pk")
         .values("created_at")[:1]
     )
     first_creation = (
-        PullRequest.objects.filter(ticket_id=models.OuterRef(ticket_ref), create_verified_at__isnull=False)
+        PullRequest.objects.filter(ticket_id=models.OuterRef("ticket_id"), create_verified_at__isnull=False)
         .order_by("create_verified_at", "pk")
         .values("create_verified_at")[:1]
     )

@@ -66,6 +66,7 @@ from teatree.core.admission_pressure import (
 )
 from teatree.core.managers_task_claim import claim_admission_block_reason
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
+from teatree.core.modelkit.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
@@ -184,6 +185,8 @@ class AgentAdmission:
         """
         cost = phase_cost(phase)
         lane = self.lane_for(cost)
+        if not _task_model().objects.filter(pk=task_pk).filter(new_pr_start_allowed_q()).exists():
+            return f"{OPEN_PR_START_CAP} or more pull requests are open; this task could start another"
         if not _task_model().objects.record_admission(
             task_pk, cheap=cost is PhaseCost.CHEAP, lane_ceiling=lane.ceiling
         ):

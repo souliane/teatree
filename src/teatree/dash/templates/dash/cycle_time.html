@@ -42,9 +42,9 @@
         <thead><tr><th>open pull request</th><th class="num">age</th></tr></thead>
         <tbody>
           {% for row in view.open_prs %}
-            <tr{% if row.stale %} data-group="failed"{% endif %}>
+            <tr>
               <td><a href="{{ row.url }}">{{ row.url }}</a></td>
-              <td class="num">{{ row.age }}</td>
+              <td class="num">{{ row.age }}{% if row.stale %} <span class="chip warn">72h+</span>{% endif %}</td>
             </tr>
           {% endfor %}
         </tbody>

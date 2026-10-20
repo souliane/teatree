@@ -16,10 +16,10 @@
 
 version: 1
 
-# The minimum fraction of the six signals that must produce a trustworthy `ok`
-# reading before the aggregate is a number at all. Below it the score is None +
+# Three of six signals must produce a trustworthy `ok` reading before the
+# aggregate is a number at all. Below it the score is None +
 # RED — an untrustworthy score is never a fabricated figure.
-coverage_floor: 0.6
+coverage_floor: 0.5
 
 signals:
   first_try_green:

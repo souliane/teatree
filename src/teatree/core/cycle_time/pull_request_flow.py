@@ -9,7 +9,7 @@ from teatree.core.models.pull_request import PullRequest
 
 
 @dataclass(frozen=True, slots=True)
-class OpenPullRequest:
+class OpenPullRequestAge:
     url: str
     age_hours: float | None
 
@@ -26,13 +26,13 @@ def merged_pull_request_seconds(*, since: datetime, until: datetime, overlay: st
     )
 
 
-def open_pull_requests(*, now: datetime, overlay: str = "") -> tuple[OpenPullRequest, ...]:
+def open_pull_requests(*, now: datetime, overlay: str = "") -> tuple[OpenPullRequestAge, ...]:
     rows = PullRequest.objects.live().with_flow_stamps()
     if overlay:
         rows = rows.filter(overlay=overlay)
     rows = rows.order_by(F("flow_started_at").asc(nulls_last=True), "pk")
     return tuple(
-        OpenPullRequest(
+        OpenPullRequestAge(
             url=row.url,
             age_hours=max(0.0, (now - row.flow_started_at).total_seconds() / 3600)
             if row.flow_started_at is not None

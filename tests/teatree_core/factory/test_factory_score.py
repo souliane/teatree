@@ -157,14 +157,24 @@ class TestPureFold:
         assert result.aggregate is None
 
     def test_below_coverage_floor_yields_none_and_red(self) -> None:
-        # coverage_floor is 0.6; only 3 of 6 covered → 0.5 < 0.6 → None + RED.
+        # Only two of six trustworthy readings cannot produce a score.
+        rows = _healthy_rows()
+        for i in (0, 1, 2, 3):
+            rows[i] = _row(rows[i].provider_id, 0.0, status=SignalStatus.INSUFFICIENT_DATA)
+        result = score_report(self.recipe, _report(rows))
+        assert result.coverage == pytest.approx(2 / 6)
+        assert result.aggregate is None
+        assert result.verdict == SignalVerdict.RED.value
+
+    def test_three_of_six_signals_cover_the_floor(self) -> None:
         rows = _healthy_rows()
         for i in (0, 1, 2):
             rows[i] = _row(rows[i].provider_id, 0.0, status=SignalStatus.INSUFFICIENT_DATA)
+
         result = score_report(self.recipe, _report(rows))
+
         assert result.coverage == pytest.approx(0.5)
-        assert result.aggregate is None
-        assert result.verdict == SignalVerdict.RED.value
+        assert result.aggregate is not None
 
     def test_four_of_six_signals_cover_the_floor(self) -> None:
         rows = _healthy_rows()

@@ -8,9 +8,11 @@ re-dispatched into the same 429 in a tight loop.
 from datetime import datetime, timedelta
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 
 
 def _pending_task(not_before: datetime | None = None) -> Task:
@@ -32,8 +34,23 @@ def _pending_task(not_before: datetime | None = None) -> Task:
 class TestClaimHonoursNotBefore(django.test.TestCase):
     def test_future_not_before_is_not_claimable(self) -> None:
         now = timezone.now()
-        _pending_task(not_before=now + timedelta(hours=5))
+        deadline = now + timedelta(hours=5)
+        task = _pending_task(not_before=deadline)
         assert Task.objects.claim_next_pending(claimed_by="worker") is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == deadline
+
+    def test_a_held_task_keeps_its_deadline_after_direct_claim_refusal(self) -> None:
+        deadline = timezone.now() + timedelta(hours=5)
+        task = _pending_task(not_before=deadline)
+
+        with pytest.raises(InvalidTransitionError, match="Task parked until"):
+            task.claim(claimed_by="worker")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == deadline
 
     def test_elapsed_not_before_is_claimable(self) -> None:
         now = timezone.now()

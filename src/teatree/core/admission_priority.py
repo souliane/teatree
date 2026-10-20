@@ -5,11 +5,17 @@ first admission breaks ties before the older task row. Every caller orders throu
 :data:`ADMISSION_ORDER`, so a new part is added here without touching any of them.
 """
 
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
+from django.db import models
 from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, When
 from django.db.models.expressions import BaseExpression, OrderBy
 
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
-from teatree.core.models.pull_request import PullRequest, pull_request_start_expression
+
+if TYPE_CHECKING:
+    from teatree.core.models.pull_request import PullRequest
 
 ADMISSION_SCORE_ALIAS = "_admission_score"
 PR_STARTED_ALIAS = "_pr_started_at"
@@ -57,10 +63,14 @@ def _stage_part(started: Exists) -> Case:
 
 
 def admission_priority_annotations() -> dict[str, BaseExpression]:
-    started = Exists(PullRequest.objects.live().filter(ticket_id=OuterRef("ticket_id")))
+    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
+    started_rows = pull_request.objects.live().filter(ticket_id=OuterRef("ticket_id"))
+    started = Exists(started_rows)
     return {
         ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part(started),
-        PR_STARTED_ALIAS: Case(When(started, then=pull_request_start_expression())),
+        PR_STARTED_ALIAS: models.Subquery(
+            started_rows.with_flow_stamps().order_by("flow_started_at", "pk").values("flow_started_at")[:1]
+        ),
     }
 
 

@@ -23,6 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
+from teatree.core.modelkit.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
@@ -117,7 +118,8 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
     ``<claimable>`` is PENDING, or CLAIMED with an absent/expired lease (a
     dead owner's orphan — reclaimable). A CLAIMED task whose lease is still
     live is NOT claimable, so a healthy owner's claim is never stolen; a
-    terminal task is never re-claimed. On a lost claim the current row is
+    terminal task is never re-claimed. A task that could open a new PR is also
+    held while the live PR cap is reached. On a lost claim the current row is
     read back ONLY to raise the matching typed error — the claim *decision*
     is the atomic UPDATE's row count, never the read-back.
 
@@ -143,9 +145,13 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
     now = timezone.now()
     owner_pid, owner_pid_namespace = current_owner()
     claimable = (
-        Q(status=status.PENDING)
-        | (Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)))
-    ) & _claimable_now_q(now)
+        (
+            Q(status=status.PENDING)
+            | (Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)))
+        )
+        & _claimable_now_q(now)
+        & new_pr_start_allowed_q()
+    )
     won = (
         type(task)
         .objects.filter(pk=task.pk)
@@ -171,6 +177,12 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         deadline = _parked_until(task, now)
         if task.status == status.PENDING and deadline is not None:
             msg = f"Task parked until {deadline.isoformat()}"
+            raise InvalidTransitionError(msg)
+        if (
+            task.status == status.PENDING
+            and not type(task).objects.filter(pk=task.pk).filter(new_pr_start_allowed_q()).exists()
+        ):
+            msg = "Task held while three or more open pull requests await completion"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)

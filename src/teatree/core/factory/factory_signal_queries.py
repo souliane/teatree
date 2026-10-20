@@ -144,7 +144,7 @@ class SignalReading:
     """One provider's reading — the seam PR-2's recipe registry consumes.
 
     ``value`` is the natural-unit measurement (a 0..1 rate for S1-S3, hours for
-    S4, a mean iteration count for S5); the recipe normalises to 0..1 with the
+    S4 and S6, a mean iteration count for S5); the recipe normalises to 0..1 with the
     signal's direction. ``window_days`` is the trailing window width.
     """
 
@@ -169,7 +169,7 @@ class Computation:
     The public provider functions expose only :attr:`reading`;
     :func:`teatree.core.factory.factory_signals.compute_factory_signals` also reads
     :attr:`evidence` (companion scalars) and :attr:`hard_red` (S4's stale-CLEAR
-    trip, which fires even when the latency sample itself is insufficient).
+    or S6's aged open-PR trip, even when the latency sample is insufficient).
     """
 
     reading: SignalReading

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
 from django.db.models import Exists, OuterRef, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
@@ -37,6 +38,8 @@ from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
+from teatree.core.modelkit.admission_clock import earliest_admission_stamp
+from teatree.core.modelkit.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
@@ -363,7 +366,9 @@ class TaskQuerySet(models.QuerySet):
         if claim_admission_block_reason():
             return None
         now = timezone.now()
-        candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
+        candidates = self.filter(status=task_model.Status.PENDING).filter(
+            _claimable_now_q(now), new_pr_start_allowed_q()
+        )
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
         if ordering is not None:
@@ -378,19 +383,23 @@ class TaskQuerySet(models.QuerySet):
             # Compare-and-swap on status: only the writer that still sees
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
-            # predicate is the status CAS token and stays untouched by it.
+            # predicate keeps the status CAS, park deadline and new-PR cap aligned.
             owner_pid, owner_pid_namespace = current_owner()
-            claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
-                status=task_model.Status.CLAIMED,
-                claimed_by=claimed_by,
-                claimed_by_session=claimed_by_session,
-                claimed_generation=current_generation(),
-                claimed_at=now,
-                heartbeat_at=now,
-                lease_expires_at=now + timedelta(seconds=lease_seconds),
-                owner_pid=owner_pid,
-                owner_pid_namespace=owner_pid_namespace,
-                owner_driving_since=None,
+            claimed_count = (
+                self.filter(pk=oldest_pk, status=task_model.Status.PENDING)
+                .filter(_claimable_now_q(now), new_pr_start_allowed_q())
+                .update(
+                    status=task_model.Status.CLAIMED,
+                    claimed_by=claimed_by,
+                    claimed_by_session=claimed_by_session,
+                    claimed_generation=current_generation(),
+                    claimed_at=now,
+                    heartbeat_at=now,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    owner_pid=owner_pid,
+                    owner_pid_namespace=owner_pid_namespace,
+                    owner_driving_since=None,
+                )
             )
             if claimed_count != 1:
                 return None
@@ -516,13 +525,14 @@ class TaskQuerySet(models.QuerySet):
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
         inside it would re-enter the receiver, and the stamp must not be able to re-arm
-        the dispatch it is recording.
+        the dispatch it is recording. The first admission clock is retained when
+        a renewable seat is cleared or stamped again.
         """
         now = timezone.now()
-        seat = self.filter(_unseated_q(now), pk=task_pk)
+        seat = self.filter(_unseated_q(now), new_pr_start_allowed_q(), pk=task_pk)
         if lane_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
-        return bool(seat.update(admitted_at=now))
+        return bool(seat.update(admitted_at=now, first_admitted_at=Coalesce(earliest_admission_stamp(), now)))
 
     def waiting_for_admission(self) -> models.QuerySet:
         """PENDING rows due now and holding no seat — what both headless chokepoints may admit or fail.

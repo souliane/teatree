@@ -195,10 +195,54 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         PullRequest.objects.record_opened(
             ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/10"
         )
-        expedited = self._task("coding", ticket=Ticket.objects.create(expedited=True))
+        expedited = self._task("planning", ticket=Ticket.objects.create(expedited=True))
 
         assert drain_queue_body()["enqueued"] == [expedited.pk]
         assert not self._admitted(started)
+
+
+class TestTheOpenPullRequestStartCap(_AdmissionCase):
+    def setUp(self) -> None:
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _open_prs(self, count: int) -> list[Ticket]:
+        tickets = [Ticket.objects.create() for _ in range(count)]
+        for index, ticket in enumerate(tickets):
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 40}"
+            )
+        return tickets
+
+    def test_three_open_prs_hold_new_shipping_and_first_push_but_serve_started_work(self) -> None:
+        started_ticket = self._open_prs(3)[0]
+        shipping = self._task("shipping")
+        first_push = self._task("coding", ticket=Ticket.objects.create())
+        started = self._task("coding", ticket=started_ticket)
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(shipping)
+        assert not self._admitted(first_push)
+
+    def test_two_open_prs_allow_a_new_shipping_task(self) -> None:
+        self._open_prs(2)
+        shipping = self._task("shipping")
+
+        assert drain_queue_body()["enqueued"] == [shipping.pk]
+
+    def test_three_open_prs_allow_review_and_critic(self) -> None:
+        self._open_prs(3)
+        review = self._task("reviewing")
+        critic = self._task("critic_reviewing", ticket=Ticket.objects.create(role=Ticket.Role.REVIEWER))
+
+        assert drain_queue_body()["enqueued"] == [review.pk, critic.pk]
+
+    def test_three_open_prs_allow_expedited_shipping(self) -> None:
+        self._open_prs(3)
+        expedited = self._task("shipping", ticket=Ticket.objects.create(expedited=True))
+
+        assert drain_queue_body()["enqueued"] == [expedited.pk]
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):

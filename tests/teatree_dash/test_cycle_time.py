@@ -271,9 +271,12 @@ class CycleTimePageTestCase(TestCase):
 
         assert "Median of 3 merged pull requests: <strong>6h</strong>" in body
         assert body.index(old.url) < body.index(young.url)
-        assert re.search(rf'<tr data-group="failed">\s*<td><a href="{re.escape(old.url)}">', body)
-        assert re.search(rf'<tr>\s*<td><a href="{re.escape(young.url)}">', body)
-        assert re.search(rf'{re.escape(old.url)}</a></td>\s*<td class="num">80h</td>', body)
+        old_row = re.search(rf'<tr>\s*<td><a href="{re.escape(old.url)}">.*?</tr>', body, re.DOTALL)
+        assert old_row is not None
+        assert '<td class="num">80h <span class="chip warn">72h+</span></td>' in old_row.group()
+        young_row = re.search(rf'<tr>\s*<td><a href="{re.escape(young.url)}">.*?</tr>', body, re.DOTALL)
+        assert young_row is not None
+        assert 'class="chip warn"' not in young_row.group()
         assert re.search(rf'{re.escape(young.url)}</a></td>\s*<td class="num">5h</td>', body)
 
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
