@@ -6,6 +6,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.repro_phase_recorder import record_phase_repro
+from teatree.config.override_reader import load_overlay_rows
+from teatree.core.gates.repro_gate import audit_repro_exemption, forced_repro_gate_enabled, repro_disabled_scope
 from teatree.core.models import ConfigSetting, HarnessRun, ReproEvidence, Session, Task, Ticket, Worktree
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -67,8 +69,16 @@ class TestRecordPhaseReproWithSatisfiedCoding(TestCase):
             command="false",
             run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
         )
+        scope_by_key: dict[str, str] = {}
+        rows, degraded = load_overlay_rows("acme", scope_by_key=scope_by_key)
+        assert not degraded
+        assert rows["forced_repro_gate_enabled"] is False
+        assert scope_by_key["forced_repro_gate_enabled"] == "acme"
+        assert repro_disabled_scope(ticket) == "acme"
+        assert not forced_repro_gate_enabled(ticket)
 
         with self.assertNoLogs("teatree.core.gates.repro_gate", level="WARNING"):
+            assert audit_repro_exemption(ticket, evidence="red")
             assert record_phase_repro(task, phase="coding") == ""
         ticket.refresh_from_db()
         assert "forced_repro_disabled_scopes" not in ticket.extra
