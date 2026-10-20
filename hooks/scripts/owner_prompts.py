@@ -1,6 +1,7 @@
 """What the owner typed and answered in this session, read newest-first from its transcript."""
 
 import contextlib
+import json
 import re
 import sys
 from collections.abc import Iterator
@@ -208,6 +209,28 @@ def owner_prompts_since(cursor: Path, transcript_path: str) -> UnreadPrompts:
     return UnreadPrompts(tuple(_as_typed(entry) for entry in reversed(newest)), cursor, look.offset)
 
 
+@dataclass(frozen=True, slots=True)
+class LastOwnerTurn:
+    """The newest user turn: the owner's prompt as typed and the tool results the agent has seen since it."""
+
+    prompt: str = ""
+    tool_results: str = ""
+
+
+def last_owner_turn(transcript_path: str) -> LastOwnerTurn:
+    """The newest user turn; its prompt is ``""`` when the owner did not start it (a loop tick, a scheduled fire)."""
+    results: list[str] = []
+    for entry in iter_transcript_reversed(transcript_path):
+        if _entry_message_role(entry) != "user":
+            continue
+        blocks = _entry_message_blocks(entry)
+        if is_tool_result_only(blocks):
+            results.extend(json.dumps(block.get("content", "")) for block in blocks if isinstance(block, dict))
+            continue
+        return LastOwnerTurn(entry_text(entry) if _is_owner_words(entry) else "", "\n".join(results))
+    return LastOwnerTurn()
+
+
 def is_live_user_turn(transcript_path: str, *, now: datetime | None = None) -> bool:
     """Whether the owner typed a prompt, or answered a question in-client, within the live window."""
     for entry in iter_transcript_reversed(transcript_path):
@@ -221,10 +244,12 @@ __all__ = [
     "LIVE_TURN_FRESHNESS",
     "LOOK_BYTES",
     "LOOK_LINES",
+    "LastOwnerTurn",
     "UnreadPrompts",
     "entry_text",
     "is_live_user_turn",
     "is_owner_prompt",
+    "last_owner_turn",
     "owner_messages",
     "owner_prompted_since",
     "owner_prompts_since",

@@ -12,13 +12,24 @@ ends the chain.
 """
 
 import datetime as dt
+import logging
+import time
+from typing import TYPE_CHECKING
 
 from django.tasks import TaskResultStatus, task
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree import standing_directives_cache
+from teatree.core.factory_slack_liveness import factory_slack_live
+from teatree.core.models import PendingChatInjection
 from teatree.loop.standing_directives import publish
 from teatree.loops.timer_chains import LOOPS_QUEUE
+
+if TYPE_CHECKING:
+    from teatree.standing_directives_cache import OpenRelayPayload
+
+logger = logging.getLogger(__name__)
 
 #: How stale the published directives may get behind an admin edit or a mode change.
 PUBLISH_POLL_SECONDS = 60
@@ -31,13 +42,43 @@ def _pending_publish() -> bool:
     ).exists()
 
 
+def publish_factory_slack() -> None:
+    """Publish whether factory Slack is live and each session's open relays; rewritten every fire to stay fresh."""
+    verdict = factory_slack_live("")
+    open_relays: dict[str, list[OpenRelayPayload]] = {}
+    for row in PendingChatInjection.objects.open_relays():
+        open_relays.setdefault(row.relayed_by_session, []).append(
+            {
+                "id": row.pk,
+                "slack_ts": row.slack_ts,
+                "channel": row.channel,
+                "text": " ".join(row.text.split())[:120],
+                "state": "delegated" if row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED else "unanswered",
+            }
+        )
+    standing_directives_cache.write_factory_slack(
+        {
+            "overlay": verdict.overlay,
+            "live": verdict.live,
+            "reason": verdict.reason,
+            "checked_at": time.time(),
+            "open_relays": open_relays,
+        }
+    )
+
+
 @task(queue_name=LOOPS_QUEUE)
 def publish_standing_directives() -> dict[str, str]:
-    """One fire: queue the successor, then publish the directives if their resolution changed."""
+    """One fire: queue the successor, publish the directives if their resolution changed, refresh the Slack verdict."""
     if _pending_publish():
         return {"action": "deduped"}
     publish_standing_directives.using(run_after=timezone.now() + dt.timedelta(seconds=PUBLISH_POLL_SECONDS)).enqueue()
-    return {"action": "published" if publish() else "unchanged"}
+    action = "published" if publish() else "unchanged"
+    try:
+        publish_factory_slack()
+    except Exception:
+        logger.exception("could not publish the factory-Slack verdict; the hooks read it as absent and fail open")
+    return {"action": action}
 
 
 def ensure_standing_directives_publish_chain() -> None:

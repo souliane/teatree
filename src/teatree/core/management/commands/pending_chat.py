@@ -158,3 +158,30 @@ class Command(TyperCommand):
         self.stdout.write(marker)
         if json_output:
             self.stdout.write(json.dumps({**fields, "marker": marker}))
+
+    @command()
+    def relays(
+        self,
+        *,
+        session: Annotated[
+            str | None, typer.Option("--session", help="Only this session's relays; omit for every session's.")
+        ] = None,
+        json_output: Annotated[bool, typer.Option("--json", help="Print the open relays as JSON.")] = False,
+    ) -> str:
+        """List the relayed owner prompts the factory has not answered, or whose delegated work went wrong."""
+        rows = [
+            {
+                "id": row.pk,
+                "session": row.relayed_by_session,
+                "channel": row.channel,
+                "slack_ts": row.slack_ts,
+                "state": "delegated" if row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED else "unanswered",
+                "text": " ".join(row.text.split())[:120],
+            }
+            for row in PendingChatInjection.objects.open_relays(session)
+        ]
+        if json_output:
+            return json.dumps(rows)
+        if not rows:
+            return "no open relays."
+        return "\n".join(f"#{row['id']} [{row['state']}] session={row['session'] or '-'} {row['text']}" for row in rows)

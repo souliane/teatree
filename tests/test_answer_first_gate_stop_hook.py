@@ -334,3 +334,26 @@ class TestRegisteredOnTheStopChain:
 
         assert "handle_answer_first_gate" in names
         assert names.index("handle_answer_first_gate") < names.index("handle_hand_back_answers")
+
+
+class TestARelayReceiptIsTheAnswer:
+    """The question went to the factory's DM through the relay, so the factory — not this turn — answers it."""
+
+    def test_a_dispatch_report_after_a_relay_receipt_is_allowed_while_the_same_turn_without_one_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        receipt = "t3-relay-receipt: pending_chat=7 ts=1700000000.000001 permalink=https://slack.test/p1"
+        relayed = _write_transcript(
+            tmp_path,
+            [_user(_QUESTION), _tool_call("Relaying it."), _tool_result(receipt), _assistant(_DISPATCH_ONLY)],
+        )
+
+        assert handle_answer_first_gate({"transcript_path": str(relayed)}) is None
+        assert capsys.readouterr().out == ""
+
+        unrelayed = _write_transcript(
+            tmp_path,
+            [_user(_QUESTION), _tool_call("Let me get a lane on it."), _tool_result(), _assistant(_DISPATCH_ONLY)],
+        )
+
+        assert handle_answer_first_gate({"transcript_path": str(unrelayed)}) is True

@@ -29,8 +29,8 @@ from hooks.scripts.session_lane import LANE_SDK, session_lane
 from hooks.scripts.state_files import hook_state_dir
 from hooks.scripts.teatree_settings import autoload_enabled
 from teatree import standing_directives_cache
-from teatree.loop.standing_directives import SCOPE_ATTENDED_SINGLETON, compiled_directives
-from teatree.standing_directives_cache import StandingDirectivePayload
+from teatree.loop.standing_directives import SCOPE_ATTENDED_SINGLETON, compiled_directives, render_open_relays
+from teatree.standing_directives_cache import OpenRelayPayload, StandingDirectivePayload
 
 INJECTED_MARKER = "directives-injected"
 _ENGAGEMENT_MARKERS = ("teatree-active", "t3-engaged")
@@ -43,11 +43,13 @@ class DueRules:
     session_id: str
     directives: tuple[StandingDirectivePayload, ...] = ()
     stamps: dict[str, float] = field(default_factory=dict)
+    open_relays: tuple[OpenRelayPayload, ...] = ()
 
     @property
     def text(self) -> str:
-        """The rendered directives, or ``""`` when none is due."""
-        return _render(self.directives) if self.directives else ""
+        """The rendered directives due and the session's open relays, or ``""`` when neither."""
+        parts = (_render(self.directives) if self.directives else "", render_open_relays(self.open_relays))
+        return "\n\n".join(part for part in parts if part)
 
     def mark_delivered(self) -> None:
         """Keep each handed-out slot's delivery instant — call it only once the text was written."""
@@ -62,7 +64,7 @@ def due_rules(session_id: str, *, every_slot: bool) -> DueRules:
     slots whose cadence has passed since this session last received them. Nothing is recorded until
     :meth:`DueRules.mark_delivered`.
     """
-    if not session_id or session_lane() == LANE_SDK or not _engaged(session_id):
+    if not session_id or session_lane() == LANE_SDK or not engaged(session_id):
         return DueRules(session_id)
     stamps = _stamps(session_id)
     now = time.time()
@@ -71,10 +73,21 @@ def due_rules(session_id: str, *, every_slot: bool) -> DueRules:
         for directive in _reaching(session_id)
         if every_slot or now - stamps.get(directive["slot_id"], 0.0) >= directive["cadence_seconds"]
     )
-    return DueRules(session_id, due, stamps | dict.fromkeys((directive["slot_id"] for directive in due), now))
+    return DueRules(
+        session_id,
+        due,
+        stamps | dict.fromkeys((directive["slot_id"] for directive in due), now),
+        _open_relays(session_id),
+    )
 
 
-def _engaged(session_id: str) -> bool:
+def _open_relays(session_id: str) -> tuple[OpenRelayPayload, ...]:
+    published = standing_directives_cache.read_factory_slack()
+    return tuple(published["open_relays"].get(session_id, ())) if published is not None else ()
+
+
+def engaged(session_id: str) -> bool:
+    """Whether *session_id* is an engaged session: the owner's ``autoload``, or a teatree or ``t3:`` skill loaded."""
     state = hook_state_dir()
     return any((state / f"{session_id}.{marker}").is_file() for marker in _ENGAGEMENT_MARKERS) or autoload_enabled()
 
@@ -128,4 +141,4 @@ def _render(directives: Sequence[StandingDirectivePayload]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["INJECTED_MARKER", "DueRules", "due_rules"]
+__all__ = ["INJECTED_MARKER", "DueRules", "due_rules", "engaged"]

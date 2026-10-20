@@ -171,6 +171,8 @@ from hooks.scripts.session_start_hook_budget import session_start_hook_budget_ad
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_path_probe import is_file_safe
+from hooks.scripts.slack_first_gate import handle_slack_first_gate
+from hooks.scripts.slack_first_question import question_run_id, supersede_pending_questions
 from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
 from hooks.scripts.standing_grant_ask_gate import handle_block_standing_grant_ask
 from hooks.scripts.state_files import append_line, hook_state_dir, read_lines
@@ -3244,7 +3246,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
-        _supersede_pending_questions(data)
+        supersede_pending_questions(data)
         return False
     queue_id = _capture_and_defer_question(data, dedupe=True)
     if queue_id is None:
@@ -3259,39 +3261,6 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
         f"A loop-driven AskUserQuestion cannot block here: decide it yourself and proceed. {OWNER_QUESTION_ROUTE}"
     )
     return emit_pretooluse_deny(reason, gate_id="deferred_question")
-
-
-def _supersede_pending_questions(data: dict) -> None:
-    """Stale-mark this (session, run)'s pending rows — an in-client ask replaces them.
-
-    A loop-driven row the agent later re-asks on an attended turn would otherwise keep
-    nagging from ``reask_escalated_questions`` after the owner has already answered.
-
-    Scoped by ``supersedable``: a raw ``pending()`` filter dismisses a DELIVERED row a Slack reply binds to,
-    sweeps the INTERNAL health queue, and — on the common run-less payload — erases the session's backlog (#4721).
-    """
-    if not bootstrap_teatree_django():
-        return
-    try:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
-
-        for prior in DeferredQuestion.supersedable(session_id=str(data.get("session_id", "")), run_id=_run_id(data)):
-            prior.mark_stale("superseded by an in-client question")
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-
-
-def _run_id(data: dict) -> str:
-    """Harness run id when the payload exposes one; empty when it names no run.
-
-    The (session, run) pair scopes the generation cursor and what a newer question may supersede; empty rather
-    than the session id, whose fallback widened that scope to the session's whole backlog (#4721).
-    """
-    for key in ("run_id", "agent_run_id", "tool_use_id"):
-        value = str(data.get(key, "")).strip()
-        if value:
-            return value
-    return ""
 
 
 def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:
@@ -3318,7 +3287,7 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | No
         return None
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
     session_id = str(data.get("session_id", ""))
-    run_id = _run_id(data)
+    run_id = question_run_id(data)
     marker = denied_question_row_marker(session_id, denied_question_dedupe_key(first)) if dedupe else ""
     try:
         row = DeferredQuestion.pending().filter(dedupe_marker=marker).first() if marker else None
@@ -3697,6 +3666,7 @@ _HANDLERS: dict[str, list] = {
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_answer_first_gate,
+        handle_slack_first_gate,
         handle_completion_claim_gate,
         handle_unbacked_claim_gate,
         handle_standing_goal_stop,

@@ -31,7 +31,7 @@ from teatree.loop.standing_directives import (
     STANDING_DIRECTIVES,
     compiled_directives,
 )
-from teatree.standing_directives_cache import StandingDirectivePayload
+from teatree.standing_directives_cache import OpenRelayPayload, StandingDirectivePayload
 
 _FAKE: list[StandingDirectivePayload] = [
     {"slot_id": "slot-a", "cadence_seconds": 300, "text": "Alpha rule.", "scope": SCOPE_ATTENDED},
@@ -319,6 +319,68 @@ class TestWhoGetsWhat:
 
     def test_an_empty_session_id_is_a_no_op(self, published: None) -> None:
         assert _due("") == ""
+
+
+# ── the open relays of the relaying session ──────────────────────────
+
+
+def _publish_relays(relays: dict[str, list[OpenRelayPayload]], *, age_seconds: float = 0.0) -> None:
+    standing_directives_cache.write_factory_slack(
+        {
+            "overlay": "t3-slack",
+            "live": True,
+            "reason": "",
+            "checked_at": time.time() - age_seconds,
+            "open_relays": relays,
+        }
+    )
+
+
+def _relay(relay_id: int, text: str, state: str = "unanswered") -> OpenRelayPayload:
+    return {"id": relay_id, "slack_ts": f"{relay_id}.0", "channel": "D1", "text": text, "state": state}
+
+
+class TestOpenRelaysRideTheDelivery:
+    """A relaying session is told which of ITS relays the factory has not answered, and nobody else is."""
+
+    def test_the_relaying_session_is_told_and_another_engaged_session_is_not(
+        self, published: None, state_dir: Path
+    ) -> None:
+        (state_dir / "sess-2.teatree-active").touch()
+        _publish_relays({"sess-1": [_relay(12, "is it merged?")], "sess-2": [_relay(13, "ship the docs?")]})
+
+        mine = _due("sess-1")
+        theirs = _due("sess-2")
+
+        assert "is it merged?" in mine
+        assert "12" in mine
+        assert "ship the docs?" not in mine
+        assert "ship the docs?" in theirs
+        assert "is it merged?" not in theirs
+
+    def test_a_session_with_no_open_relay_is_told_nothing_extra(self, published: None) -> None:
+        _publish_relays({"sess-9": [_relay(12, "is it merged?")]})
+
+        assert "is it merged?" not in _due()
+
+    def test_a_stale_verdict_adds_nothing(self, published: None) -> None:
+        _publish_relays(
+            {"sess-1": [_relay(12, "is it merged?")]},
+            age_seconds=standing_directives_cache.FACTORY_SLACK_FRESH_SECONDS + 60,
+        )
+
+        assert "is it merged?" not in _due()
+
+    def test_the_relays_come_back_on_every_delivery_while_the_directives_wait_for_their_cadence(
+        self, published: None
+    ) -> None:
+        _publish_relays({"sess-1": [_relay(12, "is it merged?")]})
+        first = _due()
+        second = _due()
+
+        assert "Alpha rule." in first
+        assert "Alpha rule." not in second
+        assert "is it merged?" in second
 
 
 # ── one session per host for a host-wide slot ────────────────────────

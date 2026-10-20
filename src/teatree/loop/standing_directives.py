@@ -39,12 +39,12 @@ database at all.
 
 import logging
 import os
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 from teatree import standing_directives_cache
-from teatree.standing_directives_cache import StandingDirectivePayload
+from teatree.standing_directives_cache import OpenRelayPayload, StandingDirectivePayload
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +322,19 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
     ]
 
 
+def render_open_relays(relays: Sequence[OpenRelayPayload]) -> str:
+    """The block telling a session which prompts it relayed to Slack the factory has not answered; ``""`` for none."""
+    if not relays:
+        return ""
+    header = (
+        f"Open Slack relays from this session ({len(relays)}) — follow each thread on Slack, and step in there "
+        "when the factory's reply is missing, late, failed or weaker than yours:"
+    )
+    lines = [header]
+    lines.extend(f"  relay {relay['id']} ({relay['state']}): {relay['text']}" for relay in relays)
+    return "\n".join(lines)
+
+
 def publish() -> bool:
     """Publish the resolved directives for the hooks; ``False`` when that resolution is already published.
 
@@ -345,6 +358,7 @@ __all__ = [
     "override_prompt_name",
     "pr_board_cadence_seconds",
     "publish",
+    "render_open_relays",
     "resolve_standing_directives",
     "todo_consolidate_cadence_seconds",
 ]

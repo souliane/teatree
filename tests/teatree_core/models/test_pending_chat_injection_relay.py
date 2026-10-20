@@ -4,15 +4,19 @@ Real manager, real egress, real ``BotPing`` ledger; only the Slack DM, the clock
 the transport registry are faked (``tests/_factory_slack.py``).
 """
 
+import datetime as dt
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.relay import RelayReceipt, RelayRefusal
-from teatree.core.models import BotPing, PendingChatInjection
+from teatree.core.models import BotPing, DmContext, PendingChatInjection, Task
 from teatree.core.notify import NotifyKind, notify_user
-from tests._factory_slack import OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
+from teatree.utils.url_slug import slack_conversation_anchor
+from tests._factory_slack import OWNER_DM, OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
+from tests.factories import TaskFactory, TicketFactory
 
 PROMPT = "  Why is *this* red?\nsecond line  \n"
 
@@ -145,3 +149,53 @@ class TestRelayEgress(TestCase):
         failed = BotPing.objects.filter(status=BotPing.Status.FAILED)
         assert {row.kind for row in failed} == {BotPing.Kind.RELAY, BotPing.Kind.INFO}
         assert {row.kind for row in BotPing.recoverable_info()} == {BotPing.Kind.INFO}
+
+
+_NOW = timezone.now()
+
+
+def _relay_row(ts: str, *, session: str | None, age_minutes: float, answered: bool = False) -> PendingChatInjection:
+    row = PendingChatInjection.record(
+        channel=OWNER_DM,
+        slack_ts=ts,
+        text=f"prompt {ts}",
+        overlay=SLACK_OVERLAY,
+        context=DmContext(user_id=OWNER_ID, relayed_by_session=session),
+    )
+    assert row is not None
+    PendingChatInjection.objects.filter(pk=row.pk).update(
+        received_at=_NOW - dt.timedelta(minutes=age_minutes),
+        loop_response_confirmed_at=_NOW if answered else None,
+    )
+    return row
+
+
+def _delegated(row: PendingChatInjection, status: Task.Status, *, age_minutes: float = 1) -> None:
+    PendingChatInjection.objects.filter(pk=row.pk).update(answer_kind="delegated", loop_response_confirmed_at=_NOW)
+    ticket = TicketFactory(issue_url=slack_conversation_anchor(channel=row.channel, slack_ts=row.slack_ts))
+    task = TaskFactory(ticket=ticket, phase="answering", status=status)
+    Task.objects.filter(pk=task.pk).update(created_at=_NOW - dt.timedelta(minutes=age_minutes))
+
+
+class TestRelayFollowUp(TestCase):
+    def test_open_relays_lists_unreplied_and_failed_delegations_for_the_session(self) -> None:
+        silent = _relay_row("1.1", session="s1", age_minutes=10)
+        _relay_row("1.2", session="s1", age_minutes=1)
+        _relay_row("1.3", session="s1", age_minutes=10, answered=True)
+        failed = _relay_row("1.4", session="s1", age_minutes=10)
+        _delegated(failed, Task.Status.FAILED)
+        stalled = _relay_row("1.5", session="s1", age_minutes=120)
+        _delegated(stalled, Task.Status.CLAIMED, age_minutes=90)
+        working = _relay_row("1.6", session="s1", age_minutes=20)
+        _delegated(working, Task.Status.CLAIMED, age_minutes=5)
+        done = _relay_row("1.7", session="s1", age_minutes=10)
+        _delegated(done, Task.Status.COMPLETED)
+        other_session = _relay_row("2.1", session="s2", age_minutes=10)
+        PendingChatInjection.record(channel=OWNER_DM, slack_ts="3.1", text="typed", overlay=SLACK_OVERLAY)
+        PendingChatInjection.objects.filter(slack_ts="3.1").update(received_at=_NOW - dt.timedelta(minutes=10))
+
+        mine = PendingChatInjection.objects.open_relays("s1", now=_NOW)
+        everyone = PendingChatInjection.objects.open_relays(now=_NOW)
+
+        assert {row.pk for row in mine} == {silent.pk, failed.pk, stalled.pk}
+        assert {row.pk for row in everyone} == {silent.pk, failed.pk, stalled.pk, other_session.pk}

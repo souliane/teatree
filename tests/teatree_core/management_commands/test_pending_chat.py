@@ -12,7 +12,7 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from teatree.core.management.commands.pending_chat import Command
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DmContext, PendingChatInjection
 from tests._factory_slack import SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -287,3 +287,45 @@ class TestRelaySubcommand:
     def test_a_missing_relay_id_or_prompt_is_a_usage_error(self) -> None:
         assert _relay_argv("--text", PROMPT) == 2
         assert _relay_argv("--relay-id", "r1") == 2
+
+
+class TestRelaysSubcommand:
+    def _relay_row(self, ts: str, session: str | None, *, age_minutes: float = 10) -> PendingChatInjection:
+        row = PendingChatInjection.record(
+            channel="D1",
+            slack_ts=ts,
+            text=f"prompt {ts}",
+            overlay="t3-slack",
+            context=DmContext(user_id="UOWNER", relayed_by_session=session),
+        )
+        assert row is not None
+        PendingChatInjection.objects.filter(pk=row.pk).update(
+            received_at=timezone.now() - timedelta(minutes=age_minutes)
+        )
+        return row
+
+    def test_a_session_sees_its_own_open_relays_and_no_session_sees_all_of_them(self) -> None:
+        mine = self._relay_row("1.0", "s1")
+        theirs = self._relay_row("2.0", "s2")
+        self._relay_row("3.0", "s1", age_minutes=1)
+
+        own = json.loads(_call("pending_chat", "relays", "--session", "s1", "--json"))
+        everyone = json.loads(_call("pending_chat", "relays", "--json"))
+
+        assert [row["id"] for row in own] == [mine.pk]
+        assert {row["id"]: row["session"] for row in everyone} == {mine.pk: "s1", theirs.pk: "s2"}
+        assert own[0] == {
+            "id": mine.pk,
+            "session": "s1",
+            "channel": "D1",
+            "slack_ts": "1.0",
+            "state": "unanswered",
+            "text": "prompt 1.0",
+        }
+
+    def test_the_human_view_names_each_open_relay_and_says_when_there_are_none(self) -> None:
+        assert "no open relays" in _call("pending_chat", "relays")
+
+        row = self._relay_row("1.0", "s1")
+
+        assert f"#{row.pk}" in _call("pending_chat", "relays", "--session", "s1")

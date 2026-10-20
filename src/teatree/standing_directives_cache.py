@@ -21,8 +21,11 @@ from typing import TypedDict, TypeGuard
 from teatree.paths import ControlDb
 
 CACHE_FILENAME = "standing-directives.json"
+FACTORY_SLACK_FILENAME = "factory-slack.json"
 LOCK_FILENAME = ".standing-directives.lock"
 SCHEMA = 1
+#: Three publish polls: a verdict the worker stopped refreshing reads as absent, so the hooks fail open.
+FACTORY_SLACK_FRESH_SECONDS = 180
 
 
 class StandingDirectivePayload(TypedDict):
@@ -34,8 +37,32 @@ class StandingDirectivePayload(TypedDict):
     scope: str
 
 
+class OpenRelayPayload(TypedDict):
+    """One relayed owner prompt the factory has not answered, as the relaying session is told of it."""
+
+    id: int
+    slack_ts: str
+    channel: str
+    text: str
+    state: str
+
+
+class FactorySlackPayload(TypedDict):
+    """Whether factory Slack was live when the worker last looked, and each session's open relays."""
+
+    overlay: str
+    live: bool
+    reason: str
+    checked_at: float
+    open_relays: dict[str, list[OpenRelayPayload]]
+
+
 def cache_path(*, env: Mapping[str, str] = os.environ) -> Path:
     return ControlDb(env).primary_data_dir() / CACHE_FILENAME
+
+
+def factory_slack_path(*, env: Mapping[str, str] = os.environ) -> Path:
+    return ControlDb(env).primary_data_dir() / FACTORY_SLACK_FILENAME
 
 
 def _is_payload(entry: object) -> bool:
@@ -79,6 +106,47 @@ def write(directives: list[StandingDirectivePayload], *, env: Mapping[str, str] 
     return publish(lambda: directives, env=env)
 
 
+def write_factory_slack(payload: FactorySlackPayload, *, env: Mapping[str, str] = os.environ) -> None:
+    """Replace the factory-Slack verdict; every call rewrites it, because ``checked_at`` is what keeps it fresh."""
+    target = factory_slack_path(env=env)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, staged = tempfile.mkstemp(prefix=".", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump({"schema": SCHEMA, **payload}, stream)
+        Path(staged).replace(target)
+    finally:
+        Path(staged).unlink(missing_ok=True)
+
+
+def read_factory_slack(*, env: Mapping[str, str] = os.environ, now: float | None = None) -> FactorySlackPayload | None:
+    """The published verdict, or ``None`` when it is absent, unreadable or older than the freshness bound."""
+    try:
+        document = json.loads(factory_slack_path(env=env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA:
+        return None
+    checked_at, relays = document.get("checked_at"), document.get("open_relays")
+    if (
+        not isinstance(document.get("live"), bool)
+        or not isinstance(document.get("overlay"), str)
+        or not isinstance(document.get("reason"), str)
+        or not isinstance(checked_at, int | float)
+        or not isinstance(relays, dict)
+    ):
+        return None
+    if (time.time() if now is None else now) - checked_at > FACTORY_SLACK_FRESH_SECONDS:
+        return None
+    return FactorySlackPayload(
+        overlay=document["overlay"],
+        live=document["live"],
+        reason=document["reason"],
+        checked_at=float(checked_at),
+        open_relays=relays,
+    )
+
+
 def _replace(target: Path, directives: list[StandingDirectivePayload], *, env: Mapping[str, str]) -> bool:
     if read(env=env) == directives:
         return False
@@ -94,11 +162,18 @@ def _replace(target: Path, directives: list[StandingDirectivePayload], *, env: M
 
 __all__ = [
     "CACHE_FILENAME",
+    "FACTORY_SLACK_FILENAME",
+    "FACTORY_SLACK_FRESH_SECONDS",
     "LOCK_FILENAME",
     "SCHEMA",
+    "FactorySlackPayload",
+    "OpenRelayPayload",
     "StandingDirectivePayload",
     "cache_path",
+    "factory_slack_path",
     "publish",
     "read",
+    "read_factory_slack",
     "write",
+    "write_factory_slack",
 ]

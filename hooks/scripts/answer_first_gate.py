@@ -62,7 +62,7 @@ def _skip_token(text: str) -> str | None:
     return match.group(1).strip() or None
 
 
-def _user_words_only(text: str) -> str:
+def user_words_only(text: str) -> str:
     """*text* with everything the user did not actually say removed.
 
     Three sources ride into the same message and all read as asks: the harness
@@ -104,12 +104,12 @@ def _last_user_text(transcript_path: str) -> str:
             continue
         content = message.get("content", []) if isinstance(message, dict) else []
         if isinstance(content, str):
-            return _user_words_only(content)
+            return user_words_only(content)
         if not isinstance(content, list):
             return ""
         if is_tool_result_only(content):
             continue
-        return _user_words_only(
+        return user_words_only(
             "\n".join(
                 str(block.get("text", ""))
                 for block in content
@@ -143,7 +143,9 @@ def handle_answer_first_gate(data: dict) -> bool | None:
 
 def _run(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
+    from hooks.scripts.owner_prompts import last_owner_turn  # noqa: PLC0415 deferred cold-hook import
     from teatree.hooks import answer_first_scanner  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.slack_first_scanner import has_relay_marker  # noqa: PLC0415 — deferred: cold-hook import
 
     if data.get("stop_hook_active") or not _gate_enabled():
         return None
@@ -155,7 +157,10 @@ def _run(data: dict) -> bool | None:
     if reason := _skip_token(agent_text):
         sys.stderr.write(f"NOTE: answer-first gate skipped via [skip-answer-gate: {reason}].\n")
         return None
-    verdict = answer_first_scanner.find_unanswered_question(_last_user_text(transcript_path), agent_text)
+    relay_receipt = has_relay_marker(last_owner_turn(transcript_path).tool_results)
+    verdict = answer_first_scanner.find_unanswered_question(
+        _last_user_text(transcript_path), agent_text, relay_receipt=relay_receipt
+    )
     if verdict is None:
         return None
     json.dump({"decision": "block", "reason": answer_first_scanner.format_block_message(verdict)}, sys.stdout)

@@ -761,6 +761,10 @@
           "name": "relay"
         },
         {
+          "help": "List the relayed owner prompts the factory has not answered, or whose delegated work went wrong",
+          "name": "relays"
+        },
+        {
           "help": "List inbound Slack-DM rows; the last hour by default",
           "name": "list"
         },

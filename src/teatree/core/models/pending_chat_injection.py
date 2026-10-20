@@ -21,12 +21,23 @@ from dataclasses import dataclass
 from functools import partial
 from typing import ClassVar, cast
 
+from django.apps import apps
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_resolver
-from teatree.core.modelkit.relay import RELAY_MAX_CHARS, LiveVerdict, RelayPosted, RelayReceipt, RelayRefusal
+from teatree.core.modelkit.relay import (
+    RELAY_MAX_CHARS,
+    RELAY_QUIET_AFTER,
+    RELAY_STALLED_AFTER,
+    LiveVerdict,
+    RelayPosted,
+    RelayReceipt,
+    RelayRefusal,
+)
 from teatree.core.telemetry.admission import record_lifecycle_transition
+from teatree.utils.url_slug import slack_conversation_anchor
 
 _QUESTION_WORDS: frozenset[str] = frozenset(
     {
@@ -98,6 +109,24 @@ class PendingChatInjectionQuerySet(models.QuerySet):
 
     def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
         return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
+
+    def open_relays(
+        self, session_id: str | None = None, *, now: dt.datetime | None = None
+    ) -> "PendingChatInjectionQuerySet":
+        """Relayed rows still waiting on the factory: no confirmed loop reply past the quiet window, or work gone wrong.
+
+        *session_id* narrows to one session's relays (``""`` is a session with no id); ``None`` covers all.
+        A delegated relay stays open while its lane's work failed or stalled, because a confirmed
+        reply proves a response, not that the delegated work finished.
+        """
+        moment = now or timezone.now()
+        relays = self.filter(is_relayed=True)
+        if session_id is not None:
+            relays = relays.filter(relayed_by_session=session_id)
+        unreplied = Q(loop_response_confirmed_at__isnull=True, received_at__lte=moment - RELAY_QUIET_AFTER)
+        gone_wrong = relays.filter(answer_kind=self.model.AnswerKind.DELEGATED)
+        failed = [row.pk for row in gone_wrong if _lane_gone_wrong(row, moment)]
+        return relays.filter(unreplied | Q(pk__in=failed)).order_by("received_at")
 
     @staticmethod
     def relay_required(overlay: str) -> bool:
@@ -430,6 +459,21 @@ class PendingChatInjection(models.Model):
             if row is not None:
                 transaction.on_commit(partial(record_lifecycle_transition, kind="message.answered", entity_id=row.pk))
         return answered
+
+
+def _lane_gone_wrong(relay: PendingChatInjection, now: dt.datetime) -> bool:
+    """A failed answering task with none finished, or an active one older than the stall bound."""
+    anchor = slack_conversation_anchor(channel=relay.channel, slack_ts=relay.slack_ts)
+    tasks = list(apps.get_model("core", "Task").objects.filter(ticket__issue_url=anchor).values("status", "created_at"))
+    statuses = {task["status"] for task in tasks}
+    if "failed" in statuses and "completed" not in statuses:
+        return True
+    return any(
+        task["status"] in {"pending", "claimed"}
+        and task["created_at"] is not None
+        and task["created_at"] <= now - RELAY_STALLED_AFTER
+        for task in tasks
+    )
 
 
 def _classify_is_question(text: str) -> bool:

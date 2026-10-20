@@ -197,14 +197,15 @@ def _carries_an_answer(agent_text: str) -> bool:
     )
 
 
-def find_unanswered_question(user_text: str, agent_text: str) -> AnswerVerdict | None:
+def find_unanswered_question(user_text: str, agent_text: str, *, relay_receipt: bool = False) -> AnswerVerdict | None:
     """Return a verdict to BLOCK, or ``None`` to allow.
 
     Fires only on the full conjunction: an answer-seeking question in
     *user_text*, a delegation report in *agent_text*, and no answer anywhere in
-    *agent_text*. Any leg missing yields ``None``.
+    *agent_text*. Any leg missing yields ``None``. A verified *relay_receipt* is the
+    answer: the question went to the factory's DM and the factory replies there.
     """
-    if not user_text or not agent_text:
+    if relay_receipt or not user_text or not agent_text:
         return None
     question = _answer_seeking_question(user_text)
     if question is None:

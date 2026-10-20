@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from teatree import standing_directives_cache
-from teatree.standing_directives_cache import StandingDirectivePayload
+from teatree.standing_directives_cache import FactorySlackPayload, OpenRelayPayload, StandingDirectivePayload
 
 _ALPHA: list[StandingDirectivePayload] = [
     {"slot_id": "slot-a", "cadence_seconds": 300, "text": "Alpha rule.", "scope": "attended"}
@@ -146,3 +146,53 @@ class TestAtomicity:
         assert sorted(path.name for path in cache_file.parent.iterdir()) == sorted(
             [cache_file.name, standing_directives_cache.LOCK_FILENAME]
         )
+
+
+def _verdict(
+    *, checked_at: float, live: bool = True, relays: dict[str, list[OpenRelayPayload]] | None = None
+) -> FactorySlackPayload:
+    return {"overlay": "t3-slack", "live": live, "reason": "", "checked_at": checked_at, "open_relays": relays or {}}
+
+
+class TestThePublishedFactorySlackVerdict:
+    def test_a_fresh_verdict_reads_back_with_its_open_relays(self, env: dict[str, str]) -> None:
+        relay: OpenRelayPayload = {
+            "id": 7,
+            "slack_ts": "1.0",
+            "channel": "D1",
+            "text": "ship it?",
+            "state": "unanswered",
+        }
+        verdict = _verdict(checked_at=1000.0, relays={"s1": [relay]})
+
+        standing_directives_cache.write_factory_slack(verdict, env=env)
+
+        assert standing_directives_cache.read_factory_slack(env=env, now=1060.0) == verdict
+
+    def test_nothing_published_or_something_unreadable_reads_as_absent(
+        self, env: dict[str, str], tmp_path: Path
+    ) -> None:
+        assert standing_directives_cache.read_factory_slack(env=env, now=1.0) is None
+
+        target = tmp_path / "data" / "teatree" / "factory-slack.json"
+        target.parent.mkdir(parents=True)
+        for unreadable in ("{not json", json.dumps({"schema": 99}), json.dumps({"schema": 1, "live": "yes"})):
+            target.write_text(unreadable, encoding="utf-8")
+            assert standing_directives_cache.read_factory_slack(env=env, now=1.0) is None
+
+    def test_a_verdict_older_than_the_freshness_bound_reads_as_absent(self, env: dict[str, str]) -> None:
+        standing_directives_cache.write_factory_slack(_verdict(checked_at=1000.0), env=env)
+        bound = standing_directives_cache.FACTORY_SLACK_FRESH_SECONDS
+
+        assert standing_directives_cache.read_factory_slack(env=env, now=1000.0 + bound) is not None
+        assert standing_directives_cache.read_factory_slack(env=env, now=1000.0 + bound + 1) is None
+
+    def test_an_unchanged_verdict_published_again_stays_fresh(self, env: dict[str, str]) -> None:
+        bound = standing_directives_cache.FACTORY_SLACK_FRESH_SECONDS
+        standing_directives_cache.write_factory_slack(_verdict(checked_at=1000.0), env=env)
+        standing_directives_cache.write_factory_slack(_verdict(checked_at=1000.0 + bound + 20), env=env)
+
+        read = standing_directives_cache.read_factory_slack(env=env, now=1000.0 + bound + 100)
+
+        assert read is not None
+        assert read["checked_at"] == pytest.approx(1000.0 + bound + 20)

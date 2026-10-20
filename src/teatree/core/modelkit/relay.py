@@ -10,6 +10,9 @@ RELAY_MAX_CHARS = 38_000
 #: How long a relayed ask may sit without a confirmed loop reply before it is listed as open.
 RELAY_QUIET_AFTER = dt.timedelta(minutes=5)
 
+#: How long a delegated relay's work may stay unclaimed or unfinished before it is listed as open.
+RELAY_STALLED_AFTER = dt.timedelta(hours=1)
+
 
 class LiveVerdict(Protocol):
     """What the model reads off ``factory_slack_live``, which lives above it."""

@@ -80,3 +80,11 @@ class TestDoesNotFireOnLegitimateTurns:
     def test_empty_input_passes(self) -> None:
         assert find_unanswered_question("", _DISPATCH_ONLY) is None
         assert find_unanswered_question(_QUESTION, "") is None
+
+
+class TestSlackFirst:
+    def test_relay_receipt_counts_as_the_answer_when_slack_live(self) -> None:
+        assert find_unanswered_question(_QUESTION, _DISPATCH_ONLY) is not None
+        assert find_unanswered_question(_QUESTION, _DISPATCH_ONLY, relay_receipt=False) is not None
+
+        assert find_unanswered_question(_QUESTION, _DISPATCH_ONLY, relay_receipt=True) is None
