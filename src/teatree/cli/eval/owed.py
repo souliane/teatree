@@ -135,7 +135,7 @@ def collect(
     now: str | None = _NOW_OPTION,
     first_lookback_days: int = typer.Option(1, "--first-lookback-days", min=1),
 ) -> None:
-    """Fold the previous nightly ledger with the owed artifacts of PRs merged since its harvest."""
+    """Fold the previous nightly ledger with the owed artifacts of merged PRs and weekly and heal legs."""
     harvest = OwedHarvest(
         gh=_gh,
         repo=repo,

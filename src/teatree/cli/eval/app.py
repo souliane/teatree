@@ -3,11 +3,9 @@
 from pathlib import Path
 
 import typer
-from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval._registration import register_imported_commands
-from teatree.cli.eval.all import build_scenarios_table
 from teatree.cli.eval.app_helpers import (
     EVAL_CREDENTIALS,
     RunReportPaths,
@@ -21,7 +19,7 @@ from teatree.cli.eval.app_helpers import (
     resolve_benchmark_selection,
     resolve_escalation,
 )
-from teatree.cli.eval.catalog_selection import select_specs
+from teatree.cli.eval.catalog_selection import print_selected_catalog, select_specs
 from teatree.cli.eval.full_suite_command import register_full_suite_callback
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
@@ -51,15 +49,14 @@ eval_app = typer.Typer(
 register_imported_commands(eval_app)
 
 
-@eval_app.command("list")
-def list_scenarios() -> None:
-    """List discovered eval scenarios as a table (Name, Scenario, Agent, File, Asserts)."""
-    ensure_django()
-    specs = discover_specs()
-    if not specs:
-        typer.echo("(no scenarios discovered)")
-        return
-    Console().print(build_scenarios_table(specs))
+@eval_app.command("list", help="List discovered eval scenarios as a table or one name per line.")
+def list_scenarios(
+    *,
+    lane: str | None = typer.Option(None, "--lane"),
+    shard: str | None = typer.Option(None, "--shard"),
+    names_only: bool = typer.Option(False, "--names-only"),
+) -> None:
+    print_selected_catalog(discover_specs, ensure_django, lane=lane, shard=shard, names_only=names_only)
 
 
 @eval_app.command("run")

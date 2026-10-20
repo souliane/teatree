@@ -265,6 +265,7 @@ class TestCollect:
             {
                 _first_page(f"actions/artifacts?name={LEDGER_ARTIFACT}"): b'{"total_count": 0, "artifacts": []}',
                 _first_page("pulls?state=closed&sort=updated&direction=desc"): b"[]",
+                f"repos/{REPO}/actions/workflows?per_page={PAGE_SIZE}&page=1": b'{"total_count": 0, "workflows": []}',
             },
         )
         out = tmp_path / "eval-owed-ledger.json"

@@ -41,7 +41,7 @@ _REDACT_IN_PLACE = "artifact_redaction in-place"
 _UPLOAD_ACTION = "actions/upload-artifact"
 _RETRY_ACTION = "nick-fields/retry"
 _LOG_ASSIGNMENT = re.compile(r'LOG="\$RUNNER_TEMP/eval-run-[^"]*\.log"')
-_RUNNER_TEMP_REF = re.compile(r"\$RUNNER_TEMP/(?P<name>[A-Za-z0-9_.$-]+)")
+_RUNNER_TEMP_REF = re.compile(r"\$RUNNER_TEMP/(?P<name>[A-Za-z0-9_.$/*-]+)")
 #: A shell variable, a GitHub expression and a glob are all "the varying part" here;
 #: collapsing them to one placeholder compares the SHAPE of the two filenames without
 #: needing to know each variable's runtime value.

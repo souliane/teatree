@@ -1,10 +1,10 @@
 """The owed-scenario ledger: eval scenarios a lane could not run, carried until a run passes them.
 
 A PR lane records what it parked, deferred past its cap, or lost to a usage limit and uploads it
-as the ``eval-owed`` artifact. The nightly is the single writer of the cumulative
-``eval-owed-ledger``: :class:`OwedHarvest` folds the previous ledger with the PR artifacts of
-every PR merged since its mark, the nightly runs the oldest debt first, and only a passing run
-settles an entry.
+as the ``eval-owed`` artifact; each weekly and heal leg uploads its own ``eval-owed-<leg>``. The
+nightly is the single writer of the cumulative ``eval-owed-ledger``: :class:`OwedHarvest` folds
+the previous ledger with the PR artifacts of every PR merged since its mark and the leg artifacts,
+the nightly runs the oldest debt first, and only a passing run settles an entry.
 """
 
 import datetime as dt
@@ -22,6 +22,8 @@ LEDGER_FILENAME = "eval-owed-ledger.json"
 PR_OWED_FILENAME = "eval-owed.json"
 LEDGER_ARTIFACT = "eval-owed-ledger"
 PR_OWED_ARTIFACT = "eval-owed"
+LEG_OWED_PREFIX = f"{PR_OWED_ARTIFACT}-"
+LEG_OWED_WORKFLOWS = frozenset({".github/workflows/eval.yml", ".github/workflows/eval-ci-heal.yml"})
 
 PAGE_SIZE = 100
 MAX_LISTING_PAGES = 20
@@ -250,6 +252,7 @@ class OwedLedger:
 @dataclass(frozen=True)
 class _Artifact:
     id: int
+    name: str
     created_at: dt.datetime
     expired: bool
     head_sha: str
@@ -261,11 +264,45 @@ class _Artifact:
         run = fields.nested("workflow_run")
         return cls(
             id=fields.integer("id"),
+            name=fields.text("name"),
             created_at=fields.moment("created_at"),
             expired=fields.flag("expired"),
             head_sha=run.text("head_sha"),
             head_branch=run.text("head_branch"),
             head_repository_id=run.integer("head_repository_id"),
+        )
+
+    @property
+    def is_leg_owed(self) -> bool:
+        return self.name.startswith(LEG_OWED_PREFIX) and self.name != LEDGER_ARTIFACT
+
+
+@dataclass(frozen=True)
+class _Workflow:
+    id: int
+    path: str
+
+    @classmethod
+    def from_fields(cls, fields: _Fields) -> Self:
+        return cls(id=fields.integer("id"), path=fields.text("path"))
+
+
+@dataclass(frozen=True)
+class _Run:
+    id: int
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    head_sha: str
+    head_branch: str
+
+    @classmethod
+    def from_fields(cls, fields: _Fields) -> Self:
+        return cls(
+            id=fields.integer("id"),
+            created_at=fields.moment("created_at"),
+            updated_at=fields.moment("updated_at"),
+            head_sha=fields.text("head_sha"),
+            head_branch=fields.text("head_branch"),
         )
 
 
@@ -307,18 +344,14 @@ class OwedHarvest:
         return OwedLedger.from_json(self._member(newest, LEDGER_FILENAME))
 
     def merged_pr_heads(self, since: dt.datetime) -> list[tuple[int, str]]:
-        pulls: list[_Pull] = []
-        for page in range(1, MAX_LISTING_PAGES + 1):
-            endpoint = (
-                f"repos/{self.repo}/pulls?state=closed&sort=updated&direction=desc&per_page={PAGE_SIZE}&page={page}"
-            )
-            rows = self._rows(endpoint, key=None)
-            batch = [_Pull.from_fields(_Fields.of(row, endpoint)) for row in rows]
-            pulls.extend(batch)
-            if len(batch) < PAGE_SIZE or batch[-1].updated_at < since:
-                return [(pull.number, pull.head_sha) for pull in pulls if pull.merged_at and pull.merged_at >= since]
-        listing = "closed pull requests"
-        raise TruncatedListingError(listing)
+        pulls = self._listing(
+            "pulls?state=closed&sort=updated&direction=desc",
+            None,
+            _Pull.from_fields,
+            what="closed pull requests",
+            stop=lambda seen: seen[-1].updated_at < since,
+        )
+        return [(pull.number, pull.head_sha) for pull in pulls if pull.merged_at and pull.merged_at >= since]
 
     def pr_owed(self, heads: Sequence[tuple[int, str]], *, since: dt.datetime | None = None) -> OwedLedger:
         if not heads:
@@ -344,6 +377,22 @@ class OwedHarvest:
             owed = owed.merged(OwedLedger.from_json(self._member(newest, PR_OWED_FILENAME)))
         return owed
 
+    def leg_owed(self, final_heads: Collection[str], since: dt.datetime) -> OwedLedger:
+        """Default-branch legs owe what they uploaded after the mark; others only at a merged PR's final head."""
+        repository_id, default_branch = self.repository_identity
+        owed = OwedLedger()
+        for run in self._leg_runs(older_than=since - PR_ARTIFACT_LOOKBACK):
+            on_default_branch = run.head_branch == default_branch
+            if (run.updated_at <= since) if on_default_branch else (run.head_sha not in final_heads):
+                continue
+            path = f"actions/runs/{run.id}/artifacts"
+            for artifact in self._listing(path, "artifacts", _Artifact.from_fields, what=path):
+                if artifact.head_repository_id != repository_id or not artifact.is_leg_owed:
+                    continue
+                if not on_default_branch or artifact.created_at > since:
+                    owed = owed.merged(self._leg_ledger(artifact))
+        return owed
+
     def collect(self, now: dt.datetime) -> OwedLedger:
         previous = self.previous_ledger()
         if previous is None:
@@ -353,27 +402,72 @@ class OwedHarvest:
                 f"{(now - self.first_harvest_lookback).isoformat()}"
             )
         since = previous.harvested_through or now - self.first_harvest_lookback
-        harvested = previous.merged(self.pr_owed(self.merged_pr_heads(since), since=since))
+        heads = self.merged_pr_heads(since)
+        harvested = previous.merged(self.pr_owed(heads, since=since))
+        harvested = harvested.merged(self.leg_owed({sha for _, sha in heads}, since))
         return replace(harvested, harvested_through=now)
+
+    def _leg_runs(self, *, older_than: dt.datetime) -> list[_Run]:
+        workflows = self._listing("actions/workflows", "workflows", _Workflow.from_fields, what="workflows")
+        return [
+            run
+            for workflow in workflows
+            if workflow.path in LEG_OWED_WORKFLOWS
+            for run in self._listing(
+                f"actions/workflows/{workflow.id}/runs",
+                "workflow_runs",
+                _Run.from_fields,
+                what=f"{workflow.path} runs",
+                stop=lambda seen: seen[-1].created_at < older_than,
+            )
+        ]
+
+    def _leg_ledger(self, artifact: _Artifact) -> OwedLedger:
+        if artifact.expired:
+            self.warn(f"::warning::{artifact.name} artifact expired before the harvest; its owed scenarios are lost")
+            return OwedLedger()
+        return OwedLedger.from_json(self._member(artifact, None))
 
     def _artifacts(
         self, name: str, *, done: Callable[[list[_Artifact]], bool], older_than: dt.datetime | None = None
     ) -> list[_Artifact]:
-        seen: list[_Artifact] = []
         repository_id, default_branch = self.repository_identity
-        for page in range(1, MAX_LISTING_PAGES + 1):
-            endpoint = f"repos/{self.repo}/actions/artifacts?name={name}&per_page={PAGE_SIZE}&page={page}"
-            batch = [_Artifact.from_fields(_Fields.of(row, endpoint)) for row in self._rows(endpoint, key="artifacts")]
-            seen.extend(
+
+        def trusted(seen: list[_Artifact]) -> list[_Artifact]:
+            return [
                 artifact
-                for artifact in batch
+                for artifact in seen
                 if artifact.head_repository_id == repository_id
                 and (name != LEDGER_ARTIFACT or artifact.head_branch == default_branch)
-            )
-            if len(batch) < PAGE_SIZE or done(seen) or (older_than is not None and batch[-1].created_at < older_than):
-                return seen
-        listing = f"{name} artifacts"
-        raise TruncatedListingError(listing)
+            ]
+
+        rows = self._listing(
+            f"actions/artifacts?name={name}",
+            "artifacts",
+            _Artifact.from_fields,
+            what=f"{name} artifacts",
+            stop=lambda seen: done(trusted(seen)) or (older_than is not None and seen[-1].created_at < older_than),
+        )
+        return trusted(rows)
+
+    def _listing[T](
+        self,
+        path: str,
+        key: str | None,
+        parse: Callable[[_Fields], T],
+        *,
+        what: str,
+        stop: Callable[[list[T]], bool] | None = None,
+    ) -> list[T]:
+        rows: list[T] = []
+        separator = "&" if "?" in path else "?"
+        for page in range(1, MAX_LISTING_PAGES + 1):
+            endpoint = f"repos/{self.repo}/{path}{separator}per_page={PAGE_SIZE}&page={page}"
+            batch = [parse(_Fields.of(row, endpoint)) for row in self._rows(endpoint, key=key)]
+            rows.extend(batch)
+            if len(batch) < PAGE_SIZE or (stop is not None and stop(rows)):
+                return rows
+        raise TruncatedListingError(what)
 
     def _rows(self, endpoint: str, *, key: str | None) -> list[object]:
         payload = _decode(self.gh(["api", endpoint]), endpoint)
@@ -384,14 +478,22 @@ class OwedHarvest:
             raise OwedLedgerError(msg)
         return payload
 
-    def _member(self, artifact: _Artifact, filename: str) -> bytes:
+    def _member(self, artifact: _Artifact, filename: str | None) -> bytes:
         archive = self.gh(["api", f"repos/{self.repo}/actions/artifacts/{artifact.id}/zip"])
         try:
             with zipfile.ZipFile(io.BytesIO(archive)) as unpacked:
-                return unpacked.read(filename)
+                return unpacked.read(filename or _only_owed_member(artifact, unpacked.namelist()))
         except (zipfile.BadZipFile, KeyError) as exc:
-            msg = f"artifact {artifact.id}: no readable {filename} ({exc})"
+            msg = f"artifact {artifact.id}: no readable {filename or 'owed JSON'} ({exc})"
             raise OwedLedgerError(msg) from exc
+
+
+def _only_owed_member(artifact: _Artifact, members: list[str]) -> str:
+    owed = [member for member in members if member.startswith(LEG_OWED_PREFIX) and member.endswith(".json")]
+    if len(owed) != 1:
+        msg = f"artifact {artifact.id}: expected one owed JSON member, got {len(owed)}"
+        raise OwedLedgerError(msg)
+    return owed[0]
 
 
 def _decode(data: bytes | str, where: str) -> object:

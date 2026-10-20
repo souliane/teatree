@@ -273,10 +273,12 @@ jobs:
                   | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
                 if [ "$scenario_rc" -eq 75 ]; then
                   limit_hit=true
+                  echo "$rc" > "$limit_marker"
                   printf '%s\n' "${NAMES[@]:index}" > "$RUNNER_TEMP/eval-owed-limit-$SUFFIX.txt"
                   uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed-$SUFFIX.json" \
                     --reason limit --source "heal@$GITHUB_RUN_ID:$SUFFIX" \
-                    --names-file "$RUNNER_TEMP/eval-owed-limit-$SUFFIX.txt" || exit $?
+                    --names-file "$RUNNER_TEMP/eval-owed-limit-$SUFFIX.txt" \
+                    || { rc=$?; echo "$rc" > "$limit_marker"; exit "$rc"; }
                   break
                 fi
                 if [ "$scenario_rc" -ne 0 ]; then

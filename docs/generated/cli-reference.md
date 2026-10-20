@@ -1627,8 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
-│ list                      List discovered eval scenarios as a table (Name,   │
-│                           Scenario, Agent, File, Asserts).                   │
+│ list                      List discovered eval scenarios as a table or one   │
+│                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
 │                           name is given.                                     │
 │ ci-heal                   Operator control of the CI-eval self-healing loop  │
@@ -2270,11 +2270,13 @@ Usage: t3 eval history [OPTIONS]
 ```
 Usage: t3 eval list [OPTIONS]
 
- List discovered eval scenarios as a table (Name, Scenario, Agent, File,
- Asserts).
+ List discovered eval scenarios as a table or one name per line.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --lane              TEXT                                                     │
+│ --shard             TEXT                                                     │
+│ --names-only                                                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3143,8 +3145,8 @@ Usage: t3 eval owed [OPTIONS] COMMAND [ARGS]...
 │ record   Add the scenario names in --names-file to the --out ledger as owed. │
 │ outputs  Print the parked=/owed= lines a workflow step appends to            │
 │          $GITHUB_OUTPUT.                                                     │
-│ collect  Fold the previous nightly ledger with the owed artifacts of PRs     │
-│          merged since its harvest.                                           │
+│ collect  Fold the previous nightly ledger with the owed artifacts of merged  │
+│          PRs and weekly and heal legs.                                       │
 │ next     Print the oldest owed scenarios the catalog still defines, one per  │
 │          line.                                                               │
 │ settle   Clear the owed scenarios that passed and the ones the catalog no    │
@@ -3199,8 +3201,8 @@ Usage: t3 eval owed outputs [OPTIONS] LEDGER
 ```
 Usage: t3 eval owed collect [OPTIONS]
 
- Fold the previous nightly ledger with the owed artifacts of PRs merged since
- its harvest.
+ Fold the previous nightly ledger with the owed artifacts of merged PRs and
+ weekly and heal legs.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --repo                       TEXT                  OWNER/NAME of the      │

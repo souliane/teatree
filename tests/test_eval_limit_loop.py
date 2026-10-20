@@ -37,8 +37,29 @@ if [ "$1 $2 $3 $4" = "run t3 eval run" ]; then
     name="$5"
     case "$name" in --*) name="suite" ;; esac
     echo "$name" >> "$STUB_LOG"
+    transcript=""; summary=""; rows=""; docker=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --docker) docker=true ;;
+            --transcript-html) transcript="$2"; shift ;;
+            --summary-md) summary="$2"; shift ;;
+            --summary-json) rows="$2"; shift ;;
+        esac
+        shift
+    done
+    if [ "$docker" = true ] && [ -n "$transcript" ] && [ -n "$summary" ] && [ -n "$rows" ]; then
+        [ "$(dirname "$transcript")" = "$(dirname "$summary")" ] || exit 2
+        [ "$(dirname "$summary")" = "$(dirname "$rows")" ] || exit 2
+    fi
     rc_var="STUB_RC_$name"
-    exit "${!rc_var:-0}"
+    rc="${!rc_var:-0}"
+    [ "$rc" -ne 0 ] || [ -z "$summary" ] || printf '| %s | PASS |\n' "$name" > "$summary"
+    exit "$rc"
+fi
+if [ "$1 $2 $3 $4" = "run t3 eval list" ]; then
+    [ -n "${STUB_NAMES:-}" ] || exit 99
+    printf '%s\n' $STUB_NAMES
+    exit 0
 fi
 if [ "$1 $2 $3 $4 $5" = "run t3 eval owed next" ]; then
     printf '%s\n' $STUB_OWED
@@ -46,15 +67,10 @@ if [ "$1 $2 $3 $4 $5" = "run t3 eval owed next" ]; then
 fi
 if [ "$1 $2 $3 $4 $5" = "run t3 eval owed record" ]; then
     while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--names-file" ]; then cat "$2" >> "$RUNNER_TEMP/recorded-owed.txt"; exit 0; fi
+        if [ "$1" = "--names-file" ]; then cat "$2" >> "$RUNNER_TEMP/recorded-owed.txt"; exit "${STUB_RC_owed:-0}"; fi
         shift
     done
     exit 99
-fi
-if [ "$1 $2 $3" = "run python -c" ]; then
-    [ -n "${STUB_NAMES:-}" ] || exit 99
-    printf '%s\n' $STUB_NAMES
-    exit 0
 fi
 if [ "$1 $2 $3" = "run python scripts/eval/select_oauth.py" ]; then
     exit "${STUB_RC_selector:-0}"
@@ -213,17 +229,30 @@ class TestSingleInvocationLanesParkOnTheLimit:
         assert run.returncode == 1
 
 
-@pytest.mark.parametrize(
+_WEEKLY_AND_HEAL_LEGS = pytest.mark.parametrize(
     ("workflow", "step_name", "env"),
     [
-        ("eval.yml", _WEEKLY_LEG, {"STUB_NAMES": "alpha beta gamma", "EVAL_SUFFIX": "clean_room-1-2"}),
+        (
+            "eval.yml",
+            _WEEKLY_LEG,
+            {
+                "STUB_NAMES": "alpha beta gamma",
+                "EVAL_SUFFIX": "clean_room-1-2",
+                "EVAL_LANE": "clean_room",
+                "EVAL_SHARD": "1/2",
+            },
+        ),
         (
             "eval-ci-heal.yml",
             "Behavioral eval — one shard (in Docker)",
             {"EVAL_SCENARIOS": "alpha,beta,gamma", "SUFFIX": "subset"},
         ),
     ],
+    ids=["weekly", "heal"],
 )
+
+
+@_WEEKLY_AND_HEAL_LEGS
 def test_weekly_and_heal_owe_the_cutoff_and_never_retry_it(
     shell, workflow: str, step_name: str, env: dict[str, str]
 ) -> None:
@@ -233,10 +262,33 @@ def test_weekly_and_heal_owe_the_cutoff_and_never_retry_it(
     assert first.invoked == ["alpha", "beta"]
     assert first.lines("recorded-owed.txt") == ["beta", "gamma"]
     assert any("eval owed record" in call for call in first.t3_invoked)
+    if workflow == "eval.yml":
+        assert any("eval list --lane clean_room --shard 1/2 --names-only" in call for call in first.t3_invoked)
     retry = shell(script, **env)
     assert retry.returncode == 0
     assert retry.invoked == first.invoked
     assert retry.t3_invoked == first.t3_invoked
+
+
+@_WEEKLY_AND_HEAL_LEGS
+def test_a_failed_owed_record_stays_failed_and_never_retries_into_the_limit(
+    shell, workflow: str, step_name: str, env: dict[str, str]
+) -> None:
+    script = _script(workflow, "eval", step_name)
+    first = shell(script, rcs={"beta": _LIMIT, "owed": 3}, **env)
+    retry = shell(script, **env)
+    assert first.returncode == retry.returncode == 3
+    assert retry.invoked == first.invoked == ["alpha", "beta"]
+
+
+def test_weekly_retry_replaces_the_previous_attempts_summary(shell) -> None:
+    script = _script("eval.yml", "eval", _WEEKLY_LEG)
+    env = {"STUB_NAMES": "alpha beta", "EVAL_SUFFIX": "clean_room-1-2", "EVAL_LANE": "clean_room", "EVAL_SHARD": "1/2"}
+    first = shell(script, **env)
+    second = shell(script, **env)
+    summary = first.temp / "eval-summary-clean_room-1-2.md"
+    assert first.returncode == second.returncode == 0
+    assert summary.read_text(encoding="utf-8").splitlines() == ["| alpha | PASS |", "| beta | PASS |"]
 
 
 _RETRIED_BODIES = [

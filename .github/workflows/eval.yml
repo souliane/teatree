@@ -570,7 +570,8 @@ jobs:
             fi
             if [ -f "$LIMIT_MARKER" ]; then
               echo "The usage limit was hit on an earlier attempt — invoking no scenario."
-              exit 0
+              read -r rc < "$LIMIT_MARKER" || rc=0
+              exit "${rc:-0}"
             fi
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
@@ -580,6 +581,7 @@ jobs:
             [ -n "$EVAL_PRESET" ] && PRESET_FLAG="--preset $EVAL_PRESET"
             TAIL_LINES=400
             SUMMARY="$RUNNER_TEMP/eval-summary-$EVAL_SUFFIX.md"
+            rm -f "$SUMMARY"
             CACHE_ARGS=()
             if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
               CACHE_ARGS+=(--verdict-cache "$RUNNER_TEMP/eval-verdicts.json")
@@ -588,28 +590,31 @@ jobs:
             echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" \
               | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             NAMES_FILE="$RUNNER_TEMP/eval-names-$EVAL_SUFFIX.txt"
-            uv run python -c 'import sys; from teatree.eval.discovery import discover_specs; from teatree.cli.eval.catalog_selection import select_specs; print("\n".join(spec.name for spec in select_specs(discover_specs(), None, lane=sys.argv[1], surface=None, shard=sys.argv[2])))' "$EVAL_LANE" "$EVAL_SHARD" > "$NAMES_FILE" || exit $?
+            uv run t3 eval list --lane "$EVAL_LANE" --shard "$EVAL_SHARD" --names-only > "$NAMES_FILE" || exit $?
             mapfile -t NAMES < "$NAMES_FILE"
             [ "${#NAMES[@]}" -gt 0 ] || { echo "::error::the selected eval leg contains no scenarios"; exit 1; }
-            LEG_JSON_DIR="$RUNNER_TEMP/eval-leg-$EVAL_SUFFIX"
-            mkdir -p "$LEG_JSON_DIR"
+            LEG_DIR="$RUNNER_TEMP/eval-leg-$EVAL_SUFFIX"
+            rm -rf "$LEG_DIR"
+            mkdir -p "$LEG_DIR"
             rc=0
             for index in "${!NAMES[@]}"; do
               name="${NAMES[$index]}"
               scenario_rc=0
               uv run t3 eval run "$name" --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
                 $EFFORT_FLAG $PRESET_FLAG --require-executed --docker \
-                --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" \
-                --summary-json "$LEG_JSON_DIR/$name.json" \
+                --transcript-html "$RUNNER_TEMP/eval-leg-$EVAL_SUFFIX/eval-transcripts-$name.html" \
+                --summary-md "$RUNNER_TEMP/eval-leg-$EVAL_SUFFIX/eval-summary-$name.md" \
+                --summary-json "$RUNNER_TEMP/eval-leg-$EVAL_SUFFIX/$name.json" \
                 "${CACHE_ARGS[@]}" $MODEL_FLAG 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || scenario_rc=$?
-              [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
+              [ -f "$LEG_DIR/eval-summary-$name.md" ] && cat "$LEG_DIR/eval-summary-$name.md" \
+                | uv run python -m teatree.eval.artifact_redaction tee "$SUMMARY"
               if [ "$scenario_rc" -eq 75 ]; then
                 touch "$LIMIT_MARKER"
                 printf '%s\n' "${NAMES[@]:index}" > "$RUNNER_TEMP/eval-owed-limit-$EVAL_SUFFIX.txt"
                 uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed-$EVAL_SUFFIX.json" \
                   --reason limit --source "weekly@$GITHUB_RUN_ID:$EVAL_SUFFIX" \
-                  --names-file "$RUNNER_TEMP/eval-owed-limit-$EVAL_SUFFIX.txt" || exit $?
+                  --names-file "$RUNNER_TEMP/eval-owed-limit-$EVAL_SUFFIX.txt" \
+                  || { rc=$?; echo "$rc" > "$LIMIT_MARKER"; exit "$rc"; }
                 echo "::warning title=eval PARKED::leg $EVAL_SUFFIX hit the usage limit; its remaining scenarios are owed"
                 break
               fi
@@ -618,8 +623,8 @@ jobs:
                 echo "$rc" > "$RED_MARKER"
               fi
             done
-            if compgen -G "$LEG_JSON_DIR/*.json" > /dev/null; then
-              uv run t3 eval merge-summary-json "$LEG_JSON_DIR" --sha "$GITHUB_SHA" \
+            if compgen -G "$LEG_DIR/*.json" > /dev/null; then
+              uv run t3 eval merge-summary-json "$LEG_DIR" --sha "$GITHUB_SHA" \
                 --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                 --out "$RUNNER_TEMP/eval-summary-$EVAL_SUFFIX.json" || exit $?
             fi
@@ -650,9 +655,10 @@ jobs:
           SUFFIX: ${{ steps.artifact.outputs.suffix }}
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
-          "$RUNNER_TEMP/eval-transcripts-*.html"
+          "$RUNNER_TEMP/eval-leg-$SUFFIX/eval-transcripts-*.html"
           "$RUNNER_TEMP/eval-summary-$SUFFIX.md"
           "$RUNNER_TEMP/eval-summary-$SUFFIX.json"
+          "$RUNNER_TEMP/eval-owed-$SUFFIX.json"
           "$RUNNER_TEMP/eval-run-$SUFFIX.log"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
@@ -666,7 +672,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
-          path: ${{ runner.temp }}/eval-transcripts-*.html
+          path: ${{ runner.temp }}/eval-leg-${{ steps.artifact.outputs.suffix }}/eval-transcripts-*.html
           if-no-files-found: warn
           # Private, and the weekly dashboard links it, so it outlives the run logs by a week.
           retention-days: 14

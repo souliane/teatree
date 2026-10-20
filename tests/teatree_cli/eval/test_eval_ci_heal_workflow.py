@@ -19,6 +19,7 @@ _SHA = "0123456789abcdef0123456789abcdef01234567"
 _STUB_UV = """#!/bin/bash
 shift
 if [ "$1" = t3 ]; then
+    if [ "$2 $3 $4" = "eval owed record" ]; then exit 0; fi
     calls=0
     [ -f "$T3_CALLS" ] && calls=$(wc -l < "$T3_CALLS")
     echo "$*" >> "$T3_CALLS"
@@ -209,6 +210,7 @@ def leg(tmp_path: Path) -> dict[str, str]:
         "RUNNER_TEMP": str(runner_temp),
         "HEAL_DIR": str(runner_temp / "heal"),
         "GITHUB_SHA": _SHA,
+        "GITHUB_RUN_ID": "7",
         "HEAD_SHA": _SHA,
         "EVAL_SCENARIOS": "",
         "EVAL_SHARD": "1/8",

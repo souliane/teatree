@@ -12,6 +12,7 @@ from teatree.eval.owed import (
     LEDGER_FILENAME,
     MAX_LISTING_PAGES,
     PAGE_SIZE,
+    PR_ARTIFACT_LOOKBACK,
     PR_OWED_ARTIFACT,
     PR_OWED_FILENAME,
     OwedHarvest,
@@ -219,6 +220,7 @@ def _artifact(
 ) -> dict:
     return {
         "id": artifact_id,
+        "name": PR_OWED_ARTIFACT,
         "expired": expired,
         "created_at": _iso(created),
         "workflow_run": {
@@ -255,8 +257,50 @@ def _pull(number: int, head_sha: str, *, merged: dt.datetime | None, updated: dt
     }
 
 
+def _workflows_url() -> str:
+    return f"repos/{REPO}/actions/workflows?per_page={PAGE_SIZE}&page=1"
+
+
+def _workflows(*workflows: dict) -> bytes:
+    return json.dumps({"total_count": len(workflows), "workflows": list(workflows)}).encode()
+
+
+def _runs_url(workflow_id: int, page: int = 1) -> str:
+    return f"repos/{REPO}/actions/workflows/{workflow_id}/runs?per_page={PAGE_SIZE}&page={page}"
+
+
+def _runs(*runs: dict) -> bytes:
+    return json.dumps({"total_count": len(runs), "workflow_runs": list(runs)}).encode()
+
+
+def _run(
+    run_id: int,
+    *,
+    created: dt.datetime,
+    updated: dt.datetime | None = None,
+    head_sha: str = "f" * 40,
+    branch: str = "main",
+) -> dict:
+    return {
+        "id": run_id,
+        "created_at": _iso(created),
+        "updated_at": _iso(updated or created),
+        "head_sha": head_sha,
+        "head_branch": branch,
+    }
+
+
+def _run_artifacts_url(run_id: int) -> str:
+    return f"repos/{REPO}/actions/runs/{run_id}/artifacts?per_page={PAGE_SIZE}&page=1"
+
+
+_WEEKLY_WORKFLOW = {"id": 11, "path": ".github/workflows/eval.yml"}
+_HEAL_WORKFLOW = {"id": 12, "path": ".github/workflows/eval-ci-heal.yml"}
+_WEEKLY_LEG = "eval-owed-clean_room-1-2"
+
+
 def _harvest(routes: dict[str, bytes]) -> tuple[OwedHarvest, FakeGh, list[str]]:
-    gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', **routes})
+    gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', _workflows_url(): _workflows(), **routes})
     warnings: list[str] = []
     return OwedHarvest(gh=gh, repo=REPO, warn=warnings.append), gh, warnings
 
@@ -490,7 +534,111 @@ class TestPrOwed:
         assert _artifacts_url(PR_OWED_ARTIFACT, 2) not in gh.calls
 
 
+class TestLegOwed:
+    def test_a_default_branch_leg_artifact_is_owed_once_after_the_mark(self) -> None:
+        mark = NOW - DAY
+        routes = {
+            _workflows_url(): _workflows(_WEEKLY_WORKFLOW, {"id": 13, "path": ".github/workflows/ci.yml"}),
+            _runs_url(11): _runs(
+                _run(100, created=mark - dt.timedelta(hours=2), updated=NOW),
+                _run(101, created=mark - DAY, updated=mark),
+            ),
+            _run_artifacts_url(100): _listing(
+                [
+                    _artifact(2, created=NOW) | {"name": _WEEKLY_LEG},
+                    _artifact(3, created=mark - dt.timedelta(hours=1)) | {"name": "eval-owed-under_load-1-1"},
+                    _artifact(4, created=NOW) | {"name": LEDGER_ARTIFACT},
+                    _artifact(5, created=NOW) | {"name": "eval-report-clean_room-1-2"},
+                    _artifact(6, created=NOW, provenance=("main", 2)) | {"name": _WEEKLY_LEG},
+                ]
+            ),
+            _zip_url(2): _zip(f"{_WEEKLY_LEG}.json", _ledger(_owed("weekly")).to_json()),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.leg_owed(set(), mark).names == ("weekly",)
+        assert not {_zip_url(3), _zip_url(4), _zip_url(5), _zip_url(6), _run_artifacts_url(101)} & set(gh.calls)
+        assert _runs_url(13) not in gh.calls
+
+    def test_a_heal_leg_on_a_pr_branch_is_owed_only_at_a_merged_final_head(self) -> None:
+        final, superseded = "a" * 40, "b" * 40
+        routes = {
+            _workflows_url(): _workflows(_HEAL_WORKFLOW),
+            _runs_url(12): _runs(
+                _run(201, created=NOW - 2 * DAY, updated=NOW, head_sha=superseded, branch="feature"),
+                _run(200, created=NOW - 3 * DAY, head_sha=final, branch="feature"),
+            ),
+            _run_artifacts_url(200): _listing(
+                [
+                    _artifact(7, created=NOW - 3 * DAY, head_sha=final, provenance=("feature", 1))
+                    | {"name": f"eval-owed-heal-{final}-subset"}
+                ]
+            ),
+            _zip_url(7): _zip("eval-owed-subset.json", _ledger(_owed("heal")).to_json()),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.leg_owed({final}, NOW - DAY).names == ("heal",)
+        assert _run_artifacts_url(201) not in gh.calls
+
+    def test_an_expired_leg_artifact_warns_and_owes_nothing(self) -> None:
+        routes = {
+            _workflows_url(): _workflows(_WEEKLY_WORKFLOW),
+            _runs_url(11): _runs(_run(100, created=NOW)),
+            _run_artifacts_url(100): _listing([_artifact(2, created=NOW, expired=True) | {"name": _WEEKLY_LEG}]),
+        }
+        harvest, gh, warnings = _harvest(routes)
+        assert harvest.leg_owed(set(), NOW - DAY) == OwedLedger()
+        assert _zip_url(2) not in gh.calls
+        assert any(_WEEKLY_LEG in message and "expired" in message for message in warnings)
+
+    @pytest.mark.parametrize("members", [["notes.txt"], [f"{_WEEKLY_LEG}.json", "eval-owed-other.json"]])
+    def test_a_leg_artifact_without_exactly_one_owed_json_fails_loud(self, members: list[str]) -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for member in members:
+                archive.writestr(member, OwedLedger().to_json())
+        routes = {
+            _workflows_url(): _workflows(_WEEKLY_WORKFLOW),
+            _runs_url(11): _runs(_run(100, created=NOW)),
+            _run_artifacts_url(100): _listing([_artifact(2, created=NOW) | {"name": _WEEKLY_LEG}]),
+            _zip_url(2): buffer.getvalue(),
+        }
+        harvest, _, _ = _harvest(routes)
+        with pytest.raises(OwedLedgerError, match="one owed JSON"):
+            harvest.leg_owed(set(), NOW - DAY)
+
+    def test_run_paging_stops_at_the_artifact_lookback(self) -> None:
+        ancient = NOW - DAY - PR_ARTIFACT_LOOKBACK - DAY
+        routes = {
+            _workflows_url(): _workflows(_WEEKLY_WORKFLOW),
+            _runs_url(11): _runs(*(_run(1000 + i, created=ancient, branch="feature") for i in range(PAGE_SIZE))),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.leg_owed(set(), NOW - DAY) == OwedLedger()
+        assert _runs_url(11, page=2) not in gh.calls
+
+
 class TestCollect:
+    def test_weekly_and_heal_leg_debt_enters_the_ledger(self) -> None:
+        mark = NOW - DAY
+        final = "a" * 40
+        routes = {
+            _artifacts_url(LEDGER_ARTIFACT): _listing([_artifact(1, created=mark)]),
+            _zip_url(1): _zip(LEDGER_FILENAME, _ledger(harvested_through=mark).to_json()),
+            _pulls_url(): json.dumps([_pull(10, final, merged=NOW - dt.timedelta(hours=2))]).encode(),
+            _artifacts_url(PR_OWED_ARTIFACT): _listing([]),
+            _workflows_url(): _workflows(_WEEKLY_WORKFLOW, _HEAL_WORKFLOW),
+            _runs_url(11): _runs(_run(100, created=NOW)),
+            _run_artifacts_url(100): _listing([_artifact(2, created=NOW) | {"name": _WEEKLY_LEG}]),
+            _zip_url(2): _zip(f"{_WEEKLY_LEG}.json", _ledger(_owed("weekly_cut_off")).to_json()),
+            _runs_url(12): _runs(_run(200, created=NOW - 3 * DAY, head_sha=final, branch="feature")),
+            _run_artifacts_url(200): _listing(
+                [_artifact(3, created=NOW - 3 * DAY, head_sha=final) | {"name": f"eval-owed-heal-{final}-subset"}]
+            ),
+            _zip_url(3): _zip("eval-owed-subset.json", _ledger(_owed("heal_cut_off")).to_json()),
+        }
+        harvest, _, _ = _harvest(routes)
+        assert harvest.collect(NOW).names == ("heal_cut_off", "weekly_cut_off")
+
     def test_first_harvest_starts_one_day_back_and_says_so(self) -> None:
         routes = {
             _artifacts_url(LEDGER_ARTIFACT): _listing([]),
@@ -509,7 +657,7 @@ class TestCollect:
             _artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(7, created=NOW - 5 * DAY, head_sha=head)]),
             _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("old_parked")).to_json()),
         }
-        gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', **routes})
+        gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', _workflows_url(): _workflows(), **routes})
         harvest = OwedHarvest(gh=gh, repo=REPO, warn=lambda _message: None, first_harvest_lookback=7 * DAY)
         assert harvest.collect(NOW).names == ("old_parked",)
 

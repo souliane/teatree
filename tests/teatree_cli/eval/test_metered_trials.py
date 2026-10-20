@@ -6,6 +6,7 @@ import typer
 from teatree.cli.eval.metered_trials import (
     UsageLimitAfterFailureError,
     park_on_usage_limit,
+    run_pass_at_k_results,
     run_trials_with_limit_evidence,
 )
 from teatree.eval.api_errors import UsageLimitReachedError
@@ -57,6 +58,33 @@ def test_usage_limit_writes_a_parked_artifact(tmp_path: Path) -> None:
         park_on_usage_limit(summary_md=summary)
     assert exc.value.exit_code == 75
     assert "PARKED" in summary.read_text()
+
+
+def test_pass_at_k_keeps_prior_measured_failure_red_at_the_limit(tmp_path: Path) -> None:
+    spec = EvalSpec(
+        name="alpha",
+        scenario="synthetic",
+        agent_path="skills/rules/SKILL.md",
+        prompt="go",
+        matchers=(),
+        source_path=Path("synthetic.yaml"),
+    )
+    calls = 0
+
+    def trial(candidate: EvalSpec) -> ScenarioResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            message = "limit"
+            raise UsageLimitReachedError(message)
+        return _failed_result(candidate)
+
+    summary = tmp_path / "summary.md"
+    with pytest.raises(typer.Exit) as exc:
+        run_pass_at_k_results([spec], trial, trials=2, require="all", summary_md=summary)
+    assert exc.value.exit_code == 1
+    assert calls == 2
+    assert "RED" in summary.read_text()
 
 
 def test_prior_failure_keeps_the_red_verdict_and_dashboard(tmp_path: Path) -> None:

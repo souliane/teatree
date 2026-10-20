@@ -9,7 +9,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.eval.catalog_selection import select_specs
+from teatree.cli.eval.catalog_selection import print_selected_catalog, select_specs
 from teatree.eval.models import EvalSpec
 
 
@@ -35,6 +35,29 @@ _CATALOG = [
 
 def test_no_filters_returns_the_whole_catalog() -> None:
     assert select_specs(_CATALOG, None, lane=None, surface=None, shard=None) == _CATALOG
+
+
+def test_list_names_uses_the_run_catalog_selector() -> None:
+    with (
+        mock.patch("teatree.cli.eval.app.ensure_django"),
+        mock.patch("teatree.cli.eval.app.discover_specs", return_value=_CATALOG),
+    ):
+        result = CliRunner().invoke(app, ["eval", "list", "--lane", "clean_room", "--shard", "1/1", "--names-only"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == ["clean_headless", "clean_interactive"]
+
+
+def test_list_names_bootstraps_and_uses_the_run_catalog_selector(capsys: pytest.CaptureFixture[str]) -> None:
+    bootstraps: list[bool] = []
+    print_selected_catalog(
+        lambda: _CATALOG,
+        lambda: bootstraps.append(True),
+        lane="clean_room",
+        shard="1/1",
+        names_only=True,
+    )
+    assert bootstraps == [True]
+    assert capsys.readouterr().out.splitlines() == ["clean_headless", "clean_interactive"]
 
 
 def test_lane_and_surface_compose() -> None:

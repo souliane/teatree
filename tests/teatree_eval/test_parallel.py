@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError, is_usage_limit_skip_reason
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
-from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, run_specs
+from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, is_usage_limit_skip, run_specs
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
@@ -59,6 +59,14 @@ class _RecordingRunner:
 
 
 class TestRunSpecs:
+    def test_only_a_usage_limit_skip_is_classified_as_capacity_park(self) -> None:
+        limited = EvalRun.skipped("limited", f"{USAGE_LIMIT_REACHED_REASON}: subscription window reached")
+        other = EvalRun.skipped("other", "ordinary skip")
+        assert is_usage_limit_skip(limited)
+        assert is_usage_limit_skip_reason(limited.terminal_reason)
+        assert not is_usage_limit_skip(other)
+        assert not is_usage_limit_skip_reason(other.terminal_reason)
+
     def test_default_is_serial(self) -> None:
         assert DEFAULT_PARALLEL == 1
 

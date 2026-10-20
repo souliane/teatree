@@ -249,7 +249,7 @@ t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly 
 t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated, `parked` if any leg parked)
 t3 eval owed record --out eval-owed.json --reason limit --source pr#N@<sha> --names-file f  # CI primitive: record scenarios a lane could not run (parked | limit | deferred)
 t3 eval owed outputs eval-owed.json           # CI primitive: print parked=/owed= lines for $GITHUB_OUTPUT
-t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since (fails loud on a GitHub API error)
+t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since + weekly/heal leg eval-owed-<leg> artifacts (fails loud on a GitHub API error)
 t3 eval owed next eval-owed-ledger.json --cap 14  # nightly: the oldest owed scenarios the catalog still defines
 t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # nightly: clear the owed scenarios that passed
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); 1 on any red or an empty run, 75 when a leg parked or the usage limit skipped a scenario
