@@ -80,6 +80,21 @@ class TestIncomingEvent(TestCase):
 
         assert (event.body, event.payload_json) == ("", {})
 
+    def test_mark_processed_keeps_dead_lettered_forge_payload(self) -> None:
+        event = IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITLAB,
+                idempotency_key="gitlab:dead",
+                dead_lettered_at=timezone.now(),
+            )
+        )
+
+        event.mark_processed()
+        event.refresh_from_db()
+
+        assert event.body == "hey, can you ship MR !42 when CI goes green?"
+        assert event.payload_json == {"event_id": "Ev0000ABCD"}
+
     def test_evidence_per_event_type(self) -> None:
         IncomingEvent.objects.create(
             **self._payload(

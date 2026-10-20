@@ -85,7 +85,7 @@ class IncomingEvent(models.Model):
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
         update_fields = ["processed_at"]
-        if self.source in {self.Source.GITHUB, self.Source.GITLAB}:
+        if self.dead_lettered_at is None and self.source in {self.Source.GITHUB, self.Source.GITLAB}:
             self.body = ""
             self.payload_json = {}
             update_fields.extend(["body", "payload_json"])
