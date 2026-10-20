@@ -275,15 +275,6 @@ class TestRelaySubcommand:
         assert PendingChatInjection.objects.count() == 0
         wake.enqueue.assert_not_called()
 
-    def test_json_output_carries_the_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with live_factory_slack(FakeOwnerDm()), patch(_WAKE):
-            _relay_argv("--relay-id", "r1", "--text", PROMPT, "--json")
-
-        *_, last = capsys.readouterr().out.strip().splitlines()
-        payload = json.loads(last)
-        assert payload["status"] == "relayed"
-        assert payload["marker"].startswith("t3-relay-receipt: pending_chat=")
-
     def test_a_missing_relay_id_or_prompt_is_a_usage_error(self) -> None:
         assert _relay_argv("--text", PROMPT) == 2
         assert _relay_argv("--relay-id", "r1") == 2

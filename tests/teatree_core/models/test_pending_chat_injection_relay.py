@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.relay import RelayReceipt, RelayRefusal
-from teatree.core.models import BotPing, DmContext, PendingChatInjection, Task
+from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Task
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.utils.url_slug import slack_conversation_anchor
 from tests._factory_slack import OWNER_DM, OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
@@ -132,6 +132,20 @@ class TestRelayEgress(TestCase):
 
         assert relay_calls == 0
         assert sidecar.call_count == 1
+
+    def test_a_relay_is_a_thread_root_even_while_the_owner_is_in_a_dm_thread(self) -> None:
+        dm = FakeOwnerDm()
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref=dm.channel,
+            thread_ref="1700000000.000111",
+            idempotency_key="slack:Ev-active",
+        )
+        with live_factory_slack(dm):
+            _relay()
+
+        [post] = dm.posts
+        assert post["thread_ts"] == ""
 
     def test_a_relay_ping_that_failed_is_never_redelivered_as_a_ghost(self) -> None:
         dm = FakeOwnerDm(fail_post=True)

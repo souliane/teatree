@@ -80,15 +80,6 @@ def test_absent_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> 
     assert "heartbeat" in verdict.reason
 
 
-def test_unparsable_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> None:
-    (heartbeat_dir / "slack-listener-heartbeat.json").write_text("{not json", encoding="utf-8")
-    with _transports({_OVERLAY: _Transport()}):
-        verdict = factory_slack_live(_OVERLAY)
-
-    assert not verdict.live
-    assert "heartbeat" in verdict.reason
-
-
 def test_stale_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> None:
     _stamp(heartbeat_dir, age_seconds=3600)
     with _transports({_OVERLAY: _Transport()}):

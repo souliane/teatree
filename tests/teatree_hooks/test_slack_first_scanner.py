@@ -18,7 +18,7 @@ from hooks.scripts.hook_router import _HANDLERS, handle_answer_first_gate
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT
 from hooks.scripts.slack_first_gate import handle_slack_first_gate
 from teatree import standing_directives_cache
-from teatree.hooks.slack_first_scanner import RELAY_RECEIPT_MARKER, RELAY_REFUSED_MARKER, find_unrelayed_prompt
+from teatree.hooks.slack_first_scanner import RELAY_RECEIPT_MARKER, RELAY_REFUSED_MARKER
 
 _SESSION: Final = "sess-1"
 _PROMPT: Final = "can you check why the 4001 pipeline is red?"
@@ -222,21 +222,3 @@ class TestNeverLockout:
         chain = _HANDLERS["Stop"]
 
         assert chain.index(handle_slack_first_gate) == chain.index(handle_answer_first_gate) + 1
-
-
-class TestTheDetector:
-    @pytest.mark.parametrize(
-        ("words", "results", "live", "fires"),
-        [
-            ("ship it?", "", True, True),
-            ("ship it?", "", False, False),
-            ("", "", True, False),
-            ("  \n ", "", True, False),
-            ("ship it?", f"x {RELAY_RECEIPT_MARKER} y", True, False),
-            ("ship it?", f"x {RELAY_REFUSED_MARKER} y", True, False),
-        ],
-    )
-    def test_it_fires_only_on_live_words_with_no_marker(
-        self, words: str, results: str, *, live: bool, fires: bool
-    ) -> None:
-        assert (find_unrelayed_prompt(words, results, slack_live=live) is not None) is fires

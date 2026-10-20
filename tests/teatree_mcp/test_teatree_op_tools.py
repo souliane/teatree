@@ -81,7 +81,7 @@ class TestTaskCreate(TestCase):
 class TestNotifyUser(TestCase):
     def test_routes_through_the_audited_notify_egress(self) -> None:
         with patch(
-            "teatree.mcp.write_tools.notify_user_outcome",
+            "teatree.mcp.notify_write_tool.notify_user_outcome",
             return_value=NotifyOutcome(sent=True),
         ) as seam:
             result = _call(
@@ -96,7 +96,7 @@ class TestNotifyUser(TestCase):
     def test_a_non_delivery_names_its_reason_instead_of_a_bare_false(self) -> None:
         """A bare ``sent=false`` is unactionable — the caller cannot escalate on it."""
         with patch(
-            "teatree.mcp.write_tools.notify_user_outcome",
+            "teatree.mcp.notify_write_tool.notify_user_outcome",
             return_value=NotifyOutcome(sent=False, reason=NotifyReason.NO_MESSAGING_BACKEND),
         ):
             result = _call(
@@ -122,7 +122,7 @@ class TestNotifyUser(TestCase):
 
     def test_notify_user_relay_kind_is_refused_because_only_the_relay_tool_queues_its_row(self) -> None:
         with (
-            patch("teatree.mcp.write_tools.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
+            patch("teatree.mcp.notify_write_tool.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
             pytest.raises(Exception, match="valid kinds: answer \\| info\\."),
         ):
             _call("notify_user", {"text": "hi", "kind": "relay", "idempotency_key": "mcp-kind-r"})
@@ -131,7 +131,7 @@ class TestNotifyUser(TestCase):
 
     def test_notify_user_question_kind_refused(self) -> None:
         with (
-            patch("teatree.mcp.write_tools.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
+            patch("teatree.mcp.notify_write_tool.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
             pytest.raises(Exception, match="questions record") as exc_info,
         ):
             _call("notify_user", {"text": "ship it?", "kind": "question", "idempotency_key": "mcp-kind-q"})
