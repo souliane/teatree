@@ -54,4 +54,5 @@ def test_the_blueprint_names_the_relay_as_the_second_pending_chat_writer() -> No
     blueprint = (_ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
 
     assert "second `PendingChatInjection` writer" in blueprint
+    assert "`bind_reply` returns nothing for it" in blueprint
     assert "slack_first_question" in blueprint
