@@ -231,7 +231,7 @@ class TestForcedReproGateSwitchedOff(TestCase):
         assert "forced_repro_gate_enabled" in logs.output[0]
         assert "acme" in logs.output[0]
 
-    def test_acme_passes_and_another_overlay_is_refused(self) -> None:
+    def test_another_overlays_fix_is_still_refused_by_both_gates(self) -> None:
         acme = _fix_ticket()
         other = Ticket.objects.create(overlay="other", kind=Ticket.Kind.FIX)
         check_red_repro(acme)
@@ -250,7 +250,7 @@ class TestForcedReproGateSwitchedOff(TestCase):
         with pytest.raises(ForcedReproGateError):
             check_red_repro(ticket)
 
-    def test_global_off_allows_the_real_code_and_test_transitions(self) -> None:
+    def test_a_fix_reaches_tested_with_no_evidence_when_switched_off_globally(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         ticket = Ticket.objects.create(kind=Ticket.Kind.FIX)
         _advance_ticket_to_tested(ticket)
@@ -259,14 +259,47 @@ class TestForcedReproGateSwitchedOff(TestCase):
         assert not ReproEvidence.objects.filter(ticket=ticket).exists()
         assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
 
-    def test_the_loop_principal_cannot_switch_the_gate_off(self) -> None:
-        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="safety-gate key"):
+    def test_the_unattended_loop_cannot_switch_it_off(self) -> None:
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
             ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="other")
         assert not ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="other").exists()
 
+    def test_existing_red_waiver_and_valid_pair_do_not_mark_a_disabled_gate(self) -> None:
+        with_red = _fix_ticket()
+        ReproEvidence.record_red(
+            ticket=with_red, command=_CMD, run=HarnessRun(head_sha=_SHA_RED, exit_code=1, output="failed")
+        )
+        check_red_repro(with_red)
+        with_red.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in with_red.extra
+
+        waived = _fix_ticket()
+        ReproWaiver.record(ticket=waived, approver_id="souliane", reason="hardware race")
+        check_red_repro(waived)
+        check_forced_repro(waived)
+        waived.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in waived.extra
+
+        paired = _fix_ticket()
+        _valid_pair(paired)
+        check_red_repro(paired)
+        check_forced_repro(paired)
+        paired.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in paired.extra
+
+    def test_global_override_is_the_recorded_scope_for_an_overlay_ticket(self) -> None:
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").delete()
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = _fix_ticket()
+        check_red_repro(ticket)
+        ticket.refresh_from_db()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
+        with patch.object(Ticket, "merge_extra", side_effect=AssertionError("duplicate marker write")):
+            check_forced_repro(ticket)
+
     def test_malformed_value_refuses_instead_of_passing(self) -> None:
         ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
-        with pytest.raises(ValueError, match="Invalid bool value"):
+        with pytest.raises(ForcedReproGateError, match="Cannot decide forced-repro requirement"):
             check_red_repro(_fix_ticket())
 
 

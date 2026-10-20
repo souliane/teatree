@@ -2,9 +2,9 @@
 
 A FIX ticket cannot ship unless a harness-recorded, provenance-verified
 RED->GREEN reproduction exists (or a human-authorized waiver). The gate is a
-pure decision over durable state — no network, no clock, no git: the ancestry
-proof was frozen at record time into ``ReproEvidence.provenance_ok``, so the gate
-is a single DB read.
+decision over durable state — no network, no clock, no git: the ancestry
+proof was frozen at record time into ``ReproEvidence.provenance_ok``. A disabled
+requirement is logged and marked only when it exempts a ticket lacking evidence.
 
 It sits in ``Ticket.ship()`` (not ``mark_delivered()``): the repro record
 commands need a LIVE worktree (git for HEAD + ancestry), and ``mark_merged()``
@@ -13,14 +13,15 @@ forgotten repro can never be recorded. ``ship()`` is the last transition before
 teardown — the same reason ``local_e2e_dod`` (which needs the live stack) also
 sits in ``ship()``.
 
-Short-circuits cheapest / most-permissive first, mirroring
+Short-circuits satisfied cases before the setting, mirroring
 ``check_fix_record_dod`` and ``check_e2e_mandatory``:
 
 1. not a FIX ticket -> pass (reuses ``fix_dod_gate.is_fix`` — the #86 SSOT, so
 kind classification never diverges).
 2. a human-authorized ``ReproWaiver`` -> pass (logged for audit).
 3. a provenance-verified RED->GREEN pair -> pass.
-4. otherwise -> raise :class:`ForcedReproGateError` (naming both remedies).
+4. a disabled requirement -> pass and record the disabling scope.
+5. otherwise -> raise :class:`ForcedReproGateError` (naming both remedies).
 
 Because it is an :class:`InvalidTransitionError` subclass, a ``ship()`` that
 hits it rolls the advance back and the FSM stays put (identical to
@@ -28,11 +29,12 @@ hits it rolls the advance back and the FSM stays put (identical to
 """
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from teatree.config import get_effective_settings
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.repro_evidence import ReproEvidence
 from teatree.core.models.repro_waiver import ReproWaiver
@@ -43,13 +45,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def repro_disabled_scope(ticket: "Ticket") -> str | None:
+    try:
+        enabled = get_effective_settings(ticket.overlay).forced_repro_gate_enabled
+    except ValueError as exc:
+        msg = f"Cannot decide forced-repro requirement for ticket {ticket.pk}: {exc}"
+        raise ForcedReproGateError(msg) from exc
+    if enabled:
+        return None
+    if ticket.overlay and ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope=ticket.overlay).exists():
+        return ticket.overlay
+    return "global"
+
+
 def forced_repro_gate_enabled(ticket: "Ticket") -> bool:
-    if get_effective_settings(ticket.overlay).forced_repro_gate_enabled:
+    return repro_disabled_scope(ticket) is None
+
+
+def repro_exempt(ticket: "Ticket", *, evidence: Literal["red", "pair"] = "pair") -> bool:
+    if not is_fix(ticket):
         return True
-    scope = ticket.overlay or "global"
+    if ReproWaiver.objects.filter(ticket=ticket).exists():
+        logger.info("Forced-repro gate waived for ticket %s (human-authorized ReproWaiver)", ticket.pk)
+        return True
+    if evidence == "red":
+        satisfied = ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).exists()
+    else:
+        satisfied = ReproEvidence.objects.has_valid_repro(ticket)
+    if satisfied:
+        return True
+    scope = repro_disabled_scope(ticket)
+    if scope is None:
+        return False
     logger.warning("forced_repro_gate_enabled is off for ticket %s in scope %s", ticket.pk, scope)
-    ticket.merge_extra(append_to_lists={"forced_repro_disabled_scopes": [scope]})
-    return False
+    if scope not in (ticket.extra or {}).get("forced_repro_disabled_scopes", []):
+        ticket.merge_extra(append_to_lists={"forced_repro_disabled_scopes": [scope]})
+    return True
 
 
 class ForcedReproGateError(InvalidTransitionError):
@@ -79,27 +110,14 @@ def _deny_message(ticket: "Ticket") -> str:
 
 def check_forced_repro(ticket: "Ticket") -> None:
     """Refuse the ship transition when a FIX ticket lacks an executed repro (#118)."""
-    if not is_fix(ticket):
-        return
-    if not forced_repro_gate_enabled(ticket):
-        return
-    if ReproWaiver.objects.filter(ticket=ticket).exists():
-        logger.info("Forced-repro gate waived for ticket %s (human-authorized ReproWaiver)", ticket.pk)
-        return
-    if ReproEvidence.objects.has_valid_repro(ticket):
+    if repro_exempt(ticket):
         return
     raise ForcedReproGateError(_deny_message(ticket))
 
 
 def check_red_repro(ticket: "Ticket") -> None:
     """Refuse FIX coding completion unless the pre-fix failing run was recorded."""
-    if (
-        not is_fix(ticket)
-        or not forced_repro_gate_enabled(ticket)
-        or ReproWaiver.objects.filter(ticket=ticket).exists()
-    ):
-        return
-    if ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).exists():
+    if repro_exempt(ticket, evidence="red"):
         return
     msg = (
         f"Refusing to complete coding for FIX ticket {ticket.pk}: record an executed RED reproduction "

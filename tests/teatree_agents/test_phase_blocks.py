@@ -176,10 +176,13 @@ class TestFixRecordDirective(TestCase):
     def test_a_switched_off_fix_brief_keeps_the_fields_and_drops_record_red(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         for phase in ("coding", "debugging"):
-            brief = self._brief(phase, Ticket.Kind.FIX)
+            task = _task(phase, kind=Ticket.Kind.FIX)
+            brief = "\n".join(phase_specific_lines(task, []))
             assert "THIS IS A FIX TICKET" in brief
             assert all(field in brief for field in FIX_RECORD_FIELDS)
             assert "repro record-red" not in brief
+            task.ticket.refresh_from_db()
+            assert "forced_repro_disabled_scopes" not in task.ticket.extra
 
     def test_a_feature_ticket_coding_brief_is_unchanged(self) -> None:
         feature = phase_specific_lines(_task("coding", kind=Ticket.Kind.FEATURE), [])

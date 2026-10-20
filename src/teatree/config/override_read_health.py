@@ -57,6 +57,7 @@ _logger = logging.getLogger("teatree.config")
 #: * ``autonomy`` — ships ``full``; ``babysit`` is the tier that keeps every approval gate.
 #: * ``mode`` — ships ``auto``; ``interactive`` gates publishing on explicit approval.
 #: * ``require_human_approval_to_merge`` / ``_to_answer`` — the two named human controls.
+#: * ``forced_repro_gate_enabled`` — ``false`` permits fixes without executed repro evidence.
 SAFETY_FAIL_CLOSED_STORED_VALUES: dict[str, Any] = {
     "autonomy": "babysit",
     "mode": "interactive",
