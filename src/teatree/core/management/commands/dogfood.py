@@ -38,7 +38,7 @@ would silently report success to cron/CI/the loop. ``SystemExit`` propagates.
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from django.core.exceptions import ImproperlyConfigured
@@ -50,6 +50,7 @@ from teatree.core.intake.issue_ref import canonicalize_issue_ref
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay
 from teatree.core.overlay_name_resolution import registered_overlay_name
 from teatree.loop.dogfood_smoke import (
@@ -68,6 +69,7 @@ from teatree.loop.dogfood_smoke import (
 from teatree.utils.run import CommandFailedError
 
 DEFAULT_FIXTURE_TICKET_URL = "https://github.com/souliane/teatree/issues/1308"
+_UNRESOLVED = object()
 
 
 def _dm_failure_body(report_summary_text: str, *, failing_step: str, command_str: str, stderr: str) -> str:
@@ -178,8 +180,9 @@ class Command(TyperCommand):
         dispatch_overlay = registered_overlay_name(target_overlay) or target_overlay
         cli_overlay = OverlayEntry.canonical_overlay_name(dispatch_overlay)
 
-        resolved_fixture_url = _resolve_fixture_url(dispatch_overlay, fixture_ticket_url)
-        smoke_variant, uncovered = _resolve_smoke_variant(dispatch_overlay, variant)
+        resolved_fixture_url, smoke_variant, uncovered = _resolve_smoke_inputs(
+            dispatch_overlay, fixture_ticket_url, variant
+        )
         steps = default_steps(
             overlay=cli_overlay,
             fixture_ticket_url=resolved_fixture_url,
@@ -228,32 +231,46 @@ class Command(TyperCommand):
 ALIAS_VARIANT_UNCOVERED = "dslr-alias-variant"
 
 
-def _resolve_fixture_url(overlay_name: str, explicit: str) -> str:
+def _resolve_smoke_inputs(overlay_name: str, fixture: str, variant: str) -> tuple[str, str, list[str]]:
+    loaded_overlay: OverlayBase | object | None = _UNRESOLVED
+    if not fixture or not variant:
+        loaded_overlay = _smoke_overlay(overlay_name, _UNRESOLVED)
+    fixture_url = _resolve_fixture_url(overlay_name, fixture, loaded_overlay)
+    selected_variant, uncovered = _resolve_smoke_variant(overlay_name, variant, loaded_overlay)
+    return fixture_url, selected_variant, uncovered
+
+
+def _resolve_fixture_url(
+    overlay_name: str, explicit: str, loaded_overlay: OverlayBase | object | None = _UNRESOLVED
+) -> str:
     if explicit:
-        return _canonical_fixture_url(overlay_name, explicit)
-    try:
-        overlay = get_overlay(overlay_name)
-    except ImproperlyConfigured:
+        return _canonical_fixture_url(overlay_name, explicit, loaded_overlay)
+    overlay = _smoke_overlay(overlay_name, loaded_overlay)
+    if overlay is None:
         if overlay_name not in OverlayConfigResolver.all_names():
             return DEFAULT_FIXTURE_TICKET_URL
         configured = load_config().raw.get("overlays", {}).get(overlay_name, {}).get("dogfood_smoke_fixture_url", "")
     else:
         configured = overlay.config.dogfood_smoke_fixture_url
-    return _canonical_fixture_url(overlay_name, configured) if configured else DEFAULT_FIXTURE_TICKET_URL
+    resolved = _canonical_fixture_url(overlay_name, configured, overlay) if configured else ""
+    return resolved or DEFAULT_FIXTURE_TICKET_URL
 
 
-def _canonical_fixture_url(overlay_name: str, value: str) -> str:
+def _canonical_fixture_url(
+    overlay_name: str, value: str, loaded_overlay: OverlayBase | object | None = _UNRESOLVED
+) -> str:
     ref = value.strip()
     if not ref.removeprefix("#").isdigit():
         return ref
-    try:
-        overlay = get_overlay(overlay_name)
-    except ImproperlyConfigured:
+    overlay = _smoke_overlay(overlay_name, loaded_overlay)
+    if overlay is None:
         return ref
     return canonicalize_issue_ref(overlay, ref)
 
 
-def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[str]]:
+def _resolve_smoke_variant(
+    overlay_name: str, explicit: str, loaded_overlay: OverlayBase | object | None = _UNRESOLVED
+) -> tuple[str, list[str]]:
     """Resolve the variant the smoke provisions, plus what it could not cover.
 
     An explicit ``--variant`` always wins. Otherwise the overlay's own
@@ -263,18 +280,23 @@ def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[
     """
     if explicit:
         return explicit, []
-    try:
-        overlay = get_overlay(overlay_name)
-    except ImproperlyConfigured:
-        # Only the not-registered case is an uncovered acceptance item. A bare `except
-        # Exception` here turned every configuration error into this same silent answer,
-        # which is what let three tests patch a name the function never reads and still pass.
-        logging.getLogger(__name__).exception("Could not load overlay %s to pick an alias variant", overlay_name)
+    overlay = _smoke_overlay(overlay_name, loaded_overlay)
+    if overlay is None:
+        logging.getLogger(__name__).warning("Could not load overlay %s to pick an alias variant", overlay_name)
         return "", [f"{ALIAS_VARIANT_UNCOVERED} (overlay {overlay_name} not loadable)"]
     alias = pick_alias_variant(overlay)
     if not alias:
         return "", [f"{ALIAS_VARIANT_UNCOVERED} (overlay {overlay_name} declares no non-identity variant)"]
     return alias, []
+
+
+def _smoke_overlay(overlay_name: str, loaded_overlay: OverlayBase | object | None) -> OverlayBase | None:
+    if loaded_overlay is _UNRESOLVED:
+        try:
+            return get_overlay(overlay_name)
+        except ImproperlyConfigured:
+            return None
+    return cast("OverlayBase | None", loaded_overlay)
 
 
 class FixtureCheckoutRefusalError(WorktreePathRefusalError):

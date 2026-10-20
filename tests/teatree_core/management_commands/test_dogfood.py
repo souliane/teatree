@@ -28,6 +28,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 
 from teatree.core import overlay_loader
+from teatree.core.management.commands import dogfood
 from teatree.core.management.commands.dogfood import _worktree_path_resolver
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -127,6 +128,20 @@ class TestDryRun:
 
         assert code == 0
         assert f"workspace ticket {OWN_FIXTURE_URL}\n" in out
+
+    def test_blank_overlay_fixture_uses_core_fixture(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch.object(_AcmeOverlay, "config", OverlayConfig(dogfood_smoke_fixture_url="   ")), _registered_acme():
+            out, code = _call_smoke(capsys, "--overlay=acme", "--dry-run")
+
+        assert code == 0
+        assert f"workspace ticket {CORE_FIXTURE_URL}\n" in out
+
+    def test_overlay_is_loaded_once_for_fixture_and_variant(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with _registered_acme(), patch.object(dogfood, "get_overlay", wraps=dogfood.get_overlay) as loaded:
+            _, code = _call_smoke(capsys, "--overlay=acme", "--dry-run")
+
+        assert code == 0
+        assert loaded.call_count == 1
 
     def test_bare_fixture_number_is_canonicalized_before_the_smoke(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _registered_acme(), patch.object(_AcmeOverlay, "resolve_issue_token", return_value=OWN_FIXTURE_URL):
