@@ -152,7 +152,7 @@ def _unresolved_value(key: str) -> object:
 
 
 def _tiers(scope: str, *, persisted_only: bool) -> _Tiers:
-    layers = read_setting_layers(scope)
+    layers = read_setting_layers(scope, with_scope_provenance=True)
     global_rows, overlay_rows = layers.db_rows
     # The NON-raising env read: a var whose value the parser refuses is the misconfiguration
     # an operator opens this page to find, and `env_setting_overrides` would take the page

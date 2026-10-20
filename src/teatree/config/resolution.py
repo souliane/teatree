@@ -203,11 +203,14 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     )
 
 
-def read_setting_layers(overlay_name: str) -> SettingLayers:
+def read_setting_layers(overlay_name: str, *, with_scope_provenance: bool = False) -> SettingLayers:
     """Read both persisted tiers once for settings resolution and provenance."""
     global_rows, global_degraded = load_global_rows()
     overlay_scopes: dict[str, str] = {}
-    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name, scope_by_key=overlay_scopes)
+    if with_scope_provenance:
+        overlay_rows, overlay_degraded = load_overlay_rows(overlay_name, scope_by_key=overlay_scopes)
+    else:
+        overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
     db_rows = (global_rows, overlay_rows)
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
     degraded = frozenset(
