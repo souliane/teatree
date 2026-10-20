@@ -192,24 +192,6 @@ def test_two_questions_in_one_call_are_refused(tmp_path: Path) -> None:
     assert "one decision per call" in result.stdout
 
 
-def test_one_question_writes_nothing_to_stderr(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    _seed_settings(tmp_path, {"owner_question_gate_enabled": False})
-    result = _run_hook(
-        tmp_path,
-        "PreToolUse",
-        {
-            "session_id": "owner-turn",
-            "transcript_path": str(transcript),
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [_ask("Merge this now?")]},
-        },
-    )
-
-    assert result.returncode == 0
-    assert result.stderr == ""
-
-
 def test_long_question_is_refused(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     question = (
@@ -496,6 +478,7 @@ def test_kill_switch_lets_both_arms_through(tmp_path: Path) -> None:
     assert (stop.returncode, stop.stdout) == (0, "")
     assert ask.returncode == 0
     assert "OWNER QUESTION GATE" not in ask.stdout
+    assert ask.stderr == ""
 
 
 def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
@@ -514,6 +497,7 @@ def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "OWNER QUESTION GATE" not in result.stdout
+    assert "owner-question-ok" in result.stderr
 
 
 def test_escape_token_beyond_first_512_question_characters_does_not_bypass(tmp_path: Path) -> None:
