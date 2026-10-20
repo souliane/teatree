@@ -13,7 +13,8 @@ invited to, so a bot-token read reports ``[]`` for every channel the
 user is in but the bot is not — the agent silently misses the user's
 own channels. Routing a general read through the user OAuth token
 (``xoxp-…``) makes the agent see exactly the channels and history the
-user sees. The only read kept on the bot is a DM read (see below).
+user sees. A DM viewing read starts with the bot and retries a membership refusal
+through ``read_with_user_token_fallback`` when a user token is configured.
 
 Writes go out under the interaction token. A ``SlackOp.WRITE`` is a
 ``chat.postMessage`` / reaction, OR a read taken *as the post* — the
@@ -80,10 +81,9 @@ def channel_token(
     to probe Connect membership with, and the user-token-only deployment
     intends every call to go out under the user's identity anyway.
 
-    A DM channel (id starts with ``D``) -> bot token. DMs are scoped to
-    the bot's own IM channels; a user-token read of the bot's DM history
-    would be wrong, and routing a DM post through the user token would
-    impersonate the user against their own DM history.
+    A DM channel (id starts with ``D``) -> bot token. A viewing history read
+    retries a membership refusal as the user via ``read_with_user_token_fallback``;
+    DM posts still use the bot to avoid impersonating the user.
 
     A ``SlackOp.READ`` on any non-DM channel -> user token. A general
     history/metadata read routes through the user's identity so the
