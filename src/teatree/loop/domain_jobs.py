@@ -26,7 +26,7 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _triage_assessor_jobs_for_overlay,
 )
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
-from teatree.loop.overlay_followup_jobs import _OverlayHookRefusalError, overlay_followup_jobs
+from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError, overlay_followup_jobs
 from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
@@ -453,7 +453,7 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
                 )
                 for s in signals
             ]
-    except _OverlayHookRefusalError as exc:
+    except OverlayHookRefusalError as exc:
         return label, [], str(exc)
     except ScannerError as exc:
         # Auth / rate-limit / missing-scope / network: surface as a

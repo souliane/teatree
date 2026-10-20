@@ -24,6 +24,8 @@ class _ScannerJob:
 
     @property
     def label(self) -> str:
+        if self.overlay_hook:
+            return f"{self.scanner.name}[{self.overlay}][hook]"
         return f"{self.scanner.name}[{self.overlay}]" if self.overlay else self.scanner.name
 
 

@@ -44,7 +44,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfSlackEgress
 from teatree.core.overlay import OverlayReview
 from teatree.core.review.review_candidate import _is_self_authored
-from teatree.loop.followup_dry_run import render_followup_dry_run, run_followup_dry_run
+from teatree.loop.followup_dry_run import FollowupDryRunReport, render_followup_dry_run, run_followup_dry_run
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.overlay_followup_jobs import overlay_followup_jobs
 from teatree.loop.phases.scan import ScanOutcome
@@ -375,7 +375,16 @@ class TestFollowupDryRun(TransactionTestCase):
         with file_backed_default_database():
             prebuilt_report = run_followup_dry_run(jobs)
         assert forge_writes == []
-        assert prebuilt_report.not_previewed == ("forge_writer[test]",)
+        assert prebuilt_report.not_previewed == ("forge_writer[test][hook]",)
+
+    def test_selected_builtin_does_not_certify_an_unpreviewed_overlay_scanner(self) -> None:
+        report = FollowupDryRunReport(
+            candidates=[],
+            errors={},
+            selected_scanners=("review_nag",),
+            not_previewed=("overlay_followup_scanners[test]",),
+        )
+        assert report.exit_code == 3
 
     def test_records_every_authorship_verdict_and_suppresses_every_egress_and_write(self) -> None:
         _seed(_SELF_POST, 1)

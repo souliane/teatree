@@ -5,6 +5,7 @@ teatree's own repo, skills, and GitHub project as the target.
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, override
@@ -197,6 +198,21 @@ class TeatreeRuntime(OverlayRuntime):
 
 
 class TeatreeReview(OverlayReview):
+    @override
+    def select_work_item_repo(self, title: str, body: str, repos: tuple[str, ...]) -> str | None:
+        content = f"{title}\n{body}"
+        named = [
+            slug
+            for slug in repos
+            if re.search(rf"(?<![\w.-]){re.escape(slug)}(?![\w.-])", content, re.IGNORECASE)
+            or re.search(rf"(?<![\w./-]){re.escape(slug.rsplit('/', 1)[-1])}(?![\w./-])", content, re.IGNORECASE)
+        ]
+        if len(named) == 1:
+            return named[0]
+        if named:
+            return None
+        return _DEFAULT_FOLLOWUP_REPOS[0] if _DEFAULT_FOLLOWUP_REPOS[0] in repos else None
+
     @override
     def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
         teatree_globs = (

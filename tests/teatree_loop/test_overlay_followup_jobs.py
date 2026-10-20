@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from threading import Event
 from typing import cast
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import Loop, Mode, ModeOverride
 from teatree.core.overlay import OverlayReview
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases.scan import scan_phase
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loops.followup.loop import MINI_LOOP
@@ -134,6 +136,61 @@ class TestOverlayFollowupScanners(TestCase):
         finally:
             release.set()
 
+    def test_a_stuck_hook_does_not_start_another_thread_on_the_next_tick(self) -> None:
+        release = Event()
+        calls: list[str] = []
+
+        class BlockingReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                calls.append(backend.name)
+                release.wait()
+                return []
+
+        try:
+            backend = self._backend("stuck", BlockingReview())
+            with patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01):
+                first = MINI_LOOP.build_jobs(backends=[backend])
+                second = MINI_LOOP.build_jobs(backends=[backend])
+            assert len([job for job in first if job.scanner.name == "overlay_followup_scanners"]) == 1
+            assert len([job for job in second if job.scanner.name == "overlay_followup_scanners"]) == 1
+            assert calls == ["stuck"]
+        finally:
+            release.set()
+
+    def test_hook_receives_selection_context(self) -> None:
+        selection = ContextVar("followup_test_selection", default="missing")
+        seen: list[str] = []
+
+        class ContextReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                seen.append(selection.get())
+                return []
+
+        token = selection.set("current-tick")
+        try:
+            MINI_LOOP.build_jobs(backends=[self._backend("context", ContextReview())])
+        finally:
+            selection.reset(token)
+        assert seen == ["current-tick"]
+
+    def test_overlay_scanner_error_cannot_overwrite_a_builtin_error(self) -> None:
+        class FailingScanner:
+            name = "slack_mentions"
+
+            def scan(self) -> list[ScanSignal]:
+                msg = "scanner failed"
+                raise ValueError(msg)
+
+        backend = self._backend("collision", _HookReview([FailingScanner()]))
+        jobs = [
+            _ScannerJob(scanner=FailingScanner(), overlay="collision"),
+            *overlay_followup_jobs_module.overlay_followup_jobs(backend),
+        ]
+        outcome = scan_phase(jobs)
+        assert len(outcome.errors) == 2
+        assert "slack_mentions[collision]" in outcome.errors
+        assert any(label != "slack_mentions[collision]" and "slack_mentions" in label for label in outcome.errors)
+
     def test_a_hook_returning_a_non_scanner_is_refused(self) -> None:
         cases = (
             ([object()], "object"),
@@ -173,7 +230,7 @@ class TestOverlayFollowupScanners(TestCase):
         jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([AgentScanner()]))])
         outcome = scan_phase([job for job in jobs if job.scanner.name == "agent_scanner"])
         assert outcome.signals == []
-        assert "agent-routed" in outcome.errors["agent_scanner[alpha]"]
+        assert "agent-routed" in outcome.errors["agent_scanner[alpha][hook]"]
 
     def test_two_overlays_keep_their_extra_scanners_separate(self) -> None:
         alpha_scanner, beta_scanner = _ExtraScanner(), _ExtraScanner()

@@ -137,7 +137,7 @@ class FollowupDryRunReport:
         """
         if self.breach_count:
             return 1
-        if not self.selected_scanners:
+        if not self.selected_scanners or self.not_previewed:
             return 3
         return 0
 

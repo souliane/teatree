@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from teatree.contrib.t3_teatree.overlay import TeatreeMetadata, TeatreeOverlay
 from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item, filing_repo
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayReview
@@ -170,6 +171,27 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert filed is not None
         assert host.created[0]["repo"] == candidates[1]
         assert selected_from == [("Fix beta renderer", "In the beta repo", candidates)]
+
+    def test_bundled_overlay_routes_named_work_and_keeps_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config = overlay.config.model_copy(update={"workspace_repos": [_REPO, "souliane/companion"]})
+        overlay.metadata = TeatreeMetadata(overlay.config)
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.get_overlay", lambda _name: overlay)
+        allow_forge_repos(_REPO, "souliane/companion")
+        host = RecordingHost()
+
+        filed = file_work_item(
+            _conversation_ticket(),
+            {"title": "Fix scanner", "body": "souliane/companion scanner crashes"},
+            host=host,
+        )
+
+        assert filed is not None
+        assert host.created[0]["repo"] == "souliane/companion"
+        assert filing_repo("t3-teatree", title="Fix companion scanner") == "souliane/companion"
+        assert filing_repo("t3-teatree", title="Fix scanner") == _REPO
+        with pytest.raises(WorkItemFilingError, match="souliane/companion"):
+            filing_repo("t3-teatree", body="souliane/teatree and companion scanners crash")
 
     def test_ambiguous_repo_refuses_with_candidates_before_forge_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
         candidates = ("souliane/alpha", "souliane/beta")

@@ -4,8 +4,8 @@ import logging
 from collections.abc import Generator, Iterable
 from concurrent.futures import Future
 from contextlib import contextmanager
-from contextvars import ContextVar
-from threading import Thread
+from contextvars import ContextVar, copy_context
+from threading import Lock, Thread
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.overlay import OverlayReview
@@ -16,6 +16,8 @@ from teatree.utils.thread_db import close_thread_db_connections
 logger = logging.getLogger(__name__)
 HOOK_DEADLINE_SECONDS = 5.0
 _SKIPPED_HOOKS: ContextVar[list[str] | None] = ContextVar("skipped_overlay_followup_hooks", default=None)
+_INFLIGHT_HOOKS: dict[str, Future[list[Scanner]]] = {}
+_HOOK_LOCK = Lock()
 
 
 @contextmanager
@@ -35,10 +37,10 @@ class _RefusedOverlayFollowupScanners:
         self.reason = reason
 
     def scan(self) -> list[ScanSignal]:
-        raise _OverlayHookRefusalError(self.reason)
+        raise OverlayHookRefusalError(self.reason)
 
 
-class _OverlayHookRefusalError(Exception):
+class OverlayHookRefusalError(Exception):
     pass
 
 
@@ -48,18 +50,26 @@ class _HookCallError(Exception):
 
 
 def _hook_result(backend: OverlayBackends, review: OverlayReview) -> list[Scanner]:
-    future: Future[list[Scanner]] = Future()
+    with _HOOK_LOCK:
+        future = _INFLIGHT_HOOKS.get(backend.name)
+        if future is None or future.done():
+            future = Future()
+            _INFLIGHT_HOOKS[backend.name] = future
+            context = copy_context()
 
-    def invoke() -> None:
-        try:
-            future.set_result(list(review.get_followup_scanners(backend)))
-        except Exception as exc:
-            logger.exception("Overlay %s follow-up scanner hook raised", backend.name)
-            future.set_exception(_HookCallError(exc))
-        finally:
-            close_thread_db_connections()
+            def invoke() -> None:
+                try:
+                    future.set_result(list(review.get_followup_scanners(backend)))
+                except Exception as exc:
+                    logger.exception("Overlay %s follow-up scanner hook raised", backend.name)
+                    future.set_exception(_HookCallError(exc))
+                finally:
+                    close_thread_db_connections()
+                    with _HOOK_LOCK:
+                        if _INFLIGHT_HOOKS.get(backend.name) is future:
+                            del _INFLIGHT_HOOKS[backend.name]
 
-    Thread(target=invoke, name=f"followup-hook-{backend.name}", daemon=True).start()
+            Thread(target=context.run, args=(invoke,), name=f"followup-hook-{backend.name}", daemon=True).start()
     return future.result(timeout=HOOK_DEADLINE_SECONDS)
 
 
