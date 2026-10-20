@@ -68,7 +68,6 @@ class GitHubWebhookView(View):
         if payload is None:
             return HttpResponse(status=400)
         fields = GitHubPayloadFields.from_payload(headers.event, payload)
-        action = payload.get("action")
         persist_incoming_event(
             IngestionRecord(
                 source=IncomingEvent.Source.GITHUB,
@@ -77,7 +76,7 @@ class GitHubWebhookView(View):
                 signer=headers.target,
                 origin=IncomingEvent.Origin.WEBHOOK,
                 repo_key=fields.repo_key,
-                action=action[:64] if isinstance(action, str) else "",
+                action=fields.action,
                 occurred_at=fields.occurred_at,
                 actor=fields.actor,
                 channel_ref=fields.channel_ref,

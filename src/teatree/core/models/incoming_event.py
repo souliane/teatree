@@ -85,7 +85,9 @@ class IncomingEvent(models.Model):
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
         update_fields = ["processed_at"]
-        if self.dead_lettered_at is None and self.source in {self.Source.GITHUB, self.Source.GITLAB}:
+        if type(self).objects.is_settled_forge(
+            self.source, settled=True, dead_lettered=self.dead_lettered_at is not None
+        ):
             self.body = ""
             self.payload_json = {}
             update_fields.extend(["body", "payload_json"])
@@ -135,13 +137,4 @@ class IncomingEvent(models.Model):
         self.save(update_fields=["parent_text"])
 
 
-def webhooks_verified_for(source: str, repo_key: str, event_name: str, window: timedelta) -> bool:
-    if not repo_key or not event_name:
-        return False
-    return IncomingEvent.objects.filter(
-        source=source,
-        repo_key=repo_key,
-        event_name=event_name,
-        origin__in=(IncomingEvent.Origin.WEBHOOK, IncomingEvent.Origin.RELAY),
-        received_at__gte=timezone.now() - window,
-    ).exists()
+webhooks_verified_for = IncomingEvent.objects.webhooks_verified_for

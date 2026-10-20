@@ -159,18 +159,6 @@ def _event_children(events: models.QuerySet, _moment: dt.datetime) -> int:
     return sum(child.objects.filter(event__in=events).count() for child in EVENT_CASCADE_CHILDREN)
 
 
-def _forge_events(cutoff: dt.datetime) -> models.QuerySet:
-    return IncomingEvent.objects.prunable(cutoff).filter(
-        source__in=(IncomingEvent.Source.GITHUB, IncomingEvent.Source.GITLAB), processed_at__isnull=False
-    )
-
-
-def _other_events(cutoff: dt.datetime) -> models.QuerySet:
-    return IncomingEvent.objects.prunable(cutoff).exclude(
-        source__in=(IncomingEvent.Source.GITHUB, IncomingEvent.Source.GITLAB), processed_at__isnull=False
-    )
-
-
 def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
     history_days = _task_history_days(cfg)
     return (
@@ -188,8 +176,18 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
             cascade=_task_attempts,
         ),
         Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=BotPing.compact),
-        Lane(FORGE_EVENT_TABLE, FORGE_EVENT_RETENTION_DAYS, _forge_events, cascade=_event_children),
-        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, _other_events, cascade=_event_children),
+        Lane(
+            FORGE_EVENT_TABLE,
+            FORGE_EVENT_RETENTION_DAYS,
+            IncomingEvent.objects.forge_identity_rows,
+            cascade=_event_children,
+        ),
+        Lane(
+            INCOMING_EVENT_TABLE,
+            POST_MORTEM_RETENTION_DAYS,
+            IncomingEvent.objects.other_rows,
+            cascade=_event_children,
+        ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
         *_slack_lanes(),
     )

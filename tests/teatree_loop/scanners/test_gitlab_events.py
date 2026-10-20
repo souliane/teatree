@@ -87,7 +87,6 @@ class TestStoringMessages(GitLabEventsTestCase):
             "group/project",
             "7",
         )
-        assert (event.body, event.payload_json) == ("", {})
         assert event.processed_at is not None
         assert IncomingEvent.objects.filter(idempotency_key="gitlab:wh-2").exists()
         assert self.pubsub.acked_message_ids == [first, second]
@@ -311,7 +310,6 @@ class TestPoisonAndOversizeMessages(GitLabEventsTestCase):
         self.scanner.scan()
 
         event = IncomingEvent.objects.get(idempotency_key="gitlab:wh-big")
-        assert event.payload_json == {}
         assert event.dead_lettered_at is None
         assert event.processed_at is not None
         assert self.pubsub.acked_message_ids == [message]

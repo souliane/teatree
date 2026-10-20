@@ -44,10 +44,8 @@ def ingest(record: IngestionRecord) -> IngestOutcome:
     # here from (source, actor) — the views need no change.
     provenance = classify_provenance(record.source, record.actor)
     moment = timezone.now()
-    trim = (
-        record.settled
-        and not record.dead_letter_reason
-        and record.source in {IncomingEvent.Source.GITHUB, IncomingEvent.Source.GITLAB}
+    trim = IncomingEvent.objects.is_settled_forge(
+        record.source, settled=record.settled, dead_lettered=bool(record.dead_letter_reason)
     )
     try:
         with transaction.atomic():

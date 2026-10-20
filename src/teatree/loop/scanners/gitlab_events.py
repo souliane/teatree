@@ -42,14 +42,7 @@ def _record_for(message: PubsubMessage) -> IngestionRecord:
         return _dead_letter(message, "message without webhook-id")
     key = f"gitlab:{webhook_id}"
     if message.attributes.get("body-omitted") == "true":
-        marker = {
-            "body_omitted": True,
-            "gitlab_event": message.attributes.get("X-Gitlab-Event", ""),
-            "publish_time": message.publish_time,
-        }
-        return IngestionRecord(
-            source=IncomingEvent.Source.GITLAB, idempotency_key=key, payload_json=marker, settled=True
-        )
+        return IngestionRecord(source=IncomingEvent.Source.GITLAB, idempotency_key=key, settled=True)
     try:
         payload = json.loads(message.data)
     except ValueError:

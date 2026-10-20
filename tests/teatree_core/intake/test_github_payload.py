@@ -40,7 +40,7 @@ from teatree.types import RawAPIDict
         (
             "ping",
             {"action": "created", "pull_request": {"number": 1}},
-            GitHubPayloadFields(actor="", channel_ref="", thread_ref="", body="created"),
+            GitHubPayloadFields(actor="", channel_ref="", thread_ref="", body="created", action="created"),
         ),
     ],
 )
@@ -88,3 +88,22 @@ def test_invalid_or_naive_timestamp_is_unknown() -> None:
     for stamp in ("not-a-time", "2026-13-40T09:00:00Z", "2026-10-20T09:00:00"):
         fields = GitHubPayloadFields.from_payload("push", {"head_commit": {"timestamp": stamp}})
         assert fields.occurred_at is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "action", "repo_key"),
+    [
+        ({"action": "a" * 32}, "a" * 32, ""),
+        ({"action": "b" * 65}, "b" * 64, ""),
+        ({"head_commit": {"timestamp": "0001-01-01T00:00:00+14:00"}}, "", ""),
+        ({"head_commit": {"timestamp": "1800-01-01T00:00:00Z"}}, "", ""),
+        ({"head_commit": {"timestamp": "2200-01-01T00:00:00Z"}}, "", ""),
+        ({"repository": {"id": 10**80}}, "", ""),
+    ],
+)
+def test_identity_fields_respect_source_bounds(payload: RawAPIDict, action: str, repo_key: str) -> None:
+    fields = GitHubPayloadFields.from_payload("push", payload)
+
+    assert fields.action == action
+    assert fields.repo_key == repo_key
+    assert fields.occurred_at is None

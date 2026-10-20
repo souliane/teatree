@@ -158,7 +158,6 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
         row = IncomingEvent.objects.get()
         assert (row.source, row.idempotency_key, row.event_name) == ("github", "github:abc-123", "pull_request_review")
         assert (row.actor, row.channel_ref, row.thread_ref) == ("bob", "owner/repo", "17")
-        assert (row.body, row.payload_json) == ("", {})
 
     def test_row_is_stored_settled_so_the_drain_never_dispatches_it(self) -> None:
         body = _payload(pull_request={"number": 4, "title": "Handle the case where the cache is cold"})

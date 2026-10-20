@@ -185,18 +185,21 @@ class IncomingEventPrunableGuardTestCase(TestCase):
         assert IncomingEvent.objects.filter(pk=recent.pk).exists()
 
     def test_forge_dead_letter_keeps_payload_until_the_long_window(self) -> None:
-        dead = IncomingEvent.objects.create(
-            source="gitlab",
-            idempotency_key="gitlab:dead",
-            received_at=timezone.now() - dt.timedelta(days=9),
-            dead_lettered_at=timezone.now(),
-            payload_json={"retry": "needed"},
-        )
+        for settled, source in ((False, "gitlab"), (True, "github")):
+            with self.subTest(settled=settled):
+                dead = IncomingEvent.objects.create(
+                    source=source,
+                    idempotency_key=f"{source}:dead:{settled}",
+                    received_at=timezone.now() - dt.timedelta(days=9),
+                    processed_at=timezone.now() if settled else None,
+                    dead_lettered_at=timezone.now(),
+                    payload_json={"retry": "needed"},
+                )
 
-        apply_retention()
+                apply_retention()
 
-        dead.refresh_from_db()
-        assert dead.payload_json == {"retry": "needed"}
+                dead.refresh_from_db()
+                assert dead.payload_json == {"retry": "needed"}
 
     def test_old_processed_event_is_prunable(self) -> None:
         event = _event(idempotency_key="k-processed")
