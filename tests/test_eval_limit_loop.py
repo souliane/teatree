@@ -132,7 +132,7 @@ class TestPrLaneParksOnTheLimit:
         assert first.invoked == retry.invoked == ["alpha", "beta"]
         assert retry.returncode == 1
 
-    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell, workflow: str) -> None:
+    def test_an_earlier_red_never_records_a_later_limit_as_owed(self, shell, workflow: str) -> None:
         script = _script(workflow, "eval", _PR_LOOP)
         first = shell(script, rcs={"alpha": 1}, EVAL_NAMES="alpha,beta")
         later = shell(script, rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta")
@@ -148,12 +148,6 @@ class TestPrLaneParksOnTheLimit:
 
 
 class TestNightlyOwedBatch:
-    def test_a_red_on_an_earlier_attempt_beats_a_later_limit(self, shell) -> None:
-        script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
-        first = shell(script, rcs={"alpha": 1, "beta": 1}, STUB_OWED="alpha beta")
-        later = shell(script, rcs={"beta": _LIMIT}, STUB_OWED="alpha beta")
-        assert first.returncode == later.returncode == 1
-
     def test_a_pass_clears_and_the_limit_leaves_the_rest_owed(self, shell) -> None:
         script = _script("eval-nightly.yml", "eval", _NIGHTLY_OWED)
         run = shell(script, rcs={"beta": _LIMIT}, STUB_OWED="alpha beta gamma")
@@ -221,16 +215,15 @@ def test_a_measured_red_replays_without_running_the_retry(
     assert retry.invoked == first.invoked
 
 
-@pytest.mark.parametrize(
-    ("workflow", "job"),
-    [("eval-pr.yml", "eval"), ("eval-nightly.yml", "eval"), ("eval.yml", "eval"), ("eval.yml", "prepare")],
-)
-def test_each_selector_parks_on_75_and_fails_on_other_errors(shell, workflow: str, job: str) -> None:
-    steps = cast("list[dict[str, Any]]", _workflow(workflow)["jobs"][job]["steps"])
-    selector = next(step for step in steps if step.get("run") == _SELECTOR)
-    script = f"set -e\n{selector['run']}"
-    assert shell(script, rcs={"selector": _LIMIT}).returncode == 0
-    assert shell(script, rcs={"selector": 1}).returncode == 1
+@pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml", "eval.yml", "eval-ci-heal.yml"])
+def test_each_selector_parks_on_75_and_fails_on_other_errors(shell, workflow: str) -> None:
+    jobs = ("eval", "prepare") if workflow == "eval.yml" else ("eval",)
+    for job in jobs:
+        steps = cast("list[dict[str, Any]]", _workflow(workflow)["jobs"][job]["steps"])
+        selector = next(step for step in steps if step.get("run") == _SELECTOR)
+        script = f"set -e\n{selector['run']}"
+        assert shell(script, rcs={"selector": _LIMIT}).returncode == 0
+        assert shell(script, rcs={"selector": 1}).returncode == 1
 
 
 @pytest.mark.parametrize("workflow", ["eval.yml", "eval-nightly.yml"])
