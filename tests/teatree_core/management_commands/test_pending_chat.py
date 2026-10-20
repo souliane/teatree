@@ -193,7 +193,7 @@ _WAKE = "teatree.core.management.commands.pending_chat.wake_slack_answer"
 
 
 def _relay_argv(*args: str) -> int | None:
-    """Run ``pending-chat relay`` through the argv path; the exit code, ``None`` for a clean return."""
+    """Run ``pending_chat relay`` through the argv path; the exit code, ``None`` for a clean return."""
     try:
         Command().run_from_argv(["manage.py", "pending_chat", "relay", *args])
     except SystemExit as exit_:

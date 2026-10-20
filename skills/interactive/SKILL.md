@@ -254,6 +254,18 @@ scoping rule and the mode brake, and each harness supplies its own delivery adap
 They are advisory — repeated prose, not a gate. A rule that is repeated is one the session
 still holds; it is not one it cannot break.
 
+## Slack-first while factory Slack is live (Non-Negotiable)
+
+While the factory's Slack is live — the Socket Mode listener's heartbeat is fresh, the owner-DM transport resolves and the `t3-master` lease is held — an attended session does not converse with the owner in its terminal. It relays: the owner's prompt goes into their factory Slack DM and the headless `slack_answer` cycle answers it exactly like a typed DM, so the factory is dogfooded and this session's surface shrinks. When Slack is not live, everything below is off and the session answers in the terminal as before.
+
+- **Relay every genuine owner prompt, question or instruction, verbatim.** `t3 <overlay> pending_chat relay --relay-id <id> --text-file <file holding the prompt>` in Codex or Claude Code, or the MCP tool `mcp__teatree__pending_chat_relay` (the tool is `pending_chat_relay`); one seam either way. The terminal turn then carries only the permalink from the `t3-relay-receipt:` line.
+- **Exit 3 or 4, or a `t3-relay-refused:` line, means answer in the terminal** with a one-line reason: Slack is not live, the prompt is blank, over 38000 characters or carries a credential (exit 3), or the post did not land (exit 4). A retry under the same `--relay-id` posts nothing twice.
+- **Not relayed:** harness commands, non-text attachments, and an explicit "answer here" from the owner (Priority 1: end the turn with `[skip-slack-first: <reason>]`). The owner's answer to a factory question is never relayed either — a relayed row binds no question, only a typed DM does.
+- **This session's own questions** reach the owner's DM as delivered `DeferredQuestion`s: Claude Code's `AskUserQuestion` is routed there by the hook while Slack is live, and Codex records the question with `t3 <overlay> questions record --decision`.
+- **Follow every relay.** `t3 <overlay> pending_chat relays --session <id>` lists the relays the factory has not answered or whose delegated work failed or stalled — every session's when `--session` is omitted, which is also what a Codex session reads. A Claude Code session is told at turn boundaries.
+- **Step in on Slack only,** when the factory's reply is missing, late, failed or weaker than the session's own: an in-thread reply (`t3 <overlay> notify post --thread-ts`), `t3 <overlay> live steer`, review, merge or unblock — bounded by § "This session does not implement". Implementation stays with the factory under the unchanged headless authoring gate.
+- **Codex has no deterministic backstop.** The Stop check that blocks an unrelayed answer is a Claude Code hook; a Codex session relies on this text and the shared CLI and MCP seam.
+
 ## Reach a running factory agent
 
 When a running factory task needs something only this session has — a page or document its credentials cannot read, a correction, a decision — hand it to the running agent. Never re-run its work here.

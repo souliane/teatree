@@ -1,4 +1,4 @@
-"""``pending_chat_relay`` over MCP reaches the same relay seam as ``t3 <overlay> pending-chat relay``."""
+"""``pending_chat_relay`` over MCP reaches the same relay seam as ``t3 <overlay> pending_chat relay``."""
 
 from typing import Any
 from unittest.mock import patch

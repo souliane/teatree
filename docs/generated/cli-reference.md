@@ -14395,6 +14395,10 @@ Usage: t3 teatree pending_chat [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list           List inbound rows from the last hour (or --all).              │
 │ mark-answered  Stamp ``answered_at`` on rows matching a Slack ts.            │
+│ relay          Relay an owner prompt verbatim into the owner's factory Slack │
+│                DM (exit 3 or 4: answer here).                                │
+│ relays         List the relayed prompts the factory has not answered, or     │
+│                whose delegated work went wrong.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -14432,6 +14436,40 @@ Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat relay`
+
+```
+Usage: t3 teatree pending_chat relay [OPTIONS]
+
+ Relay an owner prompt verbatim into the owner's factory Slack DM; exit 3 or 4:
+ answer in the terminal.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --relay-id          TEXT  Idempotency key for this prompt; a retry reuses    │
+│                           it.                                                │
+│ --text              TEXT  The owner's prompt, verbatim.                      │
+│ --text-file         TEXT  Read the prompt from this file instead.            │
+│ --session-id        TEXT  The relaying session; defaults to the session env. │
+│ --json                    Also print the result as one JSON object.          │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat relays`
+
+```
+Usage: t3 teatree pending_chat relays [OPTIONS]
+
+ List the relayed owner prompts the factory has not answered, or whose
+ delegated work went wrong.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --session        TEXT  Only this session's relays; omit for every session's. │
+│ --json                 Print the open relays as JSON.                        │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

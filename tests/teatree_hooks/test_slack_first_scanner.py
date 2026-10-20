@@ -101,7 +101,7 @@ def test_any_genuine_owner_prompt_without_relay_receipt_blocks_when_slack_live(
     assert decision["decision"] == "block"
     assert "SLACK-FIRST GATE" in decision["reason"]
     assert _PROMPT in decision["reason"]
-    assert "pending-chat relay" in decision["reason"]
+    assert "pending_chat relay" in decision["reason"]
     assert "[skip-slack-first: <reason>]" in decision["reason"]
 
 

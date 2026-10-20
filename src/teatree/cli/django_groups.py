@@ -420,6 +420,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("list", "List inbound rows from the last hour (or --all)."),
             ("mark-answered", "Stamp ``answered_at`` on rows matching a Slack ts."),
+            ("relay", "Relay an owner prompt verbatim into the owner's factory Slack DM (exit 3 or 4: answer here)."),
+            ("relays", "List the relayed prompts the factory has not answered, or whose delegated work went wrong."),
         ],
     ),
     "notify": DjangoGroup(

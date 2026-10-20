@@ -243,7 +243,7 @@ class Command(TyperCommand):
             raise SystemExit(2)
         if kind_value is NotifyKind.RELAY:
             self.stderr.write(
-                "--kind relay is posted only by `t3 <overlay> pending-chat relay`, which also queues the row"
+                "--kind relay is posted only by `t3 <overlay> pending_chat relay`, which also queues the row"
             )
             raise SystemExit(2)
 

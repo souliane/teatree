@@ -26,6 +26,7 @@ One row per abnormality an attended session watches for: its tier, the command t
 | Schedule firing in the wrong timezone | DEGRADING | `t3 loop preset show` (the active slot's `until` against the operator's clock) | no detector — #5053 |
 | A cleared PR left unmerged | DEGRADING | `t3 loop self-improve status --limit 30` (`forgotten_merge`) | The `forgotten_merge` detector; its firing reaches the health chip once #5069 lifts it |
 | Owner-prioritised issue waiting behind older ones | DEGRADING | nothing to read — intake has no priority | no detector — #5071 |
+| Relayed owner prompt the factory has not answered, or whose delegated work failed or stalled | DEGRADING | `t3 <overlay> pending_chat relays --session <id>` (every session's when `--session` is omitted) | `PendingChatInjection.objects.open_relays`, published per session beside the factory-Slack verdict by `standing_directives_publish` and delivered to the relaying session by the standing-directive adapter |
 | Tracked file matching `.gitignore` | COSMETIC | `git ls-files -ci --exclude-standard` | The `refuse-tracked-ignored-files` prek hook (`scripts/hooks/refuse-tracked-ignored-files.sh`) at commit, and the `tracked-ignored-files` CI job |
 | Dream consolidation far behind | DEGRADING | `t3 <overlay> health show --json` (dream-consolidation-stale, CRITICAL when far behind) | `operational_health._dream_staleness_signals` |
 | Overlay-specific health signal | per the signal's tier | `t3 <overlay> health show --json` | `operational_health._overlay_health_signals` |

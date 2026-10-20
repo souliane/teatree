@@ -212,7 +212,7 @@ class TestNotifySendSubcommand(TestCase):
             )
 
         assert exit_info.value.code == 2
-        assert "pending-chat relay" in err.getvalue()
+        assert "pending_chat relay" in err.getvalue()
         backend.post_message.assert_not_called()
 
     def test_send_kind_question_refused(self) -> None:

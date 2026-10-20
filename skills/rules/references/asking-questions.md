@@ -133,6 +133,7 @@ The mirror image of the rule above. That one governs the agent ASKING; this one 
 - **Lead with the answer, then keep the action.** A yes/no question gets the polarity first ("Yes — merging it now"); a why question gets the cause ("it was blocked by `<X>` — here is the line"). Dispatching afterwards is fine, and usually right.
 - **"I do not know yet" IS an answer.** "I have not read the logs yet — fetching them now" discharges the question honestly. Silence dressed as a status update does not.
 - **Never let a delegation report stand in for the answer.** "Dispatched a lane to merge it" answers neither "are you going to merge it?" nor "why was it not mergeable?".
+- **A verified relay receipt is the answer while factory Slack is live.** An attended session relays the question into the owner's factory DM (`/t3:interactive` § "Slack-first while factory Slack is live"), and the factory answers there; the `t3-relay-receipt:` line in the turn's tool results discharges this rule and the answer-first gate. A `t3-relay-refused:` line, or exit 3 or 4, sends the question back to the terminal, where it is answered as above.
 
 ```text
 # do X — answer, then act:
@@ -141,7 +142,7 @@ The mirror image of the rule above. That one governs the agent ASKING; this one 
 #   "Dispatched a lane to merge #4001. It is queued behind the current tick."
 ```
 
-Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
+Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. A relay receipt or refusal marker in the final turn's tool results satisfies it (`find_unanswered_question(..., relay_receipt=True)`). Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
 
 ## Do-X / never-Y examples for each rule
 

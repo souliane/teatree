@@ -46,7 +46,7 @@ def format_block_message(verdict: SlackFirstVerdict) -> str:
     return (
         "SLACK-FIRST GATE — factory Slack is live, so the owner's prompt goes to their factory DM, not an "
         f'answer here.\n  prompt: "{verdict.prompt}"\n'
-        "Relay it verbatim: `t3 <overlay> pending-chat relay --relay-id <new id> --text-file <file holding "
+        "Relay it verbatim: `t3 <overlay> pending_chat relay --relay-id <new id> --text-file <file holding "
         "the prompt>` or the MCP tool `mcp__teatree__pending_chat_relay`. Then end the turn with only the "
         f"permalink from its {RELAY_RECEIPT_MARKER} line. Exit 3 or 4, or a {RELAY_REFUSED_MARKER} line, "
         "means answer in the terminal with a one-line reason. Not a prompt for the factory (a harness "

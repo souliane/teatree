@@ -1,4 +1,4 @@
-"""The MCP write tool for the terminal relay: the same seam as ``t3 <overlay> pending-chat relay``."""
+"""The MCP write tool for the terminal relay: the same seam as ``t3 <overlay> pending_chat relay``."""
 
 from typing import Any
 

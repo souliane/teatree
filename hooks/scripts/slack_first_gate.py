@@ -1,7 +1,7 @@
 """Stop: slack-first gate — while factory Slack is live an owner prompt is relayed, not answered in the terminal.
 
 Directive 5: an attended session hands the owner's prompt to the headless factory through
-``t3 <overlay> pending-chat relay`` (or the MCP tool) and the terminal turn carries only the relay thread
+``t3 <overlay> pending_chat relay`` (or the MCP tool) and the terminal turn carries only the relay thread
 link. The gate blocks a turn that answered or acted on a genuine owner prompt with no relay receipt or
 refusal among the final turn's TOOL results — a marker typed into the agent's own prose does not count.
 
