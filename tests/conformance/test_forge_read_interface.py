@@ -3,7 +3,7 @@
 
 tach refuses a non-exposed name imported from a reads module. It admits what this scan
 refuses: absolute and relative reads-module bindings, a submodule path, a
-``TYPE_CHECKING`` import and an ``importlib`` string. The scan also
+``TYPE_CHECKING`` import and supported dynamic import literals. The scan also
 proves each reads module exposes, and itself touches, no write.
 """
 
@@ -73,9 +73,59 @@ def _names_a_read_module(dotted: str) -> str:
     return next((m for m in READ_MODULES if dotted == m or dotted.startswith(f"{m}.")), "")
 
 
+def _literal_argument(call: ast.Call, position: int, keyword: str) -> str | int | None:
+    argument = (
+        call.args[position]
+        if len(call.args) > position
+        else next((item.value for item in call.keywords if item.arg == keyword), None)
+    )
+    value = argument.value if isinstance(argument, ast.Constant) else None
+    return value if isinstance(value, (str, int)) else None
+
+
+def _dynamic_read_module(call: ast.Call, package: str, importlib_names: set[str], function_names: set[str]) -> str:
+    name = _literal_argument(call, 0, "name")
+    if not isinstance(name, str):
+        return ""
+    if isinstance(call.func, ast.Name) and call.func.id == "__import__":
+        level = _literal_argument(call, 4, "level")
+        if isinstance(level, int) and level > 0:
+            return _names_a_read_module(resolve_name("." * level + name, package))
+        return ""
+    if not (
+        (isinstance(call.func, ast.Name) and call.func.id in function_names)
+        or (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "import_module"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in importlib_names
+        )
+    ):
+        return ""
+    if not name.startswith("."):
+        return ""
+    supplied_package = _literal_argument(call, 1, "package")
+    resolved = resolve_name(name, supplied_package if isinstance(supplied_package, str) else package)
+    return _names_a_read_module(resolved)
+
+
 def reaches_past_the_interface(tree: ast.AST, exposed: Mapping[str, frozenset[str]], package: str) -> list[str]:
     """Every reference in *tree* to a reads module other than importing one of its exposed names."""
     found: list[str] = []
+    importlib_names = {
+        alias.asname or "importlib"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "importlib"
+    }
+    import_module_names = {
+        alias.asname or "import_module"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "importlib"
+        for alias in node.names
+        if alias.name == "import_module"
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if _names_a_read_module(alias.name)]
@@ -87,16 +137,9 @@ def reaches_past_the_interface(tree: ast.AST, exposed: Mapping[str, frozenset[st
                 found.append(module)
             else:
                 found += [f"{module}.{a.name}" for a in node.names if f"{module}.{a.name}" in exposed]
-        elif (
-            isinstance(node, ast.Call)
-            and node.args
-            and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) == "import_module"
-        ):
-            arg = node.args[0]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("."):
-                module = resolve_name(arg.value, package)
-                if _names_a_read_module(module):
-                    found.append(module)
+        elif isinstance(node, ast.Call):
+            if module := _dynamic_read_module(node, package, importlib_names, import_module_names):
+                found.append(module)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _names_a_read_module(node.value):
             found.append(node.value)
     return found
@@ -168,6 +211,21 @@ def test_reads_module_touches_no_write(module: str) -> None:
     assert literals & _GH_METHOD_SWITCHES == set()
 
 
+@pytest.mark.parametrize("module", READ_MODULES)
+def test_reads_module_does_not_bind_write_capable_modules(module: str) -> None:
+    tree = ast.parse(_module_file(module).read_text(encoding="utf-8"))
+    write_modules = {"teatree.backends.forge_merge_rpc", "teatree.backends.github.api"}
+    imported_modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    imported_modules |= {
+        f"{node.module}.{alias.name}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+
+    assert imported_modules.isdisjoint(write_modules)
+
+
 def test_no_module_reaches_past_a_read_interface() -> None:
     read_files = {_module_file(module) for module in READ_MODULES}
     offenders = {
@@ -189,6 +247,15 @@ def test_the_forge_client_reads_through_its_read_interface() -> None:
     tree = ast.parse((REPO_ROOT / _PROBE_SITES[module]).read_text(encoding="utf-8"))
 
     assert any(isinstance(node, ast.ImportFrom) and node.module == module for node in ast.walk(tree))
+    assert any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_list_pr_commits"
+        for node in ast.walk(tree)
+    )
+
+
+def test_a_prose_mention_does_not_count() -> None:
+    source = '"The teatree.backends.github.reads interface is read-only"\n'
+    assert reaches_past_the_interface(ast.parse(source), _exposed(), "teatree.backends") == []
 
 
 @pytest.mark.parametrize(
@@ -198,6 +265,7 @@ def test_the_forge_client_reads_through_its_read_interface() -> None:
         ("from teatree.backends.github import reads\n", "teatree.backends"),
         ("from teatree.backends.gitlab import reads as gitlab_reads\n", "teatree.backends"),
         ("from teatree.backends.github.reads import *\n", "teatree.backends"),
+        ("from teatree.backends.github.reads import _gh_api_post\n", "teatree.backends"),
         ("from teatree.backends.github.reads.sub import anything\n", "teatree.backends"),
         (
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from teatree.backends.gitlab import reads\n",
@@ -211,6 +279,13 @@ def test_the_forge_client_reads_through_its_read_interface() -> None:
             "from importlib import import_module\nimport_module('.reads', 'teatree.backends.github')\n",
             "teatree.backends.github",
         ),
+        ("import importlib\nimportlib.import_module('.reads', 'teatree.backends.github')\n", "teatree.backends"),
+        (
+            "import importlib\nimportlib.import_module(name='.reads', package='teatree.backends.github')\n",
+            "teatree.backends",
+        ),
+        ("from importlib import import_module as load\nload('.github.reads', __package__)\n", "teatree.backends"),
+        ("__import__('github.reads', globals(), None, ['x'], 1)\n", "teatree.backends"),
     ],
 )
 def test_every_form_that_binds_more_than_an_exposed_read_counts(source: str, package: str) -> None:

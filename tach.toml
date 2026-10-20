@@ -47,11 +47,12 @@
 # covers what tach cannot see (TYPE_CHECKING imports, root-module files, string paths).
 #
 # teatree.backends.github.reads / teatree.backends.gitlab.reads -- each forge's read
-# interface. [[interfaces]] exposes only read functions, so a module depending on a
-# reads module cannot import a write from it. The gh transport
+# interface. [[interfaces]] exposes only read functions; same-layer and unlayered
+# consumers cannot import a write through that dependency. Higher layers can
+# import lower-layer clients directly under tach's layered rules. The gh transport
 # (teatree.backends.github.api) is its own module so the GitHub reads use it without
 # cycling through the client. tests/conformance/test_forge_read_interface.py covers what
-# tach admits: absolute or relative reads-module bindings, a submodule path, an importlib string.
+# tach admits: module bindings, submodule paths, and supported literal dynamic imports.
 #
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only

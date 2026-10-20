@@ -1,8 +1,9 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab import client as gitlab_client
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.pr_reads import list_project_prs, project_pr_diff, repo_metadata, state_filter
 from teatree.core.review.mr_ci_state import carries_pipeline_field, ci_state
@@ -52,6 +53,16 @@ def test_get_pr_diff_hits_diffs_endpoint() -> None:
 
 def test_get_pr_diff_unresolvable_project_returns_empty() -> None:
     assert project_pr_diff(MagicMock(spec=GitLabAPI), None, pr_iid=7) == []
+
+
+def test_host_uses_the_commits_read_interface() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    with patch.object(gitlab_client, "_list_pr_commits", return_value=[{"id": "abc"}]) as read:
+        result = GitLabCodeHost(client=client).list_pr_commits(repo="org/repo", pr_iid=7)
+
+    assert result == [{"id": "abc"}]
+    read.assert_called_once_with(client, _project(), pr_iid=7)
 
 
 def test_repo_metadata_returns_project_fields() -> None:

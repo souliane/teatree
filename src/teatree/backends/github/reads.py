@@ -8,8 +8,9 @@ Writes stay on :class:`teatree.backends.github.client.GitHubCodeHost`.
 from typing import cast
 from urllib.parse import quote_plus
 
-from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
+from teatree.backends.forge_merge_rpc import fetch_required_checks_rollup as _fetch_required_checks_rollup
+from teatree.backends.forge_merge_rpc import fetch_workflow_runs_at_head as _fetch_workflow_runs_at_head
 from teatree.backends.github.api import (
     _gh_api_get,
     _gh_api_get_paginated,
@@ -98,11 +99,11 @@ def list_issue_comments(*, issue_url: str, token: str) -> list[RawAPIDict]:
 
 
 def fetch_required_checks_rollup(*, slug: str, pr_id: int, token: str) -> list[RawAPIDict]:
-    return _forge_merge.gh_merge_rpc(token).fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+    return _fetch_required_checks_rollup(slug=slug, pr_id=pr_id, token=token)
 
 
 def fetch_workflow_runs_at_head(*, slug: str, head_sha: str, token: str) -> list[RawAPIDict]:
-    return _forge_merge.gh_merge_rpc(token).fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)
+    return _fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha, token=token)
 
 
 def get_issue(*, issue_url: str, token: str) -> RawAPIDict:

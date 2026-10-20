@@ -4,7 +4,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.backends.errors import IssueNotFoundError
-from teatree.backends.github.reads import get_issue, list_pr_reviews, list_repo_open_issues
+from teatree.backends.github import client as github_client
+from teatree.backends.github import reads as github_reads
+from teatree.backends.github.api import is_not_found
+from teatree.backends.github.client import GitHubCodeHost
+from teatree.backends.github.reads import get_issue, list_pr_comments, list_pr_reviews, list_repo_open_issues
 from teatree.utils.run import CommandFailedError
 
 _RUN_GH = "teatree.backends.github.api._run_gh"
@@ -52,3 +56,46 @@ def test_list_repo_open_issues_drops_pull_requests() -> None:
         assert list_repo_open_issues(repo="o/r", token="t") == [{"number": 1}]
 
     assert "repos/o/r/issues?state=open&per_page=100" in run.call_args.args
+
+
+def test_is_not_found_rejects_other_errors() -> None:
+    assert not is_not_found(_gh_fails("gh: Server Error (HTTP 500)"))
+
+
+def test_list_pr_comments_reads_the_paginated_issue_endpoint() -> None:
+    with patch.object(github_reads, "_gh_api_get_paginated", return_value=[{"id": 9}]) as get:
+        assert list_pr_comments(repo="o/r", pr_iid=5, token="t") == [{"id": 9}]
+
+    get.assert_called_once_with("repos/o/r/issues/5/comments?per_page=100", token="t")
+
+
+@pytest.mark.parametrize(
+    ("method", "binding", "arguments"),
+    [
+        ("list_pr_reviews", "_list_pr_reviews", {"repo": "o/r", "pr_iid": 5}),
+        ("list_repo_open_issues", "_list_repo_open_issues", {"repo": "o/r"}),
+        ("fetch_required_checks_rollup", "_fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}),
+        ("fetch_workflow_runs_at_head", "_fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}),
+    ],
+)
+def test_host_delegates_reads_with_its_token(method: str, binding: str, arguments: dict[str, object]) -> None:
+    with patch.object(github_client, binding, return_value=[{"id": 9}]) as read:
+        result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
+
+    assert result == [{"id": 9}]
+    read.assert_called_once_with(**arguments, token="t")
+
+
+@pytest.mark.parametrize(
+    ("method", "binding", "arguments"),
+    [
+        ("fetch_required_checks_rollup", "_fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}),
+        ("fetch_workflow_runs_at_head", "_fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}),
+    ],
+)
+def test_rollup_reads_pass_the_token_to_the_transport(method: str, binding: str, arguments: dict[str, object]) -> None:
+    with patch.object(github_reads, binding, return_value=[{"id": 9}]) as read:
+        result = getattr(github_reads, method)(**arguments, token="t")
+
+    assert result == [{"id": 9}]
+    read.assert_called_once_with(**arguments, token="t")
