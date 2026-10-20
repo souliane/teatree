@@ -257,6 +257,14 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
 
+    def get_pr_requested_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        pr = _gh_api_get(f"repos/{repo}/pulls/{pr_iid}", token=self._token)
+        reviewers = pr.get("requested_reviewers") if isinstance(pr, dict) else None
+        if not isinstance(reviewers, list):
+            msg = f"Could not read requested reviewers for {repo}#{pr_iid}"
+            raise TypeError(msg)
+        return [login for item in reviewers if isinstance(item, dict) if isinstance(login := item.get("login"), str)]
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
 

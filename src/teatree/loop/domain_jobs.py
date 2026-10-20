@@ -335,6 +335,11 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     owner_identities = _user_identity_aliases_for_overlay(tag)
     jobs: list[_ScannerJob] = []
     if _colleague_egress_selected(backend):
+        try:
+            requester_slack_id = _user_slack_id_for_overlay(tag)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.warning("Review nag requester id unreadable for %r: %s", tag, exc)
+            requester_slack_id = ""
         jobs.extend(
             (
                 _ScannerJob(
@@ -342,7 +347,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=owner_identities,
-                        requester_slack_id=_user_slack_id_for_overlay(tag),
+                        requester_slack_id=requester_slack_id,
                         repo_owner=_repo_owner_resolver(backend),
                         overlay_name=tag,
                     ),
@@ -377,9 +382,10 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """Inbound Slack scanners (mentions/review-intent/red-card), sans review-nag."""
-    if backend.messaging is None:
+    messaging = backend.messaging
+    if messaging is None:
         return []
-    return _messaging_jobs_for_backend(backend, backend.name)
+    return _inbound_messaging_jobs(messaging, backend.name)
 
 
 type _OverlayDomainBuilder = Callable[[OverlayBackends], list[_ScannerJob]]
@@ -489,14 +495,3 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
 def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJob]:
     """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT."""
     return _inbound_messaging_jobs(messaging, "")
-
-
-def _messaging_jobs_for_backend(
-    backend: OverlayBackends,
-    tag: str,
-) -> list[_ScannerJob]:
-    """Per-overlay Slack scanners that need a resolved messaging backend."""
-    messaging = backend.messaging
-    if messaging is None:
-        return []
-    return _inbound_messaging_jobs(messaging, tag)

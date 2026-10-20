@@ -33,22 +33,18 @@ def stranger_pr_admission(overlay_name: str) -> tuple[tuple[str, ...], str]:
 def _user_slack_id_for_overlay(overlay_name: str) -> str:
     """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
 
-    Used by the PR-sweep scanner to know where to DM its findings. Reads the DB
+    Used by PR-sweep for DMs and review-nag for requester identity. Reads the DB
     overlays registry + ``ConfigSetting`` store directly so a fresh tick picks up
     a runtime config change without an overlay reload.
     """
     from teatree.config import cold_reader, load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    try:
-        overlays = load_config().raw.get("overlays") or {}
-        if overlay_name and isinstance(overlays.get(overlay_name), dict):
-            user_id = overlays[overlay_name].get("slack_user_id", "")
-            if user_id:
-                return str(user_id)
-        return cold_reader.str_setting("slack_user_id", default="")
-    except Exception:
-        logger.exception("Failed to resolve slack_user_id for %r; defaulting to empty", overlay_name)
-        return ""
+    overlays = load_config().raw.get("overlays") or {}
+    if overlay_name and isinstance(overlays.get(overlay_name), dict):
+        user_id = overlays[overlay_name].get("slack_user_id", "")
+        if user_id:
+            return str(user_id)
+    return cold_reader.str_setting("slack_user_id", default="")
 
 
 def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:

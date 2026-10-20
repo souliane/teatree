@@ -4,12 +4,14 @@ The user posts MRs to the review channel; the bot tracks each in a
 ``ReviewRequestPost`` row. This scanner walks the open rows each tick and, when
 an MR has had **no activity for its current re-ask interval** — no thread reply,
 no qualifying reaction — and is still live-open, non-draft, unapproved and unpaused, posts
-exactly ONE thread reply: the configured re-ask mention + `` :pray:`` on
-``(channel, thread_ts)``. The post stays behind the #960 on-behalf gate
+one thread reply for every batch thread: a safe reviewer or configured-group mention
+and a short re-ask on ``(channel, thread_ts)``. A missing safe mention refuses the post.
+The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
 
-Mention. :mod:`teatree.loop.scanners.review_nag_mention` resolves the
-per-overlay ``review_nag_reask_mention`` setting; empty re-asks with no mention.
+Mention. :mod:`teatree.loop.scanners.review_nag_mention` maps engaged forge users
+only when one active, non-bot, non-guest Slack user matches, then falls back to the
+per-overlay ``review_nag_reask_mention`` setting when nobody maps.
 
 Cadence. The interval is ``TriageThresholds.nag_interval_for_attempt(owner,
 nag_count)`` — the repo owner's base interval times the Fibonacci step for the
@@ -42,12 +44,10 @@ Unconditional: chasing an unanswered review request is not disableable. What kee
 a re-ping off a colleague's channel is the repo-exemption guard and the fail-closed
 ladder above, never a flag nobody flipped.
 
-Concurrency: two ticks both observe the same ``last_nag_at`` and would each
-post. The nag is claimed with an atomic conditional ``UPDATE`` (``last_nag_at``
-and ``nag_count`` advanced only if both still equal the observed values) *before*
-the post — the tick that loses the claim skips, so exactly one re-ping fires per
-window. A blocked or failed post restores BOTH columns, so a re-ask that never
-reached Slack never widens the schedule.
+Concurrency: one transaction claims every open sibling row in a channel/thread
+before posting. A later tick sees the shared stamp and skips. A blocked or failed
+post restores each row's previous stamp and count; a confirmed reply writes its
+timestamp to every sibling in one update.
 """
 
 import datetime as dt
@@ -68,7 +68,8 @@ from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_nag_activity import thread_activity
-from teatree.loop.scanners.review_nag_mention import reask_mention
+from teatree.loop.scanners.review_nag_claim import ReviewNagPostReconciliationError, _NagClaim
+from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.utils.url_slug import pr_ref_from_url
@@ -82,8 +83,15 @@ _BACKOFF_EXHAUSTED_OPTIONS = (
 )
 
 
-class ReviewNagPostReconciliationError(RuntimeError):
-    """Slack reported success without the reply coordinate needed to reconcile it."""
+class ReviewNagMentionUnresolvedError(RuntimeError):
+    pass
+
+
+def _reask_text(mention: str, mr_url: str) -> str:
+    if not mention:
+        msg = f"No safe reviewer mention for {mr_url}"
+        raise ReviewNagMentionUnresolvedError(msg)
+    return f"{mention} could you please have another look?"
 
 
 def default_repo_owner(_slug: str) -> RepoOwner:
@@ -103,7 +111,7 @@ class ReviewNagScanner:
     """Walk ``ReviewRequestPost`` rows and re-ask for review on a widening schedule.
 
     Stateless beyond the DB rows it walks. Safe to invoke from every loop tick —
-    at most one re-ping per row per window, enforced by the ``last_nag_at`` /
+    at most one re-ping per thread per window, enforced by the ``last_nag_at`` /
     ``nag_count`` claim.
 
     ``thresholds`` supplies the per-owner base intervals; its ceiling is always
@@ -132,11 +140,21 @@ class ReviewNagScanner:
         )
         right_now = self.now or timezone.now()
         signals: list[ScanSignal] = []
+        attempted_threads: set[tuple[str, str]] = set()
         rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
         for post in rows.order_by("created_at"):
+            thread = (post.slack_channel_id, post.slack_thread_ts)
+            if thread in attempted_threads:
+                continue
             signal = self._process_one(post, messaging, right_now, thresholds)
             if signal is not None:
                 signals.append(signal)
+                if signal.kind in {
+                    "review_nag.ping",
+                    "review_nag.gated",
+                    "review_nag.post_failed",
+                }:
+                    attempted_threads.add(thread)
         return signals
 
     def _process_one(
@@ -152,16 +170,39 @@ class ReviewNagScanner:
         exempt = _review_exempt_skip(post, self.overlay_name)
         if exempt is not None:
             return exempt
-        owner = self._repo_owner_for(post)
-        interval = thresholds.nag_interval_for_attempt(owner, post.nag_count)
-        if not self._due_for_a_re_ask(post, messaging, right_now, interval):
+        window = self._thread_due_window(post, messaging, right_now, thresholds)
+        if window is None:
             return None
+        interval, peers = window
         blocked = self._mr_not_naggable(post, messaging, right_now)
         if blocked is not None:
             return blocked
-        if thresholds.nag_backoff_at_cap(owner, post.nag_count):
+        if any(thresholds.nag_backoff_at_cap(owner, peer.nag_count) for peer, owner in peers):
             return _ask_owner_for_state(post, interval)
-        return self._post_reask(post, messaging, right_now)
+        return self._post_reask(post, messaging, right_now, interval)
+
+    def _thread_due_window(
+        self,
+        post: ReviewRequestPost,
+        messaging: MessagingBackend,
+        right_now: dt.datetime,
+        thresholds: TriageThresholds,
+    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]]] | None:
+        peers = list(
+            ReviewRequestPost.objects.filter(
+                overlay=post.overlay,
+                slack_channel_id=post.slack_channel_id,
+                slack_thread_ts=post.slack_thread_ts,
+                done_at__isnull=True,
+            )
+        )
+        if not peers:
+            return None
+        owned_peers = [(peer, self._repo_owner_for(peer)) for peer in peers]
+        interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
+        if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
+            return None
+        return (interval, owned_peers) if self._due_for_a_re_ask(post, messaging, right_now, interval) else None
 
     def _due_for_a_re_ask(
         self,
@@ -267,18 +308,25 @@ class ReviewNagScanner:
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
+        interval: dt.timedelta = dt.timedelta(days=2),
     ) -> ScanSignal | None:
         reconciled = _consult_guard_before_nag(post, self.overlay_name)
         if reconciled is not None:
             return reconciled
 
-        claim = _NagClaim.take(post, right_now)
+        claim = _NagClaim.take(post, right_now, interval)
         if claim is None:
             return None
 
-        mention = reask_mention(messaging, overlay_name=self.overlay_name)
-        text = f"{mention} :pray:" if mention else ":pray:"
         try:
+            mention = engaged_reask_mention(
+                messaging,
+                self.host,
+                list(ReviewRequestPost.objects.filter(pk__in=[post_id for post_id, _, _ in claim.previous])),
+                requester=RequesterIdentity(self.requester_slack_id, self.identities),
+                overlay_name=self.overlay_name,
+            )
+            text = _reask_text(mention, post.mr_url)
             response = OnBehalfSlackEgress(messaging).post(
                 channel=post.slack_channel_id,
                 text=text,
@@ -327,59 +375,6 @@ class ReviewNagScanner:
             summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
             payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
         )
-
-
-@dataclass(frozen=True, slots=True)
-class _NagClaim:
-    """The won right to post exactly one re-ping, and the means to give it back.
-
-    ``last_nag_at`` and ``nag_count`` advance together in ONE conditional
-    ``UPDATE`` guarded on both observed values, so a losing tick claims neither
-    and :meth:`release` can restore the exact pair it displaced. Splitting them
-    would let a post that never reached Slack still widen the schedule — a
-    permanently-gated row would walk itself out to the ceiling without a single
-    re-ask having been delivered.
-    """
-
-    post_id: int
-    claimed_at: dt.datetime
-    nag_count: int
-    previous_nag_at: dt.datetime | None
-    previous_nag_count: int
-
-    @classmethod
-    def take(cls, post: ReviewRequestPost, right_now: dt.datetime) -> "_NagClaim | None":
-        claimed = ReviewRequestPost.objects.filter(
-            pk=post.pk,
-            last_nag_at=post.last_nag_at,
-            nag_count=post.nag_count,
-        ).update(last_nag_at=right_now, nag_count=post.nag_count + 1)
-        if claimed != 1:
-            return None
-        return cls(
-            post_id=post.pk,
-            claimed_at=right_now,
-            nag_count=post.nag_count + 1,
-            previous_nag_at=post.last_nag_at,
-            previous_nag_count=post.nag_count,
-        )
-
-    def release(self) -> None:
-        ReviewRequestPost.objects.filter(
-            pk=self.post_id,
-            last_nag_at=self.claimed_at,
-            nag_count=self.nag_count,
-        ).update(last_nag_at=self.previous_nag_at, nag_count=self.previous_nag_count)
-
-    def persist_reply_ts(self, reply_ts: str) -> None:
-        updated = ReviewRequestPost.objects.filter(
-            pk=self.post_id,
-            last_nag_at=self.claimed_at,
-            nag_count=self.nag_count,
-        ).update(last_nag_reply_ts=reply_ts)
-        if updated != 1:
-            msg = f"review nag claim {self.post_id} could not persist reply timestamp"
-            raise ReviewNagPostReconciliationError(msg)
 
 
 def _ask_owner_for_state(post: ReviewRequestPost, interval: dt.timedelta) -> ScanSignal | None:

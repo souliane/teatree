@@ -98,6 +98,18 @@ def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, p
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/commits?per_page=100")
 
 
+def project_requested_reviewers(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, pr_iid: int) -> list[str]:
+    if project is None:
+        msg = f"Could not resolve project: {repo}"
+        raise ValueError(msg)
+    mr = client.get_json(f"projects/{project.project_id}/merge_requests/{pr_iid}")
+    reviewers = mr.get("reviewers") if isinstance(mr, dict) else None
+    if not isinstance(reviewers, list):
+        msg = f"Could not read requested reviewers for {repo}#{pr_iid}"
+        raise TypeError(msg)
+    return [name for item in reviewers if isinstance(item, dict) if isinstance(name := item.get("username"), str)]
+
+
 def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:
     if project is None:
         return {"error": f"Could not resolve project: {repo}"}

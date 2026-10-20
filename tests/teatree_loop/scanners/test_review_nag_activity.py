@@ -16,8 +16,11 @@ class TestThreadActivity:
             ([{"name": "eyes", "users": {"UOWNER": 1}}], "UOWNER"),
             ([{"name": "eyes", "users": ["UOWNER"], "count": 3}], "UOWNER"),
             ("eyes", "UOWNER"),
+            (1, "UOWNER"),
             (["eyes"], "UOWNER"),
             ([{"name": "eyes", "users": ["UOWNER"]}], ""),
+            ([{"name": "eyes", "users": [""]}], ""),
+            ([{"name": "eyes", "users": [42]}], "UOWNER"),
             (
                 [
                     {"name": "eyes", "users": ["UOWNER"], "count": 1},
@@ -32,8 +35,11 @@ class TestThreadActivity:
             "users-dict",
             "users-truncated",
             "reactions-not-list",
+            "reactions-non-iterable",
             "reaction-not-dict",
             "requester-unresolved",
+            "requester-unresolved-empty-user",
+            "non-string-user",
             "mixed-reactions",
         ),
     )

@@ -19,10 +19,15 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
+_USER_ID = re.compile(r"[UW][A-Z0-9]+")
 
 
 class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
+
+
+class SlackUserDirectoryUnreadableError(RuntimeError):
+    pass
 
 
 def read_channel_history_or_refuse(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
@@ -158,6 +163,47 @@ def resolve_user_id(*, get: Getter, handle: str) -> str:
         if cursor is None:
             return ""
     return ""
+
+
+def resolve_unique_active_user_id(*, get: Getter, handle: str) -> str:
+    clean = handle.strip().lstrip("@").casefold()
+    if not clean:
+        return ""
+    matches: set[str] = set()
+    cursor: str | None = None
+    for _ in range(_MAX_USER_PAGES):
+        params: dict[str, str | int] = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        listing = get("users.list", params)
+        members = listing.get("members")
+        if listing.get("ok") is not True or not isinstance(members, list):
+            msg = "Slack user directory could not be read"
+            raise SlackUserDirectoryUnreadableError(msg)
+        for raw_member in members:
+            if isinstance(raw_member, dict) and (user_id := _active_directory_match(raw_member, clean)):
+                matches.add(user_id)
+        cursor = next_cursor(listing)
+        if cursor is None:
+            return next(iter(matches)) if len(matches) == 1 else ""
+    return ""
+
+
+def _active_directory_match(member: RawAPIDict, clean: str) -> str:
+    if (
+        member.get("deleted") is not False
+        or any(member.get(flag) is not False for flag in ("is_bot", "is_restricted", "is_ultra_restricted"))
+        or member.get("is_app_user") is True
+    ):
+        return ""
+    profile = member.get("profile")
+    names = (member.get("name"), member.get("real_name"))
+    if isinstance(profile, dict):
+        names += (profile.get("display_name"),)
+    if not any(isinstance(name, str) and name.casefold() == clean for name in names):
+        return ""
+    user_id = member.get("id")
+    return user_id if isinstance(user_id, str) and _USER_ID.fullmatch(user_id) else ""
 
 
 def resolve_usergroup_id(*, get: Getter, handle: str) -> str:

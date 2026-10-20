@@ -1,6 +1,13 @@
 """Branch coverage for the web_reads free functions: the paged user lookup (#3507) and the user-group lookup."""
 
-from teatree.backends.slack.web_reads import _MAX_USER_PAGES, resolve_user_id, resolve_usergroup_id
+import pytest
+
+from teatree.backends.slack.web_reads import (
+    _MAX_USER_PAGES,
+    resolve_unique_active_user_id,
+    resolve_user_id,
+    resolve_usergroup_id,
+)
 from teatree.types import RawAPIDict
 
 
@@ -9,6 +16,57 @@ def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDic
     if next_cursor:
         data["response_metadata"] = {"next_cursor": next_cursor}
     return data
+
+
+def _active_user(user_id: str, name: str) -> RawAPIDict:
+    return {
+        "id": user_id,
+        "name": name,
+        "deleted": False,
+        "is_bot": False,
+        "is_restricted": False,
+        "is_ultra_restricted": False,
+    }
+
+
+class TestResolveUniqueActiveUserId:
+    def test_unique_active_match_ignores_deactivated_duplicate(self) -> None:
+        members = [_active_user("UPEER", "peer"), {"id": "UDEAD", "name": "peer", "deleted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == "UPEER"
+
+    def test_two_active_matches_are_ambiguous_across_pages(self) -> None:
+        pages = {
+            "": _members_page([_active_user("UONE", "peer")], next_cursor="next"),
+            "next": _members_page([_active_user("UTWO", "peer")]),
+        }
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return pages[str(params.get("cursor", ""))]
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_bot_guest_and_unknown_status_are_never_a_match(self) -> None:
+        members = [
+            {**_active_user("UBOT", "peer"), "is_bot": True},
+            {**_active_user("UGUEST", "peer"), "is_restricted": True},
+            {"id": "UUNKNOWN", "name": "peer", "deleted": False},
+        ]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unreadable_directory_raises_instead_of_looking_empty(self) -> None:
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return {"ok": False, "error": "missing_scope"}
+
+        with pytest.raises(RuntimeError, match="could not be read"):
+            resolve_unique_active_user_id(get=get, handle="peer")
 
 
 class TestResolveUserId:

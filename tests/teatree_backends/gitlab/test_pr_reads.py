@@ -46,6 +46,32 @@ def test_list_prs_unresolvable_project_returns_empty() -> None:
     client.get_json_paginated.assert_not_called()
 
 
+def test_requested_reviewers_are_read_from_the_merge_request() -> None:
+    wire = GitLabWire(
+        {
+            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+            "projects/42/merge_requests/5": {"reviewers": [{"username": "peer"}]},
+        }
+    )
+
+    reviewers = GitLabCodeHost(client=wire).get_pr_requested_reviewers(repo="org/repo", pr_iid=5)
+
+    assert reviewers == ["peer"]
+    assert "projects/42/merge_requests/5" in wire.paths
+
+
+def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
+    wire = GitLabWire(
+        {
+            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+            "projects/42/merge_requests/5": {},
+        }
+    )
+
+    with pytest.raises(TypeError, match="Could not read requested reviewers"):
+        GitLabCodeHost(client=wire).get_pr_requested_reviewers(repo="org/repo", pr_iid=5)
+
+
 def test_get_pr_diff_hits_diffs_endpoint() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.get_json_paginated.return_value = [{"new_path": "a.py"}]

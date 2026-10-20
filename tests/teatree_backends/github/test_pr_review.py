@@ -73,6 +73,23 @@ def test_get_pr_file_diffs_keys_each_patch_by_its_old_and_new_path() -> None:
     assert get.call_args.args[0] == "repos/o/r/pulls/5/files?per_page=100"
 
 
+def test_requested_reviewers_are_read_from_the_pull_request() -> None:
+    payload = {"requested_reviewers": [{"login": "peer"}, {"login": "other"}]}
+    with patch("teatree.backends.github.client._gh_api_get", return_value=payload) as get:
+        reviewers = GitHubCodeHost(token="t").get_pr_requested_reviewers(repo="o/r", pr_iid=5)
+
+    assert reviewers == ["peer", "other"]
+    get.assert_called_once_with("repos/o/r/pulls/5", token="t")
+
+
+def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
+    with (
+        patch("teatree.backends.github.client._gh_api_get", return_value={}),
+        pytest.raises(TypeError, match="Could not read requested reviewers"),
+    ):
+        GitHubCodeHost(token="t").get_pr_requested_reviewers(repo="o/r", pr_iid=5)
+
+
 def test_get_pr_file_diffs_raises_on_a_pr_it_cannot_find_rather_than_reading_no_diff() -> None:
     not_found = CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)")
     with (
