@@ -3215,6 +3215,15 @@ class TestAVendoringCheckoutIsJudgedByItsVendoredCopy:
         env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
         return work, env, work / "vendor" / "x" / "scripts" / "hooks" / HOOK.name
 
+    def test_an_own_checkout_disguised_by_a_parent_worktree_is_still_refused(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path, env_registry=_FAKE_REGISTRY, committed=_REAL_REGISTRY)
+        _git(hook.parents[2], "config", "core.worktree", str(tmp_path))
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "leak-gate-sources.txt" in result.stdout, result.stdout
+
     @pytest.mark.parametrize("run_from", [".", "vendor/x"], ids=["git-top", "prek-nested"])
     def test_a_clean_push_passes(self, tmp_path: Path, run_from: str) -> None:
         work, env, hook = self._checkout(tmp_path)
@@ -3226,6 +3235,64 @@ class TestAVendoringCheckoutIsJudgedByItsVendoredCopy:
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert "cannot be checked" not in result.stdout
+
+    def test_a_host_registry_that_differs_from_the_vendored_fingerprint_passes_a_clean_push(
+        self, tmp_path: Path
+    ) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env["TEATREE_TERM_REGISTRY"] = _FAKE_REGISTRY
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_host_registry_that_differs_from_the_vendored_fingerprint_still_refuses_its_own_term(
+        self, tmp_path: Path
+    ) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env["TEATREE_TERM_REGISTRY"] = _FAKE_REGISTRY
+        (work / "feature.txt").write_text("fake-picked-term\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout
+        assert "leak#0" in result.stdout
+        assert "does not match" not in result.stdout
+
+    def test_a_vendoring_host_without_a_registry_is_refused_naming_the_missing_registry(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env.pop("TEATREE_TERM_REGISTRY")
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "no term registry could be loaded" in result.stdout
+        assert "banned_term_registry" in result.stdout
+        assert "TEATREE_TERM_REGISTRY" in result.stdout
+        assert "term-source-fingerprint" not in result.stdout
+
+    def test_a_vendored_push_to_a_private_remote_needs_no_registry(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        _make_gh_shim(tmp_path / "bin", "PRIVATE")
+        env.pop("TEATREE_TERM_REGISTRY")
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("run_from", [".", "vendor/x"], ids=["git-top", "prek-nested"])
     @pytest.mark.parametrize("path", ["vendor/x/leak.txt", "outside.txt"])

@@ -102,6 +102,7 @@ graph TD
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
     teatree.core.loop_lease_manager --> teatree.utils
+    teatree.core.managers_admission --> teatree.core.managers_task_claim
     teatree.core.managers_admission --> teatree.core.modelkit
     teatree.core.managers_task_claim --> teatree.config
     teatree.core.managers_task_claim --> teatree.core.admission.generation_admission

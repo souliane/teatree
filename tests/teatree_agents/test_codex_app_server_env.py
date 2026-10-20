@@ -25,14 +25,58 @@ def _env(home: Path, extra: dict[str, str] | None = None, *, path: str = "/usr/b
 
 
 def test_the_routed_token_and_the_worker_cap_are_the_only_dispatch_keys_taken(tmp_path: Path) -> None:
-    env = _env(tmp_path / "home", {**_SECRETS, "GH_TOKEN": "ghp-routed", "PYTEST_XDIST_AUTO_NUM_WORKERS": "3"})
+    shared_root = tmp_path / "shared-pool"
+    env = _env(
+        tmp_path / "home",
+        {
+            **_SECRETS,
+            "GH_TOKEN": "ghp-routed",
+            "PYTEST_XDIST_AUTO_NUM_WORKERS": "3",
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+        },
+    )
 
     assert env["GH_TOKEN"] == "ghp-routed"
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
     assert env["T3_DISPATCHED_AGENT"] == "1"
     assert not {key for key in _SECRETS if key != "GH_TOKEN"} & env.keys()
     assert "ghp-routed" not in {value for key, value in env.items() if key != "GH_TOKEN"}
     assert not {"ambient-gh-secret", "ambient-github-secret"} & set(env.values())
+
+
+def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared-pool"
+    env = codex_process_env(
+        tmp_path / "private-home",
+        ambient={
+            "PATH": "/usr/bin",
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+        },
+    )
+
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
+
+
+def test_pool_root_does_not_expand_router_allowlist(tmp_path: Path) -> None:
+    ambient = {
+        "PATH": "/usr/bin",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": str(tmp_path / "shared-pool"),
+        "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+    }
+    dispatch = {
+        "GH_TOKEN": "ghp-routed",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": ambient["TEATREE_PYTEST_WORKER_POOL_ROOT"],
+        "T3_LOOP_REGISTRY_DIR": ambient["T3_LOOP_REGISTRY_DIR"],
+    }
+
+    router_env = router_process_env(dispatch, ambient=ambient)
+
+    assert router_env == {"PATH": "/usr/bin", "GH_TOKEN": "ghp-routed"}
 
 
 def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:

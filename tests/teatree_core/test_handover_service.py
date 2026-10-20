@@ -13,6 +13,7 @@ from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.core import handover
@@ -76,6 +77,14 @@ class TestSnapshotPayloadReuse(TestCase):
 
 
 class TestResolveTargetSession(TestCase):
+    def test_park_bypasses_a_live_owner(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        assert handover.resolve_target_session("", park=True) == ""
+
+    def test_park_rejects_an_explicit_target(self) -> None:
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            handover.resolve_target_session("explicit-id", park=True)
+
     def test_explicit_target_wins(self) -> None:
         assert handover.resolve_target_session("explicit-id") == "explicit-id"
 
