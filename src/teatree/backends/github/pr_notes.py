@@ -30,10 +30,6 @@ class GitHubPrNotes:
         data = _gh_api_patch(f"repos/{repo}/issues/comments/{comment_id}", {"body": body}, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
-    def list_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        # Paginated: a busy PR has >30 comments, and a first page alone hides the note an updater looks up.
-        return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
-
     def find_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         reviews = _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/reviews?per_page=100", token=self._token)
         return any(marker in str(review.get("body") or "") for review in reviews)

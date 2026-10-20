@@ -93,18 +93,6 @@ def rollup_state(rollup: object) -> str:
     return "pending" if any_pending else "success"
 
 
-def is_not_found(exc: CommandFailedError) -> bool:
-    """Whether a failed ``gh api`` call was a genuine HTTP 404.
-
-    ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
-    with returncode 1, so the only reliable signal for a permanent "no such
-    resource" is the literal ``HTTP 404`` string in stderr — the same probe
-    :meth:`GitHubCodeHost.get_issue` uses. Everything else is an indeterminate
-    failure the caller must NOT swallow as an empty result.
-    """
-    return "HTTP 404" in exc.stderr
-
-
 def issue_repo_short(url: str) -> str:
     """The repo short-name from a GitHub issue/PR URL, or ``""`` if unparsable.
 

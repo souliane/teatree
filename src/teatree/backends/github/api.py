@@ -1,7 +1,7 @@
 """GitHub ``gh`` CLI request helpers — the low-level transport concern.
 
 Free functions wrapping ``gh`` / ``gh api`` (GET / paginated GET / search /
-POST / PATCH) plus the issue-URL parse, so :class:`teatree.backends.github.GitHubCodeHost`
+POST / PATCH) plus the issue-URL parse and the HTTP 404 predicate, so :class:`teatree.backends.github.GitHubCodeHost`
 stays focused on the cross-host Protocol surface and under the module-health cap —
 the same split shape as :mod:`teatree.backends.gitlab.api`.
 """
@@ -41,6 +41,18 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
     return run_checked(list(args), env=_gh_env(token), timeout=timeout)
+
+
+def is_not_found(exc: CommandFailedError) -> bool:
+    """Whether a failed ``gh api`` call was a genuine HTTP 404.
+
+    ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
+    with returncode 1, so the only reliable signal for a permanent "no such
+    resource" is the literal ``HTTP 404`` string in stderr — the same probe
+    :func:`teatree.backends.github.reads.get_issue` uses. Everything else is an indeterminate
+    failure the caller must NOT swallow as an empty result.
+    """
+    return "HTTP 404" in exc.stderr
 
 
 def _gh_env(token: str) -> dict[str, str]:
