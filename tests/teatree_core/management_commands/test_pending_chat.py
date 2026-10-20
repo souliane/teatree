@@ -387,11 +387,14 @@ LONG_PROMPT = (
 
 
 class TestRelayThroughTheRealSlackBot:
+    @pytest.mark.parametrize("owner_dm_only", [False, True], ids=["full-scope", "dm-only"])
     def test_a_long_prompt_lands_in_the_owner_dm_verbatim_with_only_http_stubbed(
-        self, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str], *, owner_dm_only: bool
     ) -> None:
         api = _SlackWebApi()
-        bot = SlackBotBackend(bot_token="xoxb-bot", user_id=OWNER_ID, dm_channel_id=OWNER_DM)
+        bot = SlackBotBackend(
+            bot_token="xoxb-bot", user_id=OWNER_ID, dm_channel_id=OWNER_DM, owner_dm_only=owner_dm_only
+        )
         with (
             patch.object(bot._http, "post", side_effect=api.post),
             patch.object(bot._http, "get", side_effect=api.get),
