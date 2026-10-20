@@ -11,7 +11,7 @@ from teatree.backends.slack.listener_heartbeat import write_heartbeat
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
-from teatree.core.slack_listener_heartbeat import FILENAME
+from teatree.core.slack_first.slack_listener_heartbeat import FILENAME
 from teatree.types import RawAPIDict
 
 SLACK_OVERLAY = "t3-slack"
@@ -62,7 +62,7 @@ def live_factory_slack(dm: FakeOwnerDm, *, overlay: str = SLACK_OVERLAY) -> Gene
     with tempfile.TemporaryDirectory(prefix="factory-slack-") as scratch:
         directory = Path(scratch)
         with (
-            patch("teatree.core.slack_listener_heartbeat.DATA_DIR", directory),
+            patch("teatree.core.slack_first.slack_listener_heartbeat.DATA_DIR", directory),
             patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[overlay]),
             patch("teatree.core.backend_factory.configured_messaging_from_overlay", return_value=dm),
         ):

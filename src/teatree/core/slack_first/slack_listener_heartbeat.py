@@ -1,7 +1,7 @@
 """The Socket Mode listener's heartbeat file: its path, parse and staleness bound.
 
 ``t3 slack listen`` stamps this file from inside each connected overlay loop. It is read by
-``t3 doctor``, the inbox catch-up job and :mod:`teatree.core.factory_slack_liveness`, so the
+``t3 doctor``, the inbox catch-up job and :mod:`teatree.core.slack_first.factory_slack_liveness`, so the
 read lives here, below every one of them; the writer stays beside the connection that owns it
 in :mod:`teatree.backends.slack.listener_heartbeat`.
 """

@@ -279,7 +279,7 @@ depends_on = [
   "teatree.core.admission_pressure",
   "teatree.core.modelkit",
   "teatree.core.owner_question_message",
-  "teatree.core.owner_identity",
+  "teatree.core.slack_first.owner_identity",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
   "teatree.core.models",
@@ -357,7 +357,7 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
-path = "teatree.core.owner_identity"
+path = "teatree.core.slack_first.owner_identity"
 layer = "domain"
 depends_on = []
 
@@ -834,7 +834,7 @@ path = "teatree.loop.question_binding"
 layer = "domain"
 depends_on = [
   "teatree.core.models",
-  "teatree.core.owner_identity",
+  "teatree.core.slack_first.owner_identity",
   "teatree.core.owner_question_message",
   "teatree.loop.inbound_reading"
 ]

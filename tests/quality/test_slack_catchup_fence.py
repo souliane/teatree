@@ -134,7 +134,7 @@ def test_public_function_counts_stay_inside_the_module_health_cap() -> None:
     receiver = public("backends/slack/receiver.py")
 
     assert public("backends/slack/listener_heartbeat.py") == {"write_heartbeat"}
-    assert public("core/slack_listener_heartbeat.py") == heartbeat - {"write_heartbeat"}
+    assert public("core/slack_first/slack_listener_heartbeat.py") == heartbeat - {"write_heartbeat"}
     assert not receiver & heartbeat
     assert len(receiver) == 9
     assert len(public("loops/timer_reconciler.py")) <= MAX_MODULE_FUNCTIONS

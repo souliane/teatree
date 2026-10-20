@@ -6,12 +6,12 @@ The model cannot reach this module (``core.models`` sits below ``core``), so it 
 
 import html
 
-from teatree.core.factory_slack_liveness import SlackLiveVerdict
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.relay import RelayPosted, RelayRefusal
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions
+from teatree.core.slack_first.factory_slack_liveness import SlackLiveVerdict
 from teatree.hooks.publish_surface import contains_secret
 
 

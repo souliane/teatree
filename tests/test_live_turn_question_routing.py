@@ -438,7 +438,9 @@ class TestTheSlackFirstArmFailsOpenToTheModal:
         dm = FakeOwnerDm()
         with (
             live_factory_slack(dm),
-            patch("teatree.core.factory_slack_liveness.factory_slack_live", side_effect=RuntimeError("down")),
+            patch(
+                "teatree.core.slack_first.factory_slack_liveness.factory_slack_live", side_effect=RuntimeError("down")
+            ),
         ):
             result = handle_mirror_question_to_slack(
                 _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path))

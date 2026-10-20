@@ -16,10 +16,10 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 
 from typing import TYPE_CHECKING
 
-from teatree.core.factory_slack_liveness import factory_slack_live
 from teatree.core.models.self_review import SelfReview
-from teatree.core.relay_egress import post_relay
 from teatree.core.review import pr_open_state as _pr_open_state
+from teatree.core.slack_first.factory_slack_liveness import factory_slack_live
+from teatree.core.slack_first.relay_egress import post_relay
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import PrOpenState

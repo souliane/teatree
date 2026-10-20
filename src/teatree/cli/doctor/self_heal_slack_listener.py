@@ -3,7 +3,7 @@
 Split from the sibling ``self_heal`` module: the heartbeat is written by another
 container (the ``teatree-slack-listener`` service's WebSocket wait loop) into the
 shared data mount, so reading and judging it is its own concern. The file format and
-staleness bound live in :mod:`teatree.core.slack_listener_heartbeat`; the writer is beside its connection.
+staleness bound live in :mod:`teatree.core.slack_first.slack_listener_heartbeat`; the writer is beside its connection.
 
 It measures each overlay's WEBSOCKET, not a sidecar: the stamp comes from inside a
 connected overlay's own loop, so a dropped connection goes stale even while the
@@ -19,7 +19,7 @@ import time
 import typer
 
 from teatree.cli.slack.app_resolve import read_overlay_registry
-from teatree.core.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
+from teatree.core.slack_first.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"

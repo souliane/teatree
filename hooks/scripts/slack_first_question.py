@@ -66,7 +66,6 @@ def route_attended_question_to_slack(data: dict) -> str | None:
 
 
 def _route(data: dict) -> str | None:
-    from teatree.core.factory_slack_liveness import factory_slack_live  # noqa: PLC0415 — deferred: needs Django
     from teatree.core.modelkit.owner_decision import OwnerDecision  # noqa: PLC0415 — deferred: cold-hook import
     from teatree.core.modelkit.question_card import CardOption, QuestionCard  # noqa: PLC0415 — deferred: cold-hook
     from teatree.core.models.deferred_question import (  # noqa: PLC0415 — deferred: ORM
@@ -74,6 +73,7 @@ def _route(data: dict) -> str | None:
         DeferredQuestionError,
     )
     from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions  # noqa: PLC0415 — deferred
+    from teatree.core.slack_first.factory_slack_liveness import factory_slack_live  # noqa: PLC0415 — deferred: Django
 
     verdict = factory_slack_live(os.environ.get("T3_OVERLAY_NAME", ""))
     first = _first_question(data)

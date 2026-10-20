@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from teatree.core.backend_factory import OwnerMessagingTransport
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.gates.t3_master_gate import t3_master_lease_held
-from teatree.core.owner_identity import configured_owner_id
-from teatree.core.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
+from teatree.core.slack_first.owner_identity import configured_owner_id
+from teatree.core.slack_first.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
 
 
 @dataclass(frozen=True, slots=True)

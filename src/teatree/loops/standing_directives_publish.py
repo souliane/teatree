@@ -21,8 +21,8 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
 from teatree import standing_directives_cache
-from teatree.core.factory_slack_liveness import factory_slack_live
 from teatree.core.models import PendingChatInjection
+from teatree.core.slack_first.factory_slack_liveness import factory_slack_live
 from teatree.loop.standing_directives import publish
 from teatree.loops.timer_chains import LOOPS_QUEUE
 

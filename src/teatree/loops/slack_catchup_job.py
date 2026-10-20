@@ -14,7 +14,7 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.receiver import DeliveredEvents, DeliveryContext, QueuePaths, deliver_event
 from teatree.backends.slack.self_identity import resolve_own_identity
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
+from teatree.core.slack_first.slack_listener_heartbeat import heartbeat_is_stale, read_heartbeat
 from teatree.loop.scanners.base import ScanSignal
 from teatree.slack_catchup import CatchUpSlice, catch_up
 

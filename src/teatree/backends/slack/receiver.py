@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from teatree.backends.slack.listener_heartbeat import ConnectionLiveness, OnConnect, write_heartbeat
 from teatree.backends.slack.self_identity import OwnSlackIdentity, identity_from_auth_test, is_self_originated
-from teatree.core.slack_listener_heartbeat import HEARTBEAT_INTERVAL_SECONDS, heartbeat_path, read_heartbeat
+from teatree.core.slack_first.slack_listener_heartbeat import HEARTBEAT_INTERVAL_SECONDS, heartbeat_path, read_heartbeat
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict

@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.factory_slack_liveness import factory_slack_live
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from teatree.core.slack_first.factory_slack_liveness import factory_slack_live
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +44,7 @@ def _transports(overlays: dict[str, object | None]) -> Generator[None]:
 
 @pytest.fixture
 def heartbeat_dir(tmp_path: Path) -> Iterator[Path]:
-    with patch("teatree.core.slack_listener_heartbeat.DATA_DIR", tmp_path):
+    with patch("teatree.core.slack_first.slack_listener_heartbeat.DATA_DIR", tmp_path):
         yield tmp_path
 
 
@@ -142,7 +142,9 @@ def test_a_failing_leg_is_not_live_and_names_the_exception(heartbeat_dir: Path, 
     _stamp(heartbeat_dir)
     with (
         _transports({_OVERLAY: _Transport()}),
-        patch("teatree.core.factory_slack_liveness.t3_master_lease_held", side_effect=RuntimeError("db down")),
+        patch(
+            "teatree.core.slack_first.factory_slack_liveness.t3_master_lease_held", side_effect=RuntimeError("db down")
+        ),
     ):
         verdict = factory_slack_live(_OVERLAY)
 

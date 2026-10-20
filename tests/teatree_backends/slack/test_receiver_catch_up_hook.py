@@ -20,7 +20,7 @@ import slack_sdk.web
 
 from teatree.backends.slack.listener_heartbeat import ConnectionLiveness
 from teatree.backends.slack.receiver import DeliveredEvents, QueuePaths, _run_single_overlay, run_listener
-from teatree.core.slack_listener_heartbeat import read_heartbeat
+from teatree.core.slack_first.slack_listener_heartbeat import read_heartbeat
 
 _TICK = 0.01
 

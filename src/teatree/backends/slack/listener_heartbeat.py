@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.slack_listener_heartbeat import (
+from teatree.core.slack_first.slack_listener_heartbeat import (
     HEARTBEAT_INTERVAL_SECONDS,
     STALE_MULTIPLIER,
     heartbeat_path,
