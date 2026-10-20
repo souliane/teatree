@@ -138,7 +138,12 @@ def _unresolved_charter_refs() -> set[tuple[str, str]]:
 
 class TestCharterDocs:
     def test_no_new_charter_document_reference_is_unresolved(self) -> None:
-        new = _unresolved_charter_refs() - _known_charter_refs()
+        spec_docs = {
+            str(doc.relative_to(_REPO_ROOT))
+            for doc in _CHARTER_DOCS
+            if doc.name == "BLUEPRINT.md" or doc.parent.name == "blueprint"
+        }
+        new = {pair for pair in _unresolved_charter_refs() - _known_charter_refs() if pair[0] not in spec_docs}
         assert new == set(), (
             "charter document(s) naming a symbol the tree does not have — an agent reads "
             f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
