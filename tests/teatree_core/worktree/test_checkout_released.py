@@ -15,7 +15,7 @@ from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
-from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
 from teatree.utils.git import check, run_strict
@@ -46,6 +46,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.worktree = WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.path)})
         self.pr = PullRequestFactory(ticket=self.ticket)
         self.clear = ProcessTable(frozenset(), "/host-proc")
+        self.on_remote_read = Mock()
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear):
             verify_task_checkout(self.shipping, str(self.path))
         self.anchor = checkout_state(self.path, ticket=self.ticket).digest
@@ -118,6 +119,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             if not check(repo=str(self.origin), args=["show-ref", "--verify", "refs/heads/feature"]):
                 return None
             remote = run_strict(repo=str(self.origin), args=["rev-parse", "refs/heads/feature"])
+            self.on_remote_read()
             return json.dumps({"ref": "refs/heads/feature", "object": {"sha": remote}})
 
         with (
@@ -173,9 +175,12 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert self.direct_recovery()
 
     def test_second_state_read_must_match_first(self) -> None:
-        changed = CheckoutState("0" * 64, 0, 0, "feature")
-        with patch("teatree.core.worktree.checkout_recovery.checkout_state", return_value=changed):
-            self.assert_parked()
+        def change_checkout() -> None:
+            (self.path / "feature.txt").write_text("checkout changed")
+
+        self.on_remote_read.side_effect = change_checkout
+        self.assert_parked()
+        self.on_remote_read.assert_called_once()
 
     def test_current_tenure_must_name_claimant(self) -> None:
         assert acquire(self.worktree, holder=task_holder_id(self.claimant))
