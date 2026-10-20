@@ -1,7 +1,7 @@
 """GitHub's read interface: the PR, review, comment, check and issue reads, and no write.
 
-A module depending on this one reaches only ``__all__`` (tach ``[[interfaces]]``);
-``tests/conformance/test_forge_read_interface.py`` covers what tach cannot see.
+tach ``[[interfaces]]`` limits direct name imports to ``__all__``;
+``tests/conformance/test_forge_read_interface.py`` fences module bindings.
 Writes stay on :class:`teatree.backends.github.client.GitHubCodeHost`.
 """
 
@@ -98,13 +98,11 @@ def list_issue_comments(*, issue_url: str, token: str) -> list[RawAPIDict]:
 
 
 def fetch_required_checks_rollup(*, slug: str, pr_id: int, token: str) -> list[RawAPIDict]:
-    return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(token)).fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+    return _forge_merge.gh_merge_rpc(token).fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
 
 
 def fetch_workflow_runs_at_head(*, slug: str, head_sha: str, token: str) -> list[RawAPIDict]:
-    return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(token)).fetch_workflow_runs_at_head(
-        slug=slug, head_sha=head_sha
-    )
+    return _forge_merge.gh_merge_rpc(token).fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)
 
 
 def get_issue(*, issue_url: str, token: str) -> RawAPIDict:

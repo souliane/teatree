@@ -48,8 +48,7 @@ def is_not_found(exc: CommandFailedError) -> bool:
 
     ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
     with returncode 1, so the only reliable signal for a permanent "no such
-    resource" is the literal ``HTTP 404`` string in stderr — the same probe
-    :func:`teatree.backends.github.reads.get_issue` uses. Everything else is an indeterminate
+    resource" is the literal ``HTTP 404`` string in stderr. Everything else is an indeterminate
     failure the caller must NOT swallow as an empty result.
     """
     return "HTTP 404" in exc.stderr

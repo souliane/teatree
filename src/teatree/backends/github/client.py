@@ -472,7 +472,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _pr_reads.open_pr_url_for_branch(repo=repo, branch=branch)
 
     def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
-        return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))
+        return _forge_merge.gh_merge_rpc(self._token)
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)

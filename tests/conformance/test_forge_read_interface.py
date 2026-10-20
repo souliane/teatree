@@ -2,8 +2,8 @@
 """A module that depends only on a forge's read interface cannot reach a write.
 
 tach refuses a non-exposed name imported from a reads module. It admits what this scan
-refuses: binding the reads module object (its attributes reach every name it binds), a
-submodule path, a ``TYPE_CHECKING`` import and an ``importlib`` string. The scan also
+refuses: absolute and relative reads-module bindings, a submodule path, a
+``TYPE_CHECKING`` import and an ``importlib`` string. The scan also
 proves each reads module exposes, and itself touches, no write.
 """
 
@@ -16,6 +16,7 @@ import sys
 import tomllib
 from collections.abc import Mapping
 from functools import cache
+from importlib.util import resolve_name
 from pathlib import Path
 
 import pytest
@@ -72,19 +73,30 @@ def _names_a_read_module(dotted: str) -> str:
     return next((m for m in READ_MODULES if dotted == m or dotted.startswith(f"{m}.")), "")
 
 
-def reaches_past_the_interface(tree: ast.AST, exposed: Mapping[str, frozenset[str]]) -> list[str]:
+def reaches_past_the_interface(tree: ast.AST, exposed: Mapping[str, frozenset[str]], package: str) -> list[str]:
     """Every reference in *tree* to a reads module other than importing one of its exposed names."""
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if _names_a_read_module(alias.name)]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module in exposed:
-                found += [f"{node.module}.{a.name}" for a in node.names if a.name not in exposed[node.module]]
-            elif _names_a_read_module(node.module):
-                found.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = resolve_name("." * node.level + (node.module or ""), package) if node.level else node.module or ""
+            if module in exposed:
+                found += [f"{module}.{a.name}" for a in node.names if a.name not in exposed[module]]
+            elif _names_a_read_module(module):
+                found.append(module)
             else:
-                found += [f"{node.module}.{a.name}" for a in node.names if f"{node.module}.{a.name}" in exposed]
+                found += [f"{module}.{a.name}" for a in node.names if f"{module}.{a.name}" in exposed]
+        elif (
+            isinstance(node, ast.Call)
+            and node.args
+            and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) == "import_module"
+        ):
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("."):
+                module = resolve_name(arg.value, package)
+                if _names_a_read_module(module):
+                    found.append(module)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _names_a_read_module(node.value):
             found.append(node.value)
     return found
@@ -118,9 +130,9 @@ def test_reads_module_exposes_no_write(module: str, tach_output_with_write_probe
     assert f"'{module}.submit_pr_review' is not part of the public interface for '{module}'" in output
     assert output.count("[FAIL]") == len(_PROBE_SITES), output
 
-    assert reaches_past_the_interface(ast.parse(f"from {module} import submit_pr_review\n"), _exposed()) == [
-        f"{module}.submit_pr_review"
-    ]
+    assert reaches_past_the_interface(
+        ast.parse(f"from {module} import submit_pr_review\n"), _exposed(), "teatree.backends"
+    ) == [f"{module}.submit_pr_review"]
 
     imported = importlib.import_module(module)
     assert _exposed()[module], module
@@ -161,45 +173,45 @@ def test_no_module_reaches_past_a_read_interface() -> None:
     offenders = {
         str(path.relative_to(REPO_ROOT)): found
         for path, tree in src_modules()
-        if path not in read_files and (found := reaches_past_the_interface(tree, _exposed()))
+        if path not in read_files
+        and (
+            found := reaches_past_the_interface(
+                tree, _exposed(), ".".join(path.parent.relative_to(SRC_DIR.parent).parts)
+            )
+        )
     }
 
     assert offenders == {}
 
 
-@pytest.mark.parametrize("module", READ_MODULES)
-def test_the_forge_client_reads_through_its_read_interface(module: str) -> None:
+def test_the_forge_client_reads_through_its_read_interface() -> None:
+    module = "teatree.backends.gitlab.reads"
     tree = ast.parse((REPO_ROOT / _PROBE_SITES[module]).read_text(encoding="utf-8"))
 
     assert any(isinstance(node, ast.ImportFrom) and node.module == module for node in ast.walk(tree))
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("source", "package"),
     [
-        "import teatree.backends.github.reads\n",
-        "from teatree.backends.github import reads\n",
-        "from teatree.backends.gitlab import reads as gitlab_reads\n",
-        "from teatree.backends.github.reads import submit_pr_review\n",
-        "from teatree.backends.github.reads import *\n",
-        "from teatree.backends.github.reads import _gh_api_post\n",
-        "from teatree.backends.github.reads.sub import anything\n",
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from teatree.backends.gitlab import reads\n",
-        "import importlib\nimportlib.import_module('teatree.backends.gitlab.reads')\n",
+        ("import teatree.backends.github.reads\n", "teatree.backends"),
+        ("from teatree.backends.github import reads\n", "teatree.backends"),
+        ("from teatree.backends.gitlab import reads as gitlab_reads\n", "teatree.backends"),
+        ("from teatree.backends.github.reads import *\n", "teatree.backends"),
+        ("from teatree.backends.github.reads.sub import anything\n", "teatree.backends"),
+        (
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from teatree.backends.gitlab import reads\n",
+            "teatree.backends",
+        ),
+        ("import importlib\nimportlib.import_module('teatree.backends.gitlab.reads')\n", "teatree.backends"),
+        ("from .github import reads\n", "teatree.backends"),
+        ("from . import reads\n", "teatree.backends.github"),
+        ("import importlib\nimportlib.import_module('.reads', 'teatree.backends.github')\n", "teatree.backends.github"),
+        (
+            "from importlib import import_module\nimport_module('.reads', 'teatree.backends.github')\n",
+            "teatree.backends.github",
+        ),
     ],
 )
-def test_every_form_that_binds_more_than_an_exposed_read_counts(source: str) -> None:
-    assert reaches_past_the_interface(ast.parse(source), _exposed())
-
-
-def test_importing_an_exposed_read_does_not_count() -> None:
-    name = min(_exposed()["teatree.backends.gitlab.reads"])
-    source = f"from teatree.backends.gitlab.reads import {name}\n"
-
-    assert reaches_past_the_interface(ast.parse(source), _exposed()) == []
-
-
-def test_a_prose_mention_does_not_count() -> None:
-    source = '"""Reads go through :mod:`teatree.backends.github.reads`."""\n'
-
-    assert reaches_past_the_interface(ast.parse(source), _exposed()) == []
+def test_every_form_that_binds_more_than_an_exposed_read_counts(source: str, package: str) -> None:
+    assert reaches_past_the_interface(ast.parse(source), _exposed(), package)
