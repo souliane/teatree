@@ -92,7 +92,7 @@
     },
     {
       "bom-ref": "requirements-L29",
-      "description": "requirements line 29: certifi==2026.7.22",
+      "description": "requirements line 29: certifi==2026.10.19",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -101,9 +101,9 @@
         }
       ],
       "name": "certifi",
-      "purl": "pkg:pypi/certifi@2026.7.22",
+      "purl": "pkg:pypi/certifi@2026.10.19",
       "type": "library",
-      "version": "2026.7.22"
+      "version": "2026.10.19"
     },
     {
       "bom-ref": "requirements-L34",

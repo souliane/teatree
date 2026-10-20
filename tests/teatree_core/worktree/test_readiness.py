@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar
 from unittest import mock
 
@@ -30,6 +31,17 @@ from teatree.core.worktree.readiness import (
 )
 
 _GATE_TIMEOUT_SECONDS = 30.0
+
+
+def test_probe_pool_default_uses_shared_eight_worker_ceiling() -> None:
+    assert readiness.PROBE_WORKERS == 8
+    probe = Probe(name="p", description="d", check_fn=lambda: ProbeResult(name="p", passed=True))
+    with (
+        mock.patch.object(readiness, "PROBE_WORKERS", 3),
+        mock.patch.object(readiness, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as executor,
+    ):
+        assert run_probes([probe]) == [ProbeResult(name="p", passed=True)]
+    assert executor.call_args.kwargs["max_workers"] == 3
 
 
 def _free_port() -> int:

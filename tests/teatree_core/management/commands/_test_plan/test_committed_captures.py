@@ -528,7 +528,51 @@ class TestTheDefaultPlansDirIsInvocationRelative(_PlanCaptureTestBase):
         message = self._refusal()
 
         assert str(bare / _captures.PLANS_DIR_DEFAULT) in message
-        assert _invocation_cwd.INVOCATION_CWD_ENV in message
+        assert f"which came from {_invocation_cwd.INVOCATION_CWD_ENV}." in message
+
+    def test_unset_invocation_cwd_refusal_says_not_declared(self) -> None:
+        self._stand_in_another_tree()
+        self._monkeypatch.delenv(_invocation_cwd.INVOCATION_CWD_ENV, raising=False)
+
+        message = self._refusal()
+
+        assert "nothing declared an invocation cwd" in message
+        assert f"{_invocation_cwd.INVOCATION_CWD_ENV} is unset (not declared)" in message
+
+    def test_unresolvable_declared_cwd_refusal_quotes_the_value(self) -> None:
+        self._stand_in_another_tree()
+        missing = self._tmp / "host-spelled-path"
+        self._declare(missing)
+
+        message = self._refusal()
+
+        assert (
+            f"the process working directory — {_invocation_cwd.INVOCATION_CWD_ENV}={str(missing)!r} "
+            "is declared but does not resolve here"
+        ) in message
+        assert "nothing declared an invocation cwd" not in message
+
+    def test_refusal_uses_the_declaration_snapshot_that_selected_the_cwd(self) -> None:
+        self._stand_in_another_tree()
+        missing = self._tmp / "appearing-later"
+        self._declare(missing)
+        original_is_dir = Path.is_dir
+        probes = 0
+
+        def appears_after_first_probe(path: Path, *, follow_symlinks: bool = True) -> bool:
+            nonlocal probes
+            if path == missing:
+                probes += 1
+                return probes > 1
+            return original_is_dir(path, follow_symlinks=follow_symlinks)
+
+        self._monkeypatch.setattr(Path, "is_dir", appears_after_first_probe)
+
+        message = self._refusal()
+
+        assert probes == 1
+        assert f"{_invocation_cwd.INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in message
+        assert "which came from the process working directory" in message
 
     def test_a_resolution_failure_reads_differently_from_genuinely_missing_captures(self) -> None:
         bare = self._tmp / "no-plans-at-all"

@@ -6,14 +6,17 @@ The cause decides the remedy, so the classification comes first and the advice
 follows from it.
 """
 
+from teatree.core.invocation_cwd import invocation_cwd_declaration_problem
 from teatree.core.worktree.checkout_gitdir import CheckoutKind, classify_checkout, gitdir_pointer
 
 _ADOPT = "Register an existing checkout with `t3 <overlay> worktree adopt <path>` (it provisions nothing)."
 
 
-def unresolvable_worktree_message(cwd: str) -> str:
+def unresolvable_worktree_message(cwd: str, *, explicit_path: bool = False) -> str:
     """The ``WorktreeNotFoundError`` text for *cwd*, naming the cause and the remedy."""
     head = f"Cannot auto-detect worktree from {cwd}."
+    if not explicit_path and (problem := invocation_cwd_declaration_problem()):
+        head = f"{head}\n{problem}."
     kind = classify_checkout(cwd)
     if kind is CheckoutKind.UNREACHABLE_GITDIR:
         return (

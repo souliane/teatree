@@ -24,6 +24,8 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import command, initialize
 
+from teatree.core.gates.fix_dod_gate import is_fix
+from teatree.core.gates.repro_gate import repro_disabled_scope
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Ticket
 from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError
@@ -194,7 +196,13 @@ class Command(RefusalExitTyperCommand):
             for row in rows
         )
         valid = ReproEvidence.objects.has_valid_repro(ticket)
-        lines.append(f"  gate-satisfied: {valid or waivers.exists()}")
+        disabled_scope = repro_disabled_scope(ticket) if is_fix(ticket) else None
+        if disabled_scope is not None:
+            lines.append(f"  forced-repro disabled by: {disabled_scope}")
+        if recorded_scopes := (ticket.extra or {}).get("forced_repro_disabled_scopes"):
+            lines.append(f"  disabled scopes recorded: {', '.join(recorded_scopes)}")
+        gate_satisfied = not is_fix(ticket) or valid or waivers.exists() or disabled_scope is not None
+        lines.append(f"  gate-satisfied: {gate_satisfied}")
         output = "\n".join(lines)
         self.stdout.write(output)
         return output

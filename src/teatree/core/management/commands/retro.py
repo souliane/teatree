@@ -7,7 +7,7 @@ session's gate BLOCKs), and ``finding`` (record one confirmed lesson in the
 consolidation ledger and queue it on the umbrella host for the backlog sweep to fold
 into an existing ticket). ``finding`` is what retro persists a lesson WITH — retro writes no memory
 file, so a lesson lands as work that merges and then retires itself. The queueing
-is the default-OFF ``memory_promote`` mechanism, so with that toggle off the
+follows the default-ON ``dream_memory_promote`` setting, so with it off the
 finding is recorded and its promotion deferred onto the drain queue Pass 2 reads.
 
 ``review-findings`` is the enforcement-retrospective scaffold
@@ -241,7 +241,7 @@ class Command(TyperCommand):
         This is what retro persists a lesson WITH: the finding becomes a VERIFIED
         core-gap ledger row queued on the umbrella host's pending ledger — the same
         drain dreaming Pass 2 uses, so the prose retires itself once the host that
-        absorbs it merges. With ``memory_promote`` off the row is
+        absorbs it merges. With ``dream_memory_promote`` off the row is
         still recorded and the promotion reported ``deferred``, reaching no umbrella.
         Emits the result as JSON; a refusal prints its payload and raises
         ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real

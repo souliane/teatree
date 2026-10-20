@@ -12,6 +12,18 @@ change must be a deliberate, reviewed edit here, not an incidental drift.
 import dataclasses
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
+from teatree.config.setting_taxonomy import SettingClass, classify, owner_only_reason
+from teatree.mcp.write_tools import refuse_reason
+
+
+def test_forced_repro_setting_is_declared_and_owner_governed() -> None:
+    key = "forced_repro_gate_enabled"
+    assert UserSettings().forced_repro_gate_enabled is True
+    assert key in OVERLAY_OVERRIDABLE_SETTINGS
+    assert SettingClass.GATE_SWITCH in classify(key).classes
+    assert owner_only_reason(key)
+    assert refuse_reason(key)
+
 
 #: Every ``UserSettings`` field name at the current schema. Editing the dataclass
 #: WITHOUT updating this set is a red test — see the module docstring for routing.
@@ -61,6 +73,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "excluded_skills",
         "expected_required_contexts",
         "gate_relaxation_gate_enabled",
+        "forced_repro_gate_enabled",
         "gitlab_events_subscription",
         "handover_mirror_path",
         "harness_skill_exclusions",

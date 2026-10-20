@@ -220,11 +220,14 @@ class TestForceKeepOverSelectsNeverUnder:
 
 
 class TestPytestArgs:
-    def test_full_no_migration_emits_no_positional_args(self) -> None:
-        assert Selection(full=True, reason="conftest").pytest_args() == []
+    def test_full_no_migration_emits_the_whole_tree_declaration(self) -> None:
+        assert Selection(full=True, reason="conftest").pytest_args() == ["--teatree-selected-full"]
 
     def test_full_migration_emits_create_db(self) -> None:
-        assert Selection(full=True, reason="migration", create_db=True).pytest_args() == ["--create-db"]
+        assert Selection(full=True, reason="migration", create_db=True).pytest_args() == [
+            "--create-db",
+            "--teatree-selected-full",
+        ]
 
     def test_scoped_activates_the_plugin_and_pins_the_base(self) -> None:
         sel = Selection(full=False, reason="scoped", base_ref="origin/main")

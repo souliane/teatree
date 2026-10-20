@@ -449,6 +449,29 @@ class TestABranchThatIsOursIsAllowed:
 
 
 class TestABranchThatIsNotOursIsRefused:
+    def test_missing_token_scrubber_keeps_both_refusals(self, work: Path) -> None:
+        _branch_pushed_by(work, "feature", email=THEIR_EMAIL, author="Colleague")
+        _git(work, "checkout", "-q", "-b", "feature", "origin/feature")
+        commands = ("git push origin feature", "git push --force origin feature")
+        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=[])):
+            expected = [_run(command, work) for command in commands]
+            with (
+                patch.dict("sys.modules", {"teatree.forge_credentials": None}),
+                patch.dict("os.environ", {"GH_TOKEN": "sentinel-task-token"}),
+            ):
+                actual = [_run(command, work) for command in commands]
+                assert git_probes.bounded("clean text") == "clean text"
+                assert git_probes._one_line("clean text") == "clean text"
+                assert git_probes.bounded("probe says sentinel-task-token") == "probe says <redacted>"
+                assert git_probes._one_line("probe says sentinel-task-token") == "probe says <redacted>"
+
+        assert actual == expected
+        for blocked, payload in actual:
+            assert blocked is True
+            assert payload is not None
+            assert payload["permissionDecision"] == "deny"
+            assert payload["permissionDecisionReason"].startswith("REFUSED:")
+
     def test_an_open_mr_authored_by_a_colleague_refuses(self, work: Path) -> None:
         _branch_pushed_by(work, "1234-feat-search", email=THEIR_EMAIL, author="colleague-login")
         _git(work, "checkout", "-q", "-b", "1234-feat-search", "origin/1234-feat-search")
