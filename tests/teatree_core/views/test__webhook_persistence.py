@@ -79,6 +79,21 @@ class TestSettledAtIngestion(TestCase):
         row = IncomingEvent.objects.get(idempotency_key="gitlab:pending")
         assert (row.body, row.payload_json) == ("retry", {"retry": 1})
 
+    def test_dead_lettered_row_keeps_payload_even_when_settled(self) -> None:
+        ingest(
+            IngestionRecord(
+                source="gitlab",
+                idempotency_key="gitlab:pubsub:poison",
+                body="raw",
+                payload_json={"data": "raw"},
+                dead_letter_reason="message data is not JSON",
+                settled=True,
+            )
+        )
+
+        row = IncomingEvent.objects.get(idempotency_key="gitlab:pubsub:poison")
+        assert (row.body, row.payload_json) == ("raw", {"data": "raw"})
+
     def test_ingest_duplicate_outcome(self) -> None:
         record = IngestionRecord(source="github", idempotency_key="github:once", settled=True)
 

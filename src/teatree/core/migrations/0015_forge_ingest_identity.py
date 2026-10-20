@@ -8,7 +8,7 @@ from django.db.migrations.state import StateApps
 def trim_settled_forge_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
     incoming_event = apps.get_model("core", "IncomingEvent")
     incoming_event.objects.using(schema_editor.connection.alias).filter(
-        source__in=["github", "gitlab"], processed_at__isnull=False
+        source__in=["github", "gitlab"], processed_at__isnull=False, dead_lettered_at__isnull=True
     ).update(body="", payload_json={})
 
 

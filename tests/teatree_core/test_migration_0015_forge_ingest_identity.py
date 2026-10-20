@@ -27,14 +27,22 @@ class TestForgeIngestIdentityMigration(TransactionTestCase):
                 payload_json={"private": True},
                 processed_at=timezone.now() if settled else None,
             )
+        before.objects.create(
+            source="gitlab",
+            idempotency_key="gitlab:dead",
+            payload_json={"private": True},
+            processed_at=timezone.now(),
+            dead_lettered_at=timezone.now(),
+        )
 
         MigrationExecutor(connection).migrate([_AFTER])
 
         after = MigrationExecutor(connection).loader.project_state([_AFTER]).apps.get_model("core", "IncomingEvent")
         assert list(
-            after.objects.filter(source__in=["github", "gitlab"], processed_at__isnull=False).values_list(
-                "body", "payload_json"
-            )
+            after.objects.filter(
+                source__in=["github", "gitlab"], processed_at__isnull=False, dead_lettered_at__isnull=True
+            ).values_list("body", "payload_json")
         ) == [("", {}), ("", {})]
+        assert after.objects.get(idempotency_key="gitlab:dead").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="github:False").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="slack:True").body == "private"

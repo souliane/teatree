@@ -80,7 +80,7 @@ class TestIncomingEvent(TestCase):
 
         assert (event.body, event.payload_json) == ("", {})
 
-    def test_evidence_is_per_repository_and_event_type(self) -> None:
+    def test_evidence_per_event_type(self) -> None:
         IncomingEvent.objects.create(
             **self._payload(
                 source=IncomingEvent.Source.GITHUB,
@@ -95,7 +95,7 @@ class TestIncomingEvent(TestCase):
         assert not webhooks_verified_for("github", "github:101", "pull_request_review", timedelta(days=1))
         assert not webhooks_verified_for("github", "github:202", "push", timedelta(days=1))
 
-    def test_poll_rows_are_not_webhook_evidence(self) -> None:
+    def test_poll_rows_are_not_evidence(self) -> None:
         IncomingEvent.objects.create(
             **self._payload(
                 source=IncomingEvent.Source.GITHUB,
