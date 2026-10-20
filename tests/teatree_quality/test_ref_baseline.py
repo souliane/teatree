@@ -30,6 +30,19 @@ def test_architecture_spec_docs_excludes_other_charter_documents(tmp_path: Path)
     ]
 
 
+def test_charter_report_and_prune_use_the_charter_scan_mode(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "teatree" / "eval"
+    package.mkdir(parents=True)
+    (package / "__init__.py").touch()
+    (tmp_path / "BLUEPRINT.md").write_text("`eval/ghost_module_xyz.py`\n", encoding="utf-8")
+    pair = ("BLUEPRINT.md", "src/teatree/eval/ghost_module_xyz.py")
+    pinned = _write(tmp_path / "baseline.yaml", {"charter": {pair[0]: [pair[1]]}, "python_prose": {}})
+
+    assert pair in ref_baseline.reported_refs("charter", tmp_path)
+    assert ref_baseline.stale_entries(tmp_path, path=pinned)["charter"] == frozenset()
+    assert ref_baseline.prune(tmp_path, path=pinned, write=False)["charter"] == frozenset()
+
+
 def _write(path: Path, mapping: dict[str, dict[str, list[str]]]) -> Path:
     path.write_text(yaml.safe_dump(mapping, sort_keys=True), encoding="utf-8")
     return path

@@ -274,8 +274,28 @@ class TestResolver:
     def test_live_path_resolves(self) -> None:
         assert resolve_repo_path("src/teatree/quality/skill_symbol_refs.py", _REPO_ROOT) is None
 
+    def test_suffixless_python_path_resolves_only_in_charter_mode(self) -> None:
+        ref = "src/teatree/hooks/privacy_diff_comment_density"
+        assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
+        assert resolve_repo_path(ref, _REPO_ROOT) is not None
+
     def test_absent_path_is_unresolved(self) -> None:
         assert resolve_repo_path("src/teatree/core/session.py", _REPO_ROOT) is not None
+
+    def test_package_citation_does_not_emit_an_unresolved_bare_path(self) -> None:
+        findings = scan_source(
+            "`hooks/privacy_diff_comment_density.py`",
+            Path("BLUEPRINT.md"),
+            _REPO_ROOT,
+            charter=True,
+        )
+        assert [(finding.ref, finding.reason) for finding in findings] == [
+            ("src/teatree/hooks/privacy_diff_comment_density.py", None)
+        ]
+
+    def test_ambiguous_package_citation_stays_unresolved(self) -> None:
+        findings = scan_source("`eval/__init__.py`", Path("BLUEPRINT.md"), _REPO_ROOT, charter=True)
+        assert [(finding.ref, finding.reason is not None) for finding in findings] == [("eval/__init__.py", True)]
 
     def test_live_module_resolves(self) -> None:
         assert resolve_dotted("teatree.quality.skill_symbol_refs") is None
