@@ -168,7 +168,7 @@ installed editable from a clone; the eval harness ships inside it.
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
   run neither runs nor displays a metered-eval check. Its cron is checked daily,
   but the sweep runs only when an OAuth account preserves the eval reserve AND
-  resets its 7-day window within 24h (`EVAL_SWEEP_WITHIN_HOURS=24`), one leg at a
+  resets its 7-day window within 25h (`EVAL_SWEEP_WITHIN_HOURS=25`), one leg at a
   time, so it runs about once per weekly window on quota that would otherwise
   expire. The scheduled run also skips cleanly when nothing new merged in the
   lookback window (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI

@@ -270,6 +270,15 @@ def test_scheduled_sweep_window_reaches_each_credential_selector() -> None:
     assert "EVAL_SWEEP_WITHIN_HOURS" in sections[-1].split("- name:", 1)[0]
 
 
+def test_scheduled_sweep_window_exceeds_the_daily_cron_interval() -> None:
+    workflow = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))
+    prepare = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "sweep")
+    selector = next(step for step in workflow["jobs"]["eval"]["steps"] if step.get("id") == "select")
+    hours = int(prepare["env"]["EVAL_SWEEP_WITHIN_HOURS"])
+    assert 24 < hours <= 30
+    assert f"&& '{hours}' || ''" in selector["env"]["EVAL_SWEEP_WITHIN_HOURS"]
+
+
 def test_nightly_ledger_steps_are_main_only_and_retries_skip_passed_debt() -> None:
     workflow = yaml.safe_load(_NIGHTLY.read_text(encoding="utf-8"))
     steps = workflow["jobs"]
