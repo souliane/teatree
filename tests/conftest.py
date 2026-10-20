@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.conf import settings
+from xdist.workermanage import parse_tx_spec_config
 
 from hooks.scripts import hook_budget
 from teatree.agents import live_mailbox
@@ -39,7 +40,15 @@ from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
-from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
+from teatree.quality.pytest_resource_contract import (
+    TOTAL_TEST_WORKERS_PER_CORE,
+    PoolUnavailableError,
+    SlotLease,
+    WorkerSlotPool,
+    bounded_auto_workers,
+    whole_tree_refusal,
+    worker_pool_root,
+)
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
@@ -128,6 +137,15 @@ def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
 
+_WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--teatree-selected-full", action="store_true", help="Run the affected-test selector's full verdict"
+    )
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Bound a bare ``-n auto`` by this process's CPU and usable RAM."""
     return bounded_auto_workers(
@@ -137,8 +155,9 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Refuse a non-sharded whole-tree local run before test collection starts."""
+    """Refuse a non-sharded whole-tree local run, then lease its xdist workers from the host-wide pool."""
     config = session.config
     if hasattr(config, "workerinput"):
         return
@@ -146,9 +165,37 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
+    refusal = whole_tree_refusal(
+        config.args,
+        root=config.rootpath,
+        sharded=sharded,
+        tach_active=tach_active,
+        full_selected=bool(config.getoption("teatree_selected_full")),
+    )
     if refusal:
         raise pytest.UsageError(refusal)
+    distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
+    if not distributed:
+        return
+    tx = parse_tx_spec_config(config)
+    pool = WorkerSlotPool(worker_pool_root(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
+    try:
+        lease = pool.session_lease(len(tx))
+    except PoolUnavailableError as exc:
+        msg = f"{exc}; set TEATREE_PYTEST_WORKER_POOL_ROOT to a directory every pytest on this host shares"
+        raise pytest.UsageError(msg) from exc
+    config.stash[_WORKER_SLOT_LEASE] = lease
+    config.option.tx = tx[: lease.workers]
+    if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
+        config.option.numprocesses = lease.workers
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if hasattr(config, "workerinput"):
+        return
+    lease = config.stash.get(_WORKER_SLOT_LEASE, None)
+    if lease is not None:
+        lease.release()
 
 
 def load_script(name: str) -> types.ModuleType:
@@ -832,7 +879,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
 
 
-@pytest.fixture(autouse=True)
+# Class-local _isolate_env fixtures must not shadow the process sandbox.
+@pytest.fixture(autouse=True, name="isolated_test_process_env")
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate process env so tests cannot touch host workspace/config.
 
@@ -862,6 +910,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # never reads a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    # Resolve test registry paths under the isolated HOME.
+    monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh
     # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
     # cache before its network/subprocess ``gh`` call. Update checks always run here
