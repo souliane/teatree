@@ -1,0 +1,89 @@
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.agents.repro_phase_recorder import record_phase_repro
+from teatree.config.override_reader import load_overlay_rows
+from teatree.core.gates.repro_gate import audit_repro_exemption, forced_repro_gate_enabled, repro_disabled_scope
+from teatree.core.models import ConfigSetting, HarnessRun, ReproEvidence, Session, Task, Ticket, Worktree
+from tests.teatree_core.models._shared import _init_repo_with_branch
+
+
+class TestRecordPhaseReproSwitch(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _task(self, phase: str) -> Task:
+        ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
+        session = Session.objects.create(ticket=ticket, agent_id="tester")
+        return Task.objects.create(ticket=ticket, session=session, phase=phase)
+
+    def test_the_default_still_refuses_coding_without_a_red(self) -> None:
+        assert "repro record-red" in record_phase_repro(self._task("coding"), phase="coding")
+
+    def test_corrupt_switch_is_a_recordable_refusal(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
+        refusal = record_phase_repro(self._task("coding"), phase="coding")
+        assert "Cannot decide forced-repro requirement" in refusal
+
+    def test_switched_off_coding_completion_is_not_refused(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        task = self._task("coding")
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+            assert record_phase_repro(task, phase="coding") == ""
+        assert f"ticket {task.ticket_id}" in logs.output[0]
+        assert "forced_repro_gate_enabled" in logs.output[0]
+        assert "acme" in logs.output[0]
+
+    def test_switched_off_testing_completion_runs_no_green_replay(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        task = self._task("testing")
+        repo_dir = self._tmp_path / "replay-repo"
+        _init_repo_with_branch(repo_dir, branch="feature", commits_ahead=1)
+        Worktree.objects.create(
+            ticket=task.ticket, repo_path=str(repo_dir), branch="feature", extra={"worktree_path": str(repo_dir)}
+        )
+        red = ReproEvidence.record_red(
+            ticket=task.ticket,
+            command="false",
+            run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
+        )
+        with patch(
+            "teatree.agents.repro_phase_recorder.run_bounded_group",
+            return_value=SimpleNamespace(returncode=1, stdout="failed", stderr=""),
+        ) as replay:
+            result = record_phase_repro(task, phase="testing")
+        replay.assert_not_called()
+        assert result == ""
+        red.refresh_from_db()
+        assert red.green_exit_code is None
+
+
+class TestRecordPhaseReproWithSatisfiedCoding(TestCase):
+    def test_recorded_red_does_not_audit_a_disabled_requirement(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
+        session = Session.objects.create(ticket=ticket, agent_id="tester")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        ReproEvidence.record_red(
+            ticket=ticket,
+            command="false",
+            run=HarnessRun(head_sha="a" * 40, exit_code=1, output="failed"),
+        )
+        overlay, degraded = load_overlay_rows("acme")
+        assert not degraded
+        assert overlay.rows["forced_repro_gate_enabled"] is False
+        assert overlay.scopes["forced_repro_gate_enabled"] == "acme"
+        assert repro_disabled_scope(ticket) == "acme"
+        assert not forced_repro_gate_enabled(ticket)
+
+        with self.assertNoLogs("teatree.core.gates.repro_gate", level="WARNING"):
+            assert audit_repro_exemption(ticket, evidence="red")
+            assert record_phase_repro(task, phase="coding") == ""
+        ticket.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in ticket.extra

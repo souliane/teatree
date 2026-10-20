@@ -7,6 +7,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.credential_pass_key import PassKeySource, credential_of_setting, pass_key_setting
+from teatree.config.override_reader import OverlayRows
 from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayConfig
 
@@ -72,7 +73,7 @@ class TestResolutionOrder(TestCase):
     def test_an_unreadable_store_never_falls_back_onto_the_declared_default(self) -> None:
         config = _config(declared={"notion_token": "store/declared"})
 
-        with patch("teatree.config.credential_pass_key.load_overlay_rows", return_value=({}, True)):
+        with patch("teatree.config.credential_pass_key.load_overlay_rows", return_value=(OverlayRows({}, {}), True)):
             resolution = config.resolve_pass_key("notion_token")
 
         assert (resolution.value, resolution.source) == ("", PassKeySource.UNREADABLE)
