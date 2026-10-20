@@ -10,9 +10,11 @@ outer block — it just lets the platform-specific replay path no-op.
 import logging
 from dataclasses import dataclass, field
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
+from django.http import HttpResponse
 from django.utils import timezone
 
+from teatree.core.modelkit.db_retry import is_locked_error
 from teatree.core.models import IncomingEvent
 from teatree.core.models.provenance import classify_provenance
 
@@ -58,3 +60,13 @@ def persist_incoming_event(record: IngestionRecord) -> bool:
         logger.debug("%s already ingested — replay suppressed", record.idempotency_key)
         return False
     return True
+
+
+def ingest_response(record: IngestionRecord) -> HttpResponse:
+    try:
+        persist_incoming_event(record)
+    except OperationalError as exc:
+        if not is_locked_error(exc):
+            raise
+        return HttpResponse(status=503)
+    return HttpResponse(status=200)

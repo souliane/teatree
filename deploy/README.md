@@ -219,7 +219,7 @@ manual run skips the wait.
    converges the stack one service at a time — see
    [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
-The stack is five services from one image (`deploy/Dockerfile`), selected by
+The stack is six services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`, plus the read-only executor, which runs its own minimal image:
 
 | Service | Role | Restart | Notes |
@@ -227,6 +227,7 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, the pass store and, read-only, the code; no forge or chat token |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -1638,7 +1639,7 @@ applies when a container is next recreated; a log that grew before then stays un
 | `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-worker teatree-admin` | services (first reachable wins) to run the doctor/DM commands in — the worker leads because the health probe is heavy (#3651) |
 | `TEATREE_WATCHDOG_DOCTOR_RETRIES` | `3` | attempts when the probe cannot run because its target is restarting / not running |
 | `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
-| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
+| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-webhooks teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |

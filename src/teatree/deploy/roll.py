@@ -28,7 +28,7 @@ from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, DrainPacing, drain
 
 logger = logging.getLogger(__name__)
 
-CLAIMING_SERVICES = ("teatree-worker", "teatree-slack-listener")
+CLAIMING_SERVICES = ("teatree-worker", "teatree-slack-listener", "teatree-webhooks")
 RUNTIME_SERVICES = (*CLAIMING_SERVICES, "teatree-admin", "teatree-watchdog")
 _ESSENTIAL_SERVICES = ("teatree-worker", "teatree-admin")
 _TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)

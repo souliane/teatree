@@ -17,7 +17,7 @@ DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 BASE = DEPLOY / "docker-compose.yml"
 GENERATION = DEPLOY / "docker-compose.generation.yml"
 HOST_IDENTITY = DEPLOY / "docker-compose.host-identity.yml"
-ROLES = ("teatree-init", "teatree-worker", "teatree-admin", "teatree-slack-listener")
+ROLES = ("teatree-init", "teatree-worker", "teatree-admin", "teatree-slack-listener", "teatree-webhooks")
 RUNTIME_SERVICES = (*ROLES, "teatree-watchdog")
 SOURCE_TARGET = "/home/teatree/teatree"
 UV_VOLUME_TARGET = "/opt/teatree/uv"
@@ -85,6 +85,12 @@ class TestTheOverrideDropsEverythingTheCheckoutSupplies:
 
     def test_the_clone_dir_is_left_to_the_image(self, name: str) -> None:
         assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
+
+    def test_no_mount_shadows_the_baked_source_or_its_install(self, name: str) -> None:
+        override = _load(GENERATION)["services"][name]
+        volumes = override["volumes"] if "volumes" in override else _load(BASE)["services"][name].get("volumes", [])
+
+        assert not {SOURCE_TARGET, UV_VOLUME_TARGET}.intersection(_target(volume) for volume in volumes)
 
 
 def test_the_roller_is_a_one_shot_that_cannot_write_the_checkout() -> None:

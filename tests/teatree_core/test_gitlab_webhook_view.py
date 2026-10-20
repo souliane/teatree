@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -25,6 +26,16 @@ def _post(client: Client, body: bytes, *, token: str | None = SHARED_SECRET, eve
 
 @override_settings(TEATREE_GITLAB_WEBHOOK_TOKEN=SHARED_SECRET)
 class TestGitLabWebhookView(TestCase):
+    def test_locked_database_answers_503(self) -> None:
+        body = json.dumps({"object_kind": "merge_request"}).encode()
+        with patch(
+            "teatree.core.views._webhook_persistence.persist_incoming_event",
+            side_effect=OperationalError("database is locked"),
+        ):
+            response = _post(self.client, body)
+
+        assert response.status_code == 503
+
     def test_merge_request_approved_event_is_persisted(self) -> None:
         payload = {
             "object_kind": "merge_request",

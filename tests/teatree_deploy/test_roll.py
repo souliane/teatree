@@ -81,6 +81,10 @@ class TestAHappyRoll(TestCase):
     def test_every_runtime_service_runs_the_new_generation(self) -> None:
         assert self.engine.running == dict.fromkeys(RUNTIME_SERVICES, N1)
 
+    def test_the_forge_listener_stops_with_the_db_writers_and_returns_on_the_new_generation(self) -> None:
+        assert "teatree-webhooks" in self.engine.calls[1]
+        assert self.engine.running["teatree-webhooks"] == N1
+
     def test_the_new_generation_is_promoted(self) -> None:
         assert self.engine.promoted == N1
 
@@ -226,6 +230,11 @@ class TestOnlyAServiceThatStaysUpVerifies(TestCase):
 
         assert report.outcome is RollOutcome.ROLLED
         assert self.engine.calls.count(("admin_answers",)) >= 3
+
+    def test_a_crash_looping_forge_listener_declared_optional_does_not_gate_the_roll(self) -> None:
+        self.engine.crash_looping = {"teatree-webhooks"}
+
+        assert _roller(self.engine, optional=frozenset({"teatree-webhooks"})).roll(N1).outcome is RollOutcome.ROLLED
 
     def test_the_worker_and_the_admin_can_never_be_optional(self) -> None:
         for essential in ("teatree-worker", "teatree-admin"):
