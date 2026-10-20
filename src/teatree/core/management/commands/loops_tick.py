@@ -321,7 +321,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
         dry_run: Annotated[
             bool,
-            typer.Option("--dry-run", help="Preview the followup loop without posting or writing the database."),
+            typer.Option(
+                "--dry-run",
+                help="Preview built-in followup scanners without posting; overlay hooks are reported but skipped.",
+            ),
         ] = False,
     ) -> None:
         if not loop.strip():

@@ -35,15 +35,20 @@ import teatree.loop.scanners.review_request_resume as review_request_resume_modu
 import teatree.loops.loop_table as loop_table_module
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
+from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
+from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import DraftState, PrOpenState
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
 from teatree.core.models import Loop, LoopLease, OnBehalfApproval, OnBehalfAudit, ReviewRequestPost
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfSlackEgress
+from teatree.core.overlay import OverlayReview
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.loop.followup_dry_run import render_followup_dry_run, run_followup_dry_run
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.overlay_followup_jobs import overlay_followup_jobs
 from teatree.loop.phases.scan import ScanOutcome
+from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
 from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
@@ -339,6 +344,39 @@ class TestFollowupDryRun(TransactionTestCase):
         super().setUp()
         allow_slack_channels(_CHANNEL)
 
+    def test_overlay_forge_write_is_excluded_and_reported(self) -> None:
+        forge_writes: list[str] = []
+        hook_writes: list[str] = []
+
+        class ForgeWritingScanner:
+            name = "forge_writer"
+
+            def scan(self) -> list[ScanSignal]:
+                forge_writes.append("reviewer added")
+                return []
+
+        class Review(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                hook_writes.append("hook called")
+                return [ForgeWritingScanner()]
+
+        overlay = TeatreeOverlay()
+        overlay.review = Review()
+        backend = OverlayBackends(name="test", overlay=overlay)
+        with file_backed_default_database():
+            report = run_followup_dry_run(lambda: overlay_followup_jobs(backend))
+
+        assert forge_writes == []
+        assert hook_writes == []
+        assert report.not_previewed == ("overlay_followup_scanners[test]",)
+        assert report.exit_code == 3
+
+        jobs = overlay_followup_jobs(backend)
+        with file_backed_default_database():
+            prebuilt_report = run_followup_dry_run(jobs)
+        assert forge_writes == []
+        assert prebuilt_report.not_previewed == ("forge_writer[test]",)
+
     def test_records_every_authorship_verdict_and_suppresses_every_egress_and_write(self) -> None:
         _seed(_SELF_POST, 1)
         _seed(_FOREIGN_REACT, 2)
@@ -544,7 +582,7 @@ class TestFollowupDryRun(TransactionTestCase):
             time.sleep(1.0)
 
             assert _review_request_post_checksum(source) == before
-        assert "waited for it to finish" in report.errors["late"]
+        assert "waited for it to finish" in report.errors["late[test]"]
 
     def test_a_second_interrupt_during_the_join_never_lets_the_held_scanner_reach_the_source_database(self) -> None:
         _seed(_SELF_POST, 1)

@@ -1,7 +1,10 @@
+from threading import Event
 from typing import cast
+from unittest.mock import patch
 
 from django.test import TestCase
 
+import teatree.loop.overlay_followup_jobs as overlay_followup_jobs_module
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.backend_factory import OverlayBackends
@@ -17,6 +20,25 @@ class _ExtraScanner:
 
     def scan(self) -> list[ScanSignal]:
         return [ScanSignal(kind="overlay.extra", summary="ran")]
+
+
+class _BadScanScanner:
+    name = "bad_scan"
+    scan = 5
+
+
+class _ReservedScanner:
+    name = "pr_sweep"
+
+    def scan(self) -> list[ScanSignal]:
+        return []
+
+
+class _UnnamedScanner:
+    name = ""
+
+    def scan(self) -> list[ScanSignal]:
+        return []
 
 
 class _HookReview(OverlayReview):
@@ -93,10 +115,33 @@ class TestOverlayFollowupScanners(TestCase):
         assert len(failures) == 1
         outcome = scan_phase(failures)
         assert set(outcome.errors) == {"overlay_followup_scanners[alpha]"}
-        assert "bad hook" in outcome.errors["overlay_followup_scanners[alpha]"]
+        assert outcome.errors["overlay_followup_scanners[alpha]"] == "ValueError: bad hook"
+
+    def test_blocking_hook_is_bounded_and_reported(self) -> None:
+        release = Event()
+
+        class BlockingReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                release.wait()
+                return []
+
+        try:
+            with patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01):
+                jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", BlockingReview())])
+            refused = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
+            assert len(refused) == 1
+            assert scan_phase(refused).errors == {"overlay_followup_scanners[alpha]": "hook timed out after 0.01s"}
+        finally:
+            release.set()
 
     def test_a_hook_returning_a_non_scanner_is_refused(self) -> None:
-        for result, bad_type in (([object()], "object"), (None, "NoneType")):
+        cases = (
+            ([object()], "object"),
+            (None, "NoneType"),
+            ([_BadScanScanner()], "_BadScanScanner"),
+            ([_BadScanScanner], "type"),
+        )
+        for result, bad_type in cases:
             with self.subTest(result=result):
                 backend = self._backend("alpha", _HookReview(result))
                 jobs = MINI_LOOP.build_jobs(backends=[backend])
@@ -106,6 +151,29 @@ class TestOverlayFollowupScanners(TestCase):
                 outcome = scan_phase(failures)
                 assert set(outcome.errors) == {"overlay_followup_scanners[alpha]"}
                 assert bad_type in outcome.errors["overlay_followup_scanners[alpha]"]
+
+    def test_duplicate_and_reserved_names_are_refused_without_losing_other_jobs(self) -> None:
+        review = _HookReview([_ExtraScanner(), _ExtraScanner(), _ReservedScanner(), _UnnamedScanner()])
+        jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", review)])
+
+        assert [job.scanner.name for job in jobs].count("overlay_extra") == 1
+        assert not any(job.scanner.name == "pr_sweep" for job in jobs)
+        outcome = scan_phase([job for job in jobs if job.scanner.name == "overlay_followup_scanners"])
+        assert "duplicate" in outcome.errors["overlay_followup_scanners[alpha]"]
+        assert "pr_sweep" in outcome.errors["overlay_followup_scanners[alpha]"]
+        assert "Invalid scanner name" in outcome.errors["overlay_followup_scanners[alpha]"]
+
+    def test_agent_routed_signal_is_refused(self) -> None:
+        class AgentScanner:
+            name = "agent_scanner"
+
+            def scan(self) -> list[ScanSignal]:
+                return [ScanSignal(kind="self_pr_review.dispatch", summary="agent")]
+
+        jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([AgentScanner()]))])
+        outcome = scan_phase([job for job in jobs if job.scanner.name == "agent_scanner"])
+        assert outcome.signals == []
+        assert "agent-routed" in outcome.errors["agent_scanner[alpha]"]
 
     def test_two_overlays_keep_their_extra_scanners_separate(self) -> None:
         alpha_scanner, beta_scanner = _ExtraScanner(), _ExtraScanner()

@@ -16,6 +16,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_triage import RepoOwner
+from teatree.loop.dispatch import agent_dispatching_kinds
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,
     _audit_jobs_for_overlay,
@@ -25,6 +26,7 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _triage_assessor_jobs_for_overlay,
 )
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
+from teatree.loop.overlay_followup_jobs import _OverlayHookRefusalError, overlay_followup_jobs
 from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
@@ -73,7 +75,7 @@ from teatree.loop.scanners import (
     WaitingDigestScanner,
     WorkStateScanner,
 )
-from teatree.loop.scanners.base import Scanner, ScannerError
+from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
@@ -322,34 +324,6 @@ def _review_request_sender_runs(backend: OverlayBackends) -> bool:
     return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
 
 
-class _RefusedOverlayFollowupScanners:
-    name = "overlay_followup_scanners"
-
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
-
-    def scan(self) -> list[ScanSignal]:
-        raise ValueError(self.reason)
-
-
-def _overlay_followup_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
-    if backend.overlay is None:
-        return []
-    try:
-        scanners = list(backend.overlay.review.get_followup_scanners(backend))
-    except Exception as exc:
-        logger.exception("Overlay %s follow-up scanner hook raised", tag)
-        reason = f"{type(exc).__name__}: {exc}"
-        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
-
-    jobs = [_ScannerJob(scanner=scanner, overlay=tag) for scanner in scanners if isinstance(scanner, Scanner)]
-    bad_types = sorted({type(scanner).__name__ for scanner in scanners if not isinstance(scanner, Scanner)})
-    if bad_types:
-        reason = f"Non-Scanner items: {', '.join(bad_types)}"
-        jobs.append(_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag))
-    return jobs
-
-
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The colleague-facing review posts (overlay-scoped). Intake is the unified ``issue_intake`` job.
 
@@ -399,7 +373,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         if triage is not None:
             metadata = backend.overlay.metadata if backend.overlay is not None else OverlayMetadata()
             jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage, metadata=metadata), overlay=tag))
-        jobs.extend(_overlay_followup_jobs(backend, tag))
+        jobs.extend(overlay_followup_jobs(backend, (job.scanner.name for job in jobs)))
     return jobs
 
 
@@ -465,9 +439,11 @@ def _jobs_for_overlay_backend(
 
 
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
-    label = f"{job.scanner.name}[{job.overlay}]" if job.overlay else job.scanner.name
+    label = job.label
     try:
         signals = job.scanner.scan()
+        if job.overlay_hook and (forbidden := {signal.kind for signal in signals} & agent_dispatching_kinds()):
+            return label, [], f"agent-routed signal kind refused: {', '.join(sorted(forbidden))}"
         if job.overlay:
             signals = [
                 ScanSignal(
@@ -477,6 +453,8 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
                 )
                 for s in signals
             ]
+    except _OverlayHookRefusalError as exc:
+        return label, [], str(exc)
     except ScannerError as exc:
         # Auth / rate-limit / missing-scope / network: surface as a
         # structured error and DM the user once per day per
