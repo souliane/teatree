@@ -121,6 +121,17 @@ class WorktreesOutsideCanonicalRootTest(_RootsTestCase):
         row = self._register(escape, branch="escape")
         assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
 
+    def test_dotdot_in_the_canonical_root_is_normalized(self) -> None:
+        self._register(self.canonical / "T1" / "repo", branch="normalized")
+        with (
+            mock.patch(
+                "teatree.core.worktree.worktree_roots.worktree_root",
+                return_value=self.canonical / ".." / "canonical",
+            ),
+            missing_mount_table(),
+        ):
+            assert worktrees_outside_the_canonical_root() == []
+
     def test_a_deeper_mount_on_another_device_stays_outside(self) -> None:
         row = self._register(Path("/nonexistent-t3/alias/T1/repo"), branch="deeper")
         with patched_mount_table(

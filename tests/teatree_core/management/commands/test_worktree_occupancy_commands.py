@@ -123,6 +123,19 @@ class PathResolutionTests(_CommandCase):
         ):
             assert _worktree_for_path(str(self.checkout)).pk == exact.pk
 
+    def test_a_resolved_row_wins_over_an_earlier_mount_alias(self) -> None:
+        alias = f"/nonexistent-t3/alias/{self.checkout.name}"
+        self.worktree.extra = {"worktree_path": alias}
+        self.worktree.save(update_fields=["extra"])
+        resolved = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+        link = self.checkout.parent / f"{self.checkout.name}-link"
+        link.symlink_to(self.checkout, target_is_directory=True)
+        self.addCleanup(link.unlink)
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.checkout.parent)), ("259:2", "/ws", "/nonexistent-t3/alias")
+        ):
+            assert _worktree_for_path(str(link)).pk == resolved.pk
+
 
 class AttestTests(_CommandCase):
     def setUp(self) -> None:

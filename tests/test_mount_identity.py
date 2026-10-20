@@ -125,3 +125,21 @@ def test_an_unreadable_mount_table_offers_no_spelling(tmp_path: Path) -> None:
         assert mount_identity.mount_spellings(tmp_path) == []
     assert mount_identity.mount_spellings(tmp_path, mountinfo="") == []
     assert mount_identity.mount_spellings(tmp_path, mountinfo="malformed\n") == []
+
+
+def test_an_invalid_utf8_byte_does_not_discard_valid_mounts(tmp_path: Path, monkeypatch) -> None:
+    table = tmp_path / "mountinfo"
+    table.write_bytes((_HOST + "30 22 259:2 /nonexistent-t3/mnt/ws /alias rw - ext4 /dev/x rw\n").encode() + b"\xff\n")
+    monkeypatch.setattr(mount_identity, "_MOUNTINFO", table)
+    assert "/alias/ticket/repo" in mount_identity.mount_spellings(_CHECKOUT)
+
+
+def test_a_mount_table_without_a_root_line_can_locate_a_covered_path() -> None:
+    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) == "259:2:/ws/T1/repo"
+
+
+def test_overlapping_rootless_mounts_do_not_guess_a_covering_mount() -> None:
+    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 23 259:3 /other /alias/T1 rw - ext4 /dev/y rw\n"
+    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) is None

@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.worktree.worktree_paths import _candidate_paths, paths_match, ticket_dir_for, worktree_dir_for
+from teatree.core.worktree.worktree_paths import (
+    _candidate_paths,
+    path_is_within,
+    paths_match,
+    ticket_dir_for,
+    worktree_dir_for,
+)
 from tests._mount_table import missing_mount_table, patched_mount_table
 
 
@@ -73,7 +79,7 @@ class TestPathsMatch(TestCase):
                 assert paths_match(real_root / "T1" / "repo", alias)
                 assert not paths_match(alias, sibling)
 
-    def test_a_missing_mount_table_removes_only_the_mount_alias(self) -> None:
+    def test_without_a_readable_mount_table_the_two_spellings_stay_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             real = Path(directory) / "mnt" / "T1" / "repo"
             real.mkdir(parents=True)
@@ -107,3 +113,13 @@ class TestCandidatePaths(TestCase):
     def test_private_prefix_stripped_variant(self) -> None:
         out = _candidate_paths("/private/var/folders/x")
         assert "/var/folders/x" in out
+
+
+class TestPathIsWithin(TestCase):
+    def test_a_shadowing_mount_on_another_device_is_outside(self) -> None:
+        with patched_mount_table(
+            ("259:2", "/ws", "/nonexistent-t3/canonical"),
+            ("259:2", "/ws", "/nonexistent-t3/alias"),
+            ("259:3", "/other", "/nonexistent-t3/alias/T1"),
+        ):
+            assert not path_is_within("/nonexistent-t3/alias/T1/repo", "/nonexistent-t3/canonical")

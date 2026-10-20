@@ -68,11 +68,25 @@ def path_spellings(paths: Iterable[str | Path], *, mountinfo: str | None = None)
     return {spelling for path in paths for spelling in _candidate_paths(str(path), mount_table=table)}
 
 
-def path_is_within(path: str | Path, root: str | Path, *, mount_table: MountTable | None = None) -> bool:
+def path_is_within(
+    path: str | Path,
+    root: str | Path,
+    *,
+    mount_table: MountTable | None = None,
+    root_spellings: Iterable[str] | None = None,
+) -> bool:
     table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
     paths = _candidate_paths(str(path), mount_table=table)
-    roots = _candidate_paths(str(root), mount_table=table)
-    return any(Path(candidate).is_relative_to(ancestor) for candidate in paths for ancestor in roots)
+    local_roots, _ = _local_paths(str(root))
+    if any(Path(candidate).is_relative_to(ancestor) for candidate in paths for ancestor in local_roots):
+        return True
+    for alias in root_spellings if root_spellings is not None else table.spellings(str(root)):
+        for candidate in paths:
+            if Path(candidate).is_relative_to(alias):
+                translated = Path(root) / Path(candidate).relative_to(alias)
+                if candidate in _candidate_paths(str(translated), mount_table=table):
+                    return True
+    return False
 
 
 def paths_match(a: str | Path, b: str | Path) -> bool:
@@ -80,26 +94,18 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
 
     The pairwise form of the matcher the DB-lookup sites in :mod:`teatree.core.intake.resolve`
     already use via ``filter(extra__worktree_path__in=_candidate_paths(...))``. Two
-    paths match when their local variants coincide or map to one physical location, so a
+    paths match when their candidate spellings coincide, so a
     ``/var`` path matches its ``/private/var`` twin (and a resolved symlink matches
     its source). Routing the on-disk pairwise comparisons through it — the
-    ``reconcile`` stale-dir scan, ``worktree_collision`` own-dir exclusion, and the
-    orphan-worktree DB-tracked check — gives those sites the DB matcher's symlink
+    ``reconcile`` stale-dir scan and ``worktree_collision`` own-dir exclusion
+    use the DB matcher's symlink
     and mount tolerance. :func:`path_is_within` handles descendants, including
     the idle-stack active-CWD check.
     """
     raw_a, raw_b = str(a), str(b)
-    local_a, resolved_a = _local_paths(raw_a)
-    local_b, resolved_b = _local_paths(raw_b)
+    local_a, _ = _local_paths(raw_a)
+    local_b, _ = _local_paths(raw_b)
     if not set(local_a).isdisjoint(local_b):
         return True
     table = parsed_mount_table(read_mount_table())
-    location_a = table.locate(raw_a, resolved=resolved_a)
-    location_b = table.locate(raw_b, resolved=resolved_b)
-    if location_a is None or location_b is None:
-        return False
-    return (
-        location_a == location_b
-        or any(table.locate(path) == location_b for path in local_a[1:])
-        or any(table.locate(path) == location_a for path in local_b[1:])
-    )
+    return not set(_candidate_paths(raw_a, mount_table=table)).isdisjoint(_candidate_paths(raw_b, mount_table=table))

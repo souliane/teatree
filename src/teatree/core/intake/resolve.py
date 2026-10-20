@@ -30,8 +30,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
 from teatree.core.worktree.ticket_workspace import assert_joins_ticket_workspace
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
-from teatree.core.worktree.worktree_paths import _candidate_paths, path_is_within
-from teatree.mount_identity import parsed_mount_table, read_mount_table
+from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
 
 if TYPE_CHECKING:
@@ -503,10 +502,7 @@ def _warn_cwd_mismatch(worktree: Worktree, cwd: str) -> None:
         return
     cwd_resolved = str(Path(cwd).resolve())
     wt_resolved = str(Path(wt_path).resolve())
-    table = parsed_mount_table(read_mount_table())
-    if not path_is_within(cwd_resolved, wt_resolved, mount_table=table) and not path_is_within(
-        wt_resolved, cwd_resolved, mount_table=table
-    ):
+    if not cwd_resolved.startswith(wt_resolved) and not wt_resolved.startswith(cwd_resolved):
         logger.warning(
             "Resolved worktree path %s does not match CWD %s. You may be operating on the wrong worktree.",
             wt_resolved,

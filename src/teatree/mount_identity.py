@@ -99,8 +99,12 @@ class MountTable:
     def _covering_mount(self, target: str) -> _Mount | None:
         current = self.root
         if current is None:
-            return None
-        point = "/"
+            ids = {mount.mount_id for mount in self.mounts}
+            visible = [mount for mount in self.mounts if mount.parent_id not in ids and _holds(mount.point, target)]
+            if len(visible) != 1:
+                return None
+            current = visible[0]
+        point = current.point
         visited = {current.mount_id}
         for part in PurePosixPath(target).parts:
             if part != "/":
@@ -137,8 +141,8 @@ def _unescape(field: str) -> str:
 
 def _read(path: Path) -> str | None:
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
         return None
 
 
