@@ -128,6 +128,11 @@ def charter_docs(root: Path) -> list[Path]:
     return docs
 
 
+def architecture_spec_docs(root: Path) -> list[Path]:
+    """Return the architecture spec documents in stable order."""
+    return [doc for doc in charter_docs(root) if doc.name == "BLUEPRINT.md" or doc.parent.name == "blueprint"]
+
+
 def _pairs(root: Path, findings: Iterable[SymbolRefFinding]) -> set[tuple[str, str]]:
     return {(str(f.path.relative_to(root)), f.ref) for f in findings if f.reason is not None}
 
@@ -178,6 +183,7 @@ __all__ = [
     "BaselineError",
     "Pins",
     "Ratchet",
+    "architecture_spec_docs",
     "baseline_path",
     "charter_docs",
     "dump_baseline",

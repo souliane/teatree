@@ -19,6 +19,17 @@ from teatree.quality.ref_baseline import RATCHETS, BaselineError
 _BOGUS_PIN = ("src/teatree/quality/ref_baseline.py", "teatree.definitely.not.a.real.symbol")
 
 
+def test_architecture_spec_docs_excludes_other_charter_documents(tmp_path: Path) -> None:
+    spec_dir = tmp_path / "docs" / "blueprint"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "configuration.md").touch()
+
+    assert ref_baseline.architecture_spec_docs(tmp_path) == [
+        tmp_path / "BLUEPRINT.md",
+        spec_dir / "configuration.md",
+    ]
+
+
 def _write(path: Path, mapping: dict[str, dict[str, list[str]]]) -> Path:
     path.write_text(yaml.safe_dump(mapping, sort_keys=True), encoding="utf-8")
     return path

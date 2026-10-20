@@ -17,9 +17,7 @@ from teatree.quality.skill_symbol_refs import _exempt_lines, scan_file, scan_sou
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = REPO_ROOT / "src" / "teatree"
-SPEC = tuple(
-    doc for doc in ref_baseline.charter_docs(REPO_ROOT) if doc.name == "BLUEPRINT.md" or doc.parent.name == "blueprint"
-)
+SPEC = tuple(ref_baseline.architecture_spec_docs(REPO_ROOT))
 CODE_ROOTS = ("src", "hooks", "scripts", "dev", "deploy")
 CODE_SUFFIXES = frozenset({".py", ".sh", ".zsh"})
 
