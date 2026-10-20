@@ -182,6 +182,24 @@ def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     return _probe_open_pr([*_GH_OPEN_PR, "--head", branch], repo_dir, key="url")
 
 
+def github_pr_head_repository(repo_dir: str | Path, pr_url: str) -> tuple[str, str] | None:
+    output = _open_pr_stdout(["gh", "pr", "view", pr_url, "--json", "headRepository,headRefName"], repo_dir)
+    if output is None:
+        return None
+    try:
+        row = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(row, dict):
+        return None
+    repository = row.get("headRepository")
+    branch = row.get("headRefName")
+    if not isinstance(repository, dict) or not isinstance(branch, str):
+        return None
+    slug = repository.get("nameWithOwner")
+    return (slug, branch) if isinstance(slug, str) and slug and branch else None
+
+
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     """The tri-state open-MR probe for a known-GitLab repo, over the HTTP API (#151).
 

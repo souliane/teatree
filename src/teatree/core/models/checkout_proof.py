@@ -39,6 +39,19 @@ class AutoAttestation(TypedDict):
     holder: CheckoutHolderEvidence
 
 
+class ReleasedPrHeadAttestation(TypedDict):
+    at: str
+    previous: str
+    digest: str
+    anchor_commit: str
+    current_head: str
+    remote_head: str
+    pull_request: str
+    tenures: list[CheckoutTenure]
+    process_table: CheckoutProcessEvidence
+    holder: CheckoutHolderEvidence
+
+
 class DeferredCheckoutExit(TypedDict):
     holder: str
     session: str

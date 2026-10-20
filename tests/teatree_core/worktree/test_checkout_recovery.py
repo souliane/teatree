@@ -1,3 +1,5 @@
+import json
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +15,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models.checkout_custody import Custody
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
@@ -330,6 +333,290 @@ class InterruptedRunnerRecoveryTests(TestCase):
         assert audit["process_table"]["set_aside"] == ["pid 21 (claude) is unreadable by this uid"]
         assert audit["tenures"][0]["namespace"] == "pid:[42]"
         assert audit["tenures"][0]["ended"] == "abandoned"
+
+
+class ReleasedPrHeadRecoveryTests(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "checkout"
+        self.origin = Path(temporary.name) / "origin.git"
+        _init_repo_with_branch(self.path, branch="feature", commits_ahead=0)
+        run_strict(repo=str(self.path), args=["config", "user.email", "test@example.com"])
+        run_strict(repo=str(self.path), args=["config", "user.name", "Test"])
+        run_strict(repo=str(self.path), args=["init", "--bare", str(self.origin)])
+        run_strict(repo=str(self.path), args=["remote", "add", "origin", str(self.origin)])
+        run_strict(repo=str(self.path), args=["push", "origin", "main", "feature"])
+        self.ticket = TicketFactory()
+        self.shipping = TaskFactory(ticket=self.ticket, phase="shipping")
+        self.reviewer = TaskFactory(ticket=self.ticket, phase="reviewing")
+        self.claimant = TaskFactory(ticket=self.ticket, phase="coding")
+        self.worktree = WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.path)})
+        self.pr = PullRequestFactory(ticket=self.ticket)
+        self.clear = ProcessTable(frozenset(), "/host-proc")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear):
+            verify_task_checkout(self.shipping, str(self.path))
+        self.anchor = checkout_state(self.path, ticket=self.ticket).digest
+        self.anchor_head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
+        self.shipping.claim(claimed_by="worker", claimed_by_session="ship")
+        with (
+            patch.object(runner, "nested_pid_namespace", return_value="pid:[42]"),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "")),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", return_value=False),
+            patch.object(runner, "_run_agent", side_effect=self.merge_main),
+        ):
+            runner.run_agent(self.shipping, phase="shipping", overlay_skill_metadata={})
+        self.worktree.refresh_from_db()
+        assert self.worktree.occupied_by == ""
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+        self.reviewer.claim(claimed_by="worker", claimed_by_session="review")
+        with (
+            patch.object(runner, "nested_pid_namespace", return_value="pid:[43]"),
+            patch.object(runner, "_run_agent", return_value=Mock(spec=TaskAttempt)),
+        ):
+            runner.run_agent(self.reviewer, phase="reviewing", overlay_skill_metadata={})
+        self.worktree.refresh_from_db()
+        assert self.worktree.occupied_by == ""
+        assert self.worktree.get_extra()["attested_state"] == self.anchor
+        self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
+
+    def merge_main(self, *_args: object, **_kwargs: object) -> TaskAttempt:
+        (self.path / "feature.txt").write_text("feature")
+        run_strict(repo=str(self.path), args=["add", "feature.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "feature"])
+        run_strict(repo=str(self.path), args=["checkout", "main"])
+        (self.path / "main.txt").write_text("main")
+        run_strict(repo=str(self.path), args=["add", "main.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "main moved"])
+        run_strict(repo=str(self.path), args=["checkout", "feature"])
+        run_strict(repo=str(self.path), args=["merge", "--no-edit", "main"])
+        run_strict(repo=str(self.path), args=["push", "origin", "feature"])
+        return Mock(spec=TaskAttempt)
+
+    def claim(
+        self, table: ProcessTable | None = None, *, head_repo: str = "souliane/teatree", pr: PrProbe | None = None
+    ) -> TaskAttempt | None:
+        metadata = json.dumps({"headRepository": {"nameWithOwner": head_repo}, "headRefName": "feature"})
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
+            patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=pr or PrProbe.found(self.pr.url)),
+            patch.object(forge_pr_probe, "_open_pr_stdout", return_value=metadata),
+            patch("teatree.utils.git.remote_slug", return_value="souliane/teatree"),
+            patch("teatree.utils.git.remote_url", return_value="https://github.com/souliane/teatree.git"),
+            patch("teatree.core.worktree.checkout_fence.ask_owner_to_attest") as card,
+            patch("teatree.core.worktree.checkout_fence.notify_user") as page,
+        ):
+            result = claim_task_checkout_or_park(self.claimant)
+        if result is None:
+            card.assert_not_called()
+            page.assert_not_called()
+        return result
+
+    def assert_clean_claim_then_restore(self) -> None:
+        self.worktree.refresh_from_db()
+        original = deepcopy(self.worktree.extra)
+        assert self.claim() is None
+        assert release(self.worktree, holder=task_holder_id(self.claimant))
+        Worktree.objects.filter(pk=self.worktree.pk).update(extra=original)
+        self.worktree.refresh_from_db()
+
+    def assert_parked(self, table: ProcessTable | None = None, **kwargs: object) -> None:
+        self.worktree.refresh_from_db()
+        recorded = self.worktree.get_extra()["attested_state"]
+        assert self.claim(table, **kwargs) is not None
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == recorded
+
+    def test_t1_released_shipping_and_reviewer_claim_at_owned_pr_head(self) -> None:
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        assert table.eviction_refuse_reason(nested_writer=True) == ""
+        assert self.claim(table) is None
+        self.worktree.refresh_from_db()
+        audit = self.worktree.get_extra()["auto_attestation"]
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.path, ticket=self.ticket).digest
+        assert audit["anchor_commit"] == self.anchor_head
+        assert audit["remote_head"] == self.head
+        assert audit["pull_request"] == self.pr.url
+        assert [entry["holder"] for entry in audit["tenures"]] == [
+            task_holder_id(self.shipping),
+            task_holder_id(self.reviewer),
+            task_holder_id(self.claimant),
+        ]
+        assert serialize_worktree(self.worktree)["auto_attestation"] == audit
+
+    def test_t2_extra_local_commit_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        (self.path / "late.txt").write_text("late")
+        run_strict(repo=str(self.path), args=["add", "late.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "late"])
+        self.assert_parked()
+
+    def test_t2_different_branch_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        run_strict(repo=str(self.path), args=["checkout", "-b", "other"])
+        self.assert_parked()
+
+    def test_t3_tracked_and_untracked_dirt_park(self) -> None:
+        self.assert_clean_claim_then_restore()
+        (self.path / "feature.txt").write_text("dirty")
+        self.assert_parked()
+
+    def test_t3_untracked_dirt_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        (self.path / "untracked.txt").write_text("dirty")
+        self.assert_parked()
+
+    def test_t4a_host_gap_with_mixed_empty_and_nested_namespaces_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][0]["namespace"] = ""
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        assert table.eviction_refuse_reason(nested_writer=False)
+        self.assert_parked(table)
+
+    def test_t4a_different_nested_namespaces_set_aside_host_gap(self) -> None:
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
+        custody = Custody.from_extra(self.worktree.get_extra())
+        assert custody is not None
+        assert custody.prior_tenures_nested
+        assert {entry.namespace for entry in custody.tenures} == {"pid:[42]", "pid:[43]"}
+        assert table.eviction_refuse_reason(nested_writer=custody.prior_tenures_nested) == ""
+        assert self.claim(table) is None
+
+    def test_t4a_nested_unreadable_gap_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\t7\n")
+        assert table.eviction_refuse_reason(nested_writer=True)
+        self.assert_parked(table)
+
+    def test_t5_operator_holder_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        acquire(self.worktree, holder="operator", holder_session="terminal")
+        release(self.worktree, holder="operator", holder_session="terminal")
+        self.assert_parked()
+
+    def test_t5_foreign_ticket_holder_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        foreign = TaskFactory(ticket=TicketFactory(), phase="reviewing")
+        acquire(self.worktree, holder=task_holder_id(foreign))
+        release(self.worktree, holder=task_holder_id(foreign))
+        self.assert_parked()
+
+    def test_t6_completed_cancelled_prior_task_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        Task.objects.filter(pk=self.reviewer.pk).update(
+            status=Task.Status.COMPLETED, failure_kind=FailureKind.CANCELLED
+        )
+        self.assert_parked()
+
+    def test_t6_abandoned_prior_tenure_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"][1]["ended"] = "abandoned"
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        self.assert_parked()
+
+    def test_t7_anchor_beyond_bounded_reflog_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        for index in range(70):
+            run_strict(repo=str(self.path), args=["commit", "--allow-empty", "-m", f"later {index}"])
+        run_strict(repo=str(self.path), args=["push", "origin", "feature"])
+        self.assert_parked()
+
+    def test_t7_missing_anchor_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["anchor"] = "0" * 64
+        self.worktree.merge_extra(
+            set_keys={
+                "attested_state": "0" * 64,
+                "checkout_custody": extra["checkout_custody"],
+            }
+        )
+        self.assert_parked()
+
+    def test_t7_dirty_original_anchor_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        (self.path / "temporary.txt").write_text("dirty anchor")
+        dirty_digest = checkout_state(self.path, ticket=self.ticket).digest
+        (self.path / "temporary.txt").unlink()
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["anchor"] = dirty_digest
+        self.worktree.merge_extra(
+            set_keys={
+                "attested_state": dirty_digest,
+                "checkout_custody": extra["checkout_custody"],
+            }
+        )
+        self.assert_parked()
+
+    def test_t7_nonancestor_anchor_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        (self.path / "old-tip.txt").write_text("old tip")
+        run_strict(repo=str(self.path), args=["add", "old-tip.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "old tip"])
+        old_anchor = checkout_state(self.path, ticket=self.ticket).digest
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["anchor"] = old_anchor
+        self.worktree.merge_extra(
+            set_keys={"attested_state": old_anchor, "checkout_custody": extra["checkout_custody"]}
+        )
+        run_strict(repo=str(self.path), args=["checkout", "-B", "feature", self.head])
+        (self.path / "new-tip.txt").write_text("new tip")
+        run_strict(repo=str(self.path), args=["add", "new-tip.txt"])
+        run_strict(repo=str(self.path), args=["commit", "-m", "new tip"])
+        new_head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
+        run_strict(repo=str(self.path), args=["push", "origin", f"{new_head}:refs/heads/proof-candidate"])
+        run_strict(repo=str(self.origin), args=["update-ref", "refs/heads/feature", new_head])
+        self.assert_parked()
+
+    def test_t8_fork_and_unreadable_remote_park(self) -> None:
+        self.assert_clean_claim_then_restore()
+        self.assert_parked(head_repo="someone/fork")
+        run_strict(repo=str(self.path), args=["remote", "set-url", "origin", str(self.path.parent / "missing.git")])
+        self.assert_parked()
+
+    def test_t8_no_owned_open_pr_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        self.assert_parked(pr=PrProbe.none())
+        foreign = PullRequestFactory(ticket=TicketFactory())
+        self.assert_parked(pr=PrProbe.found(foreign.url))
+
+    def test_t8_missing_exact_remote_ref_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        run_strict(repo=str(self.origin), args=["update-ref", "-d", "refs/heads/feature"])
+        self.assert_parked()
+
+    def test_t8_mismatched_remote_head_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        old = run_strict(repo=str(self.path), args=["rev-parse", "main"])
+        run_strict(repo=str(self.origin), args=["update-ref", "refs/heads/feature", old])
+        self.assert_parked()
+
+    def test_other_worktree_with_foreign_open_tenure_parks(self) -> None:
+        self.assert_clean_claim_then_restore()
+        sibling = self.path.parent / "sibling"
+        _init_repo_with_branch(sibling, branch="feature", commits_ahead=0)
+        other = WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(sibling)})
+        sibling_anchor = checkout_state(sibling, ticket=self.ticket).digest
+        other.merge_extra(
+            set_keys={
+                "attested_state": sibling_anchor,
+                "checkout_custody": Custody(sibling_anchor, ()).as_dict(),
+            }
+        )
+        acquire(other, holder="operator", holder_session="terminal")
+        (sibling / "change.txt").write_text("changed")
+        run_strict(repo=str(sibling), args=["config", "user.email", "test@example.com"])
+        run_strict(repo=str(sibling), args=["config", "user.name", "Test"])
+        run_strict(repo=str(sibling), args=["add", "change.txt"])
+        run_strict(repo=str(sibling), args=["commit", "-m", "changed"])
+        assert self.claim() is not None
+        other.refresh_from_db()
+        assert other.get_extra()["attested_state"] == sibling_anchor
 
 
 class DeferredExitRecoveryTests(_RecoveryCase):

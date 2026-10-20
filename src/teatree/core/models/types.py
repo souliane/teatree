@@ -7,6 +7,7 @@ from teatree.core.models.checkout_proof import (
     CheckoutCustody,
     DeferredCheckoutExit,
     DeferredExitAttestation,
+    ReleasedPrHeadAttestation,
 )
 
 if TYPE_CHECKING:
@@ -741,7 +742,7 @@ class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
     checkout_custody: CheckoutCustody
-    auto_attestation: AutoAttestation | DeferredExitAttestation
+    auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
     deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]
