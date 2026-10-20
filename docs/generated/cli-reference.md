@@ -11942,7 +11942,8 @@ Usage: t3 teatree handover create [OPTIONS]
  failure this command is supposed to make impossible.
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
- for whichever session starts next. Per directive #8, every in-flight
+ for whichever session starts next. ``--park`` parks even with a live owner
+ and cannot be combined with ``--to``. Per directive #8, every in-flight
  sub-agent worktree is driven through leak-gated fast-push so their work is
  committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
  barrier runs on the refused path too, since a session with nothing to hand
@@ -11971,6 +11972,9 @@ Usage: t3 teatree handover create [OPTIONS]
 │ --json                                             Emit JSON.                │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+│ --park                                             Park for the next session │
+│                                                    instead of the live loop  │
+│                                                    owner.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
