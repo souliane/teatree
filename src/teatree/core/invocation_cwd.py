@@ -43,8 +43,40 @@ from pathlib import Path
 #: Set by ``deploy/t3`` to the CONTAINER-side path of the operator's host cwd.
 #: Never a host path — translating is the wrapper's job, not the reader's.
 INVOCATION_CWD_ENV = "TEATREE_INVOCATION_CWD"
+INVOCATION_CWD_UNSET_PROBLEM = f"{INVOCATION_CWD_ENV} is unset (not declared)"
 
 _log = logging.getLogger(__name__)
+
+
+def _read_declaration() -> tuple[str, Path | None]:
+    value = os.environ.get(INVOCATION_CWD_ENV, "").strip()
+    if not value:
+        return value, None
+    candidate = Path(value)
+    try:
+        return value, candidate if candidate.is_dir() else None
+    except OSError:
+        return value, None
+
+
+def _declaration_problem(declared: str, candidate: Path | None) -> str | None:
+    if not declared:
+        return INVOCATION_CWD_UNSET_PROBLEM
+    if candidate is not None:
+        return None
+    return f"{INVOCATION_CWD_ENV}={declared!r} is declared but does not resolve here"
+
+
+def declared_invocation_cwd_with_problem() -> tuple[Path | None, str | None]:
+    declared, candidate = _read_declaration()
+    if declared and candidate is None:
+        _log.warning(
+            "%s=%r is not a directory in this runtime — ignoring it and falling back to the process cwd. "
+            "It must name the CONTAINER-side path of your checkout, not the host path.",
+            INVOCATION_CWD_ENV,
+            declared,
+        )
+    return candidate, _declaration_problem(declared, candidate)
 
 
 def declared_invocation_cwd() -> Path | None:
@@ -63,19 +95,13 @@ def declared_invocation_cwd() -> Path | None:
     wrongness this module exists to fix, and the refusals that tell operators to
     export this variable are unreadable if a bad value discards without a word.
     """
-    declared = os.environ.get(INVOCATION_CWD_ENV, "").strip()
-    if not declared:
-        return None
-    candidate = Path(declared)
-    if candidate.is_dir():
-        return candidate
-    _log.warning(
-        "%s=%r is not a directory in this runtime — ignoring it and falling back to the process cwd. "
-        "It must name the CONTAINER-side path of your checkout, not the host path.",
-        INVOCATION_CWD_ENV,
-        declared,
-    )
-    return None
+    candidate, _ = declared_invocation_cwd_with_problem()
+    return candidate
+
+
+def invocation_cwd_declaration_problem() -> str | None:
+    declared, candidate = _read_declaration()
+    return _declaration_problem(declared, candidate)
 
 
 def invocation_cwd() -> Path:
@@ -99,4 +125,12 @@ def operator_cwd() -> Path:
     return invocation_cwd()
 
 
-__all__ = ["INVOCATION_CWD_ENV", "declared_invocation_cwd", "invocation_cwd", "operator_cwd"]
+__all__ = [
+    "INVOCATION_CWD_ENV",
+    "INVOCATION_CWD_UNSET_PROBLEM",
+    "declared_invocation_cwd",
+    "declared_invocation_cwd_with_problem",
+    "invocation_cwd",
+    "invocation_cwd_declaration_problem",
+    "operator_cwd",
+]
