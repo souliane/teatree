@@ -217,7 +217,7 @@ def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchRep
     (#15). Do not flip the default to satisfy a hot path; narrow at the
     caller instead.
 
-    Distinct branches classify on at most eight workers; reports and errors
+    Distinct branches classify on at most PROBE_WORKERS workers; reports and errors
     remain in Worktree row order.
     """
     workspace = clone_root()
