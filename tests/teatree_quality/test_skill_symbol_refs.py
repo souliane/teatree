@@ -279,6 +279,12 @@ class TestResolver:
         assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
         assert resolve_repo_path(ref, _REPO_ROOT) is not None
 
+    def test_template_root_path_resolves_only_when_src_qualified_in_charter_mode(self) -> None:
+        ref = "src/teatree/dash/base.html"
+        assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
+        assert resolve_repo_path(ref, _REPO_ROOT) is not None
+        assert resolve_repo_path("dash/base.html", _REPO_ROOT, charter=True) is not None
+
     def test_absent_path_is_unresolved(self) -> None:
         assert resolve_repo_path("src/teatree/core/session.py", _REPO_ROOT) is not None
 
