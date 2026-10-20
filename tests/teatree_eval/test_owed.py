@@ -4,12 +4,15 @@ import json
 import subprocess
 import zipfile
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
+import yaml
 
 from teatree.eval.owed import (
     LEDGER_ARTIFACT,
     LEDGER_FILENAME,
+    LEG_OWED_PREFIX,
     MAX_LISTING_PAGES,
     PAGE_SIZE,
     PR_ARTIFACT_LOOKBACK,
@@ -26,6 +29,29 @@ from teatree.eval.owed import (
 REPO = "souliane/teatree"
 NOW = dt.datetime(2026, 10, 16, 3, 0, tzinfo=dt.UTC)
 DAY = dt.timedelta(days=1)
+
+
+def test_owed_producer_artifact_names_match_harvest_contract() -> None:
+    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    cases = (
+        (
+            "eval.yml",
+            "Upload the weekly leg's owed scenarios",
+            LEG_OWED_PREFIX + "${{ steps.artifact.outputs.suffix }}",
+        ),
+        (
+            "eval-ci-heal.yml",
+            "Upload this shard's owed scenarios",
+            LEG_OWED_PREFIX + "heal-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+        ),
+        ("eval-pr.yml", "Upload the owed scenarios", PR_OWED_ARTIFACT),
+        ("eval-pr-reusable.yml", "Upload the owed scenarios", PR_OWED_ARTIFACT),
+    )
+    for filename, step_name, expected in cases:
+        jobs = yaml.safe_load((workflows / filename).read_text(encoding="utf-8"))["jobs"]
+        uploads = [step for job in jobs.values() for step in job.get("steps", []) if step.get("name") == step_name]
+        assert len(uploads) == 1, filename
+        assert uploads[0]["with"]["name"] == expected, filename
 
 
 def _owed(name: str, *, reason: OwedReason = OwedReason.DEFERRED, since: dt.datetime = NOW) -> OwedScenario:
