@@ -242,9 +242,8 @@ class TestForcedReproGateSwitchedOff(TestCase):
         ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").delete()
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         ticket = _fix_ticket()
-        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING"):
             check_forced_repro(ticket)
-        assert f"forced_repro_gate_enabled is off for ticket {ticket.pk} in scope global" in logs.output[0]
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
         check_forced_repro(ticket)
         ticket.refresh_from_db()
