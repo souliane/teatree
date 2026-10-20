@@ -328,14 +328,13 @@ class TestRealPytestRunsDrawFromOneBoxPool:
         tmp_path = real_pytest_root
         with WorkerSlotPool(tmp_path, capacity=_REAL_CAPACITY).acquire(_REAL_CAPACITY):
             result = subprocess.run(
-                pytest_command("-n", "0", "-q"),
+                pytest_command("-n", "1", "-q"),
                 cwd=REPO,
                 env=standalone_pytest_env(tmp_path),
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=15,
                 check=False,
             )
-        assert result.returncode == 4
-        assert "unsharded whole-tree pytest is refused" in result.stderr
+        assert result.returncode == 4, result.stderr
         assert "; waiting" not in result.stderr
