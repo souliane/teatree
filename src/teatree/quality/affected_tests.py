@@ -164,8 +164,9 @@ class Selection:
     def pytest_args(self, *, test_db_cloned: bool = False) -> list[str]:
         """Positional pytest args for this selection.
 
-        A FULL verdict emits at most a DB flag and runs the whole suite with the plugin
-        OFF. A SCOPED verdict activates the tach plugin (``--tach --tach-base <base>``)
+        A FULL verdict carries ``--teatree-selected-full`` so the runner can distinguish
+        it from an empty selector response and run the whole suite with the plugin OFF.
+        A SCOPED verdict activates the tach plugin (``--tach --tach-base <base>``)
         and loads the force-keep layer (``-p teatree.quality.force_keep_plugin``); the
         two run in ONE session. Changed src modules keep CI's ``--doctest-modules``
         parity — passing them (and an explicit ``tests`` root, so the positionals do not
@@ -177,7 +178,7 @@ class Selection:
         """
         db = (["--reuse-db"] if test_db_cloned else ["--create-db"]) if self.create_db else []
         if self.full:
-            return db  # plugin OFF ⇒ the runner executes the whole suite
+            return [*db, "--teatree-selected-full"]
         plugin = ["--tach", "--tach-base", self.base_ref, "-p", FORCE_KEEP_PLUGIN]
         if self.doctest_targets:
             return [*db, *plugin, _TESTS_PREFIX.rstrip("/"), *self.doctest_targets, "--doctest-modules"]
