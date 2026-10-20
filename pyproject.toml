@@ -774,6 +774,7 @@ override-dependencies = [  ]
 
 [tool.uv.exclude-newer-package]
 certifi = "2026-10-20T02:24:17Z"
+pillow = "2026-10-16T22:18:10Z"
 pydantic-ai-slim = "2026-10-13T23:50:13Z"
 pydantic-graph = "2026-10-13T23:50:17Z"
 
