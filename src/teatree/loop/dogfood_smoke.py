@@ -9,7 +9,7 @@ the loop's tick, not in the user's next session.
 
 The runner is pure orchestration over an injectable :class:`SmokeStep`
 list — production wiring runs ``t3 <overlay> workspace ticket /
-worktree provision / start / ready / teardown``
+worktree provision / start / ready / fixture-workspace teardown``
 and friends; tests inject in-memory fakes. Each step has a per-step
 time budget (default 60s); exceeding it categorises the run as
 :attr:`SmokeOutcomeKind.TIMEOUT` so the failure DM names the hung step.
@@ -77,7 +77,6 @@ STEP_OUTCOME_KIND: dict[str, SmokeOutcomeKind] = {
     "worktree_start": SmokeOutcomeKind.START_FAILED,
     "worktree_ready": SmokeOutcomeKind.READY_FAILED,
     "worktree_teardown": SmokeOutcomeKind.TEARDOWN_FAILED,
-    "workspace_clean_all": SmokeOutcomeKind.CLEAN_FAILED,
 }
 
 
@@ -150,6 +149,10 @@ type StepRunner = Callable[[SmokeStep], StepResult]
 type WorktreePathResolver = Callable[[], str]
 
 
+class WorktreePathRefusalError(ValueError):
+    pass
+
+
 class _WorktreePathBinder:
     """Bind :data:`WORKTREE_PATH_PLACEHOLDER` to the created worktree, memoised per run.
 
@@ -183,6 +186,9 @@ class _WorktreePathBinder:
             return
         try:
             self._path = self._resolver()
+        except WorktreePathRefusalError as exc:
+            self._failure = str(exc)
+            return
         except Exception as exc:
             logger.exception("Worktree-path resolver crashed")
             self._failure = f"{type(exc).__name__}: {exc}"
@@ -308,7 +314,7 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
             timeout_seconds=120,
             env_unset=unset_overlay,
         ),
-        SmokeStep(name="worktree_teardown", command=("t3", overlay, "worktree", "teardown", *at_worktree)),
+        SmokeStep(name="worktree_teardown", command=("t3", overlay, "workspace", "teardown", *at_worktree)),
     ]
 
 
@@ -428,6 +434,7 @@ __all__ = [
     "SmokeStep",
     "StepResult",
     "StepRunner",
+    "WorktreePathRefusalError",
     "WorktreePathResolver",
     "default_steps",
     "pick_alias_variant",

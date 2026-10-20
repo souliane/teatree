@@ -209,7 +209,6 @@ class TestRunSmoke:
         assert "worktree_start" not in runner.calls
         assert "worktree_ready" not in runner.calls
         assert "worktree_teardown" not in runner.calls
-        assert "workspace_clean_all" not in runner.calls
 
     def test_unknown_step_name_falls_back_to_unknown_outcome(self) -> None:
         custom = [SmokeStep(name="unmapped_step", command=("noop",))]
@@ -267,7 +266,6 @@ class TestStepOutcomeKindCoverage:
             ("worktree_start", SmokeOutcomeKind.START_FAILED),
             ("worktree_ready", SmokeOutcomeKind.READY_FAILED),
             ("worktree_teardown", SmokeOutcomeKind.TEARDOWN_FAILED),
-            ("workspace_clean_all", SmokeOutcomeKind.CLEAN_FAILED),
             ("workspace_provision_env_unset", SmokeOutcomeKind.OVERLAY_RESOLUTION_FAILED),
             ("workspace_provision_env_set", SmokeOutcomeKind.PROVISION_FAILED),
         ],

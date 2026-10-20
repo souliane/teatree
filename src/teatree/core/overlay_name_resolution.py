@@ -9,6 +9,8 @@ the inverse name lookup that stamps ``Ticket.overlay`` at the creation seam.
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.config import OverlayEntry
+
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
@@ -89,15 +91,15 @@ def resolve_overlay_name(name: str) -> str | None:
 
 
 def registered_overlay_name(spelling: str) -> str | None:
-    from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: matches resolve_overlay_name's loader cycle
     from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred: avoids the loader cycle
 
-    if exact := resolve_overlay_name(spelling):
-        return exact
     if not spelling:
         return None
+    names = OverlayConfigResolver.all_names()
+    if spelling in names:
+        return spelling
     canonical = OverlayEntry.canonical_overlay_name(spelling)
-    for name in OverlayConfigResolver.all_names():
+    for name in names:
         if OverlayEntry.canonical_overlay_name(name) == canonical:
             return name
     return None
