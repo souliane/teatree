@@ -5,6 +5,7 @@ the transport registry are faked (``tests/_factory_slack.py``).
 """
 
 import datetime as dt
+from dataclasses import dataclass
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -14,6 +15,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.relay import RelayReceipt, RelayRefusal
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Task
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.types import RawAPIDict
 from teatree.utils.url_slug import slack_conversation_anchor
 from tests._factory_slack import OWNER_DM, OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
 from tests.factories import TaskFactory, TicketFactory
@@ -109,6 +111,28 @@ class TestRelayRefusals(TestCase):
         }.items():
             with self.subTest(name=name), live_factory_slack(dm):
                 refusal = _relay(relay_id=name)
+
+                assert isinstance(refusal, RelayRefusal)
+                assert refusal.delivery_failed
+                assert PendingChatInjection.objects.count() == 0
+
+
+@dataclass
+class _ReadsBackWrongly(FakeOwnerDm):
+    """A DM whose read-back disagrees with what it was sent: another message's ts, or the right ts with other text."""
+
+    wrong: str = "text"
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        message = super().fetch_message(channel=channel, ts=ts)
+        return {**message, "text": "something else entirely"} if self.wrong == "text" else {**message, "ts": "9.0"}
+
+
+class TestRelayReadBack(TestCase):
+    def test_a_read_back_that_is_not_the_post_is_a_delivery_failure_with_no_row(self) -> None:
+        for wrong in ("text", "ts"):
+            with self.subTest(wrong=wrong), live_factory_slack(_ReadsBackWrongly(wrong=wrong)):
+                refusal = _relay(relay_id=wrong)
 
                 assert isinstance(refusal, RelayRefusal)
                 assert refusal.delivery_failed
