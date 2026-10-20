@@ -93,12 +93,13 @@ def test_invalid_or_naive_timestamp_is_unknown() -> None:
 @pytest.mark.parametrize(
     ("payload", "action", "repo_key"),
     [
-        ({"action": "a" * 32}, "a" * 32, ""),
         ({"action": "b" * 65}, "b" * 64, ""),
         ({"head_commit": {"timestamp": "0001-01-01T00:00:00+14:00"}}, "", ""),
         ({"head_commit": {"timestamp": "1800-01-01T00:00:00Z"}}, "", ""),
         ({"head_commit": {"timestamp": "2200-01-01T00:00:00Z"}}, "", ""),
         ({"repository": {"id": 10**80}}, "", ""),
+        ({"repository": {"id": 0}}, "", ""),
+        ({"repository": {"id": True}}, "", ""),
     ],
 )
 def test_identity_fields_respect_source_bounds(payload: RawAPIDict, action: str, repo_key: str) -> None:

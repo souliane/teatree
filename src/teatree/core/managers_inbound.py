@@ -13,6 +13,8 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.utils.forge import FORGES
+
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
 
@@ -21,19 +23,18 @@ __all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
 #: Neither drained nor poisoned — the in-flight boundary both the drain and the
 #: pruner key on, so they can never disagree about what is still owed.
 _UNSETTLED = Q(processed_at__isnull=True, dead_lettered_at__isnull=True)
-FORGE_SOURCES = frozenset({"github", "gitlab"})
-_SETTLED_FORGE = Q(source__in=FORGE_SOURCES, processed_at__isnull=False, dead_lettered_at__isnull=True)
+_SETTLED_FORGE = Q(source__in=FORGES, processed_at__isnull=False, dead_lettered_at__isnull=True)
 
 
 class IncomingEventQuerySet(models.QuerySet):
     @staticmethod
-    def is_settled_forge(source: str, *, settled: bool, dead_lettered: bool) -> bool:
-        return source in FORGE_SOURCES and settled and not dead_lettered
+    def is_settled_forge(source: str, *, settled: bool = True, dead_lettered: bool) -> bool:
+        return source in FORGES and settled and not dead_lettered
 
     def forge_identity_rows(self, cutoff: datetime) -> models.QuerySet:
         return self.prunable(cutoff).filter(_SETTLED_FORGE)
 
-    def other_rows(self, cutoff: datetime) -> models.QuerySet:
+    def non_identity_prunable_rows(self, cutoff: datetime) -> models.QuerySet:
         return self.prunable(cutoff).exclude(_SETTLED_FORGE)
 
     def webhooks_verified_for(self, source: str, repo_key: str, event_name: str, window: timedelta) -> bool:

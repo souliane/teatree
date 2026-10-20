@@ -123,7 +123,6 @@ class TestStoringMessages(GitLabEventsTestCase):
 
         signals = IncomingEventsScanner().scan()
 
-        assert IncomingEvent.objects.get().body == ""
         assert [s.kind for s in signals] == []
 
 

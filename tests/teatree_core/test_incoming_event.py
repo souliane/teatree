@@ -14,7 +14,7 @@ from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import IncomingEvent, webhooks_verified_for
+from teatree.core.models import IncomingEvent
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 
 
@@ -106,9 +106,11 @@ class TestIncomingEvent(TestCase):
             )
         )
 
-        assert webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
-        assert not webhooks_verified_for("github", "github:101", "pull_request_review", timedelta(days=1))
-        assert not webhooks_verified_for("github", "github:202", "push", timedelta(days=1))
+        assert IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for(
+            "github", "github:101", "pull_request_review", timedelta(days=1)
+        )
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:202", "push", timedelta(days=1))
 
     def test_poll_rows_are_not_evidence(self) -> None:
         IncomingEvent.objects.create(
@@ -121,7 +123,7 @@ class TestIncomingEvent(TestCase):
             )
         )
 
-        assert not webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
 
     def test_webhook_evidence_respects_the_window(self) -> None:
         IncomingEvent.objects.create(
@@ -135,7 +137,7 @@ class TestIncomingEvent(TestCase):
             )
         )
 
-        assert not webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
 
     def test_relay_is_evidence_but_empty_repository_is_not(self) -> None:
         for key, repo_key, event_name in (
@@ -153,9 +155,9 @@ class TestIncomingEvent(TestCase):
                 )
             )
 
-        assert webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
-        assert not webhooks_verified_for("gitlab", "", "merge_request", timedelta(days=1))
-        assert not webhooks_verified_for("gitlab", "gitlab:101", "", timedelta(days=1))
+        assert IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("gitlab", "", "merge_request", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "", timedelta(days=1))
 
     def test_unprocessed_manager_excludes_completed_events(self) -> None:
         unprocessed = IncomingEvent.objects.create(**self._payload())

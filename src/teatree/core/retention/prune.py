@@ -185,7 +185,7 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
         Lane(
             INCOMING_EVENT_TABLE,
             POST_MORTEM_RETENTION_DAYS,
-            IncomingEvent.objects.other_rows,
+            IncomingEvent.objects.non_identity_prunable_rows,
             cascade=_event_children,
         ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),

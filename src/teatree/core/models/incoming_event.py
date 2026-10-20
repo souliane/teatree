@@ -85,9 +85,7 @@ class IncomingEvent(models.Model):
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
         update_fields = ["processed_at"]
-        if type(self).objects.is_settled_forge(
-            self.source, settled=True, dead_lettered=self.dead_lettered_at is not None
-        ):
+        if type(self).objects.is_settled_forge(self.source, dead_lettered=self.dead_lettered_at is not None):
             self.body = ""
             self.payload_json = {}
             update_fields.extend(["body", "payload_json"])
@@ -135,6 +133,3 @@ class IncomingEvent(models.Model):
         """Persist the resolved parent-message *text* (single-field write)."""
         self.parent_text = text
         self.save(update_fields=["parent_text"])
-
-
-webhooks_verified_for = IncomingEvent.objects.webhooks_verified_for
