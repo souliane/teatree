@@ -74,6 +74,19 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(
+        "teatree pending_chat relay",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4"),
+        note="--json adds one object after the t3-relay-receipt / t3-relay-refused marker line; "
+        "exit 3 means not relayed and 4 means the post did not land, so the session answers in the terminal",
+    ),
+    Capability(
+        "teatree pending_chat relays",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json lists the relayed prompts the factory has not answered, or whose delegated work went wrong",
+    ),
+    Capability(
         "teatree tasks create",
         json_output=True,
         exit_codes=("0", "1"),

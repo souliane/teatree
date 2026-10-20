@@ -52,6 +52,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         identities,
         live,
         loop_preset,
+        pending_chat,
         pr,
         questions,
         queue,
@@ -68,6 +69,8 @@ def _switch_handler_params() -> dict[str, set[str]]:
     handlers = {
         "teatree identities bootstrap": identities.Command.bootstrap,
         "teatree queue status": queue.Command.status,
+        "teatree pending_chat relay": pending_chat.Command.relay,
+        "teatree pending_chat relays": pending_chat.Command.relays,
         "teatree retention prune": retention.Command.prune,
         "teatree retention artifacts": retention.Command.artifacts,
         "teatree retention scratch": retention.Command.scratch,

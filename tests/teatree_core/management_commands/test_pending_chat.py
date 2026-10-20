@@ -25,6 +25,12 @@ def _call(*args: str) -> str:
     return buf.getvalue()
 
 
+def _call_stderr(*args: str) -> str:
+    buf = StringIO()
+    call_command(*args, stderr=buf)
+    return buf.getvalue()
+
+
 class TestListSubcommand:
     def test_list_empty_says_no_rows(self) -> None:
         out = _call("pending_chat", "list")
@@ -315,8 +321,8 @@ class TestRelaysSubcommand:
         }
 
     def test_the_human_view_names_each_open_relay_and_says_when_there_are_none(self) -> None:
-        assert "no open relays" in _call("pending_chat", "relays")
+        assert "no open relays" in _call_stderr("pending_chat", "relays")
 
         row = self._relay_row("1.0", "s1")
 
-        assert f"#{row.pk}" in _call("pending_chat", "relays", "--session", "s1")
+        assert f"#{row.pk}" in _call_stderr("pending_chat", "relays", "--session", "s1")

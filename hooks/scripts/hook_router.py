@@ -173,7 +173,6 @@ from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_path_probe import is_file_safe
 from hooks.scripts.slack_first_gate import handle_slack_first_gate
 from hooks.scripts.slack_first_question import (
-    SLACK_FIRST_QUESTION_GATE,
     question_run_id,
     route_attended_question_to_slack,
     supersede_pending_questions,
@@ -3204,7 +3203,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
         if (reason := route_attended_question_to_slack(data)) is not None:
-            return emit_pretooluse_deny(reason, gate_id=SLACK_FIRST_QUESTION_GATE)
+            return emit_pretooluse_deny(reason, gate_id="slack_first_question")
         supersede_pending_questions(data)
         return False
     queue_id = _capture_and_defer_question(data, dedupe=True)

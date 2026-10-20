@@ -19,18 +19,18 @@ The ``mark-answered`` path is also reachable via ``notify_user``'s
 idempotency-key convention (see :mod:`teatree.core.notify`).
 """
 
-import json
 import os
 from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django.db import transaction
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.machine_output import emit
 from teatree.core.modelkit.relay import RelayRefusal
 from teatree.core.models import PendingChatInjection
 from teatree.core.session_identity import session_id_from_env
@@ -155,9 +155,14 @@ class Command(TyperCommand):
         )
 
     def _report(self, marker: str, *, json_output: bool, **fields: str | int | bool) -> None:
+        self.print_result = False
         self.stdout.write(marker)
-        if json_output:
-            self.stdout.write(json.dumps({**fields, "marker": marker}))
+        emit(
+            {**fields, "marker": marker},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+        )
 
     @command()
     def relays(
@@ -167,7 +172,7 @@ class Command(TyperCommand):
             str | None, typer.Option("--session", help="Only this session's relays; omit for every session's.")
         ] = None,
         json_output: Annotated[bool, typer.Option("--json", help="Print the open relays as JSON.")] = False,
-    ) -> str:
+    ) -> None:
         """List the relayed owner prompts the factory has not answered, or whose delegated work went wrong."""
         rows = [
             {
@@ -180,8 +185,14 @@ class Command(TyperCommand):
             }
             for row in PendingChatInjection.objects.open_relays(session)
         ]
-        if json_output:
-            return json.dumps(rows)
-        if not rows:
-            return "no open relays."
-        return "\n".join(f"#{row['id']} [{row['state']}] session={row['session'] or '-'} {row['text']}" for row in rows)
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(
+                f"#{row['id']} [{row['state']}] session={row['session'] or '-'} {row['text']}" for row in rows
+            )
+            or "no open relays.",
+        )
