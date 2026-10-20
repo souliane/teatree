@@ -270,21 +270,16 @@ class CheckoutFenceTests(TestCase):
             assert still_parked.not_before is not None
             assert still_parked.not_before > timezone.now()
 
-    def test_release_at_the_post_park_holder_check_rearms_the_task(self) -> None:
+    def test_park_behind_a_holder_released_before_the_park_rearms_at_once(self) -> None:
         held = acquire(self.worktree, holder="task:other", holder_session="s1")
-
-        def release_at_check(task: Task, behind: object) -> bool:
-            assert task.pk == self.task.pk
-            assert behind == held
-            assert Task.objects.get(pk=task.pk).not_before > timezone.now()
-            assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
-            return False
-
-        with patch("teatree.core.worktree.checkout_fence._still_held_by", side_effect=release_at_check):
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
             park_task_checkout(self.task, reason="occupied before release", behind=held)
         self.task.refresh_from_db()
         assert self.task.not_before is not None
         assert self.task.not_before <= timezone.now()
+        assert Task.objects.waiting_for_admission().filter(pk=self.task.pk).exists()
+        notice.assert_not_called()
 
     def test_unknown_occupied_holder_rearms_when_checkout_is_free_without_notice(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
