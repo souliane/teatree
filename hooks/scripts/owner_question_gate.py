@@ -122,16 +122,10 @@ def _questions(data: dict) -> list | None:
 
 
 def _fit_problems(questions: list) -> list[str]:
-    problems = [f"{len(questions)} questions in one call; ask one decision per call"] if len(questions) > 1 else []
-    try:
-        with teatree_src_on_path():
-            from teatree.core.modelkit.question_card import CardView  # noqa: PLC0415 — deferred: cold-hook import
-    except ImportError:
-        sys.stderr.write(
-            "NOTE: the owner-question-fit gate did NOT validate wording — the shared question-card check "
-            "could not be imported. The call proceeds unvalidated; remote CI cannot check the live question.\n"
-        )
-        return problems
+    with teatree_src_on_path():
+        from teatree.core.modelkit.question_card import CardView  # noqa: PLC0415 — deferred: cold-hook import
+
+    problems: list[str] = []
     for question in questions:
         if isinstance(question, dict) and isinstance(text := _question_text(question), str) and text.strip():
             problems.extend(CardView.ask_problems({**question, "question": text}))
@@ -141,16 +135,25 @@ def _fit_problems(questions: list) -> list[str]:
 def handle_block_unfit_question(data: dict) -> bool:
     if data.get("tool_name") not in _QUESTION_TOOLS or (questions := _questions(data)) is None:
         return False
-    problems = _fit_problems(questions)
+    batch_count = len(questions)
     if (
-        not problems
-        or _dispatched_agent()
-        or _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
+        _dispatched_agent()
         or not _gate_enabled()
         or not _owner_reads_this_turn(data)
+        or _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
     ):
-        if len(questions) > 1:
-            sys.stderr.write(_BATCHED_WARN.format(n=len(questions)))
+        if batch_count > 1:
+            sys.stderr.write(_BATCHED_WARN.format(n=batch_count))
+        return False
+    problems = [f"{batch_count} questions in one call; ask one decision per call"] if batch_count > 1 else []
+    try:
+        problems.extend(_fit_problems(questions))
+    except ImportError:
+        sys.stderr.write(
+            "NOTE: the owner-question-fit gate did NOT validate wording — the shared question-card check "
+            "could not be imported; remote CI cannot check the live question.\n"
+        )
+    if not problems:
         return False
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 

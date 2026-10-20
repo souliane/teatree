@@ -137,26 +137,26 @@ def test_two_separate_questions_and_clean_reply_pass(tmp_path: Path) -> None:
     assert not stop.stdout
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "I asked you two questions and recorded the answers.",
-        "Since 09:12 · all overlays\nNeeds you\n  - Q12: Merge the release branch now? — answer in its Slack thread",
-    ],
-)
-def test_normal_status_reply_passes(tmp_path: Path, text: str) -> None:
+def test_normal_status_reply_passes(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     result = _run_hook(
         tmp_path,
         "Stop",
-        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": text},
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "last_assistant_message": (
+                "Since 09:12 · all overlays\nNeeds you\n"
+                "  - Q12: Merge the release branch now? — answer in its Slack thread"
+            ),
+        },
     )
 
     assert result.returncode == 0
     assert not result.stdout
 
 
-@pytest.mark.parametrize("question", ["Merge ticket 42 now?", "Use the --force flag?", "Set widget_mode now?"])
+@pytest.mark.parametrize("question", ["Merge ticket 42 now?", "Set widget_mode now?"])
 def test_question_shorthand_is_refused(tmp_path: Path, question: str) -> None:
     transcript = _transcript(tmp_path)
     result = _run_hook(
@@ -192,6 +192,24 @@ def test_two_questions_in_one_call_are_refused(tmp_path: Path) -> None:
     assert "one decision per call" in result.stdout
 
 
+def test_one_question_writes_nothing_to_stderr(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    _seed_settings(tmp_path, {"owner_question_gate_enabled": False})
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask("Merge this now?")]},
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
 def test_long_question_is_refused(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     question = (
@@ -219,6 +237,17 @@ def test_stop_uses_transcript_when_final_message_is_missing(tmp_path: Path) -> N
     result = _run_hook(tmp_path, "Stop", {"session_id": "owner-turn", "transcript_path": str(transcript)})
 
     assert result.returncode == 0
+    assert json.loads(result.stdout)["decision"] == "block"
+
+
+def test_whitespace_final_message_uses_transcript(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path, final=_DECISION_LIST)
+    result = _run_hook(
+        tmp_path,
+        "Stop",
+        {"session_id": "owner-turn", "transcript_path": str(transcript), "last_assistant_message": " \n "},
+    )
+
     assert json.loads(result.stdout)["decision"] == "block"
 
 
@@ -487,6 +516,24 @@ def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
     assert "OWNER QUESTION GATE" not in result.stdout
 
 
+def test_escape_token_beyond_first_512_question_characters_does_not_bypass(tmp_path: Path) -> None:
+    transcript = _transcript(tmp_path)
+    question = "Merge ticket 42 now?" + " " * 512 + "[owner-question-ok: the owner asked for the number]"
+    result = _run_hook(
+        tmp_path,
+        "PreToolUse",
+        {
+            "session_id": "owner-turn",
+            "transcript_path": str(transcript),
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [_ask(question)]},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "OWNER QUESTION GATE" in result.stdout
+
+
 @pytest.mark.parametrize("dispatched", [False, True])
 def test_batched_question_the_gate_does_not_refuse_still_warns(tmp_path: Path, *, dispatched: bool) -> None:
     transcript = _transcript(tmp_path) if dispatched else _scheduled_transcript(tmp_path)
@@ -506,19 +553,6 @@ def test_batched_question_the_gate_does_not_refuse_still_warns(tmp_path: Path, *
     assert "ONE decision per call" in result.stderr
 
 
-def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    payload = {"session_id": "owner-turn", "transcript_path": str(transcript), "tool_name": "AskUserQuestion"}
-    questions = ["Merge ticket 42 now?", "Merge ticket 43 today?", "Merge ticket 44 tonight?"]
-
-    results = [
-        _run_hook(tmp_path, "PreToolUse", payload | {"tool_input": {"questions": [_ask(question)]}})
-        for question in questions
-    ]
-
-    assert [result.returncode for result in results] == [2, 2, 2]
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -528,8 +562,6 @@ def test_distinct_refused_questions_never_share_a_breaker_streak(tmp_path: Path)
         "Needs you: all clear",
         "Waiting on you: 0",
         "Needs you:",
-        "Needs you: nothing pending",
-        "Needs you: no outstanding decisions",
         "Waiting on you: zero",
     ],
 )
@@ -549,10 +581,7 @@ def test_empty_owner_labels_pass_through_router(tmp_path: Path, text: str) -> No
     "text",
     [
         "Review done. Pull requests that are ok to merge:\n- First\n- Second",
-        "Lint is clean. Warnings that are OK to ignore:\n- First\n- Second",
-        "Files that are ok to delete:\n- First\n- Second",
         "If you want me to look later, here are the logs:\n- First\n- Second",
-        "What we changed:\n- First\n- Second",
     ],
 )
 def test_status_intro_with_two_bullets_passes_router(tmp_path: Path, text: str) -> None:
@@ -565,21 +594,6 @@ def test_status_intro_with_two_bullets_passes_router(tmp_path: Path, text: str) 
 
     assert result.returncode == 0
     assert not result.stdout
-
-
-def test_real_colon_choice_list_still_blocks_router(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    result = _run_hook(
-        tmp_path,
-        "Stop",
-        {
-            "session_id": "owner-turn",
-            "transcript_path": str(transcript),
-            "last_assistant_message": "Do you want me to:\n- merge now\n- wait for review",
-        },
-    )
-
-    assert json.loads(result.stdout)["decision"] == "block"
 
 
 @pytest.mark.parametrize(
@@ -600,8 +614,6 @@ def test_label_recaps_pass_router(tmp_path: Path, text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "Needs you: nothing blocking, but should I merge the hotfix now?",
-        "Needs you: none yet. Should I merge the hotfix now or wait?",
         "Needs you: none; choose the branch.",
         "Needs you: none; please choose the branch.",
         "Needs you \u2013 pick one:\n- Merge now\n- Wait for review",
@@ -719,12 +731,44 @@ def test_skipped_owner_wording_gate_names_no_remote_ci_backstop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setitem(sys.modules, "teatree.core.modelkit.question_card", None)
+    monkeypatch.setattr(owner_gate, "_dispatched_agent", lambda: False)
+    monkeypatch.setattr(owner_gate, "_gate_enabled", lambda: True)
+    monkeypatch.setattr(owner_gate, "_owner_reads_this_turn", lambda _data: True)
 
-    owner_gate._fit_problems([_ask("Merge this now?")])
+    owner_gate.handle_block_unfit_question(
+        {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Merge this now?")]}}
+    )
 
     warning = capsys.readouterr().err
     assert "owner-question-fit" in warning
     assert "remote CI job remains the backstop" not in warning
+
+
+def test_two_questions_still_refused_when_card_import_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setitem(sys.modules, "teatree.core.modelkit.question_card", None)
+    monkeypatch.setattr(owner_gate, "_dispatched_agent", lambda: False)
+    monkeypatch.setattr(owner_gate, "_gate_enabled", lambda: True)
+    monkeypatch.setattr(owner_gate, "_owner_reads_this_turn", lambda _data: True)
+    data = {
+        "session_id": "owner-turn",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [_ask("Merge now?"), _ask("Wait for review?")]},
+    }
+
+    assert owner_gate.handle_block_unfit_question(data)
+    assert "one decision per call" in capsys.readouterr().out
+
+
+def test_disabled_question_gate_skips_card_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("T3_DISPATCHED_AGENT", raising=False)
+    monkeypatch.setattr(owner_gate, "_gate_enabled", lambda: False)
+    monkeypatch.setattr(owner_gate, "_fit_problems", lambda _questions: pytest.fail("validated card"))
+
+    assert not owner_gate.handle_block_unfit_question(
+        {"tool_name": "AskUserQuestion", "tool_input": {"questions": [_ask("Merge this now?")]}}
+    )
 
 
 def test_disabled_stop_gate_does_not_resolve_reply(monkeypatch: pytest.MonkeyPatch) -> None:

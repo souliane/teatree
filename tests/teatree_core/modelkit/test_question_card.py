@@ -403,6 +403,8 @@ def test_in_client_question_checks_header_and_total_card_words() -> None:
 
     assert any("the header carries internal shorthand" in problem for problem in problems)
     assert any("120" in problem for problem in problems)
+    assert any('must end in "?"' in problem for problem in CardView.ask_problems(card | {"question": "Merge this now"}))
+    assert any("1 option" in problem for problem in CardView.ask_problems(card | {"options": card["options"][:1]}))
 
 
 def test_in_client_word_count_skips_the_slack_reply_and_ref_lines() -> None:
