@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.core import task_dispatch
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.merge.refusal_settlement import connect_merge_refusal_settlement
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
@@ -310,9 +311,7 @@ def _auto_enqueue_task(
 
 
 def _admit_after_checkout_capacity(**_kwargs: object) -> None:
-    from teatree.core.task_dispatch import admit_waiting_tasks  # noqa: PLC0415 — deferred: call-time import
-
-    transaction.on_commit(lambda: admit_waiting_tasks(at="checkout capacity"), robust=True)
+    transaction.on_commit(lambda: task_dispatch.admit_waiting_tasks(at="checkout capacity"), robust=True)
 
 
 def _close_session_on_terminal_task(
