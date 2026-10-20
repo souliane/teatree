@@ -129,8 +129,7 @@ class TestLockedDatabase(GitHubWebhookTestCase):
             accepted = self.deliver_on_a_listener_thread()
 
         assert locked.status_code == 503
-        # SQLite's 5 s busy wait oversleeps under load (7.1 s measured); GitHub gives up at 10 s.
-        assert elapsed < 10
+        assert elapsed < 7
         assert accepted.status_code == 200
 
     def test_other_database_errors_still_raise(self) -> None:
