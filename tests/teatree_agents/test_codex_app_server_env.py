@@ -62,7 +62,7 @@ def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -
     assert "T3_LOOP_REGISTRY_DIR" not in env
 
 
-def test_pool_root_reaches_codex_without_expanding_router_allowlist(tmp_path: Path) -> None:
+def test_pool_root_does_not_expand_router_allowlist(tmp_path: Path) -> None:
     ambient = {
         "PATH": "/usr/bin",
         "TEATREE_PYTEST_WORKER_POOL_ROOT": str(tmp_path / "shared-pool"),
@@ -74,11 +74,8 @@ def test_pool_root_reaches_codex_without_expanding_router_allowlist(tmp_path: Pa
         "T3_LOOP_REGISTRY_DIR": ambient["T3_LOOP_REGISTRY_DIR"],
     }
 
-    codex_env = codex_process_env(tmp_path / "private-home", dispatch, ambient=ambient)
     router_env = router_process_env(dispatch, ambient=ambient)
 
-    assert codex_env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == ambient["TEATREE_PYTEST_WORKER_POOL_ROOT"]
-    assert "T3_LOOP_REGISTRY_DIR" not in codex_env
     assert router_env == {"PATH": "/usr/bin", "GH_TOKEN": "ghp-routed"}
 
 

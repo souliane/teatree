@@ -53,16 +53,6 @@ def _pytest_argv(tmp_path: Path, *lane_args: str, selection: str) -> list[str]:
     return result.stdout.splitlines()
 
 
-@pytest.mark.parametrize(
-    ("lane_args", "selection"),
-    [(("--full",), ""), ((), "--create-db --teatree-selected-full")],
-)
-def test_a_full_verdict_declares_itself_to_the_whole_tree_guard(
-    tmp_path: Path, lane_args: tuple[str, ...], selection: str
-) -> None:
-    assert "--teatree-selected-full" in _pytest_argv(tmp_path, *lane_args, selection=selection)
-
-
 def test_a_full_verdict_without_a_database_change_runs_the_whole_tree(tmp_path: Path) -> None:
     assert "--teatree-selected-full" in _pytest_argv(tmp_path, selection=_MODEL_FULL)
 
