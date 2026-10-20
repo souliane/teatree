@@ -773,6 +773,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 override-dependencies = [  ]
 
 [tool.uv.exclude-newer-package]
+certifi = "2026-10-20T02:24:17Z"
 pydantic-ai-slim = "2026-10-13T23:50:13Z"
 pydantic-graph = "2026-10-13T23:50:17Z"
 anthropic = "2026-10-08T03:42:01Z"
