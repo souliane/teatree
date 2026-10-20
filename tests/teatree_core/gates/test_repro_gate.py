@@ -26,6 +26,7 @@ from teatree.core.gates.repro_gate import ForcedReproGateError, check_forced_rep
 from teatree.core.models import ConfigSetting, HarnessRun, ReproEvidence, ReproWaiver, Session, Task, Ticket, Worktree
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 from tests._loop_principal_env import pinned_loop_principal
+from tests.factories import record_test_plan
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
 
 _SHA_RED = "a" * 40
@@ -238,17 +239,25 @@ class TestForcedReproGateSwitchedOff(TestCase):
         assert "disabled scopes recorded: acme" in status
 
     def test_the_ship_gate_passes_a_fix_with_no_repro(self) -> None:
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").delete()
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         ticket = _fix_ticket()
-        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
-            check_forced_repro(ticket)
-        assert f"ticket {ticket.pk}" in logs.output[0]
-        assert "forced_repro_gate_enabled" in logs.output[0]
-        assert "acme" in logs.output[0]
+        check_forced_repro(ticket)
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        check_forced_repro(ticket)
+        ticket.refresh_from_db()
+        assert not ReproEvidence.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["global", "acme"]
 
     def test_the_coding_gate_passes_a_fix_with_no_red(self) -> None:
         ticket = _fix_ticket()
-        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING"):
-            assert check_red_repro(ticket) is None
+        record_test_plan(ticket)
+        ticket.code_direct()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        assert not ReproEvidence.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
 
     def test_another_overlays_fix_is_still_refused_by_both_gates(self) -> None:
         acme = _fix_ticket()
