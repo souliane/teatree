@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from teatree import mount_identity
 from teatree.mount_identity import physical_location
 from tests._mount_table import missing_mount_table, patched_mount_table
@@ -118,6 +120,22 @@ def test_the_same_root_on_another_device_is_not_a_spelling(tmp_path: Path) -> No
     real.mkdir(parents=True)
     with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:3", "/ws", "/nonexistent-t3/mnt")):
         assert mount_identity.mount_spellings(real) == [str(real)]
+
+
+def test_spelling_scan_skips_mounts_on_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = _HOST + "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 22 259:3 /unrelated /other rw - ext4 /dev/y rw\n"
+    mount_table = mount_identity.MountTable(table)
+    holds = mount_identity._holds
+    checked: list[str] = []
+
+    def record_checked_root(root: str, target: str) -> bool:
+        checked.append(root)
+        return holds(root, target)
+
+    monkeypatch.setattr(mount_identity, "_holds", record_checked_root)
+    assert "/alias/T1/repo" in mount_table.spellings("/alias/T1/repo", resolved="/alias/T1/repo")
+    assert checked == ["/", "/ws"]
 
 
 def test_an_unreadable_mount_table_offers_no_spelling(tmp_path: Path) -> None:
