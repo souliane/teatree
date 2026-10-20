@@ -201,6 +201,70 @@ class TestStreamCapture:
         assert capture.outcome().observed_skill_loads == ()
 
 
+class TestNumberedSkillRead:
+    body = """First instruction
+Second instruction
+Third instruction
+
+Fifth instruction
+Sixth instruction
+Seventh instruction
+Eighth instruction
+Ninth instruction
+Tenth instruction
+Eleventh instruction
+Twelfth instruction
+3\tcolumns
+"""
+
+    @classmethod
+    def numbered_lines(cls, *, padded: bool) -> list[str]:
+        width = 6 if padded else 1
+        return [f"{number:>{width}}\t{line}" for number, line in enumerate(cls.body.splitlines(), start=1)]
+
+    @classmethod
+    def observed_loads(cls, tmp_path: Path, content: str) -> tuple[str, ...]:
+        skill_path = tmp_path / "code" / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.write_text(cls.body, encoding="utf-8")
+        capture = StreamCapture()
+        capture.observe(
+            AssistantMessage(
+                content=[ToolUseBlock(id="read", name="Read", input={"file_path": str(skill_path)})], model=""
+            )
+        )
+        with patch("teatree.agents.runner_stream.harness_skills_dirs", return_value=[tmp_path]):
+            capture.observe(AssistantMessage(content=[ToolResultBlock(tool_use_id="read", content=content)], model=""))
+        return capture.outcome().observed_skill_loads
+
+    @pytest.mark.parametrize("read_format", ["cli-unpadded", "cat-n-padded", "no-final-newline"])
+    def test_a_complete_numbered_read_is_an_observed_load(self, tmp_path: Path, read_format: str) -> None:
+        lines = self.numbered_lines(padded=read_format != "cli-unpadded")
+        if read_format == "cli-unpadded":
+            lines.append(f"{len(lines) + 1}\t")
+        content = "\n".join(lines) + ("" if read_format == "no-final-newline" else "\n")
+
+        assert self.observed_loads(tmp_path, content) == ("code",)
+
+    @pytest.mark.parametrize("missing", ["cut-after-line-10", "middle-line-dropped", "starts-at-line-11"])
+    def test_a_numbered_read_missing_any_line_is_not_a_load(self, tmp_path: Path, missing: str) -> None:
+        lines = self.numbered_lines(padded=False)
+        if missing == "cut-after-line-10":
+            lines = lines[:10]
+        elif missing == "middle-line-dropped":
+            del lines[5]
+        else:
+            lines = lines[10:]
+
+        assert self.observed_loads(tmp_path, "\n".join(lines) + "\n") == ()
+
+    def test_a_numbered_read_with_extra_text_before_the_first_line_is_not_a_load(self, tmp_path: Path) -> None:
+        lines = self.numbered_lines(padded=False)
+        lines[0] = lines[0].replace("First instruction", "extra First instruction")
+
+        assert self.observed_loads(tmp_path, "\n".join(lines) + "\n") == ()
+
+
 def _outcome(*, result: ResultMessage | None = None, stuck_reason: str | None = None, **flags: bool) -> HarnessOutcome:
     return HarnessOutcome(agent_text="", result_message=result, stuck_reason=stuck_reason, **flags)
 

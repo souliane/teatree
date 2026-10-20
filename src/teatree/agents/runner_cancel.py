@@ -2,15 +2,12 @@
 
 from pathlib import Path
 
+from teatree.core.cleanup.process_table import current_pid_namespace
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_cancel_source import cancel_source
 from teatree.core.models.task_claim import claim_generation
-from teatree.core.worktree.cancel_processes import (
-    current_pid_namespace,
-    stop_owned_writers,
-    wait_for_owned_checkout_processes,
-)
+from teatree.core.worktree.cancel_processes import stop_owned_writers, wait_for_owned_checkout_processes
 
 
 def settle_cancelled_checkout(task: Task, checkout: Path) -> None:

@@ -18,9 +18,9 @@ class CheckoutExit:
 
 @dataclass
 class CheckoutExitScope:
-    prepare: Callable[["Task", bool], CheckoutExit | None]
+    prepare: Callable[["Task", bool, bool], CheckoutExit | None]
     settled: CheckoutExit | None = None
-    settled_for: tuple[int, bool] | None = None
+    settled_for: tuple[int, bool, bool] | None = None
     park_attests: bool = False
     verified_run: bool = False
 
@@ -29,7 +29,7 @@ _checkout_exit: ContextVar[CheckoutExitScope | None] = ContextVar("checkout_exit
 
 
 @contextmanager
-def checkout_exit_scope(prepare: Callable[["Task", bool], CheckoutExit | None]) -> Generator[CheckoutExitScope]:
+def checkout_exit_scope(prepare: Callable[["Task", bool, bool], CheckoutExit | None]) -> Generator[CheckoutExitScope]:
     scope = CheckoutExitScope(prepare)
     token = _checkout_exit.set(scope)
     try:
@@ -38,12 +38,12 @@ def checkout_exit_scope(prepare: Callable[["Task", bool], CheckoutExit | None]) 
         _checkout_exit.reset(token)
 
 
-def prepared_checkout_exit(task: "Task", *, attest: bool = True) -> CheckoutExit | None:
+def prepared_checkout_exit(task: "Task", *, attest: bool = True, wait: bool = True) -> CheckoutExit | None:
     scope = _checkout_exit.get()
     if scope is None:
         return None
-    if scope.settled_for != (task.pk, attest):
-        scope.settled, scope.settled_for = scope.prepare(task, attest), (task.pk, attest)
+    if scope.settled_for != (task.pk, attest, wait):
+        scope.settled, scope.settled_for = scope.prepare(task, attest, wait), (task.pk, attest, wait)
     return scope.settled
 
 
