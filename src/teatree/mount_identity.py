@@ -104,7 +104,7 @@ class MountTable:
             if len(visible) != 1:
                 return None
             current = visible[0]
-        point = current.point
+        point = "/"
         visited = {current.mount_id}
         for part in PurePosixPath(target).parts:
             if part != "/":

@@ -139,6 +139,12 @@ def test_a_mount_table_without_a_root_line_can_locate_a_covered_path() -> None:
     assert physical_location(Path("/alias/T1/repo"), mountinfo=table) == "259:2:/ws/T1/repo"
 
 
+def test_a_rootless_mount_table_follows_a_nested_mount() -> None:
+    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 30 259:3 /other /alias/T1 rw - ext4 /dev/y rw\n"
+    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) == "259:3:/other/repo"
+
+
 def test_overlapping_rootless_mounts_do_not_guess_a_covering_mount() -> None:
     table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
     table += "31 23 259:3 /other /alias/T1 rw - ext4 /dev/y rw\n"

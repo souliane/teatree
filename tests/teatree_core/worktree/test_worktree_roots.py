@@ -123,10 +123,14 @@ class WorktreesOutsideCanonicalRootTest(_RootsTestCase):
 
     def test_dotdot_in_the_canonical_root_is_normalized(self) -> None:
         self._register(self.canonical / "T1" / "repo", branch="normalized")
+        elsewhere = self.tmp / "elsewhere" / "nested"
+        elsewhere.mkdir(parents=True)
+        link = self.tmp / "link"
+        link.symlink_to(elsewhere, target_is_directory=True)
         with (
             mock.patch(
                 "teatree.core.worktree.worktree_roots.worktree_root",
-                return_value=self.canonical / ".." / "canonical",
+                return_value=link / ".." / "canonical",
             ),
             missing_mount_table(),
         ):
