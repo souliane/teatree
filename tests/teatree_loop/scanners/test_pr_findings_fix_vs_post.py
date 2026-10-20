@@ -155,9 +155,8 @@ class TestTheFixDispatchGetsItsOwnLedgerSlotAndRemedy:
         signal = MyPrsScanner(host=host, identities=IDENTITIES).scan()[0]
         assert signal.payload["fix_kind"] == RedMrFixAttempt.Kind.REVIEW_FINDINGS
 
-    def test_the_voiced_remedy_fixes_and_replies_only_in_threads(self) -> None:
+    def test_the_remedy_says_implement_and_push_never_comment(self) -> None:
         remedy = _FIX_REASON_BY_KIND[RedMrFixAttempt.Kind.REVIEW_FINDINGS]
         assert "IMPLEMENT" in remedy
         assert "push" in remedy
-        assert "reply-to-discussion" in remedy
-        assert "top-level comment" in remedy
+        assert "another comment" in remedy

@@ -668,7 +668,7 @@ class TestEveryFixKindHasAScheduledRemedy(TestCase):
         assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())
 
 
-class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
+class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
     def _reason(
         self,
         *,
@@ -705,6 +705,9 @@ class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
         assert "Fixed in <short sha>." in reason
         assert "t3 review reply-to-discussion" in reason
         assert "t3 review resolve-discussion" in reason
+        assert "answer questions and push-backs in their own thread" in reason
+        assert "if either refuses, post nothing by another route" in reason
+        assert "t3 <overlay> review findings <pr-url>" in reason
         expected = (
             "Skip any thread whose latest reply is already ours",
             "reply only after the push has landed",
@@ -721,6 +724,7 @@ class TestReviewFindingsRemedyFollowsOwnerVoice(TestCase):
         assert "reply-to-discussion" not in reason
         assert "resolve-discussion" not in reason
         assert "Fixed in" not in reason
+        assert "Never answer a finding on our own MR with another comment" in reason
         assert "Escalate only if the fix cannot proceed" in reason
 
     def test_unresolvable_posture_keeps_the_remedy_quiet(self) -> None:
