@@ -61,10 +61,10 @@ def resolve_pass_key(credential: str, *, overlay_name: str, declared_default: st
     setting = pass_key_setting(credential)
     if not overlay_name:
         return _declared(setting, declared_default)
-    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
+    overlay, overlay_degraded = load_overlay_rows(overlay_name)
     if overlay_degraded:
         return PassKeyResolution(setting, "", PassKeySource.UNREADABLE)
-    if stored := overlay_rows.get(setting):
+    if stored := overlay.rows.get(setting):
         return PassKeyResolution(setting, str(stored), PassKeySource.OVERLAY_DB)
     global_rows, global_degraded = load_global_rows()
     if global_degraded:

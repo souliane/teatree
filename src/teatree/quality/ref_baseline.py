@@ -128,6 +128,11 @@ def charter_docs(root: Path) -> list[Path]:
     return docs
 
 
+def architecture_spec_docs(root: Path) -> list[Path]:
+    """Return the architecture spec documents in stable order."""
+    return [doc for doc in charter_docs(root) if doc.name == "BLUEPRINT.md" or doc.parent.name == "blueprint"]
+
+
 def _pairs(root: Path, findings: Iterable[SymbolRefFinding]) -> set[tuple[str, str]]:
     return {(str(f.path.relative_to(root)), f.ref) for f in findings if f.reason is not None}
 
@@ -136,7 +141,7 @@ def _pairs(root: Path, findings: Iterable[SymbolRefFinding]) -> set[tuple[str, s
 def _reported_cached(ratchet: Ratchet, root: Path) -> Pins:
     """The whole-tree walk, run once per (ratchet, root) rather than once per caller."""
     if ratchet == "charter":
-        findings = [f for doc in charter_docs(root) if doc.is_file() for f in scan_file(doc, root)]
+        findings = [f for doc in charter_docs(root) if doc.is_file() for f in scan_file(doc, root, charter=True)]
     else:
         findings = scan_python_tree(root)
     return frozenset(_pairs(root, findings))
@@ -178,6 +183,7 @@ __all__ = [
     "BaselineError",
     "Pins",
     "Ratchet",
+    "architecture_spec_docs",
     "baseline_path",
     "charter_docs",
     "dump_baseline",

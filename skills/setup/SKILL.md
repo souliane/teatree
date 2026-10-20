@@ -83,8 +83,6 @@ Useful optional values:
 | `T3_MODE` | Effective publishing mode. `auto` opts the pipeline into pushing without pausing for shipping approval; `interactive` (default) gates at shipping. Equivalent DB-home setting: `t3 <overlay> config_setting set mode auto`. (Supersedes the retired `T3_AUTO_SHIP` env var, #2697.) | `interactive` |
 | `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
-| `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
-| `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-codebase` |
 
 Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
 
@@ -93,12 +91,10 @@ Example (bootstrap environment):
 ```bash
 export T3_REPO="$HOME/workspace/teatree"
 export T3_WORKSPACE_DIR="$HOME/workspace"
-export T3_ISSUE_TRACKER="gitlab"
 export T3_PUSH=false
 export T3_AUTO_PUSH_FORK=false
 export T3_UPSTREAM=""
 export T3_BRANCH_PREFIX="ac"
-export T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
 ```
 
 Operational settings go in the DB store, e.g.:
