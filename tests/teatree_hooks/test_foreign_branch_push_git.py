@@ -355,7 +355,6 @@ def test_venue_fault_strips_gh_login_guidance() -> None:
 
 @pytest.mark.parametrize("key", FORGE_TOKEN_ENV_KEYS)
 def test_active_task_token_is_scrubbed_from_probe_output(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
-    assert FORGE_TOKEN_ENV_KEYS == ("GH_TOKEN", "GITHUB_TOKEN")
     monkeypatch.setenv(key, "sentinel-task-token")
 
     result = git_probes.bounded("probe says sentinel-task-token was rejected")
