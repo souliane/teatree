@@ -170,6 +170,12 @@ class TestReproCliRealGit(TestCase):
         assert "forced-repro disabled by: global" in output
         assert "disabled scopes recorded: global" in output
 
+    def test_status_reports_a_feature_as_gate_satisfied_without_evidence(self) -> None:
+        feature = Ticket.objects.create(overlay="t3-teatree", kind=Ticket.Kind.FEATURE)
+        output = cast("str", call_command("repro", "status", str(feature.pk)))
+        assert "gate-satisfied: True" in output
+        assert "forced-repro disabled by" not in output
+
     def _tmp(self) -> Path:
         return self._tmp_path
 
