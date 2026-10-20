@@ -4,11 +4,10 @@ from urllib.parse import urlsplit
 
 from django.apps import apps
 from django.db import models
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
-from teatree.core.modelkit.admission_clock import earliest_admission_stamp
 from teatree.core.models.merge_void import MergeVoid
 from teatree.url_classify import repo_and_iid
 from teatree.utils.pr_ref import PrRef
@@ -28,11 +27,9 @@ def pull_request_start_expression() -> models.Expression:
     task = apps.get_model("core", "Task")
     transition_row = apps.get_model("core", "TicketTransition")
     first_admission = (
-        task.objects.filter(ticket_id=models.OuterRef("ticket_id"))
-        .annotate(first_stamp=earliest_admission_stamp())
-        .filter(first_stamp__isnull=False)
-        .order_by("first_stamp", "pk")
-        .values("first_stamp")[:1]
+        task.objects.filter(ticket_id=models.OuterRef("ticket_id"), admitted_at__isnull=False)
+        .order_by("admitted_at", "pk")
+        .values("admitted_at")[:1]
     )
     first_transition = (
         transition_row.objects.filter(ticket_id=models.OuterRef("ticket_id"))
@@ -44,12 +41,15 @@ def pull_request_start_expression() -> models.Expression:
         .order_by("create_verified_at", "pk")
         .values("create_verified_at")[:1]
     )
-    return Coalesce(
+    created = models.Subquery(first_creation)
+    start = Coalesce(
         models.Subquery(first_admission),
         models.Subquery(first_transition),
-        models.Subquery(first_creation),
+        created,
         output_field=models.DateTimeField(),
     )
+    # A re-stamped or cleared admitted_at only moves later; the PR's creation bounds the start.
+    return Least(start, Coalesce(created, start), output_field=models.DateTimeField())
 
 
 def _merge_is_voided(row: object) -> bool:

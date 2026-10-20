@@ -1,6 +1,6 @@
 """The fixed live-PR cap shared by admission seats and task claims."""
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models
@@ -10,6 +10,9 @@ from django.db.models.lookups import LessThan
 
 from teatree.core.modelkit.phases import phase_spellings
 
+if TYPE_CHECKING:
+    from teatree.core.models.pull_request import PullRequest
+
 OPEN_PR_START_CAP = 3
 _PR_START_PHASES = tuple(
     spelling for phase in ("coding", "testing", "debugging", "e2e", "shipping") for spelling in phase_spellings(phase)
@@ -17,7 +20,7 @@ _PR_START_PHASES = tuple(
 
 
 def new_pr_start_allowed_q() -> Q:
-    pull_request = cast("Any", apps.get_model("core", "PullRequest"))
+    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
     open_prs = pull_request.objects.live()
     open_count = open_prs.order_by().values(_all=Value(1)).annotate(total=models.Count("*")).values("total")[:1]
     below_cap = LessThan(Coalesce(models.Subquery(open_count), Value(0)), OPEN_PR_START_CAP)

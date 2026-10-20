@@ -61,28 +61,9 @@ class PullRequestFlowTests(TestCase):
 
         assert durations == pytest.approx((8 * 3600,), abs=1)
 
-    def test_first_admission_survives_a_cleared_seat_and_readmission(self) -> None:
-        ticket = TicketFactory()
-        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
-        assert Task.objects.record_admission(task.pk, cheap=False)
-        assert Task.objects.get(pk=task.pk).first_admitted_at is not None
-        first = self.now - timedelta(hours=8)
-        Task.objects.filter(pk=task.pk).update(admitted_at=None, first_admitted_at=first)
-        assert Task.objects.record_admission(task.pk, cheap=False)
-        pr = PullRequestFactory(ticket=ticket)
-
-        assert Task.objects.get(pk=task.pk).first_admitted_at == first
-        assert open_pull_requests(now=self.now)[0].url == pr.url
-        assert open_pull_requests(now=self.now)[0].age_hours == pytest.approx(8, abs=0.1)
-
-    def test_clock_uses_earliest_stamp_when_recorded_stamps_disagree(self) -> None:
-        ticket = TicketFactory()
-        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
-        Task.objects.filter(pk=task.pk).update(
-            admitted_at=self.now - timedelta(hours=8),
-            first_admitted_at=self.now - timedelta(hours=1),
-        )
-        pr = PullRequestFactory(ticket=ticket)
+    def test_clock_never_starts_after_the_pull_request_was_created(self) -> None:
+        pr = self._pr(hours=1)
+        PullRequest.objects.filter(pk=pr.pk).update(create_verified_at=self.now - timedelta(hours=8))
 
         row = open_pull_requests(now=self.now)[0]
 
