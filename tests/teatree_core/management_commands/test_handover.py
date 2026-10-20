@@ -146,9 +146,7 @@ class TestHandoverCreate(_PinnedSessionTestCase):
 class TestParkForTheNextSession(_PinnedSessionTestCase):
     def test_park_parks_the_row_while_another_session_owns_the_loop(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-
         data = json.loads(_call("handover", "create", "--park", json_output=True))
-
         assert data["to_session"] == ""
         assert data["parked_for_next"] is True
         row = SessionHandover.objects.get()
@@ -158,10 +156,8 @@ class TestParkForTheNextSession(_PinnedSessionTestCase):
     def test_the_loop_owner_is_told_to_park_and_can(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="this-session", owner_pid=os.getpid())
         err = StringIO()
-
         with pytest.raises(SystemExit) as exit_info:
             call_command("handover", "create", stdout=StringIO(), stderr=err, json_output=True)
-
         assert exit_info.value.code == 1
         assert "cannot hand off to itself" in err.getvalue()
         assert "--park" in err.getvalue()
@@ -210,11 +206,15 @@ class TestParkForTheNextSession(_PinnedSessionTestCase):
         assert "SECOND" in row.payload
 
 
-cls = TestParkForTheNextSession
-method = cls.test_park_retargets_this_sessions_owner_addressed_row
-for case, initial, to in (("plain-then-park", (), ""), ("park-then-plain", ("--park",), "owner-X")):
-    setattr(cls, f"{method.__name__}[{case}]", partialmethod(method, initial, ("--park",) if not initial else (), to))
-delattr(cls, method.__name__)
+def _parameterize_retarget_test() -> None:
+    cls = TestParkForTheNextSession
+    test = cls.test_park_retargets_this_sessions_owner_addressed_row
+    for case, initial, to in (("plain-then-park", (), ""), ("park-then-plain", ("--park",), "owner-X")):
+        setattr(cls, f"{test.__name__}[{case}]", partialmethod(test, initial, ("--park",) if not initial else (), to))
+    delattr(cls, test.__name__)
+
+
+_parameterize_retarget_test()
 
 
 class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
