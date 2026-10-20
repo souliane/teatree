@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import tempfile
+from functools import partialmethod
 from io import StringIO
 from unittest import mock
 
@@ -195,26 +196,25 @@ class TestParkForTheNextSession(_PinnedSessionTestCase):
         report = _call_human("handover", "create")
         assert "claimable by any session" not in report
 
-    def test_park_retargets_this_sessions_owner_addressed_row(self) -> None:
+    def test_park_retargets_this_sessions_owner_addressed_row(
+        self, first_args: tuple[str, ...], second_args: tuple[str, ...], to: str
+    ) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        first = json.loads(_call("handover", "create", body="FIRST", json_output=True))
-        second = json.loads(_call("handover", "create", "--park", body="SECOND", json_output=True))
-
+        first = json.loads(_call("handover", "create", *first_args, body="FIRST", json_output=True))
+        second = json.loads(_call("handover", "create", *second_args, body="SECOND", json_output=True))
         assert second["handover_id"] == first["handover_id"]
         assert second["updated_existing"] is True
         row = SessionHandover.objects.get()
-        assert row.to_session == ""
+        assert row.to_session == to
         assert "FIRST" in row.payload
         assert "SECOND" in row.payload
 
-    def test_a_later_plain_create_readdresses_a_parked_row_to_the_live_owner(self) -> None:
-        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        first = json.loads(_call("handover", "create", "--park", body="FIRST", json_output=True))
-        second = json.loads(_call("handover", "create", body="SECOND", json_output=True))
 
-        assert second["handover_id"] == first["handover_id"]
-        assert second["updated_existing"] is True
-        assert SessionHandover.objects.get().to_session == "owner-X"
+cls = TestParkForTheNextSession
+method = cls.test_park_retargets_this_sessions_owner_addressed_row
+for case, initial, to in (("plain-then-park", (), ""), ("park-then-plain", ("--park",), "owner-X")):
+    setattr(cls, f"{method.__name__}[{case}]", partialmethod(method, initial, ("--park",) if not initial else (), to))
+delattr(cls, method.__name__)
 
 
 class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
