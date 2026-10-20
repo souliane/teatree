@@ -3215,6 +3215,15 @@ class TestAVendoringCheckoutIsJudgedByItsVendoredCopy:
         env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
         return work, env, work / "vendor" / "x" / "scripts" / "hooks" / HOOK.name
 
+    def test_an_own_checkout_disguised_by_a_parent_worktree_is_still_refused(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path, env_registry=_FAKE_REGISTRY, committed=_REAL_REGISTRY)
+        _git(hook.parents[2], "config", "core.worktree", str(tmp_path))
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "leak-gate-sources.txt" in result.stdout, result.stdout
+
     @pytest.mark.parametrize("run_from", [".", "vendor/x"], ids=["git-top", "prek-nested"])
     def test_a_clean_push_passes(self, tmp_path: Path, run_from: str) -> None:
         work, env, hook = self._checkout(tmp_path)
