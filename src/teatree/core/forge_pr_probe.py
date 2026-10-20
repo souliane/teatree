@@ -194,7 +194,7 @@ def github_open_pr_head(repo_dir: str | Path, branch: str) -> tuple[str, str, st
             "--json",
             "url,headRepository,headRefName,headRefOid",
             "--limit",
-            "1",
+            "2",
             "--head",
             branch,
         ],

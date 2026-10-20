@@ -14,8 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.utils import git_sync
-from teatree.utils.git_sync import RemoteReadError, fetch_all_prune, fetch_branch, remote_head, remote_heads
+from teatree.utils.git_sync import RemoteReadError, fetch_all_prune, fetch_branch, remote_heads
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -92,26 +91,6 @@ class TestStrictRemoteReads:
 
         _run_git("push", "-q", "origin", "main:refs/heads/feat", cwd=self.repo)
         assert remote_heads(str(self.repo), ["feat", "main"]) == {"feat", "main"}
-
-    def test_remote_head_reads_only_the_exact_branch_without_fetching(self) -> None:
-        _run_git("push", "-q", "origin", "main:refs/heads/nest/refs/heads/feat", cwd=self.repo)
-        assert remote_head(str(self.repo), "feat") is None
-        _run_git("push", "-q", "origin", "main:refs/heads/feat", cwd=self.repo)
-        expected = subprocess.run(
-            [_GIT, "-C", str(self.repo), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout.strip()
-        with patch.object(git_sync, "_read_remote", wraps=git_sync._read_remote) as read:
-            assert remote_head(str(self.repo), "feat") == expected
-        read.assert_called_once_with(str(self.repo), ["ls-remote", "origin", "refs/heads/feat"])
-
-    def test_remote_head_unreadable_is_not_an_absent_ref(self) -> None:
-        _run_git("remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.repo)
-        with pytest.raises(RemoteReadError):
-            remote_head(str(self.repo), "main")
 
     def test_an_unreachable_remote_raises_gits_error(self) -> None:
         _run_git("remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.repo)

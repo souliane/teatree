@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
+from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.checkout_exit import mark_verified_checkout_run
@@ -27,7 +27,8 @@ from teatree.core.models.worktree_occupancy import (
 )
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof, reattest_released_pr_head
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
+from teatree.core.worktree.checkout_released import reattest_released_pr_head
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -53,7 +54,7 @@ def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> N
 
 
 def writes_checkout(task: Task) -> bool:
-    return bool(tools_for_phase(task.phase) & {"write_file", "edit_file", MCP_WRITE})
+    return phase_writes_checkout(task.phase)
 
 
 def verify_task_checkout(task: Task, path: str, *, namespace: str = "") -> None:

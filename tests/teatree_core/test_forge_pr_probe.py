@@ -136,11 +136,21 @@ class TestGithubHeadProof:
                 "--json",
                 "url,headRepository,headRefName,headRefOid",
                 "--limit",
-                "1",
+                "2",
                 "--head",
                 "feature",
             ]
         ]
+
+    def test_open_pr_head_refuses_ambiguous_branch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        row = {
+            "url": _GH_URL,
+            "headRepository": {"nameWithOwner": "acme/widgets"},
+            "headRefName": "feature",
+            "headRefOid": "a" * 40,
+        }
+        _fake_cli(monkeypatch, _completed(json.dumps([row, {**row, "url": _GH_URL + "-other"}])))
+        assert github_open_pr_head(tmp_path, "feature") is None
 
     @pytest.mark.parametrize("payload", ["garbage", "{}", "[]", '[{"url":"x"}]', '[{"headRefOid":"oops"}]'])
     def test_open_pr_head_refuses_malformed_output(

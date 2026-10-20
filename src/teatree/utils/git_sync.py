@@ -11,7 +11,6 @@ credential and read the remote back before it may claim to have landed
 did neither, and was reached for precisely because it looked like the primitive.
 """
 
-import re
 import subprocess
 from collections.abc import Iterable
 
@@ -50,17 +49,6 @@ def remote_heads(repo: str, branches: Iterable[str], remote: str = "origin") -> 
     output = _read_remote(repo, ["ls-remote", remote, *(f"refs/heads/{name}" for name in sorted(wanted))])
     listed = {line.split("\t", 1)[1] for line in output.splitlines() if "\t" in line}
     return {name for name in wanted if f"refs/heads/{name}" in listed}
-
-
-def remote_head(repo: str, branch: str, remote: str = "origin") -> str | None:
-    ref = f"refs/heads/{branch}"
-    output = _read_remote(repo, ["ls-remote", remote, ref])
-    matches = []
-    for line in output.splitlines():
-        sha, separator, name = line.partition("\t")
-        if separator and name == ref and re.fullmatch(r"[0-9a-f]{40}", sha):
-            matches.append(sha)
-    return matches[0] if len(matches) == 1 else None
 
 
 def fetch_branch(repo: str, branch: str, remote: str = "origin") -> None:
