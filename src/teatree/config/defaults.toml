@@ -183,6 +183,7 @@ review_skill_alternates = [] # list — extra skills whose recorded run also sat
 
 [teatree.Gates.Quality."Merge & done"]
 expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge (workflow names on a plan-restricted GitHub Free fallback — #4844)
+forced_repro_gate_enabled = true # bool — require an executed pre-fix failing run for fix tickets at coding, testing and ship
 
 [teatree.Gates.Quality."Critic & send proxy"]
 bulk_close_threshold = 5 # int — how many closes in one run count as a bulk action needing approval

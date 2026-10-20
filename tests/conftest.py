@@ -918,8 +918,6 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         json.dumps({"ts": time.time(), "message": ""}), encoding="utf-8"
     )
     monkeypatch.setattr("teatree.update_check.DATA_DIR", update_cache_dir)
-    # Default to per-worktree postgres for test isolation (override in specific tests)
-    monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
     monkeypatch.delenv("T3_BRANCH_PREFIX", raising=False)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)

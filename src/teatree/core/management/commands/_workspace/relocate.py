@@ -75,9 +75,9 @@ def active_overlay_name() -> str:
     ``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay, so the
     relocate scope and the per-overlay ``target_root`` always agree on the overlay.
     """
-    from teatree.config.resolution import _resolved_overlay_name  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.config.resolution import resolved_overlay_name  # noqa: PLC0415 — deferred: keeps command import light
 
-    return _resolved_overlay_name(None)
+    return resolved_overlay_name(None)
 
 
 def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_run: bool) -> RelocateResult:
