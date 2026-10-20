@@ -36,6 +36,7 @@ from teatree.core.worktree.occupancy import (
     WorktreeOccupiedError,
     acquire,
     occupancy_holder,
+    release,
     task_holder_id,
 )
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
@@ -89,6 +90,18 @@ class OccupiedCheckoutTests(_DispatchCase):
         assert "task:999" in str(attempt.result.get("summary", ""))
         assert "operator-lane" in str(attempt.result.get("summary", ""))
         assert str(self.checkout) in str(attempt.result.get("summary", ""))
+
+    def test_the_holders_release_makes_the_parked_dispatch_due_at_once(self) -> None:
+        held = acquire(self.worktree, holder="task:999", holder_session="operator-lane")
+
+        self.dispatch()
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.task.not_before > timezone.now()
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        self.task.refresh_from_db()
+        assert self.task.not_before <= timezone.now()
 
     def test_the_incumbent_keeps_the_checkout_after_the_refusal(self) -> None:
         acquire(self.worktree, holder="task:999", holder_session="operator-lane")
