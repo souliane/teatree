@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from teatree.quality import ref_baseline
-from teatree.quality.ref_baseline import RATCHETS, BaselineError
+from teatree.quality.ref_baseline import RATCHETS, BaselineError, architecture_spec_docs
 
 #: A pin the scanner cannot possibly report — the file is not in any indexed package.
 _BOGUS_PIN = ("src/teatree/quality/ref_baseline.py", "teatree.definitely.not.a.real.symbol")
@@ -24,7 +24,7 @@ def test_architecture_spec_docs_excludes_other_charter_documents(tmp_path: Path)
     spec_dir.mkdir(parents=True)
     (spec_dir / "configuration.md").touch()
 
-    assert ref_baseline.architecture_spec_docs(tmp_path) == [
+    assert architecture_spec_docs(tmp_path) == [
         tmp_path / "BLUEPRINT.md",
         spec_dir / "configuration.md",
     ]
