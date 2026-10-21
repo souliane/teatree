@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from django.core.management import call_command
 from django.test import TestCase
@@ -172,9 +173,30 @@ class LiveControlIntegrationTests(TestCase):
         assert reused_by_steer["code"] == "duplicate_mismatch"
         assert run.user_turns() == 2
         assert run.saw("follow_up_turn")
-        assert "second prompt" in json.dumps(run.events())
+        stdin_log = json.dumps([row for row in run.events() if row["event"] == "stdin"])
+        assert stdin_log.count("[TeaTree operator follow-up id=same]") == 1
+        assert stdin_log.count("second prompt") == 1
         assert self.attempt.exit_code == 0
         assert self.attempt.result["summary"] == "second"
+
+    def test_after_the_window_closes_a_follow_up_is_offline_and_starts_nothing(self) -> None:
+        run = _FakeCliRun(self.root)
+
+        def operator() -> None:
+            _until(lambda: any(row["state"] == "idle" for row in shared_registry().sessions()), "idle session")
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 0.3):
+            self.dispatch(run, operator)
+
+        err = StringIO()
+        with pytest.raises(SystemExit) as exit_info:
+            call_command("live", "follow-up", str(self.task.pk), "--text", "late", stderr=err)
+
+        assert exit_info.value.code == 5
+        assert f"task {self.task.pk} in the task list" in err.getvalue()
+        assert "tasks create" in err.getvalue()
+        assert run.user_turns() == 1
+        assert self.attempt.exit_code == 0
 
     def test_a_prose_only_follow_up_keeps_the_first_turns_complete_envelope(self) -> None:
         run = _FakeCliRun(self.root, follow_up_final_text="Second turn had no envelope.")

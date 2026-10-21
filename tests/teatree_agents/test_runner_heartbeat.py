@@ -183,8 +183,15 @@ def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
             )
         driven.result(timeout=3)
 
+    past_cap = [
+        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="past-cap", wait=0.1)),
+        asyncio.run(shared_registry().push(_TASK_PK, "peer note", command_id="peer-past-cap", wait=0.1)),
+    ]
     assert all(receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN for receipt in receipts), receipts
     assert len(session.prompts) == MAX_FOLLOW_UP_TURNS
+    assert [(late.outcome, late.code) for late in past_cap] == [
+        (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+    ] * 2
     assert not shared_registry().sessions()
 
 

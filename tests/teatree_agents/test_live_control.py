@@ -17,6 +17,7 @@ from teatree.agents.live_control import (
     LiveTask,
     PeerIdentity,
     RejectCode,
+    frame_follow_up,
     frame_peer_message,
 )
 
@@ -108,7 +109,18 @@ def test_an_idle_follow_up_claims_one_turn_and_a_duplicate_returns_its_receipt()
     assert first.outcome is ControlOutcome.ACCEPTED_NEW_TURN
     assert (busy.code, mismatch.code) == (RejectCode.NOT_IDLE, RejectCode.DUPLICATE_MISMATCH)
     assert len(session.delivered) == 1
+    assert session.delivered[0] == frame_follow_up("next step", "c-1")
     assert "result envelope" in session.delivered[0]
+
+
+def test_a_follow_up_during_a_busy_turn_is_not_idle_and_starts_nothing() -> None:
+    session = _FollowUpSession()
+    controller = _controller(session)
+
+    receipt = asyncio.run(controller.follow_up("too early", command_id="early", wait=1))
+
+    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.NOT_IDLE)
+    assert session.delivered == []
 
 
 def test_an_expired_idle_window_closes_without_starting_a_turn() -> None:

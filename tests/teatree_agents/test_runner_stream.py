@@ -1,5 +1,6 @@
 """A run's stream capture, and which endings count as a run cut short."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,11 +8,29 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 from teatree.agents.codex_app_server_messages import tool_blocks
-from teatree.agents.runner_stream import HarnessOutcome, StreamCapture
-from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, rate_limit_event, result_message
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, drain_turn
+from tests.teatree_agents._sdk_fake import (
+    FakeHarnessSession,
+    assistant_text,
+    assistant_tool_use,
+    rate_limit_event,
+    result_message,
+)
 
 
 class TestStreamCapture:
+    def test_drain_turn_keeps_the_first_turn_text_and_uses_the_latest_result(self) -> None:
+        capture = StreamCapture()
+        capture.observe(assistant_text("first"))
+        capture.observe(result_message(result="first"))
+        session = FakeHarnessSession([assistant_text("second"), result_message(result="second")])
+
+        outcome = asyncio.run(drain_turn(session, capture))
+
+        assert outcome.agent_text == "first\nsecond"
+        assert outcome.result_message is not None
+        assert outcome.result_message.result == "second"
+
     def test_it_hands_over_everything_observed_before_the_run_was_cut_off(self) -> None:
         capture = StreamCapture()
         for message in (

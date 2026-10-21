@@ -1,6 +1,7 @@
 """Only a clean capable session enters the bounded idle window."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from time import monotonic
 from typing import cast
@@ -14,7 +15,7 @@ from teatree.agents.harness import HarnessSession, PydanticAiHarnessSession
 from teatree.agents.live_control import ControlOutcome, FollowUpSession, LiveSessionController, LiveTask, RejectCode
 from teatree.agents.live_idle import IdleWindowBudget, can_idle, hold_idle_window
 from teatree.agents.runner_stream import StreamCapture
-from tests.teatree_agents._sdk_fake import result_message
+from tests.teatree_agents._sdk_fake import assistant_text, result_message
 
 
 class _CapableSession:
@@ -50,6 +51,63 @@ def test_an_error_result_or_round_handoff_cannot_enter_idle() -> None:
 
     assert not can_idle(_CapableSession(), capture.outcome(), live)
     assert not can_idle(_CapableSession(), replace(capture.outcome(), round_handoff="next"), live)
+
+
+@pytest.mark.parametrize("unfit", [{"stuck_reason": "wedged"}, {"compaction_stopped": True}, {"result_message": None}])
+def test_a_stuck_compaction_stopped_or_resultless_run_cannot_enter_idle(unfit: dict[str, object]) -> None:
+    capture = StreamCapture()
+    capture.observe(result_message())
+    live = _controller(capture)
+
+    assert not can_idle(_CapableSession(), replace(capture.outcome(), **unfit), live)
+
+
+def test_a_closed_controller_cannot_enter_idle() -> None:
+    capture = StreamCapture()
+    capture.observe(result_message())
+    live = _controller(capture)
+    live.close()
+
+    assert not can_idle(_CapableSession(), capture.outcome(), live)
+
+
+def test_a_claim_made_before_the_deadline_is_drained_and_a_later_command_is_session_closed() -> None:
+    class SlowStartSession(_CapableSession):
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def follow_up(self, prompt: str) -> None:
+            await asyncio.sleep(0.15)
+            self.prompts.append(prompt)
+
+        async def receive_response(self) -> AsyncIterator[object]:
+            yield assistant_text("second turn")
+            yield result_message(result="second turn")
+
+    session = SlowStartSession()
+    capture = StreamCapture()
+    capture.observe(result_message())
+    live = _controller(capture)
+    live.bind(session)
+
+    async def run() -> tuple[ControlOutcome, str, RejectCode | None]:
+        held = asyncio.create_task(
+            hold_idle_window(
+                cast("HarnessSession", session), capture, live, capture.outcome(), budget=IdleWindowBudget(0.1, None)
+            )
+        )
+        await asyncio.sleep(0.02)
+        receipt = await live.follow_up("claimed in time", command_id="in-time", wait=1)
+        outcome = await held
+        late = await live.follow_up("too late", command_id="late", wait=1)
+        return receipt.outcome, outcome.agent_text, late.code
+
+    receipt_outcome, agent_text, late_code = asyncio.run(run())
+
+    assert receipt_outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert agent_text.endswith("second turn")
+    assert len(session.prompts) == 1
+    assert late_code is RejectCode.SESSION_CLOSED
 
 
 def test_a_session_without_follow_up_closes_after_its_first_result() -> None:
