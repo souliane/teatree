@@ -84,8 +84,11 @@ class TestTheOverrideDropsEverythingTheCheckoutSupplies:
     def test_the_entrypoint_is_the_images_own(self, name: str) -> None:
         assert _load(GENERATION)["services"][name]["entrypoint"] == BAKED_ENTRYPOINT
 
-    def test_the_clone_dir_is_left_to_the_image(self, name: str) -> None:
-        assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
+
+@pytest.mark.parametrize("name", tuple(name for name in RUNTIME_SERVICES if name != "teatree-webhooks"))
+def test_the_clone_dir_is_left_to_the_image(name: str) -> None:
+    assert "TEATREE_CLONE_DIR" in _load(BASE)["services"][name]["environment"]
+    assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
 
 
 def test_the_roller_is_a_one_shot_that_cannot_write_the_checkout() -> None:

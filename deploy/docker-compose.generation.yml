@@ -99,8 +99,6 @@ services:
     pull_policy: never
     build: !reset null
     entrypoint: *generation-entrypoint
-    environment:
-      TEATREE_CLONE_DIR: !reset null
     volumes: !override
       - teatree_control_db:/var/lib/teatree/control-db
       - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home

@@ -2,6 +2,7 @@ from typing import cast
 
 from teatree import settings as base_settings
 
+# Ruff rejects a star import here; copy only Django's uppercase settings without disabling F403.
 globals().update({name: value for name, value in vars(base_settings).items() if name.isupper()})
 
 DEBUG = False

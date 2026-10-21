@@ -1,5 +1,4 @@
-import pytest
-from django.urls import Resolver404, resolve
+from django.urls import resolve
 
 from teatree.webhook_urls import urlpatterns
 
@@ -14,11 +13,6 @@ def _receiver(path: str) -> str:
 def test_listener_routes_each_hook_to_its_receiver() -> None:
     assert _receiver("/hooks/github/") == "teatree.core.views.github_webhook.GitHubWebhookView"
     assert _receiver("/hooks/gitlab/") == "teatree.core.views.gitlab_webhook.GitLabWebhookView"
-
-
-def test_listener_resolves_nothing_else() -> None:
-    with pytest.raises(Resolver404):
-        resolve("/", urlconf=_URLCONF)
 
 
 def test_listener_has_exactly_the_two_hook_routes() -> None:

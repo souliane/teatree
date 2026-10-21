@@ -4,7 +4,7 @@ Phase 1 is sequential: N stops claiming, drains, and stops before N+1 starts. N 
 running worker container carries, not what the registry last recorded. A failure before N's
 drain starts fails N+1 and leaves N untouched. Anything that fails — or interrupts the roll —
 after it rolls back: N+1 is marked failed, N resumes, is brought back up from its own
-still-present image, and must pass the same verification N+1 had to. A failure after N+1's init
+still-present image, and must verify the services in N's own topology. A failure after N+1's init
 moved the schema is never rolled back, because N's code would refuse every claim against it.
 The promoted tag the watchdog restarts from moves only once N+1 is verified.
 """
@@ -28,6 +28,7 @@ from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, DrainPacing, drain
 
 logger = logging.getLogger(__name__)
 
+# Admin remains up for its health probe and operator recovery; loopback users can still write during init.
 WRITING_SERVICES = ("teatree-worker", "teatree-slack-listener", "teatree-webhooks")
 RUNTIME_SERVICES = (*WRITING_SERVICES, "teatree-admin", "teatree-watchdog")
 _ESSENTIAL_SERVICES = ("teatree-worker", "teatree-admin")

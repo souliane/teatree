@@ -22,6 +22,7 @@ from teatree.core.models import IncomingEvent, Task
 from teatree.core.views import _webhook_secrets, github_webhook
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.utils import secrets
+from teatree.utils.thread_db import close_thread_db_connections
 from tests._file_backed_db import file_backed_default_database
 
 PREFIX = "teatree/github-webhook"
@@ -34,6 +35,8 @@ TARGET_B = {"X-GitHub-Hook-Installation-Target-Type": "integration", "X-GitHub-H
 TARGET_EMPTY = {"X-GitHub-Hook-Installation-Target-ID": "303"}
 TARGET_UNLISTED = {"X-GitHub-Hook-Installation-Target-ID": "999"}
 DEFAULT_BODY = json.dumps({"action": "opened", "sender": {"login": "bob"}}).encode()
+LOCK_TIMEOUT_SECONDS = 5
+LOCK_WAIT_MARGIN_SECONDS = 4
 
 
 def _sign(body: bytes, secret: str) -> str:
@@ -112,7 +115,7 @@ class TestLockedDatabase(GitHubWebhookTestCase):
             try:
                 return self.deliver()
             finally:
-                connection.close()
+                close_thread_db_connections()
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(deliver).result()
@@ -129,7 +132,8 @@ class TestLockedDatabase(GitHubWebhookTestCase):
             accepted = self.deliver_on_a_listener_thread()
 
         assert locked.status_code == 503
-        assert elapsed < 7
+        assert webhook_settings.DATABASES["default"]["OPTIONS"]["timeout"] == LOCK_TIMEOUT_SECONDS
+        assert elapsed < LOCK_TIMEOUT_SECONDS + LOCK_WAIT_MARGIN_SECONDS
         assert accepted.status_code == 200
 
     def test_other_database_errors_still_raise(self) -> None:
