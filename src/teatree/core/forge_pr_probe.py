@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
-from teatree.generation import is_full_git_sha
+from teatree.git_sha import is_full_git_sha
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_allowed_to_fail
@@ -175,7 +175,7 @@ def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
 
 def github_open_pr_head(repo_dir: str | Path, branch: str) -> GithubOpenPrHead | None:
     """Read one open PR's source repo, branch and head for the exact branch."""
-    output = _open_pr_stdout(
+    output = _github_cli_stdout(
         [
             *_GH_OPEN_PR,
             "--json",
@@ -213,7 +213,7 @@ def github_open_pr_head(repo_dir: str | Path, branch: str) -> GithubOpenPrHead |
 def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host: str) -> str | None:
     """Read the exact GitHub branch ref; refuse missing or mismatched replies."""
     # The backend's _branch_tip uses its own credentials; custody needs this routed read.
-    output = _open_pr_stdout(["gh", "api", "--hostname", host, f"repos/{slug}/git/ref/heads/{branch}"], repo_dir)
+    output = _github_cli_stdout(["gh", "api", "--hostname", host, f"repos/{slug}/git/ref/heads/{branch}"], repo_dir)
     if output is None:
         return None
     try:
@@ -288,27 +288,27 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
     output schema, never a PR with no url: reporting FOUND-with-``""`` there let the
     fail-closed teardown adapter read an unverified open PR as verified absence.
     """
-    stdout = _open_pr_stdout(cmd, repo_dir)
+    stdout = _github_cli_stdout(cmd, repo_dir)
     if stdout is None:
         return PrProbe.unknown()
     return _classify_open_pr_rows(stdout, cmd[0], key=key)
 
 
-def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
-    """*cmd*'s stdout, or ``None`` when the forge CLI could not answer at all."""
+def _github_cli_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
+    """GitHub CLI stdout, or ``None`` when the read could not answer."""
     env = forge_cli_env(repo_dir)
     if env is None:
-        logger.warning("open-PR probe has no routed GitHub token for %s — unknown", repo_dir)
+        logger.warning("GitHub read has no routed token for %s — unknown", repo_dir)
         return None
     try:
         result = run_allowed_to_fail(
             cmd, expected_codes=None, cwd=Path(repo_dir), env=env, timeout=_PROBE_TIMEOUT_SECONDS
         )
     except SUBPROCESS_UNREACHABLE:
-        logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
+        logger.warning("GitHub read could not run %r in %s — unknown", cmd[0], repo_dir)
         return None
     if result.returncode != 0:
-        logger.warning("open-PR probe %r failed (exit %s) in %s — unknown", cmd[0], result.returncode, repo_dir)
+        logger.warning("GitHub read %r failed (exit %s) in %s — unknown", cmd[0], result.returncode, repo_dir)
         return None
     return result.stdout or "[]"
 

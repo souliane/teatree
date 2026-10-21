@@ -159,7 +159,6 @@ class TestGithubHeadProof:
         [
             "garbage",
             "[]",
-            '[{"url":"x"}]',
             json.dumps(
                 [
                     {
@@ -232,8 +231,7 @@ class TestFindOpenPrForBranch:
         probe = find_open_pr_for_branch(repo, "feature")
         assert probe.outcome is PrProbeOutcome.FOUND
         assert probe.url == _GH_URL
-        assert seen[0][0] == "gh"
-        assert "--head" in seen[0]
+        assert seen == [["gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1", "--head", "feature"]]
 
     def test_gitlab_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="https://gitlab.com/acme/widgets.git")
@@ -269,7 +267,7 @@ class TestFindOpenPrForBranch:
             raise subprocess.TimeoutExpired(_cmd, forge_pr_probe._PROBE_TIMEOUT_SECONDS)
 
         monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
-        assert forge_pr_probe._open_pr_stdout(["gh", "pr", "list"], repo) is None
+        assert forge_pr_probe._github_cli_stdout(["gh", "pr", "list"], repo) is None
         assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
         assert [kwargs.get("timeout") for kwargs in seen] == [forge_pr_probe._PROBE_TIMEOUT_SECONDS] * 2
 

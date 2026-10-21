@@ -9,6 +9,7 @@ from teatree.core.models.checkout_proof import CheckoutCustody, CheckoutTenure
 
 _MAX_TENURES = 16
 RELEASED_EXIT = "released"
+ABANDONED_EXIT = "abandoned"
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ class Custody:
             if (
                 not entry["holder"]
                 or not entry["since"]
-                or entry["ended"] not in {"", RELEASED_EXIT, "abandoned"}
+                or entry["ended"] not in {"", RELEASED_EXIT, ABANDONED_EXIT}
                 or bool(entry["ended"]) != bool(entry["ended_at"])
             ):
                 return None
@@ -92,7 +93,7 @@ class Custody:
         if entries and not entries[-1].ended:
             if renewal and (entries[-1].holder, entries[-1].session) == (holder, session):
                 return self
-            entries[-1] = replace(entries[-1], ended="abandoned", ended_at=now.isoformat())
+            entries[-1] = replace(entries[-1], ended=ABANDONED_EXIT, ended_at=now.isoformat())
         entries.append(Tenure(holder, session, now.isoformat(), namespace=namespace))
         return Custody(self.anchor, tuple(entries))
 

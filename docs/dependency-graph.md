@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.paths --> teatree.generation
+    teatree.paths --> teatree.git_sha
     teatree.paths --> teatree.mount_identity
     teatree.paths --> teatree.sqlite_snapshot
     teatree.project --> teatree.paths
@@ -526,6 +527,7 @@ graph TD
     teatree.loop.url_specificity
     teatree.instance_id
     teatree.generation
+    teatree.git_sha
     teatree.slack_mrkdwn
     teatree.memory_audit
 ```

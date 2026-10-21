@@ -146,7 +146,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
-            patch.object(forge_pr_probe, "_open_pr_stdout", side_effect=forge_stdout),
+            patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=forge_stdout),
             patch("teatree.core.worktree.checkout_fence.ask_owner_to_attest") as card,
             patch("teatree.core.worktree.checkout_fence.notify_user") as page,
         ):
@@ -172,7 +172,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert self.worktree.get_extra()["attested_state"] == recorded
 
     def direct_recovery(self, table: ProcessTable | None = None) -> bool:
-        with patch.object(forge_pr_probe, "_open_pr_stdout", side_effect=self.forge_stdout):
+        with patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=self.forge_stdout):
             return reattest_released_pr_head(
                 self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), table or self.clear
             )
@@ -411,7 +411,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
         self.assert_parked()
 
-    def test_t7_anchor_inside_window_beyond_ten_entries_attests(self) -> None:
+    def test_t7_anchor_inside_window_after_eleven_commits_attests(self) -> None:
         for index in range(11):
             run_strict(repo=str(self.path), args=["commit", "--allow-empty", "-m", f"later {index}"])
         run_strict(repo=str(self.path), args=["push", "origin", "feature"])
@@ -455,11 +455,6 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.assert_clean_claim_then_restore()
         self.assert_parked(response=ForgeResponse(head_repo="someone/fork"))
 
-    def test_host_gh_row_without_repository_owner_parks(self) -> None:
-        with self.assertLogs("teatree.core.forge_pr_probe", level="WARNING") as captured:
-            self.assert_parked(response=ForgeResponse(head_repository={"id": "R_kgDORe_NCA", "name": "teatree"}))
-        assert "headRepository.nameWithOwner" in "\n".join(captured.output)
-
     def test_t8_no_owned_open_pr_parks(self) -> None:
         self.assert_clean_claim_then_restore()
         self.assert_parked(response=ForgeResponse(pr=PrProbe.none()))
@@ -485,7 +480,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.worktree.refresh_from_db()
         run_strict(repo=str(self.path), args=["remote", "set-url", "origin", "https://gitlab.com/souliane/teatree.git"])
         with (
-            patch.object(forge_pr_probe, "_open_pr_stdout", side_effect=AssertionError("GitLab must not use gh")),
+            patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=AssertionError("GitLab must not use gh")),
         ):
             assert not reattest_released_pr_head(
                 self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), self.clear

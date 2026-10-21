@@ -19,6 +19,7 @@ from teatree.core.worktree.checkout_recovery import (
     checkout_state_unchanged,
     persist_checkout_recovery_attestation,
     pr_owned_by_ticket,
+    task_id_from_holder,
 )
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_digest
 from teatree.utils import git
@@ -68,10 +69,10 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
         return False
     holder_ids: set[int] = set()
     for entry in previous:
-        pk = entry.holder.removeprefix("task:")
-        if not entry.holder.startswith("task:") or not pk.isdigit():
+        pk = task_id_from_holder(entry.holder)
+        if pk is None:
             return False
-        holder_ids.add(int(pk))
+        holder_ids.add(pk)
     prior_tasks = list(Task.objects.filter(pk__in=holder_ids, ticket=task.ticket))
     return bool(
         len(prior_tasks) == len(holder_ids)

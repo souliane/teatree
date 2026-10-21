@@ -26,11 +26,16 @@ from teatree.utils.url_slug import pr_ref_from_url
 logger = logging.getLogger(__name__)
 
 
-def holder_task_for_ticket(holder: str, task: Task) -> Task | None:
+def task_id_from_holder(holder: str) -> int | None:
     pk = holder.removeprefix("task:")
     if not holder.startswith("task:") or not pk.isdigit():
         return None
-    return Task.objects.filter(pk=int(pk), ticket=task.ticket).first()
+    return int(pk)
+
+
+def _holder_task_for_ticket(holder: str, task: Task) -> Task | None:
+    pk = task_id_from_holder(holder)
+    return Task.objects.filter(pk=pk, ticket=task.ticket).first() if pk is not None else None
 
 
 def _failed_cancelled(task: Task | None) -> bool:
@@ -52,7 +57,7 @@ def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
     ):
         return None
     prior_holder, _ = next(iter(identities))
-    prior = holder_task_for_ticket(prior_holder, task)
+    prior = _holder_task_for_ticket(prior_holder, task)
     if prior is None or not phase_writes_checkout(prior.phase) or _failed_cancelled(prior):
         return None
     return prior
@@ -158,7 +163,7 @@ def attest_deferred_exit(task: Task, worktree: Worktree, state: CheckoutState, t
         or (worktree.occupied_by, worktree.occupied_by_session) != claimant
     ):
         return False
-    if _failed_cancelled(holder_task_for_ticket(record["holder"], task)) or not checkout_state_unchanged(
+    if _failed_cancelled(_holder_task_for_ticket(record["holder"], task)) or not checkout_state_unchanged(
         task, worktree, state
     ):
         return False
