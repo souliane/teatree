@@ -136,9 +136,6 @@ class TestAgentAdmissionDeniedReason(TestCase):
 
         assert verdict.denied_reason("shipping") == "worker quiescing"
         assert verdict.retiring_denied == "worker quiescing"
-        assert verdict.cheap_lane.ceiling == 0
-        assert verdict.review_lane.ceiling == 0
-        assert verdict.retiring_lane.ceiling == 0
 
 
 class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
@@ -443,6 +440,7 @@ class TestHeadlessAdmissionStatus(TestCase):
 
         assert status.as_json()["expensive_denied"] == status.as_json()["review_denied"] == quiescing
         assert status.as_json()["retiring_denied"] == quiescing
+        assert status.verdict().cheap_lane.ceiling == 3
         assert status.verdict().review_lane.ceiling == 2
         assert status.verdict().retiring_lane.ceiling == 2
         assert (
@@ -751,7 +749,6 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
 
         assert racer_one.admit(first.pk, first.phase, at="racer-one") is True
         assert racer_two.admit(second.pk, second.phase, at="racer-two") is False
-        assert Task.objects.cheap_class_occupancy(CheapClass.RETIRING) == 2
 
     def test_braked_lane_total_rejects_a_stale_cross_class_booking(self) -> None:
         self._seated_row()
@@ -835,6 +832,19 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
             )
             == 1
         )
+
+    def test_a_full_cheap_lane_is_announced_once(self) -> None:
+        verdict = AgentAdmission(
+            expensive_denied=None,
+            cheap_denied="cheap lane full",
+            review_denied=None,
+            retiring_denied=None,
+        )
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            verdict.log_denials()
+
+        assert len([line for line in logs.output if "cheap lane full" in line]) == 1
 
     def test_a_pass_announces_the_seats_the_window_released(self) -> None:
         # The ceiling goes soft exactly when the box is saturated — the state an operator

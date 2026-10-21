@@ -21,6 +21,7 @@ from teatree.core.loop_lease_manager import (
 )
 from teatree.core.managers_admission import (
     ADMITTED_INFLIGHT_WINDOW,
+    AdmissionLane,
     _cheap_phase_q,
     _lane_occupancy_q,
     _lane_under_ceiling,
@@ -454,11 +455,11 @@ class TaskQuerySet(models.QuerySet):
 
     def cheap_lane_occupancy(self) -> int:
         """Aggregate occupancy of both cheap classes, including recent pending seats."""
-        return self.filter(_lane_occupancy_q(timezone.now(), cheap_class=None, cheap_total=True)).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.CHEAP_TOTAL)).count()
 
     def cheap_class_occupancy(self, cheap_class: CheapClass) -> int:
         """Occupancy of one bounded cheap class, including recent pending seats."""
-        return self.filter(_lane_occupancy_q(timezone.now(), cheap_class=cheap_class)).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.for_class(cheap_class))).count()
 
     def expensive_lane_occupancy(self) -> int:
         """How much of the box the EXPENSIVE class holds — what the coding ceiling is measured against.
@@ -470,7 +471,7 @@ class TaskQuerySet(models.QuerySet):
         a burst of ``post_save`` admissions is still PENDING, so a count of CLAIMED rows
         alone cannot see the seats it just handed out.
         """
-        return self.filter(_lane_occupancy_q(timezone.now(), cheap_class=None)).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.EXPENSIVE)).count()
 
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
@@ -517,11 +518,10 @@ class TaskQuerySet(models.QuerySet):
         now = timezone.now()
         seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:
-            seat = seat.filter(
-                _lane_under_ceiling(now, lane_ceiling, cheap_class=None, cheap_total=cheap_class is not None)
-            )
+            lane = AdmissionLane.CHEAP_TOTAL if cheap_class is not None else AdmissionLane.EXPENSIVE
+            seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))
         if cheap_class is not None and class_ceiling is not None:
-            seat = seat.filter(_lane_under_ceiling(now, class_ceiling, cheap_class=cheap_class))
+            seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=AdmissionLane.for_class(cheap_class)))
         return bool(seat.update(admitted_at=now))
 
     def waiting_for_admission(self) -> models.QuerySet:

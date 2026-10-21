@@ -5,6 +5,7 @@ After that, or once it is parked into the future, the seat is released so it can
 """
 
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -25,6 +26,17 @@ if TYPE_CHECKING:
 ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
 
 
+class AdmissionLane(StrEnum):
+    EXPENSIVE = "expensive"
+    CHEAP_TOTAL = "cheap_total"
+    REVIEW = "review"
+    RETIRING = "retiring"
+
+    @classmethod
+    def for_class(cls, cheap_class: CheapClass) -> "AdmissionLane":
+        return {CheapClass.REVIEW: cls.REVIEW, CheapClass.RETIRING: cls.RETIRING}[cheap_class]
+
+
 def _cheap_phase_q(cheap_class: CheapClass | None = None) -> Q:
     """Every row of the cheap phase class, whichever spelling it was stored with.
 
@@ -39,7 +51,7 @@ def _unseated_q(now: datetime) -> Q:
     return Q(admitted_at__isnull=True) | Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
 
 
-def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None, cheap_total: bool = False) -> Q:
+def _lane_occupancy_q(now: datetime, *, lane: AdmissionLane) -> Q:
     """The rows holding a seat in one cost class's lane at *now*.
 
     One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
@@ -48,15 +60,17 @@ def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None, cheap_to
     bound at all. The three lanes PARTITION the queue — the expensive one is the exact
     complement of both cheap classes — so an unregistered phase lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
-    ``cheap_total`` is the one definition of the whole cheap lane (both classes) that the
+    ``CHEAP_TOTAL`` is the one definition of the whole cheap lane (both classes) that the
     total-occupancy read and the conditional write's total bound share.
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    if cheap_class is not None:
-        membership = _cheap_phase_q(cheap_class)
-    elif cheap_total:
+    if lane is AdmissionLane.CHEAP_TOTAL:
         membership = _cheap_phase_q()
+    elif lane is AdmissionLane.REVIEW:
+        membership = _cheap_phase_q(CheapClass.REVIEW)
+    elif lane is AdmissionLane.RETIRING:
+        membership = _cheap_phase_q(CheapClass.RETIRING)
     else:
         membership = ~_cheap_phase_q()
     return membership & (
@@ -65,9 +79,7 @@ def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None, cheap_to
     )
 
 
-def _lane_under_ceiling(
-    now: datetime, ceiling: int, *, cheap_class: CheapClass | None, cheap_total: bool = False
-) -> LessThan:
+def _lane_under_ceiling(now: datetime, ceiling: int, *, lane: AdmissionLane) -> LessThan:
     """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
@@ -76,7 +88,7 @@ def _lane_under_ceiling(
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
     occupied = (
-        task_model.objects.filter(_lane_occupancy_q(now, cheap_class=cheap_class, cheap_total=cheap_total))
+        task_model.objects.filter(_lane_occupancy_q(now, lane=lane))
         .order_by()
         .values(_lane=models.Value(1))
         .annotate(seats=models.Count("*"))

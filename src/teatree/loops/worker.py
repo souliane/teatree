@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Protocol
 from teatree.agents.runner_heartbeat import CHECKPOINT_GRACE_SECONDS
 from teatree.core.admission_pressure import MACHINE_BRAKE_CAUSES
 from teatree.core.managers_task_claim import process_exit
+from teatree.core.modelkit.phases import CheapClass
 from teatree.loop.queue_drain import expire_stale_headless_jobs
 from teatree.loops.deadlined_tick import kill_live_tick_process_groups
 from teatree.loops.enable_verdict import FleetAdmission, read_fleet_admission
@@ -90,8 +91,7 @@ def loops_executor_count() -> int:
 def agent_executor_queues(widths: "LaneWidths | None") -> tuple[str, ...]:
     """One executor per seat the verdict can admit, so no admitted seat lapses waiting for a thread."""
     if widths is None:
-        # One cheap executor per class (review, retiring) when the widths are unreadable.
-        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",) * 2
+        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",) * len(CheapClass)
     return ("default",) * widths.expensive + ("cheap",) * widths.cheap
 
 

@@ -251,14 +251,13 @@ def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.Mo
     assert loops_executor_count() == LOOPS_EXECUTOR_FLOOR == 2
 
 
-def _widths(expensive: int, cheap: int) -> LaneWidths:
-    """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
-    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), review=cheap)
+def _widths(expensive: int, review: int) -> LaneWidths:
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), review=review)
 
 
-@pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
-def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
-    assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * (cheap + 1)
+@pytest.mark.parametrize(("expensive", "review"), [(1, 1), (3, 2), (15, 2)])
+def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, review: int) -> None:
+    assert agent_executor_queues(_widths(expensive, review)) == ("default",) * expensive + ("cheap",) * (review + 1)
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:

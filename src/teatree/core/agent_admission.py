@@ -179,7 +179,7 @@ class AgentAdmission:
         return None
 
     def log_denials(self) -> None:
-        """Announce every class this verdict refuses, one WARNING line each.
+        """Announce each refused cost or cheap class once.
 
         Lives on the verdict rather than at each chokepoint so a refusal is worded
         identically wherever it is taken, and so a class added to :class:`PhaseCost`
@@ -189,19 +189,17 @@ class AgentAdmission:
         A released seat is announced alongside: it is the state in which the ceiling is
         SOFT, and it arrives with no refusal of its own to carry it.
         """
-        for cost, cheap_class in (
-            (PhaseCost.EXPENSIVE, None),
-            (PhaseCost.CHEAP, CheapClass.REVIEW),
-            (PhaseCost.CHEAP, CheapClass.RETIRING),
-        ):
-            denied = self.denied_for(cost, cheap_class=cheap_class)
-            if denied is not None:
-                self._announced.add(denied)
-                logger.warning(
-                    "Governor DENIED headless admission of %s work: %s (rows stay queued)",
-                    cheap_class or cost,
-                    denied,
-                )
+        for cost in PhaseCost:
+            classes = tuple(CheapClass) if cost is PhaseCost.CHEAP and self.cheap_denied is None else (None,)
+            for cheap_class in classes:
+                denied = self.denied_for(cost, cheap_class=cheap_class)
+                if denied is not None:
+                    self._announced.add(denied)
+                    logger.warning(
+                        "Governor DENIED headless admission of %s work: %s (rows stay queued)",
+                        cheap_class or cost,
+                        denied,
+                    )
         if self.seats_released:
             logger.warning(
                 "Cheap lanes released %s unclaimed seat(s) — the runner backlog outran the seat window, "
@@ -415,19 +413,17 @@ def _read_admission(
 
 @request_scope()  # every Task creation runs a verdict, so each settings re-read is paid per row
 def agent_admission_verdict() -> AgentAdmission:
-    """Probe the governor ONCE and resolve the verdict for both phase cost classes.
+    """Probe the governor once and resolve expensive and cheap class bounds.
 
     The EXPENSIVE (coding) class is the pure decision over the live quota + machine
     signals, then the expensive lane's OCCUPANCY against the governor's ceiling — never
     the whole live population, which would refuse coding work because reviews are running.
 
-    The CHEAP (review) class re-runs the SAME pure decision with the machine brake lifted —
-    the token brakes still refuse it, because a review burns quota like anything else —
-    bounded by :func:`review_lane_width` over the lane's OCCUPANCY: the running cheap agents
-    plus the cheap rows already handed to the runner. Counting the latter is what lets a
-    chokepoint see admissions it (or the other chokepoint) just made, so the bound is one
-    number in the database rather than per-caller state. The two lanes do not share the
-    governor's ceiling: a review is never queued behind coding (#5051).
+    CHEAP review and retiring classes rerun the same decision with the machine brake lifted;
+    token brakes still apply. Each class has W seats, with W from :func:`review_lane_width`,
+    inside a shared W+1 cheap lane. Occupancy includes running agents and recent pending
+    seats, so both chokepoints see each other's admissions. Cheap work is bounded beside
+    coding rather than by the expensive ceiling (#5051).
 
     Between the two sits the SHED band (#4508): the expensive class is refused while the
     cheap drain runs on, because :func:`decide_admission` is class-BLIND and can only
@@ -446,9 +442,6 @@ def agent_admission_verdict() -> AgentAdmission:
             cheap_denied=blocked,
             review_denied=blocked,
             retiring_denied=blocked,
-            cheap_lane=LaneBound(ceiling=0, headroom=0),
-            review_lane=LaneBound(ceiling=0, headroom=0),
-            retiring_lane=LaneBound(ceiling=0, headroom=0),
             expensive_guard_denied=blocked,
             cheap_guard_denied=blocked,
         )
