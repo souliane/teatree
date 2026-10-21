@@ -66,6 +66,39 @@ class TestChangedScenarios:
         assert "weekly sharded lane" in result.stderr
         assert len([line for line in result.stdout.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
 
+    def test_deferred_out_writes_the_tail_without_changing_stdout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        core_specs = specs_under(discover_specs(), SCENARIOS_DIR)
+        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in core_specs})
+        deferred = tmp_path / "deferred.txt"
+        monkeypatch.setenv("TEATREE_EVAL_DEFERRED_OUT", str(deferred))
+        result = CliRunner().invoke(
+            app,
+            ["eval", "changed-scenarios"],
+            input="\n".join(all_files) + "\n",
+        )
+        assert result.exit_code == 0, result.output
+        selected = result.stdout.splitlines()
+        tail = deferred.read_text(encoding="utf-8").splitlines()
+        assert len(selected) == MAX_SELECTIVE_PR_SCENARIOS
+        assert tail
+        assert set(selected).isdisjoint(tail)
+        assert set(selected) | set(tail) == {spec.name for spec in core_specs}
+
+    def test_deferred_out_is_empty_when_no_scenario_changed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        deferred = tmp_path / "deferred.txt"
+        monkeypatch.setenv("TEATREE_EVAL_DEFERRED_OUT", str(deferred))
+        result = CliRunner().invoke(
+            app,
+            ["eval", "changed-scenarios", "--skip-code", "3"],
+            input="src/teatree/cli/eval/app.py\n",
+        )
+        assert result.exit_code == 3
+        assert deferred.read_text(encoding="utf-8") == ""
+
 
 class TestChangedScenariosOverlayFacingFlags:
     """``--repo-root`` / ``--scenarios-dir`` / ``--require-specs`` make the CLI reusable (#3337).

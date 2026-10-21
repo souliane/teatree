@@ -106,6 +106,17 @@ class TestGateTruthTable:
         assert result.returncode == 0, result.stderr
         assert "PASS — the PR's changed scenarios ran and passed" in result.stdout
 
+    def test_reusable_bounded_pass_names_deferred_work(self) -> None:
+        result = _run_gate(
+            _REUSABLE,
+            detect="success",
+            eval_result="success",
+            changed="true",
+            owed="later",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "deferred to the owed ledger: later" in result.stdout
+
     @pytest.mark.parametrize("path", _GATE_WORKFLOWS, ids=lambda p: p.name)
     def test_changed_and_failing_is_red(self, path: Path) -> None:
         # detect succeeds, eval fails (a changed scenario failed) → FAIL.

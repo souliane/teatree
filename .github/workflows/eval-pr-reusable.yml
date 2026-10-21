@@ -105,6 +105,7 @@ jobs:
     outputs:
       names: ${{ steps.select.outputs.names }}
       run: ${{ steps.select.outputs.run }}
+      deferred: ${{ steps.select.outputs.deferred }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -153,6 +154,7 @@ jobs:
         id: select
         env:
           BASE_REF: ${{ github.base_ref }}
+          TEATREE_EVAL_DEFERRED_OUT: deferred.txt
         run: |
           git fetch --no-tags origin "$BASE_REF"
           git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
@@ -166,6 +168,7 @@ jobs:
           fi
           NAMES="$(paste -sd, names.txt)"
           echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"
           if [ -n "$NAMES" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Changed scenarios → running: $NAMES"
@@ -435,21 +438,30 @@ jobs:
       - name: Report the owed scenarios
         id: owed
         if: always()
+        env:
+          DEFERRED: ${{ needs.detect.outputs.deferred }}
         run: |
           LIMIT_NAMES="$RUNNER_TEMP/eval-owed-limit.txt"
           if [ -s "$LIMIT_NAMES" ]; then
             echo "parked=true" >> "$GITHUB_OUTPUT"
-            echo "owed=$(paste -sd, "$LIMIT_NAMES")" >> "$GITHUB_OUTPUT"
+            LIMIT_OWED="$(paste -sd, "$LIMIT_NAMES")"
+            echo "owed=${LIMIT_OWED}${DEFERRED:+,$DEFERRED}" >> "$GITHUB_OUTPUT"
           else
             echo "parked=false" >> "$GITHUB_OUTPUT"
+            echo "owed=$DEFERRED" >> "$GITHUB_OUTPUT"
           fi
       - name: Record owed scenarios
         if: always() && steps.owed-availability.outputs.enabled == 'true'
+        env:
+          DEFERRED: ${{ needs.detect.outputs.deferred }}
         run: |
           touch "$RUNNER_TEMP/eval-owed-limit.txt"
-          uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed.json" --reason limit \
-            --source "pr#${{ github.event.pull_request.number }}@${{ github.event.pull_request.head.sha }}" \
-            --names-file "$RUNNER_TEMP/eval-owed-limit.txt"
+          printf '%s' "$DEFERRED" | tr ',' '\n' > "$RUNNER_TEMP/eval-owed-deferred.txt"
+          for reason in limit deferred; do
+            uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed.json" --reason "$reason" \
+              --source "pr#${{ github.event.pull_request.number }}@${{ github.event.pull_request.head.sha }}" \
+              --names-file "$RUNNER_TEMP/eval-owed-$reason.txt"
+          done
       - name: Record and save eval verdicts
         continue-on-error: true
         if: success() && steps.verdict-cache-availability.outputs.enabled == 'true'
@@ -560,7 +572,11 @@ jobs:
                   echo "eval-gate PARKED — owed: $OWED" >> "$GITHUB_STEP_SUMMARY"
                 fi
               else
-                echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+                if [ -n "$OWED" ]; then
+                  echo "eval-gate PASS — bounded scenarios passed; deferred to the owed ledger: $OWED"
+                else
+                  echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+                fi
               fi
               ;;
             skipped)

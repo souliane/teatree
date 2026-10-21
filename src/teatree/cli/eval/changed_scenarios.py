@@ -35,6 +35,7 @@ Exit 0 when at least one scenario matched; exit ``--skip-code`` (default 1) when
 nothing matched, so the caller's eval job skips cleanly with no API spend.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -95,6 +96,8 @@ def changed_scenarios(
         changed_sections=sections,
         quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
     )
+    if deferred_out := os.environ.get("TEATREE_EVAL_DEFERRED_OUT"):
+        Path(deferred_out).write_text("".join(f"{name}\n" for name in selection.deferred_names), encoding="utf-8")
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
     # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
     if note := selection.truncation_note():

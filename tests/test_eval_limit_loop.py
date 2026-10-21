@@ -495,6 +495,37 @@ def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
     assert ledger.names == ("limited",)
 
 
+def test_reusable_pr_record_step_writes_deferred_debt(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(_REAL_T3_UV, encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    temp = tmp_path / "runner-temp"
+    temp.mkdir()
+    script = _script("eval-pr-reusable.yml", "eval", "Record owed scenarios")
+    script = script.replace("${{ github.event.pull_request.number }}", "7").replace(
+        "${{ github.event.pull_request.head.sha }}", "abc123"
+    )
+    result = subprocess.run(
+        [_BASH, "-c", script],
+        env={
+            **{key: value for key, value in os.environ.items() if key != "T3_REPO"},
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(temp),
+            "XDG_DATA_HOME": str(tmp_path / "xdg"),
+            "DEFERRED": "deferred-a,deferred-b",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=_WORKFLOWS.parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+    ledger = OwedLedger.from_json((temp / "eval-owed.json").read_text(encoding="utf-8"))
+    assert ledger.names == ("deferred-a", "deferred-b")
+
+
 def test_reusable_pr_reports_limit_debt_to_gate(tmp_path: Path, shell) -> None:
     (tmp_path / "eval-owed-limit.txt").write_text("beta\ngamma\n", encoding="utf-8")
     output = tmp_path / "github-output"
@@ -507,6 +538,18 @@ def test_reusable_pr_reports_limit_debt_to_gate(tmp_path: Path, shell) -> None:
 
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8").splitlines() == ["parked=true", "owed=beta,gamma"]
+
+
+def test_reusable_pr_reports_deferred_debt_without_parking(tmp_path: Path, shell) -> None:
+    output = tmp_path / "github-output"
+    result = shell(
+        _script("eval-pr-reusable.yml", "eval", "Report the owed scenarios"),
+        RUNNER_TEMP=str(tmp_path),
+        GITHUB_OUTPUT=str(output),
+        DEFERRED="alpha,beta",
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == ["parked=false", "owed=alpha,beta"]
 
 
 @pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml"])

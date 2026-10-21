@@ -459,6 +459,19 @@ def test_pr_deferred_tail_reaches_the_owed_record_step() -> None:
     assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
 
 
+def test_reusable_pr_deferred_tail_reaches_the_owed_record_step() -> None:
+    jobs = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    detect = jobs["detect"]
+    select = next(step for step in detect["steps"] if step.get("id") == "select")
+    record = next(step for step in jobs["eval"]["steps"] if step.get("name") == "Record owed scenarios")
+    assert select["env"]["TEATREE_EVAL_DEFERRED_OUT"] == "deferred.txt"
+    assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
+    assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
+    assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
+    assert "for reason in limit deferred" in record["run"]
+    assert '--reason "$reason"' in record["run"]
+
+
 def test_reusable_owed_steps_require_the_old_overlay_to_expose_the_command() -> None:
     pr = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
     availability = next(step for step in pr if step.get("id") == "owed-availability")
