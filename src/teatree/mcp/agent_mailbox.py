@@ -19,7 +19,11 @@ _READ = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _MAX_RESPONSE_BYTES = 2_000_000  # 100 valid 16-KiB messages plus envelope metadata
 
-TOOL_SEAMS = {"agent_mailbox_send": "LiveMailboxBroker._send — authenticated, addressed, live-only delivery"}
+TOOL_SEAMS = {
+    "agent_mailbox_send": "LiveMailboxBroker._send — authenticated, addressed, live-only delivery",
+    "agent_mailbox_inbox": "LiveMailboxBroker._inbox — authenticated inbox read and acknowledgement",
+    "agent_mailbox_wait": "LiveMailboxBroker._wait — authenticated wait and acknowledgement",
+}
 
 INSTRUCTIONS = (
     "- agent_mailbox_self(): your TeaTree-assigned address and harness.\n"
