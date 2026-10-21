@@ -223,7 +223,6 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     from teatree.core.answering.work_item_filing import (  # noqa: PLC0415 — deferred: ORM + backend imports
         WorkItemFilingError,
         file_work_item,
-        filing_repo,
     )
 
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
@@ -234,7 +233,7 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     overlay = task.ticket.overlay
     try:
         host = _resolved_code_host(overlay)
-        filed = file_work_item(task.ticket, dict(envelope), host=host, repo=filing_repo(overlay))
+        filed = file_work_item(task.ticket, dict(envelope), host=host)
     except WorkItemFilingError as exc:
         logger.warning("Work-item filing failed for task %s: %s", task.pk, exc)
         return WorkItemOutcome(url="", failure=str(exc))

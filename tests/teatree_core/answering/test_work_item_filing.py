@@ -16,8 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item
+from teatree.contrib.t3_teatree.overlay import TeatreeMetadata, TeatreeOverlay
+from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item, filing_repo
 from teatree.core.models import Ticket
+from teatree.core.overlay import OverlayReview
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_forge_repos
@@ -141,6 +143,67 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert filed is not None
         ticket.refresh_from_db()
         assert ticket.extra["slack_answer"]["work_issue_url"] == filed.url
+
+    def test_bundled_overlay_routes_named_work_and_keeps_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config = overlay.config.model_copy(update={"workspace_repos": [_REPO, "souliane/companion"]})
+        overlay.metadata = TeatreeMetadata(overlay.config)
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.get_overlay", lambda _name: overlay)
+        allow_forge_repos(_REPO, "souliane/companion")
+        host = RecordingHost()
+
+        filed = file_work_item(
+            _conversation_ticket(),
+            {"title": "Fix scanner", "body": "souliane/companion scanner crashes"},
+            host=host,
+        )
+
+        assert filed is not None
+        assert host.created[0]["repo"] == "souliane/companion"
+        assert filing_repo("t3-teatree", title="Fix companion scanner") == "souliane/companion"
+        assert filing_repo("t3-teatree", title="Fix scanner") == _REPO
+        with pytest.raises(WorkItemFilingError) as refusal:
+            filing_repo("t3-teatree", body="souliane/teatree and companion scanners crash")
+        assert all(repo in str(refusal.value) for repo in (_REPO, "souliane/companion"))
+
+    def test_unselected_or_invalid_multi_repo_choice_refuses_before_forge_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repos = (_REPO, "souliane/companion")
+
+        class InvalidReview(OverlayReview):
+            def select_work_item_repo(self, title: str, body: str, repos: tuple[str, ...]) -> str | None:
+                return "souliane/other"
+
+        overlay = TeatreeOverlay()
+        overlay.config = overlay.config.model_copy(update={"workspace_repos": list(repos)})
+        overlay.metadata = TeatreeMetadata(overlay.config)
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.get_overlay", lambda _name: overlay)
+        host = RecordingHost()
+        ticket = _conversation_ticket()
+
+        for review in (OverlayReview(), InvalidReview()):
+            overlay.review = review
+            with pytest.raises(WorkItemFilingError) as refusal:
+                file_work_item(ticket, {"title": "Fix scanner"}, host=host)
+            assert all(repo in str(refusal.value) for repo in repos)
+        assert host.created == []
+
+    def test_raising_multi_repo_hook_refuses_before_forge_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class RaisingReview(OverlayReview):
+            def select_work_item_repo(self, title: str, body: str, repos: tuple[str, ...]) -> str | None:
+                raise RuntimeError
+
+        overlay = TeatreeOverlay()
+        overlay.config = overlay.config.model_copy(update={"workspace_repos": [_REPO, "souliane/companion"]})
+        overlay.metadata = TeatreeMetadata(overlay.config)
+        overlay.review = RaisingReview()
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.get_overlay", lambda _name: overlay)
+        host = RecordingHost()
+
+        with pytest.raises(WorkItemFilingError, match="repo-selection hook failed"):
+            file_work_item(_conversation_ticket(), {"title": "Fix scanner"}, host=host)
+        assert host.created == []
 
 
 class TestARetryNeverForksASecondIssue:

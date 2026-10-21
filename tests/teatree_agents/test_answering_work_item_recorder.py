@@ -14,6 +14,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.contrib.t3_teatree.overlay import TeatreeMetadata, TeatreeOverlay
 from teatree.core.models import Session, Task, Ticket
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
@@ -88,7 +89,6 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         patches = (
             mock.patch("teatree.core.backend_factory.messaging_from_overlay", return_value=self.backend),
             mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host),
-            mock.patch("teatree.core.answering.work_item_filing.filing_repo", return_value="souliane/teatree"),
         )
         for patch in patches:
             patch.start()
@@ -109,6 +109,24 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
         assert self.host.created, "the owner's request was answered and never filed"
         assert Ticket.objects.get(issue_url=_FILED).is_admissible()
+
+    def test_named_repo_is_filed_through_the_real_teatree_overlay(self) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config = overlay.config.model_copy(
+            update={"workspace_repos": ["souliane/teatree", "souliane/companion"]}
+        )
+        overlay.metadata = TeatreeMetadata(overlay.config)
+        allow_forge_repos("souliane/teatree", "souliane/companion")
+
+        with mock.patch("teatree.core.answering.work_item_filing.get_overlay", return_value=overlay):
+            self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Fix scanner", "body": "souliane/companion scanner crashes"},
+                }
+            )
+
+        assert self.host.created[0]["repo"] == "souliane/companion"
 
     def test_the_reply_carries_the_clickable_filed_issue(self) -> None:
         self._record(
