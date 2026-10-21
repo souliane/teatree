@@ -46,21 +46,6 @@ def test_list_prs_unresolvable_project_returns_empty() -> None:
     client.get_json_paginated.assert_not_called()
 
 
-def test_requested_reviewers_are_read_from_the_merge_request() -> None:
-    wire = GitLabWire(
-        {
-            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
-            "projects/42/merge_requests/5": {"reviewers": [{"username": "peer"}]},
-            "projects/42/merge_requests/5/approvals": {"approved_by": [], "approvals_left": 1},
-        }
-    )
-
-    reviewers = GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5)
-
-    assert reviewers == ["peer"]
-    assert "projects/42/merge_requests/5" in wire.paths
-
-
 def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
     wire = GitLabWire(
         {

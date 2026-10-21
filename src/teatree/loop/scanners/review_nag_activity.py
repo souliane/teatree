@@ -4,7 +4,7 @@ import datetime as dt
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewRequestPost
-from teatree.core.review.review_pause import PauseState, _carries_pause_reaction, read_pause_state
+from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -61,13 +61,6 @@ def thread_activity(
     return dt.datetime.fromtimestamp(latest, tz=dt.UTC)
 
 
-def root_pause_visible(post: ReviewRequestPost, replies: list[RawAPIDict]) -> bool:
-    return any(
-        isinstance(reply, dict) and reply.get("ts") == post.slack_thread_ts and _carries_pause_reaction(reply)
-        for reply in replies
-    )
-
-
 def paused_signal(post: ReviewRequestPost, state: PauseState) -> ScanSignal:
     return ScanSignal(
         kind="review_nag.mr_paused",
@@ -76,6 +69,11 @@ def paused_signal(post: ReviewRequestPost, state: PauseState) -> ScanSignal:
     )
 
 
-def pause_skip(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
-    state = read_pause_state(post, messaging)
+def pause_skip(
+    post: ReviewRequestPost,
+    messaging: MessagingBackend,
+    *,
+    visible_root: RawAPIDict | None = None,
+) -> ScanSignal | None:
+    state = read_pause_state(post, messaging, visible_root=visible_root)
     return None if state is PauseState.NOT_PAUSED else paused_signal(post, state)

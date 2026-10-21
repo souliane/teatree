@@ -40,9 +40,8 @@ a failed open-state lookup, an unparsable URL, an ``UNKNOWN`` draft state, an
 the row, so a later merge-react still fires and the next tick retries once the
 read works again.
 
-Unconditional: chasing an unanswered review request is not disableable. What keeps
-a re-ping off a colleague's channel is the repo-exemption guard and the fail-closed
-ladder above, never a flag nobody flipped.
+The scanner is selected without a feature flag, but an empty or unreadable safe
+mention holds its re-ask and leaves the request open.
 
 Concurrency: one transaction claims every open sibling row in a channel/thread
 before posting. A later tick sees the shared stamp and skips. A blocked or failed
@@ -65,14 +64,14 @@ from teatree.core.review.mr_state_question import ask_mr_state
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner, TriageThresholds
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
-from teatree.core.review.review_pause import PauseState
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_nag_activity import pause_skip as _pause_skip
-from teatree.loop.scanners.review_nag_activity import paused_signal, root_pause_visible, thread_activity
-from teatree.loop.scanners.review_nag_claim import ReviewNagPostReconciliationError, _NagClaim
+from teatree.loop.scanners.review_nag_activity import thread_activity
+from teatree.loop.scanners.review_nag_claim import ReviewNagClaim, ReviewNagPostReconciliationError
 from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
+from teatree.types import RawAPIDict
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -154,6 +153,7 @@ class ReviewNagScanner:
                     "review_nag.ping",
                     "review_nag.gated",
                     "review_nag.post_failed",
+                    "review_nag.mention_held",
                 }:
                     attempted_threads.add(thread)
         return signals
@@ -203,9 +203,9 @@ class ReviewNagScanner:
         interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
         if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
             return None
-        due = self._due_for_a_re_ask(post, messaging, right_now, interval)
-        if isinstance(due, ScanSignal):
-            return due
+        due, held = self._due_for_a_re_ask(post, messaging, right_now, interval)
+        if held is not None:
+            return held
         return (interval, owned_peers) if due else None
 
     def _due_for_a_re_ask(
@@ -214,21 +214,19 @@ class ReviewNagScanner:
         messaging: MessagingBackend,
         right_now: dt.datetime,
         interval: dt.timedelta,
-    ) -> bool | ScanSignal:
+    ) -> tuple[bool, ScanSignal | None]:
         """Whether this row's re-ask window has lapsed with no thread activity inside it.
 
         An unreadable activity read answers NOT due, so a Slack outage costs a
         tick rather than a re-ping nobody could show was warranted.
         """
-        if post.last_nag_at is not None and right_now - post.last_nag_at < interval:
-            return False
         observation = self._last_activity(post, messaging, right_now)
         if observation is None:
-            return False
-        last_activity, root_paused = observation
-        if root_paused:
-            return paused_signal(post, PauseState.PAUSED)
-        return right_now - last_activity > interval
+            return False, None
+        last_activity, visible_root = observation
+        if visible_root is not None and (held := _pause_skip(post, messaging, visible_root=visible_root)):
+            return False, held
+        return right_now - last_activity > interval, None
 
     def _repo_owner_for(self, post: ReviewRequestPost) -> RepoOwner:
         """Which org function reviews this MR's repo — the base interval's selector."""
@@ -240,17 +238,18 @@ class ReviewNagScanner:
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
-    ) -> tuple[dt.datetime, bool] | None:
+    ) -> tuple[dt.datetime, RawAPIDict | None] | None:
         """Return last review activity, or ``None`` when the thread read fails."""
         try:
             replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
         except Exception as exc:  # noqa: BLE001 — a thread read must never crash a tick.
             logger.warning("review_nag: thread read failed for %s: %s", post.mr_url, exc)
             return None
-        return (
-            thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id),
-            root_pause_visible(post, replies),
+        visible_root = next(
+            (reply for reply in replies if isinstance(reply, dict) and reply.get("ts") == post.slack_thread_ts),
+            None,
         )
+        return thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id), visible_root
 
     def _mr_not_naggable(
         self,
@@ -318,13 +317,13 @@ class ReviewNagScanner:
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
-        interval: dt.timedelta = dt.timedelta(days=2),
+        interval: dt.timedelta,
     ) -> ScanSignal | None:
         reconciled = _consult_guard_before_nag(post, self.overlay_name)
         if reconciled is not None:
             return reconciled
 
-        claim = _NagClaim.take(post, right_now, interval)
+        claim = ReviewNagClaim.take(post, right_now, interval)
         if claim is None:
             return None
 
@@ -356,10 +355,17 @@ class ReviewNagScanner:
             )
         except Exception as exc:  # noqa: BLE001 — Slack-Connect not_in_channel etc.; release the claim for retry.
             claim.release()
-            logger.warning("review_nag: post failed for %s on %s: %s", post.mr_url, post.slack_channel_id, exc)
+            held = isinstance(exc, ReviewNagMentionUnresolvedError)
+            if not held:
+                logger.warning("review_nag: post failed for %s on %s: %s", post.mr_url, post.slack_channel_id, exc)
+            summary = (
+                f"Review re-ask held for {post.mr_url}: {exc}"
+                if held
+                else f"Slack post failed for {post.mr_url}: {exc}"
+            )
             return ScanSignal(
-                kind="review_nag.post_failed",
-                summary=f"Slack post failed for {post.mr_url}: {exc}",
+                kind="review_nag.mention_held" if held else "review_nag.post_failed",
+                summary=summary,
                 payload={"mr_url": post.mr_url, "error": str(exc), "post_id": post.pk},
             )
 

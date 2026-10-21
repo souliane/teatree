@@ -37,7 +37,7 @@ def _active_user(user_id: str, name: str) -> RawAPIDict:
 
 class TestResolveUniqueActiveUserId:
     def test_unique_active_match_ignores_deactivated_duplicate(self) -> None:
-        members = [_active_user("UPEER", "peer"), {"id": "UDEAD", "name": "peer", "deleted": True}]
+        members = [_active_user("UPEER", "peer"), {**_active_user("UDEAD", "peer"), "deleted": True}]
 
         def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
             return _members_page(members)

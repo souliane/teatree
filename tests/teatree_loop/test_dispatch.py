@@ -34,6 +34,18 @@ from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners.base import ScanSignal
 
 
+def test_held_review_reask_is_visible_as_action_needed() -> None:
+    signal = ScanSignal(
+        kind="review_nag.mention_held",
+        summary="Review re-ask held: no safe reviewer mention",
+        payload={"mr_url": "https://gitlab.example/x/-/merge_requests/1"},
+    )
+
+    actions = dispatch([signal])
+
+    assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
+
 @pytest.fixture(autouse=True)
 def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the two ambient review-request gates so routing tests are deterministic.

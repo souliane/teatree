@@ -13,13 +13,13 @@ class ReviewNagPostReconciliationError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class _NagClaim:
+class ReviewNagClaim:
     previous: tuple[tuple[int, dt.datetime | None, int], ...]
     claimed_at: dt.datetime
     nag_count: int
 
     @classmethod
-    def take(cls, post: ReviewRequestPost, right_now: dt.datetime, interval: dt.timedelta) -> "_NagClaim | None":
+    def take(cls, post: ReviewRequestPost, right_now: dt.datetime, interval: dt.timedelta) -> "ReviewNagClaim | None":
         with transaction.atomic():
             peers = list(
                 ReviewRequestPost.objects.select_for_update()

@@ -39,7 +39,7 @@ class TestThreadActivity:
             "reaction-not-dict",
             "requester-unresolved",
             "requester-unresolved-empty-user",
-            "non-string-user",
+            "non-string-user-control",
             "mixed-reactions",
         ),
     )

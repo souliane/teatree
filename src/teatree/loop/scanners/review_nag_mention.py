@@ -7,18 +7,21 @@ unless an engaged reviewer resolves safely.
 """
 
 import logging
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
+from hashlib import sha256
 
+from django.core.cache import cache as django_cache
+
+from teatree.backends.slack.web_reads import is_slack_user_id
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.models import ReviewRequestPost
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
-_SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]+")
+NAG_IDENTITY_LOOKUP_ERRORS = (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,13 +58,23 @@ def engaged_reask_mention(
             reviewers = host.get_pr_engaged_reviewers(repo=ref.slug, pr_iid=ref.pr_id)
             forge_names.update(_forge_engagers(comments, reviewers))
         for name in forge_names - set(requester.aliases):
-            if user_id := messaging.resolve_unique_active_user_id(name):
+            if user_id := _active_user_id(messaging, name, overlay_name=overlay_name, fallback=fallback):
                 slack_ids.add(user_id)
-    except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+    except NAG_IDENTITY_LOOKUP_ERRORS as exc:
         logger.warning("review_nag: engaged-reviewer lookup failed for %s: %s", post.mr_url, exc)
         return fallback
     slack_ids.discard(requester.slack_id)
     return " ".join(f"<@{user_id}>" for user_id in sorted(slack_ids)) or fallback
+
+
+def _active_user_id(messaging: MessagingBackend, name: str, *, overlay_name: str, fallback: str) -> str:
+    cache_key = "review-nag-unmapped:" + sha256(f"{overlay_name}\0{name.casefold()}".encode()).hexdigest()
+    if not fallback and django_cache.get(cache_key):
+        return ""
+    user_id = messaging.resolve_unique_active_user_id(name)
+    if not user_id and not fallback:
+        django_cache.set(cache_key, 1, timeout=1800)
+    return user_id
 
 
 def _forge_engagers(comments: object, reviewers: object) -> set[str]:
@@ -71,7 +84,7 @@ def _forge_engagers(comments: object, reviewers: object) -> set[str]:
     if not isinstance(comments, list):
         return names
     for comment in comments:
-        if not isinstance(comment, dict):
+        if not isinstance(comment, dict) or comment.get("system") is True:
             continue
         author = comment.get("author") or comment.get("user")
         if not isinstance(author, dict):
@@ -90,15 +103,8 @@ def _thread_engagers(replies: object, requester_slack_id: str) -> set[str]:
         if not isinstance(reply, dict) or reply.get("bot_id") or reply.get("subtype") == "bot_message":
             continue
         user_id = reply.get("user")
-        if isinstance(user_id, str) and _SLACK_USER_ID.fullmatch(user_id):
+        if is_slack_user_id(user_id):
             ids.add(user_id)
-        reactions = reply.get("reactions")
-        if not isinstance(reactions, list):
-            continue
-        for reaction in reactions:
-            users = reaction.get("users") if isinstance(reaction, dict) else None
-            if isinstance(users, list):
-                ids.update(user for user in users if isinstance(user, str) and _SLACK_USER_ID.fullmatch(user))
     ids.discard(requester_slack_id)
     return ids
 
@@ -121,7 +127,7 @@ def reask_mention(messaging: MessagingBackend, *, overlay_name: str) -> str:
 @cache
 def _warn_unresolved_mention_once(overlay_name: str, configured: str) -> None:
     logger.warning(
-        "review_nag: re-ask mention %r (overlay %r) resolves to no user group or user — re-asking without a mention",
+        "review_nag: re-ask mention %r (overlay %r) resolves to no user group or user — holding the re-ask",
         configured,
         overlay_name,
     )

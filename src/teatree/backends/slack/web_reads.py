@@ -10,7 +10,7 @@ retry with its configured user token. Connect routing stays on the backend.
 
 import re
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import Protocol, TypeGuard, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES, SlackReadRefusedError
 from teatree.backends.slack.pagination import next_cursor
@@ -21,6 +21,12 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
 _USER_ID = re.compile(r"[UW][A-Z0-9]+")
+
+
+def is_slack_user_id(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and _USER_ID.fullmatch(value) is not None
+
+
 # A bot can be absent from a channel that the configured user can read.
 _BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
@@ -219,7 +225,7 @@ def _active_directory_match(member: RawAPIDict, clean: str) -> str:
     if not any(isinstance(name, str) and name.casefold() == clean for name in names):
         return ""
     user_id = member.get("id")
-    return user_id if isinstance(user_id, str) and _USER_ID.fullmatch(user_id) else ""
+    return user_id if is_slack_user_id(user_id) else ""
 
 
 def resolve_usergroup_id(*, get: Getter, handle: str) -> str:

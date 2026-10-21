@@ -43,11 +43,16 @@ class PauseState(StrEnum):
     UNKNOWN = "unknown"
 
 
-def read_pause_state(post: ReviewRequestPost, messaging: MessagingBackend | None) -> PauseState:
+def read_pause_state(
+    post: ReviewRequestPost,
+    messaging: MessagingBackend | None,
+    *,
+    visible_root: RawAPIDict | None = None,
+) -> PauseState:
     if messaging is None or not post.slack_channel_id or not post.slack_thread_ts:
         return PauseState.UNKNOWN
     try:
-        message = messaging.fetch_message(channel=post.slack_channel_id, ts=post.slack_thread_ts)
+        message = visible_root or messaging.fetch_message(channel=post.slack_channel_id, ts=post.slack_thread_ts)
         if not message:
             return PauseState.UNKNOWN
         return PauseState.PAUSED if _carries_pause_reaction(message) else PauseState.NOT_PAUSED
