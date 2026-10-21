@@ -152,12 +152,38 @@ class TestGithubHeadProof:
         _fake_cli(monkeypatch, _completed(json.dumps([row, {**row, "url": _GH_URL + "-other"}])))
         assert github_open_pr_head(tmp_path, "feature") is None
 
-    @pytest.mark.parametrize("payload", ["garbage", "{}", "[]", '[{"url":"x"}]', '[{"headRefOid":"oops"}]'])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "garbage",
+            "{}",
+            "[]",
+            '[{"url":"x"}]',
+            json.dumps(
+                [
+                    {
+                        "url": _GH_URL,
+                        "headRepository": {"nameWithOwner": "acme/widgets"},
+                        "headRefName": "feature",
+                        "headRefOid": "oops",
+                    }
+                ]
+            ),
+        ],
+    )
     def test_open_pr_head_refuses_malformed_output(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str
     ) -> None:
         _fake_cli(monkeypatch, _completed(payload))
         assert github_open_pr_head(tmp_path, "feature") is None
+
+    def test_missing_repository_owner_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        row = {"url": _GH_URL, "headRepository": {}, "headRefName": "feature", "headRefOid": "a" * 40}
+        _fake_cli(monkeypatch, _completed(json.dumps([row])))
+        assert github_open_pr_head(tmp_path, "feature") is None
+        assert "headRepository.nameWithOwner" in caplog.text
 
     def test_exact_branch_ref_uses_routed_gh_api(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         head = "b" * 40

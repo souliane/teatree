@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
+from typing import NamedTuple
 
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
 from teatree.utils.forge import forge_from_remote
@@ -43,8 +44,16 @@ logger = logging.getLogger(__name__)
 # branch selector (``--head``) is appended by the forge-specific wrapper. The GitLab arm
 # runs no CLI at all — the image declares no ``glab``, so that side reads over the
 # token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
-_GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
+_GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open")
+_GIT_OID = re.compile(r"[0-9a-f]{40}")
 _PROBE_TIMEOUT_SECONDS = 30
+
+
+class GithubOpenPrHead(NamedTuple):
+    url: str
+    repository: str
+    branch: str
+    head: str
 
 
 def forge_cli_env(repo: str | Path = ".") -> dict[str, str] | None:
@@ -180,17 +189,13 @@ def forge_for_repo(repo_dir: str | Path) -> str | None:
 
 def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     """The tri-state open-PR probe for a known-GitHub repo (``gh pr list --head``)."""
-    return _probe_open_pr([*_GH_OPEN_PR, "--head", branch], repo_dir, key="url")
+    return _probe_open_pr([*_GH_OPEN_PR, "--json", "url", "--limit", "1", "--head", branch], repo_dir, key="url")
 
 
-def github_open_pr_head(repo_dir: str | Path, branch: str) -> tuple[str, str, str, str] | None:
+def github_open_pr_head(repo_dir: str | Path, branch: str) -> GithubOpenPrHead | None:
     output = _open_pr_stdout(
         [
-            "gh",
-            "pr",
-            "list",
-            "--state",
-            "open",
+            *_GH_OPEN_PR,
             "--json",
             "url,headRepository,headRefName,headRefOid",
             "--limit",
@@ -210,15 +215,19 @@ def github_open_pr_head(repo_dir: str | Path, branch: str) -> tuple[str, str, st
         return None
     row = rows[0]
     repository = row.get("headRepository")
-    branch = row.get("headRefName")
+    head_branch = row.get("headRefName")
     url = row.get("url")
     head = row.get("headRefOid")
-    if not isinstance(repository, dict) or not isinstance(branch, str):
+    if not isinstance(head_branch, str):
         return None
-    slug = repository.get("nameWithOwner")
-    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug or not branch:
+    slug = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+    if slug is None:
+        logger.warning("GitHub PR head proof unavailable: gh did not return headRepository.nameWithOwner")
+    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug or not head_branch:
         return None
-    return (url, slug, branch, head) if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    return (
+        GithubOpenPrHead(url, slug, head_branch, head) if isinstance(head, str) and _GIT_OID.fullmatch(head) else None
+    )
 
 
 def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host: str) -> str | None:
@@ -233,7 +242,7 @@ def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host:
         return None
     object_data = row.get("object")
     sha = object_data.get("sha") if isinstance(object_data, dict) else None
-    return sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    return sha if isinstance(sha, str) and _GIT_OID.fullmatch(sha) else None
 
 
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:

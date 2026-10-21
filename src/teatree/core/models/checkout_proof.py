@@ -45,8 +45,6 @@ class ReleasedPrHeadAttestation(TypedDict):
     digest: str
     anchor_commit: str
     current_head: str
-    pr_head: str
-    remote_head: str
     pull_request: str
     tenures: list[CheckoutTenure]
     process_table: CheckoutProcessEvidence

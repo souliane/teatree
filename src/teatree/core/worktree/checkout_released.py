@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import urlsplit
 
 from django.utils import timezone
@@ -11,10 +11,16 @@ from teatree.core import forge_pr_probe
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import PullRequest, Task, Worktree
+from teatree.core.models import Task, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.worktree_occupancy import task_holder_id
-from teatree.core.worktree.checkout_recovery import _attest, _holder_task, _process_evidence, _state_unchanged
+from teatree.core.worktree.checkout_recovery import (
+    attest_checkout,
+    checkout_process_evidence,
+    checkout_state_unchanged,
+    holder_task_for_ticket,
+    pr_owned_by_ticket,
+)
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_digest
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
@@ -27,6 +33,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _MAX_REFLOG_ANCHORS = 64
+
+
+class ReleasedPrHeadProof(NamedTuple):
+    anchor_commit: str
+    current_head: str
+    pull_request: str
 
 
 def _clean_anchor_commit(path: str, branch: str, digest: str) -> str | None:
@@ -43,20 +55,19 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
     *previous, current = custody.tenures
     claimant = (task_holder_id(task), task.claimed_by_session)
     if (
-        current.ended
-        or (current.holder, current.session) != claimant
+        (current.holder, current.session) != claimant
         or (worktree.occupied_by, worktree.occupied_by_session) != claimant
         or any(entry.ended != "released" for entry in previous)
     ):
         return False
-    prior_tasks = [_holder_task(entry.holder, task) for entry in previous]
+    prior_tasks = [holder_task_for_ticket(entry.holder, task) for entry in previous]
     return bool(
         all(prior is not None and prior.failure_kind != FailureKind.CANCELLED for prior in prior_tasks)
         and any(prior is not None and phase_writes_checkout(prior.phase) for prior in prior_tasks)
     )
 
 
-def _owned_github_head_url(task: Task, path: str, state: CheckoutState, head: str) -> tuple[str, str, str] | None:
+def _owned_github_pr_url(task: Task, path: str, state: CheckoutState, head: str) -> str | None:
     origin = git.remote_slug(repo=path)
     origin_url = git.remote_url(repo=path)
     origin_host = host_from_remote(origin_url)
@@ -65,25 +76,26 @@ def _owned_github_head_url(task: Task, path: str, state: CheckoutState, head: st
     pr_head = forge_pr_probe.github_open_pr_head(path, state.branch)
     if pr_head is None:
         return None
-    pr_url, head_repo, head_branch, forge_head = pr_head
-    ref = pr_ref_from_url(pr_url)
+    ref = pr_ref_from_url(pr_head.url)
     if ref is None or ref.host_kind != "github":
         return None
     identity_matches = (
-        ref.slug.casefold() == origin.casefold() and origin_host == (urlsplit(pr_url).hostname or "").lower()
+        ref.slug.casefold() == origin.casefold() and origin_host == (urlsplit(pr_head.url).hostname or "").lower()
     )
-    head_matches = head_repo.casefold() == origin.casefold() and head_branch == state.branch and forge_head == head
+    head_matches = (
+        pr_head.repository.casefold() == origin.casefold() and pr_head.branch == state.branch and pr_head.head == head
+    )
     if not identity_matches or not head_matches:
         return None
-    if PullRequest.objects.owning_ticket(slug=ref.slug, pr_id=ref.pr_id, pr_url=pr_url) != task.ticket:
+    if not pr_owned_by_ticket(task, ref, pr_head.url):
         return None
     remote_head = forge_pr_probe.github_exact_branch_head(path, origin, state.branch, origin_host)
-    return (pr_url, forge_head, remote_head) if remote_head is not None and remote_head == head else None
+    return pr_head.url if remote_head == head else None
 
 
 def _released_pr_head_proof(
     task: Task, worktree: Worktree, state: CheckoutState, custody: Custody
-) -> tuple[str, str, str, str, str] | None:
+) -> ReleasedPrHeadProof | None:
     path = worktree.worktree_path
     try:
         anchor = _clean_anchor_commit(path, state.branch, custody.anchor)
@@ -94,46 +106,41 @@ def _released_pr_head_proof(
             repo=path, args=["merge-base", "--is-ancestor", anchor, head]
         ):
             return None
-        owned_head = _owned_github_head_url(task, path, state, head)
-        if owned_head is None:
+        pr_url = _owned_github_pr_url(task, path, state, head)
+        if pr_url is None:
             return None
     except (CommandFailedError, OSError, RuntimeError, ValueError) as exc:
         logger.warning("Released PR head proof unreadable for checkout %s: %s", worktree.pk, exc)
         return None
-    pr_url, pr_head, remote_head = owned_head
-    return anchor, head, pr_url, pr_head, remote_head
+    return ReleasedPrHeadProof(anchor, head, pr_url)
 
 
 def reattest_released_pr_head(task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable) -> bool:
     custody = Custody.from_extra(worktree.get_extra())
-    if custody is None or len(custody.tenures) <= 1 or state.dirty or state.branch != worktree.branch:
+    if custody is None or len(custody.tenures) <= 1 or state.branch != worktree.branch:
         return False
     if (
-        not table.usable
-        or table.holds(Path(worktree.worktree_path))
+        table.holds(Path(worktree.worktree_path))
         or table.eviction_refuse_reason(nested_writer=custody.prior_tenures_nested)
         or not _released_custody(task, worktree, custody)
     ):
         return False
     proof = _released_pr_head_proof(task, worktree, state, custody)
-    if proof is None or not _state_unchanged(task, worktree, state):
+    if proof is None or not checkout_state_unchanged(task, worktree, state):
         return False
-    anchor, head, pr_url, pr_head, remote_head = proof
     current = custody.tenures[-1]
     audit: ReleasedPrHeadAttestation = {
         "at": timezone.now().isoformat(),
         "previous": custody.anchor,
         "digest": state.digest,
-        "anchor_commit": anchor,
-        "current_head": head,
-        "pr_head": pr_head,
-        "remote_head": remote_head,
-        "pull_request": pr_url,
+        "anchor_commit": proof.anchor_commit,
+        "current_head": proof.current_head,
+        "pull_request": proof.pull_request,
         "tenures": [entry.as_dict() for entry in custody.tenures],
-        "process_table": _process_evidence(table, custody),
+        "process_table": checkout_process_evidence(table, custody),
         "holder": {"id": current.holder, "session": current.session},
     }
-    attested = _attest(worktree, custody, state.digest, audit)
+    attested = attest_checkout(worktree, custody, state.digest, audit)
     if attested:
-        logger.info("Re-attested released PR-head checkout %s at %s", worktree.pk, head)
+        logger.info("Re-attested released PR-head checkout %s at %s", worktree.pk, proof.current_head)
     return attested
