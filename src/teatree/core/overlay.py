@@ -581,7 +581,7 @@ class OverlayReview:
     """Review / merge / customer-display concern — ``overlay.review``."""
 
     def get_followup_scanners(self, backend: "OverlayBackends") -> "list[Scanner]":
-        """Selection is bounded and omitted from previews because hooks may write to the forge."""
+        """Scanners this overlay adds to the follow-up loop; construct only, do forge I/O in ``scan()``."""
         return []
 
     def merge_candidate_repo_slugs(self) -> list[str]:

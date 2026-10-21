@@ -15,6 +15,8 @@ from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
 HOOK_DEADLINE_SECONDS = 5.0
+# Captured at import: a rebound or wrapped base method then counts as an override, not as the default.
+_DEFAULT_FOLLOWUP_HOOK = OverlayReview.get_followup_scanners
 _SKIPPED_HOOKS: ContextVar[list[str] | None] = ContextVar("skipped_overlay_followup_hooks", default=None)
 # Retain one timed-out call per overlay so repeated ticks cannot spawn unbounded hook threads.
 _INFLIGHT_HOOKS: dict[str, Future[list[Scanner]]] = {}
@@ -36,6 +38,10 @@ def skip_overlay_followup_hooks() -> Generator[list[str]]:
         _SKIPPED_HOOKS.reset(token)
 
 
+class OverlayHookRefusalError(Exception):
+    """A rejected hook result is reported as a scanner failure."""
+
+
 class _RefusedOverlayFollowupScanners:
     name = "overlay_followup_scanners"
 
@@ -44,10 +50,6 @@ class _RefusedOverlayFollowupScanners:
 
     def scan(self) -> list[ScanSignal]:
         raise OverlayHookRefusalError(self.reason)
-
-
-class OverlayHookRefusalError(Exception):
-    """A rejected hook result is reported as a scanner failure."""
 
 
 class _HookCallError(Exception):
@@ -107,7 +109,7 @@ def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str
         return []
     review = backend.overlay.review
     hook = getattr(type(review), "get_followup_scanners", None)
-    if hook is None or hook is OverlayReview.get_followup_scanners:
+    if hook is None or hook is _DEFAULT_FOLLOWUP_HOOK:
         return []
     tag = backend.name
     if (skipped := _SKIPPED_HOOKS.get()) is not None:

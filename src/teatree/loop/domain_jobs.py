@@ -441,7 +441,7 @@ def _jobs_for_overlay_backend(
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     label = job.label
     try:
-        signals = job.scanner.scan()
+        signals = list(job.scanner.scan())
         if job.overlay_hook and (forbidden := {signal.kind for signal in signals} & agent_dispatching_kinds()):
             return label, [], f"agent-routed signal kind refused: {', '.join(sorted(forbidden))}"
         if job.overlay:

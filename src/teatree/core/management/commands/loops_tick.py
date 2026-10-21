@@ -261,7 +261,7 @@ class Command(TyperCommand):
         )
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
-        """``--dry-run``: run the followup scanners for real, post nothing, gate on breaches.
+        """``--dry-run``: scan built-in follow-up jobs, omit overlay hooks, and report breaches.
 
         Selection deliberately does NOT go through the live admission gate
         (:class:`_ScopedJobsBuilder`): ``followup`` is previewed precisely while it is

@@ -1,9 +1,12 @@
+from collections.abc import Iterator
 from contextvars import ContextVar
-from threading import Event
+from functools import wraps
+from threading import Event, Thread, current_thread
 from typing import cast
 from unittest.mock import patch
 
 import pytest
+from django.db import connections
 from django.test import TestCase
 
 import teatree.loop.overlay_followup_jobs as overlay_followup_jobs_module
@@ -94,6 +97,68 @@ class TestOverlayFollowupScanners(TestCase):
         assert outcome.errors == {}
         assert outcome.signals == [ScanSignal(kind="overlay.extra", summary="ran", payload={"overlay": "alpha"})]
 
+    def test_patched_base_hook_selects_a_scanner(self) -> None:
+        scanner = _ExtraScanner()
+        backend = self._backend("alpha")
+        with patch.object(OverlayReview, "get_followup_scanners", return_value=[scanner]) as hook:
+            jobs = MINI_LOOP.build_jobs(backends=[backend])
+        assert any(job.scanner is scanner for job in jobs)
+        hook.assert_called_once_with(backend)
+
+    def test_rebound_base_hook_selects_a_scanner(self) -> None:
+        scanner = _ExtraScanner()
+        original = OverlayReview.get_followup_scanners
+
+        def rebound(self: OverlayReview, backend: OverlayBackends) -> list[Scanner]:
+            return [scanner]
+
+        try:
+            OverlayReview.get_followup_scanners = rebound
+            jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha")])
+        finally:
+            OverlayReview.get_followup_scanners = original
+        assert any(job.scanner is scanner for job in jobs)
+
+    def test_wrapped_base_hook_selects_a_scanner(self) -> None:
+        scanner = _ExtraScanner()
+
+        @wraps(OverlayReview.get_followup_scanners)
+        def wrapped(self: OverlayReview, backend: OverlayBackends) -> list[Scanner]:
+            return [scanner]
+
+        with patch.object(OverlayReview, "get_followup_scanners", wrapped):
+            jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha")])
+        assert any(job.scanner is scanner for job in jobs)
+
+    def test_generator_scanner_signals_keep_the_overlay_tag(self) -> None:
+        class GeneratorScanner:
+            name = "generator_scanner"
+
+            def scan(self) -> Iterator[ScanSignal]:
+                yield ScanSignal(kind="overlay.extra", summary="generated")
+
+        jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([GeneratorScanner()]))])
+        outcome = scan_phase([job for job in jobs if job.scanner.name == "generator_scanner"])
+        assert outcome.signals == [ScanSignal(kind="overlay.extra", summary="generated", payload={"overlay": "alpha"})]
+
+    def test_orm_connection_opened_by_hook_is_closed(self) -> None:
+        hook_threads: list[Thread] = []
+        wrappers = []
+
+        class OrmReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                Loop.objects.count()
+                wrappers.append(connections["default"])
+                hook_threads.append(current_thread())
+                assert wrappers[0].connection is not None
+                return []
+
+        MINI_LOOP.build_jobs(backends=[self._backend("alpha", OrmReview())])
+        assert hook_threads
+        hook_threads[0].join(timeout=1)
+        assert not hook_threads[0].is_alive()
+        assert wrappers[0].connection is None
+
     def test_a_posture_that_forbids_egress_never_asks_the_overlay(self) -> None:
         review = _HookReview([_ExtraScanner()])
         backend = self._backend("alpha", review)
@@ -172,9 +237,11 @@ class TestOverlayFollowupScanners(TestCase):
     def test_reset_ignores_a_late_result_from_the_previous_hook(self) -> None:
         entered = Event()
         release = Event()
+        first_thread: list[Thread] = []
 
         class BlockingReview(OverlayReview):
             def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                first_thread.append(current_thread())
                 entered.set()
                 release.wait()
                 return []
@@ -187,9 +254,91 @@ class TestOverlayFollowupScanners(TestCase):
                 assert any(job.scanner.name == "overlay_followup_scanners" for job in first)
                 overlay_followup_jobs_module.reset_inflight_hooks()
                 second = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([scanner]))])
+            release.set()
+            first_thread[0].join(timeout=1)
+            assert not first_thread[0].is_alive()
             assert any(job.scanner is scanner for job in second)
         finally:
             release.set()
+
+    def test_done_hook_is_replaced_before_its_cleanup_finishes(self) -> None:
+        closing = Event()
+        release = Event()
+        first_thread: list[Thread] = []
+        first_scanner, second_scanner = _ExtraScanner(), _ExtraScanner()
+        original_close = overlay_followup_jobs_module.close_thread_db_connections
+
+        class FirstReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                first_thread.append(current_thread())
+                return [first_scanner]
+
+        def pause_first_close() -> None:
+            if current_thread() is first_thread[0]:
+                closing.set()
+                release.wait(timeout=2)
+            original_close()
+
+        try:
+            with patch.object(overlay_followup_jobs_module, "close_thread_db_connections", pause_first_close):
+                first = MINI_LOOP.build_jobs(backends=[self._backend("alpha", FirstReview())])
+                assert closing.wait(timeout=1)
+                second = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([second_scanner]))])
+            assert any(job.scanner is first_scanner for job in first)
+            assert any(job.scanner is second_scanner for job in second)
+        finally:
+            release.set()
+            if first_thread:
+                first_thread[0].join(timeout=1)
+
+    def test_old_hook_cleanup_preserves_its_replacement(self) -> None:
+        first_closing = Event()
+        release_first = Event()
+        release_second = Event()
+        second_started = Event()
+        first_thread: list[Thread] = []
+        second_thread: list[Thread] = []
+        original_close = overlay_followup_jobs_module.close_thread_db_connections
+
+        class FirstReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                first_thread.append(current_thread())
+                return []
+
+        class SecondReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                second_thread.append(current_thread())
+                second_started.set()
+                release_second.wait(timeout=2)
+                return []
+
+        def pause_first_close() -> None:
+            if current_thread() is first_thread[0]:
+                first_closing.set()
+                release_first.wait(timeout=2)
+            original_close()
+
+        try:
+            with (
+                patch.object(overlay_followup_jobs_module, "close_thread_db_connections", pause_first_close),
+                patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01),
+            ):
+                MINI_LOOP.build_jobs(backends=[self._backend("alpha", FirstReview())])
+                assert first_closing.wait(timeout=1)
+                MINI_LOOP.build_jobs(backends=[self._backend("alpha", SecondReview())])
+                assert second_started.is_set()
+                replacement = overlay_followup_jobs_module._INFLIGHT_HOOKS["alpha"]
+                release_first.set()
+                first_thread[0].join(timeout=1)
+                assert not first_thread[0].is_alive()
+                assert overlay_followup_jobs_module._INFLIGHT_HOOKS["alpha"] is replacement
+        finally:
+            release_first.set()
+            release_second.set()
+            if first_thread:
+                first_thread[0].join(timeout=1)
+            if second_thread:
+                second_thread[0].join(timeout=1)
 
     def test_hook_receives_selection_context(self) -> None:
         selection = ContextVar("followup_test_selection", default="missing")

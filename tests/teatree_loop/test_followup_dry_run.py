@@ -362,9 +362,9 @@ class TestFollowupDryRun(TransactionTestCase):
         assert report.exit_code == 0
         assert "NOT PREVIEWED" not in render_followup_dry_run(report)
 
-    def test_overlay_forge_write_is_excluded_and_reported(self) -> None:
+    def _forge_writing_backend(self) -> tuple[OverlayBackends, list[str], list[str]]:
         forge_writes: list[str] = []
-        hook_writes: list[str] = []
+        hook_calls: list[str] = []
 
         class ForgeWritingScanner:
             name = "forge_writer"
@@ -375,17 +375,20 @@ class TestFollowupDryRun(TransactionTestCase):
 
         class Review(OverlayReview):
             def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
-                hook_writes.append("hook called")
+                hook_calls.append("hook called")
                 return [ForgeWritingScanner()]
 
         overlay = TeatreeOverlay()
         overlay.review = Review()
-        backend = OverlayBackends(name="test", overlay=overlay)
+        return OverlayBackends(name="test", overlay=overlay), forge_writes, hook_calls
+
+    def test_preview_never_calls_an_overlay_hook_and_reports_it(self) -> None:
+        backend, forge_writes, hook_calls = self._forge_writing_backend()
         with file_backed_default_database():
             report = run_followup_dry_run(lambda: overlay_followup_jobs(backend))
 
         assert forge_writes == []
-        assert hook_writes == []
+        assert hook_calls == []
         assert report.not_previewed == ("overlay_followup_scanners[test]",)
         assert report.as_payload()["not_previewed"] == ["overlay_followup_scanners[test]"]
         assert "NOT PREVIEWED (external writes possible): overlay_followup_scanners[test]" in render_followup_dry_run(
@@ -393,15 +396,22 @@ class TestFollowupDryRun(TransactionTestCase):
         )
         assert report.exit_code == 3
 
+    def test_skip_scope_records_the_overlay_hook_without_calling_it(self) -> None:
+        backend, _, hook_calls = self._forge_writing_backend()
         with skip_overlay_followup_hooks() as skipped:
             assert overlay_followup_jobs(backend) == []
-        assert skipped == ["overlay_followup_scanners[test]"]
 
+        assert skipped == ["overlay_followup_scanners[test]"]
+        assert hook_calls == []
+
+    def test_preview_drops_a_prebuilt_overlay_scanner_and_reports_it(self) -> None:
+        backend, forge_writes, _ = self._forge_writing_backend()
         jobs = overlay_followup_jobs(backend)
         with file_backed_default_database():
-            prebuilt_report = run_followup_dry_run(jobs)
+            report = run_followup_dry_run(jobs)
+
         assert forge_writes == []
-        assert prebuilt_report.not_previewed == ("forge_writer[test][hook]",)
+        assert report.not_previewed == ("forge_writer[test][hook]",)
 
     def test_selected_builtin_does_not_certify_an_unpreviewed_overlay_scanner(self) -> None:
         report = FollowupDryRunReport(
