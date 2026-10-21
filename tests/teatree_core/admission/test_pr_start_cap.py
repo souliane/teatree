@@ -5,9 +5,9 @@ from django.db.models import QuerySet
 from django.db.models.signals import post_save
 from django.test import TestCase
 
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
 from teatree.core.signals import _auto_enqueue_task
 
 

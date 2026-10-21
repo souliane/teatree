@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
+from teatree.core.admission.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.claim_liveness import current_owner
 from teatree.core.intake.ticket_findability import unfindable_tickets
 from teatree.core.loop_lease_liveness import OwnershipStatus
@@ -40,7 +41,6 @@ from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_c
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
-from teatree.core.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
 

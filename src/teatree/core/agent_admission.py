@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
+from teatree.core.admission.pr_start_cap import cap_hold_reason
 from teatree.core.admission_governor import (
     AdmissionCeiling,
     MachineBrake,
@@ -67,7 +68,6 @@ from teatree.core.admission_pressure import (
 from teatree.core.managers_task_claim import claim_admission_block_reason
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.pr_start_cap import cap_hold_reason
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
 

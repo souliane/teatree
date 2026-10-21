@@ -12,8 +12,8 @@ from django.db import models
 from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, When
 from django.db.models.expressions import BaseExpression, OrderBy
 
+from teatree.core.admission.pr_start_cap import ticket_has_live_pr
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
-from teatree.core.pr_start_cap import ticket_has_live_pr
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest

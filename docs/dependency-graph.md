@@ -70,7 +70,7 @@ graph TD
     teatree.core --> teatree.core.admission
     teatree.core --> teatree.core.admission_pressure
     teatree.core --> teatree.core.modelkit
-    teatree.core --> teatree.core.pr_start_cap
+    teatree.core --> teatree.core.admission.pr_start_cap
     teatree.core --> teatree.core.owner_question_message
     teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
@@ -95,7 +95,7 @@ graph TD
     teatree.core.admission --> teatree.core.models
     teatree.core.admission --> teatree.loops.enable_verdict
     teatree.core.factory.queue_stall --> teatree.core.models
-    teatree.core.pr_start_cap --> teatree.core.modelkit
+    teatree.core.admission.pr_start_cap --> teatree.core.modelkit
     teatree.core.owner_question_message --> teatree.core.modelkit
     teatree.core.owner_question_message --> teatree.core.models
     teatree.core.owner_question_message --> teatree.types
@@ -125,7 +125,7 @@ graph TD
     teatree.core.managers --> teatree.core.claim_liveness
     teatree.core.managers --> teatree.utils
     teatree.core.managers --> teatree.core.modelkit
-    teatree.core.managers --> teatree.core.pr_start_cap
+    teatree.core.managers --> teatree.core.admission.pr_start_cap
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
     teatree.core.managers --> teatree.core.managers_admission
@@ -142,7 +142,7 @@ graph TD
     teatree.core.models --> teatree.core.claim_liveness
     teatree.core.models --> teatree.core.forge_url
     teatree.core.models --> teatree.core.modelkit
-    teatree.core.models --> teatree.core.pr_start_cap
+    teatree.core.models --> teatree.core.admission.pr_start_cap
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.managers_task_claim
     teatree.core.models --> teatree.core.models.errors

@@ -22,11 +22,11 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.admission.pr_start_cap import cap_hold_reason, new_pr_start_allowed_q
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
-from teatree.core.pr_start_cap import cap_hold_reason, new_pr_start_allowed_q
 from teatree.generation import current_generation
 
 if TYPE_CHECKING:
