@@ -694,7 +694,8 @@ The broker queues peer text framed as information, never a tool call on the send
 
 The worker publishes one private Unix socket in `<control_db_dir>/live/`. Each live command carries
 the target session's per-drive attempt token and worker generation; a stale fence is refused before
-delivery. Worker-to-worker `relay.*` calls verify the socket and owner record, kernel peer PID, process start time, and live worker
+delivery. Worker-to-worker `relay.*`
+calls verify the socket and owner record, kernel peer PID, process start time, and live worker
 command before trusting discovery or forwarding text. A PID hidden by a namespace fails closed. The
 receiver also verifies the sender through its source broker and per-message proof. Discovery removes
 abandoned sockets before applying the 32-worker limit; peer listing skips other failed reads with a
