@@ -292,7 +292,7 @@ class _LoopSettings:
     # The drain-then-deploy admission gate (rolling/zero-downtime deploy). Default
     # OFF: the worker admits new work normally. `t3 worker drain` flips it ON for the
     # deploy window so the claim/admission path admits ZERO new tasks — the CAS
-    # `claim_next_pending` and the `_claimable_for_target` query both short-circuit —
+    # `claim_next_pending` and the `claimable()` query both short-circuit —
     # while in-flight CLAIMED leases keep renewing and finish. It is READ only at the
     # claim chokepoint; it deliberately does NOT feed the worker supervisor's
     # zero-admitted stop condition, so quiescing never stops the supervisor or kills a

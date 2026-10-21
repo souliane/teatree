@@ -196,6 +196,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "orchestrator_boundary_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "owner_question_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "raw_pr_create_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_goal_stop_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_grant_ask_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),

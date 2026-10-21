@@ -91,9 +91,9 @@ def declared_identities_for_url(url: str) -> tuple[str, ...]:
 
     The URL-keyed face of the ONE ``self_forge_identities`` read
     (:func:`teatree.hooks.foreign_mr_cli.declared_self_identities_raw`), so a bot
-    declared once is honoured by the push gate, the review-candidate self-author
-    skip and this guard alike — three hand-rolled reads of one setting is how they
-    drift. An unparsable URL declares nothing, which refuses rather than widens.
+    declared once is honoured by the push gate, review-candidate self-author
+    skip, issue-hygiene guard, and review own-MR proof alike. An unparsable URL
+    declares nothing, which refuses rather than widens.
     """
     from teatree.hooks.foreign_mr_cli import (  # noqa: PLC0415 — deferred: keeps the cold hook leaf cold
         declared_self_identities_raw,

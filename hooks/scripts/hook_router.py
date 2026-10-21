@@ -128,6 +128,7 @@ from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchest
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
 from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
 from hooks.scripts.owner_prompts import is_live_user_turn, owner_prompted_since
+from hooks.scripts.owner_question_gate import attended_turn, handle_block_decision_prose, handle_block_unfit_question
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     _resolve_worktree_state,
     _ticket_state_for_cwd,
@@ -141,7 +142,6 @@ from hooks.scripts.question_gates import (
     _options_hash,
     denied_question_dedupe_key,
     denied_question_row_marker,
-    handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
 )
@@ -3082,28 +3082,9 @@ def _session_drives_loop(session_id: str) -> bool:
 # `stop_hook_active` flag short-circuits so the gate cannot hot-loop on
 # its own re-fire.
 
-# The detection heuristic itself — ``is_user_directed_question`` and its
-# ``?``/decision-cue/soft-ask regexes — lives in the ``question_gates`` sibling
-# (imported above) alongside the one-decision-per-call warn; this handler keeps
-# the routing decision (loop-ownership, transcript parsing, the block emit).
-
-
 # ``_read_transcript_entries`` moved to the ``question_gates`` sibling (the
 # transcript-parsing home) and imported back as ``_read_transcript_entries`` so
 # this god-module stays under its LOC cap; callers below are unchanged.
-def _entry_role(entry: dict) -> str | None:
-    message = entry.get("message")
-    if isinstance(message, dict):
-        return message.get("role")
-    return entry.get("type")
-
-
-def _entry_content(entry: dict) -> list:
-    message = entry.get("message")
-    content = message.get("content", []) if isinstance(message, dict) else []
-    return content if isinstance(content, list) else []
-
-
 # ``_last_assistant_turn`` moved to the ``question_gates`` sibling (the
 # transcript-parsing home, beside ``read_transcript_entries``) and imported back
 # as ``_last_assistant_turn`` so this god-module keeps shrinking; callers and the
@@ -3193,7 +3174,7 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     """
     if data.get("stop_hook_active"):
         return None
-    if _is_live_user_turn(data) or not _session_drives_loop(data.get("session_id", "")):
+    if attended_turn(data):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
@@ -3243,7 +3224,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
+    if attended_turn(data):
         _supersede_pending_questions(data)
         return False
     queue_id = _capture_and_defer_question(data, dedupe=True)
@@ -3667,7 +3648,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_orchestrator_investigation_boundary,
         handle_warn_merged_detection_probe,
         handle_block_standing_grant_ask,
-        handle_warn_batched_questions,
+        handle_block_unfit_question,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
     ],
@@ -3696,6 +3677,7 @@ _HANDLERS: dict[str, list] = {
         handle_reset_turn_tool_budget,
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
+        handle_block_decision_prose,
         handle_answer_first_gate,
         handle_completion_claim_gate,
         handle_unbacked_claim_gate,

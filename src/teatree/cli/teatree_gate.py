@@ -57,6 +57,7 @@ FOREIGN_BRANCH_PUSH_GATE_KEY = "foreign_branch_push_gate_enabled"
 GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
 VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
+OWNER_QUESTION_GATE_KEY = "owner_question_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -348,6 +349,12 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="delegation",
         key=ORCHESTRATOR_DELEGATION_GATE_KEY,
         label="Orchestrator delegation gate (an unbounded read belongs in a sub-agent)",
+    )
+    _register_keyed_gate(
+        gate_group,
+        name="owner-question",
+        key=OWNER_QUESTION_GATE_KEY,
+        label="Attended owner-question gate (one plain question per call, no decisions in reply prose)",
     )
 
     overlay_app.add_typer(gate_group, name="gate")
