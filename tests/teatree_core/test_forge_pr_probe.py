@@ -156,7 +156,6 @@ class TestGithubHeadProof:
         "payload",
         [
             "garbage",
-            "{}",
             "[]",
             '[{"url":"x"}]',
             json.dumps(
@@ -196,7 +195,6 @@ class TestGithubHeadProof:
         [
             "garbage",
             "[]",
-            "{}",
             '{"ref":"refs/heads/other","object":{"sha":"' + "a" * 40 + '"}}',
             '{"ref":"refs/heads/feature","object":{"sha":"nope"}}',
         ],

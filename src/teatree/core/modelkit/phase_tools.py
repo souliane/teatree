@@ -26,10 +26,6 @@ from teatree.core.modelkit.phases import normalize_phase
 MCP_WRITE: Final = "mcp_write"
 
 
-def phase_writes_checkout(phase: str) -> bool:
-    return bool(tools_for_phase(phase) & {"write_file", "edit_file", MCP_WRITE})
-
-
 #: The one write tool a phase without :data:`MCP_WRITE` still reaches: its own deliverable.
 _MCP_WRITE_TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "requesting_review": frozenset({"review_request_post"}),
@@ -64,6 +60,12 @@ _READ_ONLY: Final[frozenset[str]] = frozenset({"read_file", "search_files", "rec
 _WEB: Final[frozenset[str]] = frozenset({"web_fetch", "web_search"})
 _WRITE: Final[frozenset[str]] = frozenset({"write_file", "edit_file"})
 _FULL: Final[frozenset[str]] = ALL_TOOLS
+
+
+def phase_writes_checkout(phase: str) -> bool:
+    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
+
+
 #: The read-mostly-WITH-shell shape every verdict-producing review phase carries:
 #: read + search + web + shell, and NEVER write/edit (a review does not mutate
 #: source). Shared by :data:`VERDICT_REVIEW_PHASES` below.

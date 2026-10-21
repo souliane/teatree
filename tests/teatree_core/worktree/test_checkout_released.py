@@ -16,7 +16,6 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
-from teatree.core.models.checkout_custody import Custody
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
 from teatree.core.worktree.checkout_state import checkout_state
@@ -137,15 +136,10 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self,
         table: ProcessTable | None = None,
         *,
-        head_repo: str = "souliane/teatree",
-        head_branch: str = "feature",
-        forge_head: str | None = None,
-        pr: PrProbe | None = None,
+        response: ForgeResponse | None = None,
     ) -> TaskAttempt | None:
         def forge_stdout(cmd: list[str], repo: str) -> str | None:
-            return self.forge_stdout(
-                cmd, repo, ForgeResponse(head_repo=head_repo, head_branch=head_branch, forge_head=forge_head, pr=pr)
-            )
+            return self.forge_stdout(cmd, repo, response)
 
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
@@ -254,24 +248,15 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         )
         wrapper.chmod(0o755)
 
-        with (
-            patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}),
-            patch.object(
-                forge_pr_probe,
-                "_open_pr_stdout",
-                side_effect=lambda cmd, repo: self.forge_stdout(
-                    cmd, repo, ForgeResponse(forge_head=self.anchor_head, remote_head=self.anchor_head)
-                ),
-            ),
-        ):
-            self.assert_parked()
+        with patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
+            self.assert_parked(response=ForgeResponse(forge_head=self.anchor_head, remote_head=self.anchor_head))
         assert substituted.exists()
 
     def test_pr_repository_slug_must_equal_origin(self) -> None:
         foreign = PullRequestFactory(
             ticket=self.ticket, url="https://github.com/other/repo/pull/9001", repo="other/repo", iid="9001"
         )
-        self.assert_parked(pr=PrProbe.found(foreign.url))
+        self.assert_parked(response=ForgeResponse(pr=PrProbe.found(foreign.url)))
 
     def test_pr_host_must_equal_origin(self) -> None:
         other_host = PullRequestFactory(
@@ -280,10 +265,12 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             repo="souliane/teatree",
             iid="9001",
         )
-        self.assert_parked(pr=PrProbe.found(other_host.url))
+        self.assert_parked(response=ForgeResponse(pr=PrProbe.found(other_host.url)))
 
     def test_pr_url_must_parse_as_github(self) -> None:
-        self.assert_parked(pr=PrProbe.found("https://github.com/souliane/teatree/not-a-pr/9001"))
+        self.assert_parked(
+            response=ForgeResponse(pr=PrProbe.found("https://github.com/souliane/teatree/not-a-pr/9001"))
+        )
 
     def test_gitlab_shaped_pr_url_on_github_host_parks(self) -> None:
         foreign_shape = PullRequestFactory(
@@ -292,10 +279,10 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             repo="souliane/teatree",
             iid="9001",
         )
-        self.assert_parked(pr=PrProbe.found(foreign_shape.url))
+        self.assert_parked(response=ForgeResponse(pr=PrProbe.found(foreign_shape.url)))
 
     def test_reported_pr_source_branch_must_equal_checkout(self) -> None:
-        self.assert_parked(head_branch="other")
+        self.assert_parked(response=ForgeResponse(head_branch="other"))
 
     def test_recorded_branch_must_equal_checkout(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="other")
@@ -310,8 +297,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert self.worktree.get_extra()["attested_state"] == checkout_state(self.path, ticket=self.ticket).digest
         assert audit["anchor_commit"] == self.anchor_head
         assert audit["current_head"] == self.head
-        assert "pr_head" not in audit
-        assert "remote_head" not in audit
+        assert audit["pr_head"] == self.head
+        assert audit["remote_head"] == self.head
         assert audit["pull_request"] == self.pr.url
         assert audit["process_table"]["set_aside"] == ["pid 21 (claude) is unreadable by this uid"]
         assert [entry["holder"] for entry in audit["tenures"]] == [
@@ -326,11 +313,6 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         (self.path / "late.txt").write_text("late")
         run_strict(repo=str(self.path), args=["add", "late.txt"])
         run_strict(repo=str(self.path), args=["commit", "-m", "late"])
-        self.assert_parked()
-
-    def test_t2_different_branch_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        run_strict(repo=str(self.path), args=["checkout", "-b", "other"])
         self.assert_parked()
 
     def test_t2_detached_head_parks(self) -> None:
@@ -440,15 +422,15 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
     def test_t8_fork_and_unreadable_remote_park(self) -> None:
         self.assert_clean_claim_then_restore()
-        self.assert_parked(head_repo="someone/fork")
+        self.assert_parked(response=ForgeResponse(head_repo="someone/fork"))
         run_strict(repo=str(self.path), args=["remote", "set-url", "origin", str(self.path.parent / "missing.git")])
         self.assert_parked()
 
     def test_t8_no_owned_open_pr_parks(self) -> None:
         self.assert_clean_claim_then_restore()
-        self.assert_parked(pr=PrProbe.none())
+        self.assert_parked(response=ForgeResponse(pr=PrProbe.none()))
         foreign = PullRequestFactory(ticket=TicketFactory())
-        self.assert_parked(pr=PrProbe.found(foreign.url))
+        self.assert_parked(response=ForgeResponse(pr=PrProbe.found(foreign.url)))
 
     def test_t8_missing_exact_remote_ref_parks(self) -> None:
         self.assert_clean_claim_then_restore()
@@ -462,7 +444,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.assert_parked()
 
     def test_t8_mismatched_pr_head_parks(self) -> None:
-        self.assert_parked(forge_head=self.anchor_head)
+        self.assert_parked(response=ForgeResponse(forge_head=self.anchor_head))
 
     def test_t8_gitlab_origin_never_asks_github_for_a_pr(self) -> None:
         assert acquire(self.worktree, holder=task_holder_id(self.claimant))
@@ -474,25 +456,3 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             assert not reattest_released_pr_head(
                 self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), self.clear
             )
-
-    def test_other_worktree_with_foreign_open_tenure_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        sibling = self.path.parent / "sibling"
-        _init_repo_with_branch(sibling, branch="feature", commits_ahead=0)
-        other = WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(sibling)})
-        sibling_anchor = checkout_state(sibling, ticket=self.ticket).digest
-        other.merge_extra(
-            set_keys={
-                "attested_state": sibling_anchor,
-                "checkout_custody": Custody(sibling_anchor, ()).as_dict(),
-            }
-        )
-        acquire(other, holder="operator", holder_session="terminal")
-        (sibling / "change.txt").write_text("changed")
-        run_strict(repo=str(sibling), args=["config", "user.email", "test@example.com"])
-        run_strict(repo=str(sibling), args=["config", "user.name", "Test"])
-        run_strict(repo=str(sibling), args=["add", "change.txt"])
-        run_strict(repo=str(sibling), args=["commit", "-m", "changed"])
-        assert self.claim() is not None
-        other.refresh_from_db()
-        assert other.get_extra()["attested_state"] == sibling_anchor

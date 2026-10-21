@@ -130,7 +130,7 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
         "pull_requests": pull_requests,
         "holder": {"id": current.holder, "session": current.session},
     }
-    if not attest_checkout(worktree, custody, state.digest, audit):
+    if not persist_checkout_recovery_attestation(worktree, custody, state.digest, audit):
         return False
     logger.info("Re-attested checkout %s after task %s", worktree.pk, prior.pk)
     return True
@@ -171,13 +171,13 @@ def attest_deferred_exit(task: Task, worktree: Worktree, state: CheckoutState, t
         "holder": {"id": current.holder, "session": current.session},
         "deferred_exit": record,
     }
-    attested = attest_checkout(worktree, custody, state.digest, audit)
+    attested = persist_checkout_recovery_attestation(worktree, custody, state.digest, audit)
     if attested:
         logger.info("Attested deferred exit for checkout %s after %s", worktree.pk, previous.holder)
     return attested
 
 
-def attest_checkout(
+def persist_checkout_recovery_attestation(
     worktree: Worktree,
     custody: Custody,
     digest: str,
