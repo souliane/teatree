@@ -20,6 +20,11 @@ _INFLIGHT_HOOKS: dict[str, Future[list[Scanner]]] = {}
 _HOOK_LOCK = Lock()
 
 
+def reset_inflight_hooks() -> None:
+    with _HOOK_LOCK:
+        _INFLIGHT_HOOKS.clear()
+
+
 @contextmanager
 def skip_overlay_followup_hooks() -> Generator[list[str]]:
     skipped: list[str] = []
@@ -41,10 +46,12 @@ class _RefusedOverlayFollowupScanners:
 
 
 class OverlayHookRefusalError(Exception):
-    pass
+    """A rejected hook result is reported as a scanner failure."""
 
 
 class _HookCallError(Exception):
+    """Keep the hook's original exception available across the selection thread."""
+
     def __init__(self, original: Exception) -> None:
         self.original = original
 
@@ -73,24 +80,7 @@ def _hook_result(backend: OverlayBackends, review: OverlayReview) -> list[Scanne
     return future.result(timeout=HOOK_DEADLINE_SECONDS)
 
 
-def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str] = ()) -> list[_ScannerJob]:
-    if backend.overlay is None:
-        return []
-    tag = backend.name
-    if (skipped := _SKIPPED_HOOKS.get()) is not None:
-        skipped.append(f"overlay_followup_scanners[{tag}]")
-        return []
-
-    try:
-        scanners = _hook_result(backend, backend.overlay.review)
-    except TimeoutError:
-        reason = f"hook timed out after {HOOK_DEADLINE_SECONDS}s"
-        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
-    except _HookCallError as raised:
-        exc = raised.original
-        reason = f"{type(exc).__name__}: {exc}"
-        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
-
+def _validated_scanner_jobs(scanners: list[Scanner], tag: str, reserved_names: Iterable[str]) -> list[_ScannerJob]:
     used_names = {*reserved_names, *SWEEP_SCANNER_NAMES, _RefusedOverlayFollowupScanners.name}
     jobs: list[_ScannerJob] = []
     refusals: list[str] = []
@@ -109,3 +99,29 @@ def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str
     if refusals:
         jobs.append(_ScannerJob(scanner=_RefusedOverlayFollowupScanners("; ".join(refusals)), overlay=tag))
     return jobs
+
+
+def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str] = ()) -> list[_ScannerJob]:
+    if backend.overlay is None:
+        return []
+    review = backend.overlay.review
+    hook = getattr(type(review), "get_followup_scanners", None)
+    if hook is None or hook is OverlayReview.get_followup_scanners:
+        return []
+    tag = backend.name
+    if (skipped := _SKIPPED_HOOKS.get()) is not None:
+        # A custom hook may write to the forge before it returns scanners.
+        skipped.append(f"overlay_followup_scanners[{tag}]")
+        return []
+
+    try:
+        scanners = _hook_result(backend, review)
+    except TimeoutError:
+        reason = f"hook timed out after {HOOK_DEADLINE_SECONDS}s"
+        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
+    except _HookCallError as raised:
+        exc = raised.original
+        reason = f"{type(exc).__name__}: {exc}"
+        return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]
+
+    return _validated_scanner_jobs(scanners, tag, reserved_names)

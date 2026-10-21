@@ -85,13 +85,15 @@ def test_mandatory_e2e_review_hooks_are_documented_in_overlay_api() -> None:
 
 
 @pytest.mark.parametrize(
-    "path",
+    ("path", "anchor", "contract"),
     [
-        "BLUEPRINT.md",
-        "docs/overlay-api.md",
-        "docs/blueprint/loop-topology.md",
-        "skills/internals/SKILL.md",
+        ("BLUEPRINT.md", "| `OverlayReview` | `review` |", "`get_followup_scanners`"),
+        ("docs/overlay-api.md", "| `get_followup_scanners(backend)` |", "default empty hook adds no omission"),
+        ("docs/blueprint/loop-topology.md", "| Overlay `get_followup_scanners` |", "preview skips and reports"),
+        ("skills/internals/SKILL.md", "| `review` |", "`get_followup_scanners(backend)`"),
     ],
 )
-def test_followup_scanner_hook_is_documented_at_each_contract_surface(path: str) -> None:
-    assert "get_followup_scanners" in (REPO_ROOT / path).read_text(encoding="utf-8")
+def test_followup_scanner_hook_is_documented_at_each_contract_surface(path: str, anchor: str, contract: str) -> None:
+    lines = (REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
+    row = next((line for line in lines if line.startswith(anchor)), "")
+    assert contract in row

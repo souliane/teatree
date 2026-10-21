@@ -14,7 +14,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.core.answering.work_item_filing import filing_repo
 from teatree.core.models import Session, Task, Ticket
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
@@ -152,18 +151,6 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
         body = self.backend.replies[0][2]
         assert "could not file" in body.lower(), f"the filing failed and the owner was told nothing: {body!r}"
-
-    def test_ambiguous_repo_refusal_names_candidates_to_owner(self) -> None:
-        candidates = ("souliane/alpha", "souliane/beta")
-        with (
-            mock.patch("teatree.core.answering.work_item_filing.filing_repo", wraps=filing_repo),
-            mock.patch("teatree.core.answering.work_item_filing.owned_repo_slugs", return_value=candidates),
-        ):
-            self._record({"answer": {"text": "On it."}, "work_item": {"title": "Fix rendering", "body": ""}})
-
-        body = self.backend.replies[0][2]
-        assert all(repo in body for repo in candidates)
-        assert self.host.created == []
 
     def test_a_forge_refusal_is_stated_in_the_thread_and_never_destroys_the_answer(self) -> None:
         """A non-zero ``gh`` exit — 403, rate limit, the posting gate — must not eat the reply."""

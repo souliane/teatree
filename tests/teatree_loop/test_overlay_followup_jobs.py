@@ -36,6 +36,13 @@ class _ReservedScanner:
         return []
 
 
+class _BuiltInNameScanner:
+    name = "review_nag"
+
+    def scan(self) -> list[ScanSignal]:
+        return []
+
+
 class _UnnamedScanner:
     name = ""
 
@@ -196,7 +203,7 @@ class TestOverlayFollowupScanners(TestCase):
             ([object()], "object"),
             (None, "NoneType"),
             ([_BadScanScanner()], "_BadScanScanner"),
-            ([_BadScanScanner], "type"),
+            ([_ExtraScanner], "type"),
         )
         for result, bad_type in cases:
             with self.subTest(result=result):
@@ -219,6 +226,14 @@ class TestOverlayFollowupScanners(TestCase):
         assert "duplicate" in outcome.errors["overlay_followup_scanners[alpha]"]
         assert "pr_sweep" in outcome.errors["overlay_followup_scanners[alpha]"]
         assert "Invalid scanner name" in outcome.errors["overlay_followup_scanners[alpha]"]
+
+    def test_builtin_followup_scanner_name_is_reserved(self) -> None:
+        jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([_BuiltInNameScanner()]))])
+        assert not any(job.overlay_hook and job.scanner.name == "review_nag" for job in jobs)
+        refused = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
+        assert scan_phase(refused).errors == {
+            "overlay_followup_scanners[alpha]": "duplicate or reserved scanner name: review_nag"
+        }
 
     def test_agent_routed_signal_is_refused(self) -> None:
         class AgentScanner:

@@ -580,10 +580,8 @@ class OverlayE2E:
 class OverlayReview:
     """Review / merge / customer-display concern — ``overlay.review``."""
 
-    def select_work_item_repo(self, title: str, body: str, repos: tuple[str, ...]) -> str | None:
-        return None
-
     def get_followup_scanners(self, backend: "OverlayBackends") -> "list[Scanner]":
+        """Selection is bounded and omitted from previews because hooks may write to the forge."""
         return []
 
     def merge_candidate_repo_slugs(self) -> list[str]:

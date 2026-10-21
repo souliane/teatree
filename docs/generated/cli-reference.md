@@ -5796,8 +5796,8 @@ Usage: t3 loops tick [OPTIONS]
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │
 │                        all).                                                 │
 │ --json                 Emit the tick report as JSON.                         │
-│ --dry-run              Preview followup decisions without posting or         │
-│                        writing.                                              │
+│ --dry-run              Preview built-in followup decisions; report omitted   │
+│                        overlay hooks.                                        │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

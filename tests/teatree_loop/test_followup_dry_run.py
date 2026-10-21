@@ -46,7 +46,7 @@ from teatree.core.overlay import OverlayReview
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.loop.followup_dry_run import FollowupDryRunReport, render_followup_dry_run, run_followup_dry_run
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.overlay_followup_jobs import overlay_followup_jobs
+from teatree.loop.overlay_followup_jobs import overlay_followup_jobs, skip_overlay_followup_hooks
 from teatree.loop.phases.scan import ScanOutcome
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -344,6 +344,24 @@ class TestFollowupDryRun(TransactionTestCase):
         super().setUp()
         allow_slack_channels(_CHANNEL)
 
+    def test_default_overlay_hook_does_not_make_a_builtin_preview_incomplete(self) -> None:
+        backend = OverlayBackends(name="test", overlay=TeatreeOverlay())
+
+        def build_jobs() -> list[_ScannerJob]:
+            return [
+                _ScannerJob(_ProbeReviewNagScanner(lambda: None, "review_nag"), "test"),
+                *overlay_followup_jobs(backend),
+            ]
+
+        with file_backed_default_database():
+            report = run_followup_dry_run(build_jobs)
+
+        assert report.selected_scanners == ("review_nag",)
+        assert report.not_previewed == ()
+        assert report.as_payload()["not_previewed"] == []
+        assert report.exit_code == 0
+        assert "NOT PREVIEWED" not in render_followup_dry_run(report)
+
     def test_overlay_forge_write_is_excluded_and_reported(self) -> None:
         forge_writes: list[str] = []
         hook_writes: list[str] = []
@@ -369,7 +387,15 @@ class TestFollowupDryRun(TransactionTestCase):
         assert forge_writes == []
         assert hook_writes == []
         assert report.not_previewed == ("overlay_followup_scanners[test]",)
+        assert report.as_payload()["not_previewed"] == ["overlay_followup_scanners[test]"]
+        assert "NOT PREVIEWED (external writes possible): overlay_followup_scanners[test]" in render_followup_dry_run(
+            report
+        )
         assert report.exit_code == 3
+
+        with skip_overlay_followup_hooks() as skipped:
+            assert overlay_followup_jobs(backend) == []
+        assert skipped == ["overlay_followup_scanners[test]"]
 
         jobs = overlay_followup_jobs(backend)
         with file_backed_default_database():

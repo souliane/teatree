@@ -128,12 +128,10 @@ class FollowupDryRunReport:
 
     @property
     def exit_code(self) -> int:
-        """0 clean · 1 guard breach · 3 vacuous — the gate contract (usage 2 is the CLI's).
+        """0 complete · 1 guard breach · 3 incomplete — usage errors are CLI exit 2.
 
-        3 exists so a gate run can never PASS by previewing nothing: with the active
-        posture forbidding egress, or with no messaging backend, ``build_jobs`` selects
-        no colleague scanner at all and a plain "0 candidates, exit 0" would read as
-        proof the guard holds when in fact nothing was examined.
+        Exit 3 means no colleague scanner was selected or an overlay hook was
+        excluded, so the preview cannot certify the full selected job set.
         """
         if self.breach_count:
             return 1
