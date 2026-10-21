@@ -59,7 +59,7 @@ class _HookCallError(Exception):
         self.original = original
 
 
-def _hook_result(backend: OverlayBackends, review: OverlayReview) -> list[Scanner]:
+def _start_or_await_hook_call(backend: OverlayBackends, review: OverlayReview) -> list[Scanner]:
     with _HOOK_LOCK:
         future = _INFLIGHT_HOOKS.get(backend.name)
         if future is None or future.done():
@@ -114,11 +114,11 @@ def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str
     tag = backend.name
     if (skipped := _SKIPPED_HOOKS.get()) is not None:
         # A custom hook may write to the forge before it returns scanners.
-        skipped.append(f"overlay_followup_scanners[{tag}]")
+        skipped.append(_ScannerJob(scanner=_RefusedOverlayFollowupScanners(""), overlay=tag).label)
         return []
 
     try:
-        scanners = _hook_result(backend, review)
+        scanners = _start_or_await_hook_call(backend, review)
     except TimeoutError:
         reason = f"hook timed out after {HOOK_DEADLINE_SECONDS}s"
         return [_ScannerJob(scanner=_RefusedOverlayFollowupScanners(reason), overlay=tag)]

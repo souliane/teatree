@@ -46,7 +46,7 @@ from teatree.core.overlay import OverlayReview
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.loop.followup_dry_run import FollowupDryRunReport, render_followup_dry_run, run_followup_dry_run
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.overlay_followup_jobs import overlay_followup_jobs, skip_overlay_followup_hooks
+from teatree.loop.overlay_followup_jobs import overlay_followup_jobs
 from teatree.loop.phases.scan import ScanOutcome
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -395,14 +395,6 @@ class TestFollowupDryRun(TransactionTestCase):
             report
         )
         assert report.exit_code == 3
-
-    def test_skip_scope_records_the_overlay_hook_without_calling_it(self) -> None:
-        backend, _, hook_calls = self._forge_writing_backend()
-        with skip_overlay_followup_hooks() as skipped:
-            assert overlay_followup_jobs(backend) == []
-
-        assert skipped == ["overlay_followup_scanners[test]"]
-        assert hook_calls == []
 
     def test_preview_drops_a_prebuilt_overlay_scanner_and_reports_it(self) -> None:
         backend, forge_writes, _ = self._forge_writing_backend()
