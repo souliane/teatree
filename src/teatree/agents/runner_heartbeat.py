@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
@@ -10,7 +11,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.harness import Harness
-from teatree.agents.live_control import LiveSessionController, LiveTask
+from teatree.agents.live_control import LiveFence, LiveSessionController, LiveTask
 from teatree.agents.live_idle import IdleWindowBudget, hold_idle_window
 from teatree.agents.live_mailbox import bound_task_mailbox
 from teatree.agents.live_registry import shared_registry
@@ -19,7 +20,7 @@ from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.managers_task_claim import drain_block_reason
 from teatree.core.models import LeaseLostError, Task
-from teatree.core.models.task_claim import describe_lease_loss
+from teatree.core.models.task_claim import claim_generation, describe_lease_loss
 from teatree.core.worktree.occupancy import WorktreeOccupancyLostError, renew_ticket_checkout, task_holder_id
 from teatree.utils.thread_db import close_thread_db_connections
 
@@ -44,6 +45,12 @@ class HeartbeatRuntime:
     idle_window_seconds: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundTask:
+    task: Task
+    live: LiveTask
+
+
 def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
     """Renew task/worktree leases and close this worker thread's DB connection."""
     try:
@@ -55,6 +62,20 @@ def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
     except WorktreeOccupancyLostError as exc:
         msg = f"lease lost for task {task.pk}: {exc}"
         raise LeaseLostError(msg) from exc
+    finally:
+        close_thread_db_connections()
+
+
+def claim_fence_holds_closing_connection(task: Task) -> bool:
+    try:
+        return Task.objects.filter(
+            pk=task.pk,
+            status=Task.Status.CLAIMED,
+            claimed_by=task.claimed_by,
+            claimed_by_session=task.claimed_by_session,
+            claimed_at=task.claimed_at,
+            claimed_generation=task.claimed_generation,
+        ).exists()
     finally:
         close_thread_db_connections()
 
@@ -86,17 +107,20 @@ async def drive_with_heartbeat(
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
     """Drive one session while renewing ownership and enforcing watchdog ceilings."""
-    with bound_task_mailbox(options, _live_task(task, options, harness)):
-        return await _drive_bound_session(task, prompt, options, harness, runtime=runtime)
+    bound = _BoundTask(task, _live_task(task, options, harness))
+    with bound_task_mailbox(options, bound.live):
+        return await _drive_bound_session(bound, prompt, options, harness, runtime=runtime)
 
 
 def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> LiveTask:
+    claim = claim_generation(task)
     return LiveTask(
         pk=task.pk,
         ticket=task.ticket_id,
         phase=task.phase,
         harness=harness.name if isinstance(harness, GuardedHarness) else type(harness).__name__,
         model=options.model or "",
+        fence=LiveFence(claim=claim or f"run:{uuid.uuid4().hex}", worker_generation=task.claimed_generation),
     )
 
 
@@ -195,19 +219,32 @@ class _Heartbeat:
 
 
 async def _drive_bound_session(
-    task: Task,
+    bound: _BoundTask,
     prompt: str,
     options: ClaudeAgentOptions,
     harness: Harness,
     *,
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
+    task = bound.task
     usage = await asyncio.to_thread(runtime.sample_usage, task)
     started_at = time.monotonic()
     capture = StreamCapture(round_ceiling=_arm_round_ceiling(options, harness))
 
     registry = shared_registry()
-    async with registry.attach(_live_task(task, options, harness), capture) as live, harness.open(options) as session:
+
+    async def claim_live() -> bool:
+        try:
+            await asyncio.to_thread(runtime.renew_lease, task)
+            return await asyncio.to_thread(claim_fence_holds_closing_connection, task)
+        except Exception:
+            logger.warning("Task %s: claim could not be verified before a new turn", task.pk, exc_info=True)
+            return False
+
+    async with (
+        registry.attach(bound.live, capture, claim_live=claim_live if task.claimed_at else None) as live,
+        harness.open(options) as session,
+    ):
         live.bind(session)
         beat = _Heartbeat(task=task, runtime=runtime, live=live, capture=capture, usage=usage, started_at=started_at)
         heartbeat_task = asyncio.create_task(beat.run())

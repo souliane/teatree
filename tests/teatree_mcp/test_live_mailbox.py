@@ -536,6 +536,29 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
     ] == ["the schema moved"]
 
 
+def test_a_peer_delivery_with_an_old_recipient_fence_cannot_reach_the_new_attempt(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="codex", label="sender")
+    old = replace(_TASK, fence={"claim": "old", "worker_generation": "worker-a"})
+    current = replace(_TASK, fence={"claim": "new", "worker_generation": "worker-b"})
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=old)
+    session = BoundarySession()
+
+    with OwnerLoop(registry, current, session):
+        receipt = invoke(
+            MailboxClient(sender.socket_path, sender.token), "send", to=recipient.address, text="old", key="same"
+        )
+        replay = invoke(
+            MailboxClient(sender.socket_path, sender.token), "send", to=recipient.address, text="old", key="same"
+        )
+
+    assert receipt == replay
+    assert (receipt["outcome"], receipt["code"]) == ("rejected", "stale_session")
+    assert session.pending == 0
+    assert session.delivered == []
+
+
 def test_a_push_finishing_just_after_the_wait_returns_its_real_outcome(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
@@ -1136,7 +1159,7 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
 
     class _BrokenBroker(LiveMailboxBroker):
         def register(
-            self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+            self, *, room: str, harness: str, label: str, task: LiveTask | int | None = None, phase: str = ""
         ) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)

@@ -13,9 +13,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
-from teatree.agents.live_control import DEFAULT_STEER_WAIT_SECONDS, MAX_STEER_WAIT_SECONDS, RejectCode, SessionFacts
+from teatree.agents.live_control import (
+    DEFAULT_STEER_WAIT_SECONDS,
+    MAX_STEER_WAIT_SECONDS,
+    LiveFence,
+    RejectCode,
+    SessionFacts,
+)
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 PROC_ROOT = Path("/proc")
@@ -100,6 +106,18 @@ def _task_pk(request: Mapping[str, object]) -> int:
     return task
 
 
+def _live_fence(request: Mapping[str, object]) -> LiveFence | None:
+    raw = request.get("fence")
+    if raw is None:
+        return None
+    invalid = "Live request needs a valid claim and worker-generation fence"
+    if not isinstance(raw, dict) or set(raw) != {"claim", "worker_generation"}:
+        raise ValueError(invalid)
+    if not isinstance(raw["claim"], str) or not raw["claim"] or not isinstance(raw["worker_generation"], str):
+        raise ValueError(invalid)
+    return cast("LiveFence", raw)
+
+
 class OperatorIngress:
     """``live.list`` / ``live.inspect`` (passive) and ``live.steer`` (active) for operators only."""
 
@@ -149,5 +167,5 @@ class OperatorIngress:
             raise ValueError(msg)
         registry = self._registry()
         command = registry.follow_up if method == "live.follow_up" else registry.steer
-        receipt = await command(task_pk, text, command_id=command_id, wait=float(wait))
+        receipt = await command(task_pk, text, command_id=command_id, wait=float(wait), fence=_live_fence(request))
         return receipt.as_payload()

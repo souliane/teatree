@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -27,13 +27,14 @@ from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from teatree.agents import runner
-from teatree.agents.live_control import LiveTask
+from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_stream import StreamCapture
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.worktree.checkout_fence import CheckoutFenceError
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
@@ -396,6 +397,9 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
             status=Task.Status.CLAIMED,
             claimed_by="worker-A",
             claimed_by_session="session-A",
+            claimed_at=timezone.now(),
+            claimed_generation="worker-A",
+            lease_expires_at=timezone.now() + timedelta(minutes=5),
         )
 
     def holder(self) -> OccupancyHolder | None:
@@ -407,6 +411,12 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
             while not any(row["state"] == "idle" for row in shared_registry().sessions()):
                 assert time.monotonic() < deadline, "no idle window opened"
                 time.sleep(0.005)
+            facts = shared_registry().facts(self.task.pk)
+            assert facts is not None
+            assert facts["fence"] == {
+                "claim": claim_generation(self.task),
+                "worker_generation": "worker-A",
+            }
             while Task.objects.get(pk=self.task.pk).lease_expires_at is None:
                 assert time.monotonic() < deadline, "no lease renewal reached the task"
                 time.sleep(0.005)
@@ -447,3 +457,42 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
         assert renewed_until > held_until
         assert renewed_lease > lease
         assert self.holder() is None
+
+    def test_a_new_worker_generation_refuses_an_idle_follow_up_before_a_second_turn(self) -> None:
+        session = _TwoTurnSession()
+
+        def observe() -> tuple[ControlOutcome, RejectCode | None]:
+            deadline = time.monotonic() + 10
+            while not any(row["state"] == "idle" for row in shared_registry().sessions()):
+                assert time.monotonic() < deadline, "no idle window opened"
+                time.sleep(0.005)
+            Task.objects.filter(pk=self.task.pk).update(claimed_generation="worker-B")
+            facts = shared_registry().facts(self.task.pk)
+            assert facts is not None
+            fence = facts["fence"]
+            receipt = asyncio.run(
+                shared_registry().follow_up(self.task.pk, "stale", command_id="old", wait=1, fence=fence)
+            )
+            close_thread_db_connections()
+            return receipt.outcome, receipt.code
+
+        def driver(task: Task, **_: object) -> TaskAttempt:
+            runtime = HeartbeatRuntime(
+                watchdog=LoopWatchdog(max_runtime_seconds=30, max_turns=0, max_cost_usd=0.0),
+                heartbeat_interval=0.5,
+                sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+                renew_lease=runner._renew_lease_closing_connection,
+                drain_reason=lambda: "",
+                idle_window_seconds=1.0,
+            )
+            asyncio.run(
+                drive_with_heartbeat(task, "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime)
+            )
+            return mock.Mock(spec=TaskAttempt)
+
+        observed = _in_background(observe)
+        with mock.patch.object(runner, "_run_agent", driver), mock.patch.object(runner, "verify_task_checkout"):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        assert observed.result(timeout=30) == (ControlOutcome.REJECTED, RejectCode.STALE_SESSION)
+        assert session.prompts == []

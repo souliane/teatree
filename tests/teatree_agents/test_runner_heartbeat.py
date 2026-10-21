@@ -28,6 +28,7 @@ from teatree.agents.live_control import (
     MAX_FOLLOW_UP_TURNS,
     ControlOutcome,
     ControlReceipt,
+    LiveFence,
     RejectCode,
 )
 from teatree.agents.live_registry import shared_registry
@@ -67,6 +68,14 @@ class _Ceilings:
 
 
 _NO_BREACH = _Ceilings()
+
+
+def _current_fence() -> LiveFence:
+    facts = shared_registry().facts(_TASK_PK)
+    assert facts is not None
+    fence = facts["fence"]
+    assert fence is not None
+    return fence
 
 
 def _drain_from_beat(first: int, calls: list[str]) -> Callable[[], str]:
@@ -166,7 +175,9 @@ def test_an_idle_follow_up_keeps_the_claim_and_records_the_second_turn() -> None
                 break
             time.sleep(0.005)
         assert any(row["state"] == "idle" for row in shared_registry().sessions())
-        receipt = asyncio.run(shared_registry().follow_up(_TASK_PK, "continue", command_id="next", wait=0.1))
+        receipt = asyncio.run(
+            shared_registry().follow_up(_TASK_PK, "continue", command_id="next", wait=0.1, fence=_current_fence())
+        )
         outcome = driven.result(timeout=3)
 
     assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
@@ -188,6 +199,7 @@ def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
             ceilings=_Ceilings(idle_window_seconds=2),
         )
         receipts = []
+        fence: LiveFence | None = None
         for index in range(MAX_FOLLOW_UP_TURNS):
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline and not any(
@@ -197,14 +209,18 @@ def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
                     driven.result()
                 time.sleep(0.005)
             assert any(row["state"] == "idle" for row in shared_registry().sessions())
+            fence = _current_fence()
             receipts.append(
-                asyncio.run(shared_registry().follow_up(_TASK_PK, "continue", command_id=str(index), wait=0.1))
+                asyncio.run(
+                    shared_registry().follow_up(_TASK_PK, "continue", command_id=str(index), wait=0.1, fence=fence)
+                )
             )
         driven.result(timeout=3)
 
+    assert fence is not None
     past_cap = [
-        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="past-cap", wait=0.1)),
-        asyncio.run(shared_registry().push(_TASK_PK, "peer note", command_id="peer-past-cap", wait=0.1)),
+        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="past-cap", wait=0.1, fence=fence)),
+        asyncio.run(shared_registry().push(_TASK_PK, "peer note", command_id="peer-past-cap", wait=0.1, fence=fence)),
     ]
     assert all(receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN for receipt in receipts), receipts
     assert len(session.prompts) == MAX_FOLLOW_UP_TURNS
@@ -407,7 +423,9 @@ class _OperatorSteerableSession(InterruptibleSession):
         self.steered.append(input_id)
 
     def operator_steer(self, command_id: str) -> None:
-        steer = shared_registry().steer(_TASK_PK, "stop and report", command_id=command_id, wait=0.05)
+        steer = shared_registry().steer(
+            _TASK_PK, "stop and report", command_id=command_id, wait=0.05, fence=_current_fence()
+        )
         self.receipts.append(asyncio.run(steer))
 
     async def interrupt(self) -> None:

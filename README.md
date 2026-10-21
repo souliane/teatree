@@ -467,7 +467,7 @@ information rather than an operator instruction; any peer also accepts it by
 reading its inbox, and whichever comes first wins. The send returns a receipt:
 `accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
-`too_large`, `session_closed`, `dropped_unread` or `recipient_cannot_receive`.
+`too_large`, `session_closed`, `stale_session`, `dropped_unread` or `recipient_cannot_receive`.
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
 remains in the recipient's inbox, including after a current-turn push. Retrying
 the same key waits on the original message instead of sending a second copy, and
@@ -510,6 +510,9 @@ After a clean result, a `claude_sdk` session remains idle for up to 60 seconds
 while the worker renews its task and checkout leases. `follow-up` starts one new
 turn and returns `accepted_new_turn` (exit 0) once the SDK accepts its prompt;
 `not_idle` exits 3. A repeated command id and text returns its first receipt.
+Each request carries the selected session's full claim token and worker generation;
+a replacement attempt or generation rejects an old request as `stale_session`
+before delivery. New-turn admission also verifies the live task claim and checkout.
 After expiry or restart, the command exits 5 with the task-list status and the
 durable route; a lost answer exits 4 and is never replayed automatically. A
 parked task resumes only through the task list. At most four follow-up turns can

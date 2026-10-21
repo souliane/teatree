@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 from teatree.agents import live_mailbox
-from teatree.agents.live_control import DEFAULT_STEER_WAIT_SECONDS, ReceiptPayload, SessionFacts
+from teatree.agents.live_control import DEFAULT_STEER_WAIT_SECONDS, LiveFence, ReceiptPayload, SessionFacts
 
 _CONNECT_SECONDS = 5.0
 _PASSIVE_SECONDS = 10.0
@@ -29,6 +29,7 @@ class LiveRequest(TypedDict):
     text: NotRequired[str]
     command_id: NotRequired[str]
     wait_seconds: NotRequired[float]
+    fence: NotRequired[LiveFence | None]
 
 
 class LiveOfflineError(Exception):
@@ -81,7 +82,7 @@ class LiveClient:
         return rows
 
     def inspect(self, task: int) -> WorkerSessionFacts:
-        worker = self._owner(task)
+        worker, _fence = self._owner(task)
         try:
             facts = self._call(worker, {"method": "live.inspect", "task": task}, timeout=_PASSIVE_SECONDS)
         except (_UnreachableError, _AnswerLostError) as exc:
@@ -105,13 +106,14 @@ class LiveClient:
         return self._operator_command("live.follow_up", task, text, command_id=command_id, wait=wait)
 
     def _operator_command(self, method: str, task: int, text: str, *, command_id: str, wait: float) -> ReceiptPayload:
-        worker = self._owner(task)
+        worker, fence = self._owner(task)
         request: LiveRequest = {
             "method": method,
             "task": task,
             "text": text,
             "command_id": command_id,
             "wait_seconds": wait,
+            "fence": fence,
         }
         try:
             return cast("ReceiptPayload", self._call(worker, request, timeout=wait + _STEER_GRACE_SECONDS))
@@ -121,10 +123,10 @@ class LiveClient:
         except _AnswerLostError as exc:
             raise LiveDeliveryUnknownError(str(exc)) from exc
 
-    def _owner(self, task: int) -> Path:
+    def _owner(self, task: int) -> tuple[Path, LiveFence | None]:
         for row in self.sessions():
             if row["task"] == task:
-                return (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
+                return (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock", row.get("fence")
         msg = f"task {task} is not running on any live worker on this host"
         raise LiveOfflineError(msg)
 

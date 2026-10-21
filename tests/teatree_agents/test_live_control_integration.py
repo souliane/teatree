@@ -30,7 +30,7 @@ from django.test import TestCase
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.live_client import LiveClient, WorkerSessionFacts
-from teatree.agents.live_control import MAX_PENDING_INPUTS, ReceiptPayload
+from teatree.agents.live_control import MAX_PENDING_INPUTS, LiveFence, ReceiptPayload
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner import TaskUsage, run_agent
@@ -145,6 +145,7 @@ class LiveControlIntegrationTests(TestCase):
                 lambda: any(row["state"] == "idle" for row in shared_registry().sessions()),
                 "idle session",
             )
+            assert self.live.inspect(self.task.pk)["fence"] is not None
             idle_steer = self.live.steer(self.task.pk, "wrong turn", command_id="idle-steer", wait=1)
             receipts = []
             for _ in range(2):
@@ -378,17 +379,23 @@ class LiveControlIntegrationTests(TestCase):
     def test_a_finished_session_answers_closed_and_still_replays_its_receipts(self) -> None:
         run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
 
-        def operator() -> ReceiptPayload:
+        def operator() -> tuple[ReceiptPayload, LiveFence]:
             _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            fence = self.live.inspect(self.task.pk)["fence"]
+            assert fence is not None
             steering = self.steer_async("last words", command_id="kept-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            return steering.result(timeout=_WAIT_LIMIT)
+            return steering.result(timeout=_WAIT_LIMIT), fence
 
-        accepted = self.dispatch(run, operator)
+        accepted, fence = self.dispatch(run, operator)
 
         assert self.live.sessions() == []
-        replay = asyncio.run(shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1))
-        late = asyncio.run(shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1))
+        replay = asyncio.run(
+            shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1, fence=fence)
+        )
+        late = asyncio.run(
+            shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1, fence=fence)
+        )
         assert replay.as_payload() == accepted
         assert (late.outcome, late.code) == ("rejected", "session_closed")

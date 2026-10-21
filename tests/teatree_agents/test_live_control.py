@@ -138,6 +138,31 @@ def test_an_expired_idle_window_closes_without_starting_a_turn() -> None:
     assert session.delivered == []
 
 
+def test_a_lost_claim_refuses_operator_and_peer_wakeups_before_starting_a_turn() -> None:
+    session = _FollowUpSession()
+
+    async def lost() -> bool:
+        await asyncio.sleep(0)
+        return False
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt]:
+        operator = LiveSessionController(_TASK, _Capture(result_message=object()), lost)
+        operator.bind(session)
+        operator.begin_idle()
+        refused_operator = await operator.follow_up("stale", command_id="old", wait=1)
+
+        peer = LiveSessionController(_TASK, _Capture(result_message=object()), lost)
+        peer.bind(session)
+        peer.begin_idle()
+        refused_peer = await peer.push("stale peer", command_id="old-peer", wait=1)
+        return refused_operator, refused_peer
+
+    operator, peer = asyncio.run(run())
+
+    assert (operator.code, peer.code) == (RejectCode.STALE_SESSION, RejectCode.STALE_SESSION)
+    assert session.delivered == []
+
+
 def test_a_peer_message_reaches_the_agent_as_peer_information_not_operator_input() -> None:
     session = _AcceptingSession()
     framed = frame_peer_message("the schema moved to v2", message_id=9, sender=_PEER)
@@ -285,4 +310,5 @@ def test_the_facts_age_every_clock_reading_from_one_now() -> None:
         "open_tool_seconds": 2.5,
         "last_event_age_seconds": 1.5,
         "context_tokens": 52_000,
+        "fence": None,
     }

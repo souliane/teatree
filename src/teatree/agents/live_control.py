@@ -7,6 +7,7 @@ model obedience. The only per-harness surface is :class:`SteerableSession`.
 import asyncio
 import hashlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -46,6 +47,7 @@ class RejectCode(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     DROPPED_UNREAD = "dropped_unread"
     RECIPIENT_CANNOT_RECEIVE = "recipient_cannot_receive"
+    STALE_SESSION = "stale_session"
 
 
 class SteerRejectedError(Exception):
@@ -112,6 +114,12 @@ class SessionFacts(TypedDict):
     open_tool_seconds: float | None
     last_event_age_seconds: float | None
     context_tokens: int | None
+    fence: "LiveFence | None"
+
+
+class LiveFence(TypedDict):
+    claim: str
+    worker_generation: str
 
 
 class PeerIdentity(TypedDict):
@@ -130,6 +138,7 @@ class LiveTask:
     phase: str
     harness: str
     model: str
+    fence: LiveFence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +212,9 @@ class LiveSessionController:
     Every method that touches the session runs on the session's own event loop.
     """
 
-    def __init__(self, task: LiveTask, capture: StreamFacts) -> None:
+    def __init__(
+        self, task: LiveTask, capture: StreamFacts, claim_live: Callable[[], Awaitable[bool]] | None = None
+    ) -> None:
         self.task = task
         self._capture = capture
         self._session: InterruptibleSession | None = None
@@ -215,6 +226,7 @@ class LiveSessionController:
         self._idle: asyncio.Future[FollowUp | None] | None = None
         self._starting: FollowUp | None = None
         self._turn_running = True
+        self._claim_live = claim_live
 
     def bind(self, session: InterruptibleSession) -> None:
         self._session = session
@@ -283,6 +295,7 @@ class LiveSessionController:
             "open_tool_seconds": round(now - open_tool[1], 1) if open_tool else None,
             "last_event_age_seconds": round(now - last_event, 1) if last_event is not None else None,
             "context_tokens": self._capture.context_tokens,
+            "fence": self.task.fence,
         }
 
     def known_receipt(self, command_id: str, text: str, kind: str = "steer") -> ControlReceipt | None:
@@ -361,6 +374,9 @@ class LiveSessionController:
             return await asyncio.shield(entry[1])
         if refusal := self._follow_up_refusal(text):
             return ControlReceipt.rejected(command_id, self.task.pk, refusal)
+        if self._claim_live is not None and not await self._claim_live():
+            self.close()
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_SESSION)
         follow_up = self._start_turn(frame_follow_up(text, command_id), wait)
         if follow_up is None:
             return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
@@ -394,6 +410,9 @@ class LiveSessionController:
         if refusal is not None:
             return ControlReceipt.rejected(command_id, self.task.pk, refusal)
         if self.idle:
+            if self._claim_live is not None and not await self._claim_live():
+                self.close()
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_SESSION)
             follow_up = self._start_turn(
                 f"{framed}\nFinish with your complete result envelope as the last plain JSON object.", wait
             )

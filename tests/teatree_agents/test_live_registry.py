@@ -1,6 +1,7 @@
 """A command whose delivery the owner loop never confirmed stays ``unknown_delivery`` and is never replayed."""
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import patch
 
 from teatree.agents import live_registry
@@ -106,3 +107,21 @@ def test_a_peer_push_to_a_task_with_no_live_session_is_unknown_session() -> None
     receipt = _push(LiveSessionRegistry())
 
     assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.UNKNOWN_SESSION)
+
+
+def test_old_claim_and_worker_generation_cannot_reach_a_replacement_session() -> None:
+    registry = LiveSessionRegistry()
+    current = replace(_TASK, fence={"claim": "claim-b", "worker_generation": "worker-b"})
+    session = _AcceptingSession()
+    with OwnerLoop(registry, current, session):
+        for stale in (
+            {"claim": "claim-a", "worker_generation": "worker-b"},
+            {"claim": "claim-b", "worker_generation": "worker-a"},
+        ):
+            operator = asyncio.run(registry.steer(_TASK.pk, "stale", command_id="old", wait=1, fence=stale))
+            peer = asyncio.run(registry.push(_TASK.pk, "stale peer", command_id="old-peer", wait=1, fence=stale))
+            assert (operator.outcome, operator.code) == (ControlOutcome.REJECTED, RejectCode.STALE_SESSION)
+            assert (peer.outcome, peer.code) == (ControlOutcome.REJECTED, RejectCode.STALE_SESSION)
+        assert session.steered == []
+        accepted = asyncio.run(registry.steer(_TASK.pk, "current", command_id="new", wait=1, fence=current.fence))
+        assert accepted.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
