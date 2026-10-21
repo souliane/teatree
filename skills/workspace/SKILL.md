@@ -64,7 +64,6 @@ Key environment variables used by this skill (see `/t3:setup` for the full confi
 | `T3_WORKSPACE_DIR` | Yes | Root workspace directory |
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
-| `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
 ### One Agent Per Checkout (#3952)
 
@@ -569,7 +568,10 @@ t3 <overlay> worktree provision             # re-run; now green end-to-end
 #### A checkout `t3` does not know yet — `worktree adopt`, never `provision`
 
 `WorktreeNotFoundError: Cannot auto-detect worktree from <path>` means the checkout has
-no `Worktree` row, not that you are standing in the wrong place. Registration used to
+no `Worktree` row, not that you are standing in the wrong place.
+A declaration line in this refusal means resolution used a fallback directory and says either
+`TEATREE_INVOCATION_CWD is unset (not declared)` or
+`TEATREE_INVOCATION_CWD='<path>' is declared but does not resolve here`. Registration used to
 happen only as a side effect of resolving something else, so a worktree cut by
 `git worktree add`, by another session, or one whose row was reaped, had no verb at all
 — and `provision` is the wrong answer (it runs tenant-DB provisioning many overlays

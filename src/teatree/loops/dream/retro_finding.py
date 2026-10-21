@@ -9,7 +9,7 @@ retires through :func:`~teatree.loops.dream.promote_memory.retire_resolved_memor
 when :func:`~teatree.loops.dream.batch_promote.reconcile_batches` sees the fix merge,
 with no retro-specific code anywhere in that path.
 
-The queueing sits behind the ``memory_promote`` toggle Pass 2 obeys: with it off
+The queueing sits behind the ``dream_memory_promote`` setting Pass 2 obeys: with it off
 the finding is still RECORDED and its promotion DEFERRED onto the same drain queue, so
 nothing is lost by waiting and an explicit command may not spend an intent the operator
 withheld.
@@ -92,12 +92,15 @@ def record_finding(*, rule: str, citation: str, destination: str) -> Consolidate
 def promote_finding(*, rule: str, umbrella_url: str, dry_run: bool = False) -> FindingOutcome:
     """Queue one finding on the umbrella host's pending ledger for the backlog sweep, as a batch of one.
 
-    Deferred rather than queued while ``memory_promote`` is off; with no ticket tracking
-    the umbrella nothing is queued. Both leave the recorded row in the drain queue, so no
-    lesson is lost by waiting.
+    Deferred rather than queued while ``dream_memory_promote`` is off or unreadable; with no
+    ticket tracking the umbrella nothing is queued. Both leave the recorded row in the drain
+    queue, so no lesson is lost by waiting.
     """
     if not memory_promote_enabled():
-        return _deferred(rule, "deferred — [loops.dream] memory_promote is off; the recorded gap drains once it is on")
+        return _deferred(
+            rule,
+            "deferred — dream_memory_promote is off or unreadable; the recorded gap drains once enabled",
+        )
     batch = batch_promote.PromotionBatch()
     considered = batch.consider(gap=finding_gap(rule), dry_run=dry_run)
     if not considered.queued:

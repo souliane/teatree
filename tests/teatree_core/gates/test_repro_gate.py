@@ -16,12 +16,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents.repro_phase_recorder import GREEN_REPLAY_OUTPUT_MAX_BYTES, _run_green_replay, record_phase_repro
 from teatree.core.gates import dod_gate
 from teatree.core.gates.repro_gate import ForcedReproGateError, check_forced_repro, check_red_repro
-from teatree.core.models import HarnessRun, ReproEvidence, ReproWaiver, Session, Task, Ticket, Worktree
+from teatree.core.models import ConfigSetting, HarnessRun, ReproEvidence, ReproWaiver, Session, Task, Ticket, Worktree
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from tests._loop_principal_env import pinned_loop_principal
+from tests.factories import record_test_plan
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
 
 _SHA_RED = "a" * 40
@@ -208,6 +213,125 @@ class TestGateVerdict(TestCase):
         assert "waive" in message
 
 
+class TestForcedReproGateSwitchedOff(TestCase):
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+
+    def test_coding_recorder_and_gate_log_one_exemption(self) -> None:
+        ticket = _fix_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="tester")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+            assert record_phase_repro(task, phase="coding") == ""
+            check_red_repro(ticket)
+        assert len(logs.output) == 1
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+
+    def test_alias_scope_is_reported_by_audit_and_status(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-acme", kind=Ticket.Kind.FIX)
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING") as logs:
+            check_red_repro(ticket)
+        ticket.refresh_from_db()
+        assert "scope acme" in logs.output[0]
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+        status = call_command("repro", "status", str(ticket.pk))
+        assert "forced-repro disabled by: acme" in status
+        assert "disabled scopes recorded: acme" in status
+
+    def test_the_ship_gate_passes_a_fix_with_no_repro(self) -> None:
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").delete()
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = _fix_ticket()
+        with self.assertLogs("teatree.core.gates.repro_gate", level="WARNING"):
+            check_forced_repro(ticket)
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="acme")
+        check_forced_repro(ticket)
+        ticket.refresh_from_db()
+        assert not ReproEvidence.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["global", "acme"]
+
+    def test_the_coding_gate_passes_a_fix_with_no_red(self) -> None:
+        ticket = _fix_ticket()
+        record_test_plan(ticket)
+        ticket.code_direct()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        assert not ReproEvidence.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+
+    def test_another_overlays_fix_is_still_refused_by_both_gates(self) -> None:
+        acme = _fix_ticket()
+        other = Ticket.objects.create(overlay="other", kind=Ticket.Kind.FIX)
+        check_red_repro(acme)
+        check_forced_repro(acme)
+        with pytest.raises(ForcedReproGateError):
+            check_red_repro(other)
+        with pytest.raises(ForcedReproGateError):
+            check_forced_repro(other)
+
+    def test_off_marker_survives_turning_the_setting_back_on(self) -> None:
+        ticket = _fix_ticket()
+        check_red_repro(ticket)
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ticket.refresh_from_db()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["acme"]
+        with pytest.raises(ForcedReproGateError):
+            check_red_repro(ticket)
+
+    def test_a_fix_reaches_tested_with_no_evidence_when_switched_off_globally(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = Ticket.objects.create(kind=Ticket.Kind.FIX)
+        _advance_ticket_to_tested(ticket)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert not ReproEvidence.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
+
+    def test_the_unattended_loop_cannot_switch_it_off(self) -> None:
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
+            ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="other")
+        assert not ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="other").exists()
+
+    def test_existing_red_waiver_and_valid_pair_do_not_mark_a_disabled_gate(self) -> None:
+        with_red = _fix_ticket()
+        ReproEvidence.record_red(
+            ticket=with_red, command=_CMD, run=HarnessRun(head_sha=_SHA_RED, exit_code=1, output="failed")
+        )
+        check_red_repro(with_red)
+        with_red.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in with_red.extra
+
+        waived = _fix_ticket()
+        ReproWaiver.record(ticket=waived, approver_id="souliane", reason="hardware race")
+        check_red_repro(waived)
+        check_forced_repro(waived)
+        waived.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in waived.extra
+
+        paired = _fix_ticket()
+        _valid_pair(paired)
+        check_red_repro(paired)
+        check_forced_repro(paired)
+        paired.refresh_from_db()
+        assert "forced_repro_disabled_scopes" not in paired.extra
+
+    def test_global_override_is_the_recorded_scope_for_an_overlay_ticket(self) -> None:
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").delete()
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = _fix_ticket()
+        check_red_repro(ticket)
+        ticket.refresh_from_db()
+        assert ticket.extra["forced_repro_disabled_scopes"] == ["global"]
+        with patch.object(Ticket, "merge_extra", side_effect=AssertionError("duplicate marker write")):
+            check_forced_repro(ticket)
+
+    def test_malformed_value_refuses_instead_of_passing(self) -> None:
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
+        with pytest.raises(ForcedReproGateError, match="Cannot decide forced-repro requirement"):
+            check_red_repro(_fix_ticket())
+
+
 class TestShipTransitionReproGate(TestCase):
     """The real FSM ``ship()`` path enforces the gate (#118)."""
 
@@ -215,7 +339,7 @@ class TestShipTransitionReproGate(TestCase):
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
-    def _reviewed_fix_ticket(self) -> Ticket:
+    def _reviewed_fix_ticket(self, *, with_repro: bool = True) -> Ticket:
         ticket = Ticket.objects.create(kind=Ticket.Kind.FIX)
         repo_dir = self._tmp_path / f"repo-{ticket.pk}"
         branch = f"feature-{ticket.pk}"
@@ -226,9 +350,11 @@ class TestShipTransitionReproGate(TestCase):
             branch=branch,
             extra={"worktree_path": str(repo_dir)},
         )
-        _valid_pair(ticket)
+        if with_repro:
+            _valid_pair(ticket)
         _advance_ticket_to_tested(ticket)
-        ReproEvidence.objects.filter(ticket=ticket).delete()
+        if with_repro:
+            ReproEvidence.objects.filter(ticket=ticket).delete()
         ticket.record_review_context(
             work_item="https://example.test/issues/1",
             documents=["https://example.test/spec"],
@@ -246,6 +372,14 @@ class TestShipTransitionReproGate(TestCase):
         with patch.object(dod_gate, "frontend_repos_for_overlay", return_value=[]), pytest.raises(ForcedReproGateError):
             ticket.ship()
         ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_turning_the_gate_back_on_refuses_a_fix_coded_without_red(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = self._reviewed_fix_ticket(with_repro=False)
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True)
+        with patch.object(dod_gate, "frontend_repos_for_overlay", return_value=[]), pytest.raises(ForcedReproGateError):
+            ticket.refuse_unless_shippable()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_ship_proceeds_with_valid_repro_under_flag(self) -> None:

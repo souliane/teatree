@@ -38,11 +38,12 @@ _REFERENCE_WORDS = (
 )
 
 #: Pattern rules, no name lists: each matches a SHAPE an owner cannot read, and a match is blanked before the next rule.
-_SHORTHAND_PATTERNS = (
-    re.compile(r"`[^`]*`"),
+_INTERNAL_ID_PATTERNS = (
     re.compile(rf"\b{_REFERENCE_WORDS}\s+[#!]?\d+\b", re.IGNORECASE),
     re.compile(r"(?<![\w&])[#!]\d+\b"),
     re.compile(r"(?<![\d,])\d{3,}(?:\s*[,/]\s*\d{3,})+(?!\d)"),
+)
+_FILE_PATH_PATTERNS = (
     re.compile(rf"(?<!\w)~/{_SEGMENT}*(?:/{_SEGMENT}+)*"),
     re.compile(rf"(?<![\w/])\./{_SEGMENT}+(?:/{_SEGMENT}+)*"),
     re.compile(rf"\b(?:src|tests)/{_SEGMENT}+(?:/{_SEGMENT}+)*"),
@@ -50,10 +51,19 @@ _SHORTHAND_PATTERNS = (
     re.compile(rf"(?<![\w/.~-])(?:{_SEGMENT}*[A-Za-z]{_SEGMENT}*/){{2,}}{_SEGMENT}+"),
     re.compile(r"\b[\w-]+\.(?:py|toml|json|ya?ml|md|sh|sqlite3)\b"),
     re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}\b"),
+)
+_INTERNAL_CODE_PATTERNS = (
     re.compile(r"\b(?=[0-9a-fA-F]*\d)(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{7,40}\b"),
     re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b"),
     re.compile(r"(?<![\w-])--[A-Za-z][\w-]*"),
     re.compile(r"\b\w+=[^\s,;]+"),
+)
+_CLIENT_SHORTHAND_PATTERNS = (*_INTERNAL_ID_PATTERNS, *_INTERNAL_CODE_PATTERNS)
+_SHORTHAND_PATTERNS = (
+    re.compile(r"`[^`]*`"),
+    *_INTERNAL_ID_PATTERNS,
+    *_FILE_PATH_PATTERNS,
+    *_INTERNAL_CODE_PATTERNS,
     re.compile(r"\bdeferred\b", re.IGNORECASE),
 )
 
@@ -76,9 +86,13 @@ def _blank_urls(text: str) -> str:
 
 def internal_shorthand(text: str) -> list[str]:
     """The tokens in *text* an owner reads as internal shorthand, in reading order."""
+    return _shorthand_tokens(text, _SHORTHAND_PATTERNS)
+
+
+def _shorthand_tokens(text: str, patterns: tuple[re.Pattern[str], ...]) -> list[str]:
     working = _blank_urls(text)
     found: list[tuple[int, str]] = []
-    for pattern in _SHORTHAND_PATTERNS:
+    for pattern in patterns:
         found.extend((match.start(), match.group(0)) for match in pattern.finditer(working))
         working = pattern.sub(lambda match: " " * len(match.group(0)), working)
     return [token for _start, token in sorted(found)]
@@ -187,6 +201,28 @@ class CardView:
     ref: int
     action: bool = False
 
+    @classmethod
+    def ask_problems(cls, raw: Mapping[str, object]) -> list[str]:
+        """What is wrong with a question rendered in the owner's client, which shows no reply or ref line."""
+        question = raw.get("question")
+        header = raw.get("header")
+        options = raw.get("options")
+        question_text = question if isinstance(question, str) else ""
+        header_text = header if isinstance(header, str) else ""
+        parsed_options = (
+            tuple(option for item in options if (option := CardOption.from_raw(item)) is not None)
+            if isinstance(options, list)
+            else ()
+        )
+        view = cls(question_text, "", parsed_options, "", 0)
+        problems = [*_view_shorthand_problems(view, in_client=True), *_option_problems(parsed_options)]
+        problems += _shorthand_problems("the header", header_text, in_client=True)
+        problems += _sentence_problems("the question", question_text, limit=MAX_QUESTION_CHARS, ends_with="?")
+        shown = [header_text, question_text, *(f"{option.label} {option.description}" for option in parsed_options)]
+        if (words := word_count(" ".join(shown))) > MAX_WORDS:
+            problems.append(f"the card is {words} words; at most {MAX_WORDS}")
+        return problems
+
 
 def option_row(option: CardOption) -> str:
     """The line one option renders as, in the text and (split at the button) in the blocks."""
@@ -215,8 +251,8 @@ def plain_text(view: CardView, *, closing: str = "") -> str:
     return "\n\n".join("\n".join(lines) for lines in layout(view, closing=closing))
 
 
-def _shorthand_problems(where: str, text: str) -> list[str]:
-    tokens = internal_shorthand(text)
+def _shorthand_problems(where: str, text: str, *, in_client: bool = False) -> list[str]:
+    tokens = _shorthand_tokens(text, _CLIENT_SHORTHAND_PATTERNS) if in_client else internal_shorthand(text)
     return [f"{where} carries internal shorthand ({', '.join(tokens)}); say it in plain words"] if tokens else []
 
 
@@ -242,12 +278,16 @@ def _option_problems(options: tuple[CardOption, ...]) -> list[str]:
     return problems
 
 
-def shown_problems(view: CardView) -> list[str]:
-    """What is wrong with *view* as the owner will read it: shorthand anywhere, too many words, a bad option set."""
+def _view_shorthand_problems(view: CardView, *, in_client: bool = False) -> list[str]:
     shown = [("the question", view.question), ("the why sentence", view.why), ("the quoted text", view.quoted)]
     for option in view.options:
         shown += [(f"option {option.label!r} label", option.label), (f"option {option.label!r}", option.description)]
-    problems = [problem for where, text in shown for problem in _shorthand_problems(where, text)]
+    return [problem for where, text in shown for problem in _shorthand_problems(where, text, in_client=in_client)]
+
+
+def shown_problems(view: CardView) -> list[str]:
+    """What is wrong with *view* as the owner will read it: shorthand anywhere, too many words, a bad option set."""
+    problems = _view_shorthand_problems(view)
     if (words := word_count(plain_text(view))) > MAX_WORDS:
         problems.append(f"the card is {words} words; at most {MAX_WORDS}")
     return [*problems, *_option_problems(view.options)]

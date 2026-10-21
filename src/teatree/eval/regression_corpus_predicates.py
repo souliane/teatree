@@ -22,6 +22,7 @@ from pathlib import Path
 
 from django.db import transaction
 
+from teatree.config.override_reader import OverlayRows
 from teatree.eval.regression_corpus_fixtures import git as _git
 from teatree.eval.regression_corpus_fixtures import (
     seed_repo_behind_but_clean,
@@ -104,11 +105,11 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Generator[None
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
 
-    def _staged_overlay_rows(name: str = "") -> tuple[dict[str, str], bool]:
+    def _staged_overlay_rows(name: str) -> tuple[OverlayRows, bool]:
         # ``(rows, degraded)`` — the readers report whether the scope could be READ, not just
         # what it held (#3873). ``False`` here is "read fine, these are the rows".
         rows = {"autonomy": autonomy} if OverlayEntry.canonical_overlay_name(name) == canonical else {}
-        return rows, False
+        return OverlayRows(rows, dict.fromkeys(rows, name)), False
 
     with (
         patch("teatree.config.resolution.load_global_rows", return_value=({}, False)),

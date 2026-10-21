@@ -67,9 +67,9 @@
 # (`<repo>/scripts/privacy_scan.py`, `<repo>/src`), never from an installed copy, so a push
 # that fixes the gate is judged by the fixed gate. The hook reads no override variable of its
 # own. The term registry still resolves through the environment
-# (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME), so before it trusts any
-# verdict, a private one included, the hook holds the lists it LOADED to the digests committed at this
-# checkout's HEAD in .github/term-source-fingerprint.json (digests only, never printed) and refuses on a
+# (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME). In this project's own checkout,
+# before it trusts any verdict, a private one included, the hook holds the lists it LOADED to the digests
+# committed at HEAD in .github/term-source-fingerprint.json (digests only, never printed) and refuses on a
 # mismatch, on a fingerprint it cannot read, and on one that is missing, untracked or edited since. The
 # PreToolUse guards also refuse an inline assignment of any of those names, or of
 # SKIP/GIT_CONFIG_*/XDG_CONFIG_HOME, on a command that commits, pushes or runs prek or a t3 verb that
@@ -123,6 +123,12 @@ _checkout_git() {
   env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE -u GIT_PREFIX -u GIT_CEILING_DIRECTORIES \
     git -C "${repo_root}" "$@"
+}
+
+_checkout_is_vendored() {
+  local prefix
+  prefix=$(_checkout_git rev-parse --show-prefix 2>/dev/null </dev/null) || return 1
+  [ -n "${prefix}" ]
 }
 
 # Prek may invoke this hook from a vendored directory; git diff.relative must not narrow the pushed history.
@@ -221,6 +227,7 @@ scan_pythonpath="${gate_tree}/src:${gate_tree}/vendor/teatree/src"
 # The dedicated "findings present" exit code of scripts/privacy_scan.py. Any other
 # non-zero exit is a scan that could not run, and refuses the push as well.
 findings_code=3
+registry_unavailable_code=4
 
 # A Python 3.13+ to run the stdlib-only scanner. Every PATH match of a version-explicit name is
 # tried before the next name, because a bare `python3` on a stock Mac is the Command Line Tools
@@ -294,8 +301,8 @@ visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[
 known_private=0
 case "${visibility}" in
   PRIVATE | INTERNAL)
-    # KNOWN non-public remote — nothing reaches public history. The verdict comes from the same
-    # environment-resolved store as the term registry, so it is only trusted once that registry is verified below.
+    # KNOWN non-public remote — nothing reaches public history. The verdict comes from the
+    # live forge probe, which reads no store, so a vendored checkout needs no registry for this verdict.
     known_private=1
     target="private repo '${slug}'"
     confirm_hint=""
@@ -329,7 +336,7 @@ if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
   exit 1
 fi
 
-# The term registry resolves through the environment, which a pusher can fill with
+# In this project's own checkout, the term registry resolves through the environment, which a pusher can fill with
 # a store of their own in ways no PreToolUse guard sees (`export`, `printf -v`, `read`, `source`, a script setting
 # os.environ). So the lists this hook LOADED are held to the digests committed at this checkout's HEAD, which the
 # required term-source-drift CI job holds equal to the real secret. Only the fingerprint as committed counts: a file
@@ -342,6 +349,22 @@ _fingerprint_is_committed() {
   [ -n "${at_head}" ] && [ "${at_head}" = "${on_disk}" ]
 }
 
+if _checkout_is_vendored; then
+  [ "${known_private}" = 0 ] || exit 0
+  registry_rc=0
+  registry_report=$(_scan --text --terms-only - 2>&1 </dev/null) || registry_rc=$?
+  if [ "${registry_rc}" -ne 0 ]; then
+    if [ "${registry_rc}" -eq "${registry_unavailable_code}" ]; then
+      echo "✗ refuse: push to ${target} cannot be checked: no term registry could be loaded (fail closed)."
+    else
+      echo "✗ refuse: push to ${target} cannot be checked: term registry probe failed (exit ${registry_rc}) (fail closed)."
+    fi
+    printf '%s\n' "${registry_report}" | sed 's/^/  /'
+    echo "  Nothing was published."
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+    exit 1
+  fi
+else
 registry_rc=0
 registry_report=""
 if ! _fingerprint_is_committed; then
@@ -366,6 +389,7 @@ if [ "${registry_rc}" -ne 0 ]; then
   exit 1
 fi
 [ "${known_private}" = 0 ] || exit 0
+fi
 
 # Ref updates arrive on stdin under git's native pre-push protocol. But when the
 # hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the

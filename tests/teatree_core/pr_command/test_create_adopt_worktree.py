@@ -174,8 +174,21 @@ class TestAdoptResolvesTheInvocationCwd(TestCase):
 
         error = str(self._create(ticket)["error"])
 
-        assert INVOCATION_CWD_ENV in error
+        assert f"{INVOCATION_CWD_ENV} is unset (not declared)" in error
         assert str(image_workdir.resolve()) in error
+        assert not ticket.worktrees.exists()
+
+    def test_unresolvable_declared_cwd_is_quoted_in_the_refusal(self) -> None:
+        ticket = self._merged_ticket_ready_to_ship()
+        missing = self._tmp / "host-spelled-path"
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(missing))
+        self._monkeypatch.chdir(self._plain_dir("image-workdir"))
+
+        error = str(self._create(ticket)["error"])
+
+        assert f"{INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in error
+        assert "is unset" not in error
+        assert "container-side path" in error
         assert not ticket.worktrees.exists()
 
     def test_declared_non_worktree_keeps_the_plain_refusal(self) -> None:
