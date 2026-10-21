@@ -9,7 +9,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.live_control import LiveTask
 from teatree.agents.live_delivery import MailboxIdentity
-from teatree.agents.live_mailbox import LiveMailboxBroker, shared_broker
+from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask, shared_broker
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 if TYPE_CHECKING:
@@ -51,8 +51,7 @@ def bound_task_mailbox(
                 room=str(task.ticket),
                 harness=task.harness,
                 label=label,
-                task=task,
-                reads_inbox=teatree_stdio is not None,
+                task=task if teatree_stdio is not None else PushOnlyTask(task),
             )
         except Exception:
             logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)

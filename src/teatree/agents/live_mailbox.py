@@ -75,6 +75,11 @@ class _Participant:
     waiting: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class PushOnlyTask:
+    task: LiveTask
+
+
 class LiveMailboxBroker:
     """Own only sessions currently running in this worker process."""
 
@@ -153,23 +158,25 @@ class LiveMailboxBroker:
         room: str,
         harness: str,
         label: str,
-        task: LiveTask | None = None,
-        reads_inbox: bool = True,
+        task: LiveTask | PushOnlyTask | None = None,
+        phase: str = "",
     ) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
+        push_only = isinstance(task, PushOnlyTask)
+        bound_task = task.task if push_only else task
         participant = _Participant(
             address=str(uuid.uuid4()),
             token=secrets.token_urlsafe(32),
             room=room,
             harness=harness,
             label=label,
-            phase=task.phase if task else "",
+            phase=bound_task.phase if bound_task else phase,
             can_receive=harness != AgentHarness.PYDANTIC_AI,
-            task=task,
-            reads_inbox=reads_inbox,
+            task=bound_task,
+            reads_inbox=not push_only,
         )
         with self._lock:
             self._by_token[participant.token] = participant

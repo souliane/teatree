@@ -35,7 +35,13 @@ from teatree.agents import live_mailbox
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
-from teatree.agents.live_mailbox import LiveMailboxBroker, MailboxIdentity, reset_shared_brokers, shared_broker
+from teatree.agents.live_mailbox import (
+    LiveMailboxBroker,
+    MailboxIdentity,
+    PushOnlyTask,
+    reset_shared_brokers,
+    shared_broker,
+)
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.cli.mcp import serve
@@ -1033,7 +1039,8 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "phase": "coding",
             "can_receive": True,
         }
-        assert (broker._by_address[identity.address].room, broker._by_address[identity.address].task) == ("3", 7)
+        assert broker._by_address[identity.address].room == "3"
+        assert broker._by_address[identity.address].task == _TASK
         assert isinstance(options.mcp_servers, dict)
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
@@ -1092,8 +1099,8 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
             room: str,
             harness: str,
             label: str,
-            task: LiveTask | None = None,
-            reads_inbox: bool = True,
+            task: LiveTask | PushOnlyTask | None = None,
+            phase: str = "",
         ) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)

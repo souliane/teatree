@@ -19,7 +19,7 @@ from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_control import LiveFence, LiveTask
 from teatree.agents.live_delivery import InboxMessage, SendReceipt
-from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
@@ -263,10 +263,16 @@ def test_a_push_queued_for_an_old_participant_is_stale_in_the_new_attempt(tmp_pa
             room="3",
             harness="codex_app_server",
             label="old",
-            task=LiveTask(
-                pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex", fence=LiveFence("old", "g")
+            task=PushOnlyTask(
+                LiveTask(
+                    pk=7,
+                    ticket=3,
+                    phase="coding",
+                    harness="codex_app_server",
+                    model="codex",
+                    fence=LiveFence("old", "g"),
+                )
             ),
-            reads_inbox=False,
         )
 
         async def send() -> SendReceipt:
