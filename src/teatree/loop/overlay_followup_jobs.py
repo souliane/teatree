@@ -16,6 +16,7 @@ from teatree.utils.thread_db import close_thread_db_connections
 logger = logging.getLogger(__name__)
 HOOK_DEADLINE_SECONDS = 5.0
 _SKIPPED_HOOKS: ContextVar[list[str] | None] = ContextVar("skipped_overlay_followup_hooks", default=None)
+# Retain one timed-out call per overlay so repeated ticks cannot spawn unbounded hook threads.
 _INFLIGHT_HOOKS: dict[str, Future[list[Scanner]]] = {}
 _HOOK_LOCK = Lock()
 

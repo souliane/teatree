@@ -169,6 +169,28 @@ class TestOverlayFollowupScanners(TestCase):
         finally:
             release.set()
 
+    def test_reset_ignores_a_late_result_from_the_previous_hook(self) -> None:
+        entered = Event()
+        release = Event()
+
+        class BlockingReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                entered.set()
+                release.wait()
+                return []
+
+        scanner = _ExtraScanner()
+        try:
+            with patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01):
+                first = MINI_LOOP.build_jobs(backends=[self._backend("alpha", BlockingReview())])
+                assert entered.is_set()
+                assert any(job.scanner.name == "overlay_followup_scanners" for job in first)
+                overlay_followup_jobs_module.reset_inflight_hooks()
+                second = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([scanner]))])
+            assert any(job.scanner is scanner for job in second)
+        finally:
+            release.set()
+
     def test_hook_receives_selection_context(self) -> None:
         selection = ContextVar("followup_test_selection", default="missing")
         seen: list[str] = []
