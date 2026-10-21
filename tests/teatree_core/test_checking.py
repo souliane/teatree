@@ -88,6 +88,33 @@ class CheckingTestBase(TestCase):
         TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=hours_ago))
 
 
+class TestMeteredGroup(CheckingTestBase):
+    def test_metered_attempt_and_estimated_cost_appear_in_both_reports(self) -> None:
+        ticket = self._ticket(number=5399)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        attempt = TaskAttempt.objects.create(
+            task=task,
+            lane=TaskAttempt.Lane.METERED,
+            route_candidate_index=1,
+            cost_usd=1.25,
+            exit_code=0,
+        )
+        TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=1))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+        all_report = gather_all_overlays_report(
+            overlay_windows={self.OVERLAY: (self.since, self.now)},
+            overlay_configs={self.OVERLAY: ("github", ["acme/widgets"])},
+        )
+
+        assert report.to_dict()["metered"]["total"] == 1
+        assert "estimated $1.25" in report.to_terse()
+        assert "#5399" in report.to_terse()
+        assert all_report.to_dict()["metered"]["total"] == 1
+        assert "[acme]" in all_report.to_terse()
+
+
 class TestMergedGroup(CheckingTestBase):
     def test_merge_in_window_is_reported(self) -> None:
         ticket = self._ticket()
@@ -417,7 +444,7 @@ class TestJsonShape(CheckingTestBase):
         payload = report.to_dict()
         encoded = json.dumps(payload)  # must not raise
         decoded = json.loads(encoded)
-        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "terse"}
+        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "terse"}
         assert decoded["merged"]["total"] == 1
         assert decoded["merged"]["items"][0]["label"] == "acme/widgets#7"
 

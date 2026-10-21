@@ -1,13 +1,18 @@
 """A routed task whose candidates are only waiting parks until the first can run; a permanent refusal fails."""
 
+from dataclasses import replace
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+import teatree.agents.harness_dispatch as harness_dispatch_mod
+from teatree.agents import harness_registry
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.runner import _resolve_backend_or_failure
 from teatree.agents.skill_routing import QUOTA_AUTH_HOLD, record_route_unavailable
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import LIMIT_PARKED_PREFIX, Mode, ModeOverride, Session, Task, TaskAttempt, UsageWindowState
 from tests.factories import planned_ticket
@@ -52,6 +57,51 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
             outcome = _resolve_backend_or_failure(task, phase=_PHASE, skills=["route-skill"])
         assert isinstance(outcome, TaskAttempt)
         return outcome
+
+    def _register_resolved_paid_harness(self) -> None:
+        name = "resolved_paid"
+        capabilities = HarnessCapabilities()
+        register_harness(
+            HarnessSpec(
+                name=name,
+                factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
+                capabilities=capabilities,
+                valid_providers=frozenset({AgentHarnessProvider.API_KEY.value}),
+            )
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, name, None)
+
+    def test_providerless_second_candidate_resolving_to_metered_parks_without_authorization(self) -> None:
+        task = self._task()
+        self._register_resolved_paid_harness()
+        self._hold_codex(task)
+        with patch.object(
+            harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
+        ):
+            attempt = self._dispatch(task, MANAGED, "resolved_paid")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before > timezone.now()
+        assert "agent_route_paid_fallback" in attempt.error
+        assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+
+    def test_owner_authorization_permits_a_resolved_metered_second_candidate(self) -> None:
+        task = self._task()
+        self._register_resolved_paid_harness()
+        self._hold_codex(task)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+        with (
+            patch.object(
+                harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
+            ),
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            routed_by(route_config("route-skill", MANAGED, "resolved_paid")),
+        ):
+            selected = harness_dispatch_mod.resolve_dispatch_harness(task, phase=_PHASE, skills=["route-skill"])
+
+        assert selected.name == "resolved_paid"
+        assert selected.provider == AgentHarnessProvider.API_KEY
 
     def test_a_held_codex_and_a_windowed_claude_park_until_the_hold_lifts(self) -> None:
         task = self._task()

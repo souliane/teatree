@@ -104,6 +104,11 @@ def read_only_system_context(context: str) -> str:
     return rewritten
 
 
+def read_only_text(text: str) -> str:
+    rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, text)
+    return _TEATREE_COMMAND.sub(f"{ABSENT_TOOL} ", rewritten)
+
+
 def _refused(reason: str) -> HarnessFallbackError:
     return HarnessFallbackError(
         f"read-only executor brief refused: {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False

@@ -2,7 +2,10 @@
 
 import logging
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from typing import TYPE_CHECKING
+
+from django.utils import timezone
 
 from teatree.agents.credential_policy import resolve_credential_provider
 from teatree.agents.harness_registry import (
@@ -221,7 +224,7 @@ def _static_rejection(context: HarnessBuildContext, candidate: AgentRouteCandida
 
 
 def _eligible_candidate(
-    context: HarnessBuildContext, candidate: AgentRouteCandidate
+    context: HarnessBuildContext, candidate: AgentRouteCandidate, *, is_fallback: bool = False
 ) -> _EligibleCandidate | tuple[HarnessRejection, ...]:
     spec, registration_rejections = _registered_route_spec(context, candidate)
     if spec is None:
@@ -230,7 +233,16 @@ def _eligible_candidate(
         provider = _route_provider(context, candidate, spec)
     except (CredentialError, ValueError) as exc:
         return (HarnessRejection(candidate.harness, str(exc)),)
-    if window := _active_window(_route_lane(spec.capabilities, provider)):
+    lane = _route_lane(spec.capabilities, provider)
+    if (
+        is_fallback
+        and lane == "metered"
+        and context.settings is not None
+        and not context.settings.agent_route_paid_fallback
+    ):
+        reason = "metered route fallback requires agent_route_paid_fallback"
+        return (HarnessRejection(candidate.harness, reason, retry_at=timezone.now() + timedelta(minutes=2), held=True),)
+    if window := _active_window(lane):
         reason = f"{window.cause or 'quota'} window on lane {window.lane or 'ambient'!r} is active"
         return (HarnessRejection(candidate.harness, reason, retry_at=window.resets_at),)
     candidate_context = replace(context, model=candidate.model, provider=_managed_provider_name(spec, provider))
@@ -269,7 +281,7 @@ def _skill_route_selection(
         if reason := _static_rejection(context, candidate, floor_rank):
             rejected.append(HarnessRejection(candidate.harness, reason))
             continue
-        eligible = _eligible_candidate(context, candidate)
+        eligible = _eligible_candidate(context, candidate, is_fallback=index > 0)
         if not isinstance(eligible, _EligibleCandidate):
             rejected.extend(eligible)
             continue

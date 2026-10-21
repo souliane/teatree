@@ -11,7 +11,7 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
-from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts
+from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts, read_only_text
 from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
@@ -196,7 +196,7 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
     lines.append(final_output_reminder_line(task.phase))
-    return "\n".join(lines)
+    return read_only_text("\n".join(lines))
 
 
 def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
@@ -259,6 +259,9 @@ def read_only_required_skills(
     phase: str, skills: list[str], *, lifecycle_skill: str, stage_skills: list[str]
 ) -> set[str]:
     """What the read-only executor must receive in full: it has neither a Skill tool nor a skill file to read."""
+    if normalize_phase(phase) in {"reviewing", "critic_reviewing"}:
+        needed = {"rules", lifecycle_skill, *_REVIEW_PHASE_ALWAYS_FULL}
+        return {name for name in skills if _explicit_load_name(name) in needed}
     full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
     return full | explicit
 
@@ -400,7 +403,11 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
         ),
     )
 
-    lines.extend(phase_specific_lines(task, skills, stage_exclude=stage_exclude, read_only_venue=read_only_venue))
+    phase_lines = phase_specific_lines(task, skills, stage_exclude=stage_exclude, read_only_venue=read_only_venue)
+    if read_only_venue:
+        lines.extend(read_only_text(line) for line in phase_lines)
+    else:
+        lines.extend(phase_lines)
 
     lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 

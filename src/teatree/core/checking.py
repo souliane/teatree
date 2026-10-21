@@ -67,6 +67,7 @@ class CheckingReportDict(TypedDict):
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    metered: CheckGroupDict
     terse: str
 
 
@@ -76,6 +77,7 @@ class AllOverlaysReportDict(TypedDict):
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    metered: CheckGroupDict
     terse: str
 
 
@@ -148,6 +150,7 @@ class CheckingReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
 
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
@@ -155,6 +158,7 @@ class CheckingReport:
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            metered=self.metered.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -171,7 +175,7 @@ class CheckingReport:
 
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
-        groups = [self.merged, self.in_flight, self.needs_you]
+        groups = [self.merged, self.in_flight, self.needs_you, self.metered]
         if all(group.total == 0 for group in groups):
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
@@ -196,6 +200,7 @@ class AllOverlaysReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
 
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
@@ -204,6 +209,7 @@ class AllOverlaysReport:
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            metered=self.metered.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -219,7 +225,7 @@ class AllOverlaysReport:
             timezone.localtime(self.earliest_since) if timezone.is_aware(self.earliest_since) else self.earliest_since
         )
         stamp = local.strftime("%H:%M")
-        groups = [self.merged, self.in_flight, self.needs_you]
+        groups = [self.merged, self.in_flight, self.needs_you, self.metered]
         if all(group.total == 0 for group in groups):
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
@@ -279,6 +285,12 @@ def gather_all_overlays_report(
     needs_you_items = deferred_questions(overlay_slug=overlay_slug)
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
+    metered_entries = [
+        entry
+        for overlay_name, (since, now) in overlay_windows.items()
+        for entry in _metered_entries(since=since, now=now, overlay_name=overlay_name, overlay_tag=f"[{overlay_name}]")
+    ]
+    metered_entries.sort(key=operator.itemgetter(0), reverse=True)
     return AllOverlaysReport(
         all_overlays=list(overlay_windows),
         earliest_since=effective_since,
@@ -289,6 +301,9 @@ def gather_all_overlays_report(
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        metered=CheckGroup(
+            title="Metered", items=[item for _, item in metered_entries[:cap]], total=len(metered_entries)
+        ),
     )
 
 
@@ -358,7 +373,43 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
     )
+
+
+def _metered_entries(
+    *, since: datetime, now: datetime, overlay_name: str, overlay_tag: str = ""
+) -> list[tuple[datetime, CheckItem]]:
+    attempts = (
+        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now, lane=TaskAttempt.Lane.METERED)
+        .select_related("task__ticket")
+        .order_by("-ended_at")
+    )
+    if overlay_name:
+        attempts = attempts.filter(task__ticket__overlay=overlay_name)
+    entries: list[tuple[datetime, CheckItem]] = []
+    for attempt in attempts:
+        ticket = attempt.task.ticket
+        estimate = (
+            f"estimated ${attempt.cost_usd:.2f}" if attempt.cost_usd is not None else "estimated cost unavailable"
+        )
+        entries.append(
+            (
+                attempt.ended_at or attempt.started_at,
+                CheckItem(
+                    label=f"#{ticket.ticket_number}",
+                    url=ticket_url(ticket),
+                    detail=f"{estimate} {overlay_tag}".strip(),
+                    title=ticket.short_description,
+                ),
+            )
+        )
+    return entries
+
+
+def _metered_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
+    entries = _metered_entries(since=since, now=now, overlay_name=overlay_name)
+    return CheckGroup(title="Metered", items=[item for _, item in entries[:cap]], total=len(entries))
 
 
 def _merged_group(*, since: datetime, now: datetime, scope: _MergedScope, cap: int) -> CheckGroup:

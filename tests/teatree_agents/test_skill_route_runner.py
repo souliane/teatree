@@ -2,6 +2,7 @@
 
 import contextlib
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -24,7 +25,7 @@ from teatree.agents.harness_registry import (
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.session_lineage import resume_session_id
 from teatree.agents.skill_routing import clear_route_availability_cache
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
 from teatree.core.models import Session, Task, TaskAttempt, UsageWindowState
 from teatree.types import SkillMetadata
@@ -87,10 +88,12 @@ class TestSkillRouteRuntimeFallback(TestCase):
         session: type[FakeHarnessSession],
         *,
         spawns_cli_child: bool = False,
+        metered_lane: bool = False,
     ) -> None:
         capabilities = HarnessCapabilities(
             managed_lane=name == "codex_like",
             spawns_cli_child=spawns_cli_child,
+            metered_lane=metered_lane,
         )
 
         def build(context: HarnessBuildContext) -> _Harness:
@@ -113,7 +116,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         ticket = planned_ticket()
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
 
-    def _run(self, config: AgentConfig, *, skills: list[str] | None = None) -> TaskAttempt:
+    def _run(self, config: AgentConfig, *, skills: list[str] | None = None, phase: str = "debugging") -> TaskAttempt:
         task = self._task()
         with (
             patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config),
@@ -121,7 +124,44 @@ class TestSkillRouteRuntimeFallback(TestCase):
             patch.object(Task, "renew_lease", lambda self, **_kw: None),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            return run_agent(task, phase="debugging", overlay_skill_metadata=SkillMetadata())
+            return run_agent(task, phase=phase, overlay_skill_metadata=SkillMetadata())
+
+    def test_coding_failure_parks_before_metered_fallback_unless_enabled_and_alerts_owner(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+        config = AgentConfig(
+            skill_models={
+                "code": (
+                    AgentRouteCandidate("codex_like", "codex-model"),
+                    AgentRouteCandidate("claude_like", "claude-model"),
+                )
+            }
+        )
+
+        parked = self._run(config, skills=["code"], phase="coding")
+
+        parked.task.refresh_from_db()
+        assert parked.task.status == Task.Status.PENDING
+        assert parked.task.not_before > timezone.now()
+        assert not parked.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert "agent_route_paid_fallback" in parked.error
+
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user") as notify,
+        ):
+            paid = self._run(config, skills=["code"], phase="coding")
+            another_paid = self._run(config, skills=["code"], phase="coding")
+
+        assert paid.lane == TaskAttempt.Lane.METERED
+        assert paid.route_candidate_index == 1
+        assert another_paid.lane == TaskAttempt.Lane.METERED
+        assert notify.call_count == 2
+        assert {call.kwargs["idempotency_key"] for call in notify.call_args_list} == {
+            f"agent_route_paid_fallback:{timezone.now().date().isoformat()}"
+        }
 
     def test_typed_codex_runtime_failure_switches_to_claude_and_records_provenance(self) -> None:
         self._register("codex_like", _TypedFailureSession)

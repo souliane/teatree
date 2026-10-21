@@ -35,6 +35,7 @@ SETTING_HELP: dict[str, str] = {
         "credential the harness authenticates with — under claude_sdk: plans only, API only, "
         "or plans first with automatic failover to the API; empty inherits the ambient one"
     ),
+    "agent_route_paid_fallback": "allow an ordered agent route to fall through to a metered lane",
     "agent_honesty_model": "model used for honesty-critical verification, where over-claiming costs most",
     "agent_shell_max_output_bytes": "per-call ceiling on Bash output the agent lane carries; 0 is uncapped",
     "agent_phase_harness": "per-phase harness override, for a phase that needs a different CLI",

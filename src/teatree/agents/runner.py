@@ -5,9 +5,11 @@ import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, timedelta
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
+from django.utils import timezone
 
 from teatree.agents._runner_env import DispatchCredential, _provider_child_env, agent_spawn_env
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
@@ -18,6 +20,7 @@ from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_ha
 from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
+    HarnessRejection,
     InvalidHarnessProviderError,
     NoAvailableHarnessError,
     UnknownHarnessError,
@@ -75,10 +78,13 @@ from teatree.agents.skill_routing import (
 )
 from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import park_on_timed_rejections
+from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_refused_checkout, verify_task_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.llm.credentials import CredentialError
@@ -124,6 +130,8 @@ class _RouteRetry:
     dispatch: DispatchHarness
 
     def after(self, record: _RouteFailureRecord) -> TaskAttempt:
+        if self.dispatch.harness.capabilities.read_only_venue and not _paid_route_fallback_enabled(self.task):
+            return _park_read_only_route_failure(self.task, self.dispatch, record.reason)
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
         if record.outcome is not None:
             release_finished_thread(self.task)
@@ -181,11 +189,29 @@ def _retry_route_exception(
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
         _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
+    if preflight.dispatch.harness.capabilities.read_only_venue and not _paid_route_fallback_enabled(task):
+        return _park_read_only_route_failure(task, preflight.dispatch, str(exc))
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
         return route_retry.after(record)
     return None
+
+
+def _paid_route_fallback_enabled(task: Task) -> bool:
+    return get_effective_settings(task.ticket.overlay or None).agent_route_paid_fallback
+
+
+def _park_read_only_route_failure(task: Task, dispatch: DispatchHarness, reason: str) -> TaskAttempt:
+    detail = f"{reason}; metered fallback requires agent_route_paid_fallback"
+    rejection = HarnessRejection(
+        dispatch.name,
+        detail,
+        retry_at=timezone.now() + timedelta(minutes=2),
+        held=True,
+    )
+    parked = park_on_timed_rejections(task, (rejection,))
+    return parked or _record_failure(task, error=detail)  # no-usage: the brief was refused before a model turn
 
 
 def _prepare_run(
@@ -276,6 +302,7 @@ def run_agent(
 ) -> TaskAttempt:
     """Hold checkout occupancy before driving the task claim and harness."""
     namespace = nested_pid_namespace()
+    prior_attempt_id = task.attempts.order_by("-pk").values_list("pk", flat=True).first() or 0
     try:
         with occupy_ticket_checkout(
             task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session, namespace=namespace
@@ -283,13 +310,37 @@ def run_agent(
             verify_task_checkout(task, path, namespace=namespace)
             with drive_claim(task), delivered_phase_handoff(task) as handoff:
                 try:
-                    return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
+                    attempt = _run_agent(
+                        task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff
+                    )
+                    _alert_owner_of_metered_fallback(task, after_attempt_id=prior_attempt_id)
+                    return attempt
                 finally:
                     if path:
                         settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
         return park_refused_checkout(task, exc)
+
+
+def _alert_owner_of_metered_fallback(task: Task, *, after_attempt_id: int) -> None:
+    if not task.attempts.filter(
+        pk__gt=after_attempt_id,
+        lane=TaskAttempt.Lane.METERED,
+        route_candidate_index__gt=0,
+    ).exists():
+        return
+    day = timezone.now().astimezone(UTC).date().isoformat()
+    try:
+        notify_user(
+            f"An agent route fell through to the metered lane on {day} UTC. "
+            "Check the Metered group in check-in for estimated cost.",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"agent_route_paid_fallback:{day}",
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
+    except Exception:
+        logger.warning("owner alert for a metered route fallback failed — continuing", exc_info=True)
 
 
 def _run_agent(

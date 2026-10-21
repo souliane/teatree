@@ -402,7 +402,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),
         *rubric_brief_lines(task),
         *declared_seams_brief_lines(task),
-        *review_diff_brief_lines(task),
+        *(() if read_only_venue else review_diff_brief_lines(task)),
     ]
     return tuple(lines)
 

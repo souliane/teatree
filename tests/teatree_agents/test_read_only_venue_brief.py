@@ -24,6 +24,7 @@ from teatree.agents.read_only_venue_brief import (
     ISSUE_COMMENTS_CAP_BYTES,
     READ_ONLY_DIRECTIVE,
     TICKET_CONTEXT_CAP_BYTES,
+    read_only_system_context,
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
@@ -31,6 +32,11 @@ from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.utils.run import CommandFailedError
+from tests.teatree_agents._read_only_review_world import (
+    read_only_context,
+    read_only_review_world,
+    read_only_task_message,
+)
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
 _BODY = "## Problem\nThe planner needs the body.\n"
@@ -172,6 +178,17 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert json.dumps(_SURVEY, sort_keys=True) not in context
         assert json.dumps(_SURVEY, sort_keys=True) in prepared.prompt
 
+    def test_real_review_and_critic_briefs_rewrite_commands_in_all_text(self) -> None:
+        with read_only_review_world():
+            for phase in ("reviewing", "critic_reviewing"):
+                context = read_only_system_context(read_only_context(phase))
+                message = read_only_task_message(phase)
+                assert not _T3_INVOCATION.search(context)
+                assert not _T3_INVOCATION.search(message)
+                if phase == "reviewing":
+                    assert "teatree ticket show 123" in context
+                assert "teatree ticket show 123" in message
+
     def test_a_stack_skill_reaches_the_executor_in_full_with_its_teatree_commands_rewritten(self) -> None:
         self._stack_skill("Before planning, run `t3 placeholder check` and follow the style rules.\n")
 
@@ -196,7 +213,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         prepared = self._prepare(child)
 
-        assert "intake done; next run t3 teatree pr create" in prepared.prompt
+        assert f"intake done; next run {ABSENT_TOOL} teatree pr create" in prepared.prompt
         assert "Prior Task Result" not in self._system_context(prepared)
 
     def test_an_over_budget_system_context_refuses_the_executor_run(self) -> None:
