@@ -19,8 +19,9 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.repro_gate import check_red_repro
 from teatree.core.management.commands.repro import Command, ReproRecordResult, ReproWaiveResult
-from teatree.core.models import ReproEvidence, ReproWaiver, Ticket, Worktree
+from teatree.core.models import ConfigSetting, ReproEvidence, ReproWaiver, Ticket, Worktree
 
 _GIT_ENV = {
     **os.environ,
@@ -160,6 +161,21 @@ class TestReproCliRealGit(TestCase):
     def test_status_with_no_evidence(self) -> None:
         output = cast("str", call_command("repro", "status", str(self.ticket.pk)))
         assert "(no repro evidence, no waiver)" in output
+
+    def test_status_reports_a_disabled_gate_and_its_marker(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        check_red_repro(self.ticket)
+        output = cast("str", call_command("repro", "status", str(self.ticket.pk)))
+        assert "gate-satisfied: True" in output
+        assert "forced-repro disabled by: global" in output
+        assert "disabled scopes recorded: global" in output
+
+    def test_status_reports_a_feature_as_gate_satisfied_without_evidence(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, scope="t3-teatree")
+        feature = Ticket.objects.create(overlay="t3-teatree", kind=Ticket.Kind.FEATURE)
+        output = cast("str", call_command("repro", "status", str(feature.pk)))
+        assert "gate-satisfied: True" in output
+        assert "forced-repro disabled by" not in output
 
     def _tmp(self) -> Path:
         return self._tmp_path

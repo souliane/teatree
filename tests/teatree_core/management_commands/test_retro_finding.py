@@ -2,8 +2,8 @@
 
 A finding is recorded in the consolidation ledger and queued on the umbrella host's
 pending ledger for the backlog sweep — the drain dreaming Pass 2 already uses. The
-queueing is the default-OFF ``memory_promote`` mechanism, so the promoting cases opt in
-and the OFF case is its own class.
+queueing follows the default-ON ``dream_memory_promote`` setting; promoting and OFF cases
+pin it through ``T3_DREAM_MEMORY_PROMOTE``.
 """
 
 import json
@@ -93,6 +93,9 @@ class RetroFindingPromoteToggleTest(_RunsTheFindingCommand):
         assert (result["deferred"], result["queued"]) == (True, False)
         assert self._pending() == []
         assert ConsolidatedMemory.objects.get(cluster_key=result["cluster_key"]).verified_citation == _CITATION
+
+    def test_the_deferral_names_the_setting_that_turns_it_back_on(self) -> None:
+        assert "dream_memory_promote" in str(self._run()["reason"])
 
 
 @patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "1"})

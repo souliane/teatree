@@ -17,6 +17,7 @@ from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV, ForgeTokenState, resolve_named_overlay_token
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
+from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV, worker_pool_root
 from teatree.utils.env import patched_environ
 from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
 
@@ -168,7 +169,7 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
         ram_available_gb=allocatable_gb,
         per_worker_gb=get_effective_settings().test_worker_ram_gb,
     )
-    return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
+    return {**(env or {}), XDIST_WORKERS_VAR: str(workers), POOL_ROOT_ENV: str(worker_pool_root())}
 
 
 def with_routed_github_token(env: dict[str, str] | None, *, overlay: str) -> dict[str, str] | None:
