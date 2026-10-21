@@ -18,10 +18,10 @@ from teatree.backends.slack.web_reads import is_slack_user_id
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.models import ReviewRequestPost
+from teatree.core.self_forge_identities import IDENTITY_LOOKUP_ERRORS
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
-NAG_IDENTITY_LOOKUP_ERRORS = (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +48,7 @@ def engaged_reask_mention(
         return fallback
     try:
         replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
-        slack_ids = _thread_engagers(replies, requester.slack_id)
+        slack_ids = _thread_engagers(replies)
         forge_names: set[str] = set()
         for request in posts:
             ref = pr_ref_from_url(request.mr_url)
@@ -60,7 +60,7 @@ def engaged_reask_mention(
         for name in forge_names - set(requester.aliases):
             if user_id := _active_user_id(messaging, name, overlay_name=overlay_name, fallback=fallback):
                 slack_ids.add(user_id)
-    except NAG_IDENTITY_LOOKUP_ERRORS as exc:
+    except IDENTITY_LOOKUP_ERRORS as exc:
         logger.warning("review_nag: engaged-reviewer lookup failed for %s: %s", post.mr_url, exc)
         return fallback
     slack_ids.discard(requester.slack_id)
@@ -73,6 +73,7 @@ def _active_user_id(messaging: MessagingBackend, name: str, *, overlay_name: str
         return ""
     user_id = messaging.resolve_unique_active_user_id(name)
     if not user_id and not fallback:
+        # Three ten-minute follow-up ticks avoid repeating a failed directory lookup each tick.
         django_cache.set(cache_key, 1, timeout=1800)
     return user_id
 
@@ -95,7 +96,7 @@ def _forge_engagers(comments: object, reviewers: object) -> set[str]:
     return names
 
 
-def _thread_engagers(replies: object, requester_slack_id: str) -> set[str]:
+def _thread_engagers(replies: object) -> set[str]:
     ids: set[str] = set()
     if not isinstance(replies, list):
         return ids
@@ -103,9 +104,8 @@ def _thread_engagers(replies: object, requester_slack_id: str) -> set[str]:
         if not isinstance(reply, dict) or reply.get("bot_id") or reply.get("subtype") == "bot_message":
             continue
         user_id = reply.get("user")
-        if is_slack_user_id(user_id):
+        if user_id != "USLACKBOT" and is_slack_user_id(user_id):
             ids.add(user_id)
-    ids.discard(requester_slack_id)
     return ids
 
 

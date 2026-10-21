@@ -713,6 +713,19 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
         assert [signal.kind for signal in scanner.scan()] == ["review_nag.mention_held"]
         assert slack.lookups.count("users.list") == 1
 
+    def test_batch_thread_holds_once_with_one_directory_lookup(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        _seed(days_old=5.0)
+        _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        slack = FakeSlack()
+        host = FakeHost(comments=[{"author": {"username": "single_lookup_peer_5055"}}])
+
+        signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.mention_held"]
+        assert slack.lookups.count("users.list") == 1
+        assert slack.posts == []
+
 
 class TestMrStateGate(_PermittingPostureMixin, TestCase):
     def test_merged_mr_reacts_and_closes_without_pinging(self) -> None:
@@ -890,7 +903,7 @@ class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
     def test_the_requesters_own_pause_reaction_still_holds_the_nag(self) -> None:
         _seed(days_old=10.0)
         pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
-        slack = FakeSlack(root_reactions=[pause])
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
 
         signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
 
@@ -910,8 +923,32 @@ class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
             signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
 
         assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
-        open_read.assert_not_called()
+        open_read.assert_called_once()
         root_read.assert_not_called()
+
+    def test_closed_paused_request_is_marked_done(self) -> None:
+        post = _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
+
+        signals = ReviewNagScanner(
+            messaging=slack, host=FakeHost(open_state=PrOpenState.CLOSED), requester_slack_id="UOWNER"
+        ).scan()
+
+        post.refresh_from_db()
+        assert post.done_at is not None
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mr_closed"]
+
+    def test_not_yet_due_paused_request_emits_no_signal(self) -> None:
+        _seed(days_old=1.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert signals == []
+        assert slack.posts == []
 
     def test_pause_on_a_reply_still_checks_the_root(self) -> None:
         _seed(days_old=10.0)
@@ -1276,6 +1313,18 @@ class TestBackoffCapAsksTheOwnerInsteadOfNaggingForever(_PermittingPostureMixin,
         question = DeferredQuestion.objects.get(dedupe_marker=mr_state_marker(post.mr_url))
         assert post.mr_url in question.question
         assert [s.kind for s in signals] == ["review_nag.backoff_exhausted"]
+
+    def test_sibling_at_cap_holds_the_batch(self) -> None:
+        primary = _seed(days_old=200.0)
+        _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=200.0, nag_count=7)
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
+
+        assert slack.posts == []
+        assert signals
+        assert all(signal.kind == "review_nag.backoff_exhausted" for signal in signals)
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(primary.mr_url)).exists()
 
     def test_one_step_below_the_cap_still_re_asks_the_group(self) -> None:
         """The control: the cap, not the fixture's age or count, is what stops the nag."""

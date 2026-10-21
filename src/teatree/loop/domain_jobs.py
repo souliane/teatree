@@ -16,6 +16,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_triage import RepoOwner
+from teatree.core.self_forge_identities import IDENTITY_LOOKUP_ERRORS
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,
     _audit_jobs_for_overlay,
@@ -78,7 +79,6 @@ from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
-from teatree.loop.scanners.review_nag_mention import NAG_IDENTITY_LOOKUP_ERRORS
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 from teatree.loops.enable_verdict import loop_admits
 from teatree.messaging import notify_with_fallback
@@ -338,7 +338,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     if _colleague_egress_selected(backend):
         try:
             requester_slack_id = _user_slack_id_for_overlay(tag)
-        except NAG_IDENTITY_LOOKUP_ERRORS as exc:
+        except IDENTITY_LOOKUP_ERRORS as exc:
             logger.warning("Review nag requester id unreadable for %r: %s", tag, exc)
             requester_slack_id = ""
         jobs.extend(

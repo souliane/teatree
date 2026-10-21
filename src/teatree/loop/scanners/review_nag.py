@@ -83,15 +83,16 @@ _BACKOFF_EXHAUSTED_OPTIONS = (
 )
 
 
-class ReviewNagMentionUnresolvedError(RuntimeError):
-    pass
+@dataclass(frozen=True, slots=True)
+class ReaskText:
+    text: str
+    held_reason: str
 
 
-def _reask_text(mention: str, mr_url: str) -> str:
+def _reask_text(mention: str, mr_url: str) -> ReaskText:
     if not mention:
-        msg = f"No safe reviewer mention for {mr_url}"
-        raise ReviewNagMentionUnresolvedError(msg)
-    return f"{mention} could you please have another look?"
+        return ReaskText("", f"No safe reviewer mention for {mr_url}")
+    return ReaskText(f"{mention} could you please have another look?", "")
 
 
 def default_repo_owner(_slug: str) -> RepoOwner:
@@ -172,10 +173,10 @@ class ReviewNagScanner:
         if exempt is not None:
             return exempt
         window = self._thread_due_window(post, messaging, right_now, thresholds)
-        if window is None or isinstance(window, ScanSignal):
-            return window
-        interval, peers = window
-        blocked = self._mr_not_naggable(post, messaging, right_now)
+        if window is None:
+            return None
+        interval, peers, visible_root = window
+        blocked = self._mr_not_naggable(post, messaging, right_now, visible_root=visible_root)
         if blocked is not None:
             return blocked
         if any(thresholds.nag_backoff_at_cap(owner, peer.nag_count) for peer, owner in peers):
@@ -188,7 +189,7 @@ class ReviewNagScanner:
         messaging: MessagingBackend,
         right_now: dt.datetime,
         thresholds: TriageThresholds,
-    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]]] | ScanSignal | None:
+    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]], RawAPIDict | None] | None:
         peers = list(
             ReviewRequestPost.objects.filter(
                 overlay=post.overlay,
@@ -203,30 +204,11 @@ class ReviewNagScanner:
         interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
         if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
             return None
-        due, held = self._due_for_a_re_ask(post, messaging, right_now, interval)
-        if held is not None:
-            return held
-        return (interval, owned_peers) if due else None
-
-    def _due_for_a_re_ask(
-        self,
-        post: ReviewRequestPost,
-        messaging: MessagingBackend,
-        right_now: dt.datetime,
-        interval: dt.timedelta,
-    ) -> tuple[bool, ScanSignal | None]:
-        """Whether this row's re-ask window has lapsed with no thread activity inside it.
-
-        An unreadable activity read answers NOT due, so a Slack outage costs a
-        tick rather than a re-ping nobody could show was warranted.
-        """
         observation = self._last_activity(post, messaging, right_now)
         if observation is None:
-            return False, None
+            return None
         last_activity, visible_root = observation
-        if visible_root is not None and (held := _pause_skip(post, messaging, visible_root=visible_root)):
-            return False, held
-        return right_now - last_activity > interval, None
+        return (interval, owned_peers, visible_root) if right_now - last_activity > interval else None
 
     def _repo_owner_for(self, post: ReviewRequestPost) -> RepoOwner:
         """Which org function reviews this MR's repo — the base interval's selector."""
@@ -256,6 +238,8 @@ class ReviewNagScanner:
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
+        *,
+        visible_root: RawAPIDict | None,
     ) -> ScanSignal | None:
         """A skip-signal when the MR must not be nagged about; ``None`` when naggable.
 
@@ -276,7 +260,7 @@ class ReviewNagScanner:
         settled = self._open_state_skip(post, messaging, right_now, host)
         if settled is not None:
             return settled
-        paused = _pause_skip(post, messaging)
+        paused = _pause_skip(post, messaging, visible_root=visible_root)
         if paused is not None:
             return paused
         return _draft_or_approved_skip(post, host)
@@ -335,10 +319,17 @@ class ReviewNagScanner:
                 requester=RequesterIdentity(self.requester_slack_id, self.identities),
                 overlay_name=self.overlay_name,
             )
-            text = _reask_text(mention, post.mr_url)
+            decision = _reask_text(mention, post.mr_url)
+            if decision.held_reason:
+                claim.release()
+                return ScanSignal(
+                    kind="review_nag.mention_held",
+                    summary=f"Review re-ask held for {post.mr_url}: {decision.held_reason}",
+                    payload={"mr_url": post.mr_url, "error": decision.held_reason, "post_id": post.pk},
+                )
             response = OnBehalfSlackEgress(messaging).post(
                 channel=post.slack_channel_id,
-                text=text,
+                text=decision.text,
                 target=post.mr_url,
                 action="review_nag_post",
                 thread_ts=post.slack_thread_ts,
@@ -355,42 +346,37 @@ class ReviewNagScanner:
             )
         except Exception as exc:  # noqa: BLE001 — Slack-Connect not_in_channel etc.; release the claim for retry.
             claim.release()
-            held = isinstance(exc, ReviewNagMentionUnresolvedError)
-            if not held:
-                logger.warning("review_nag: post failed for %s on %s: %s", post.mr_url, post.slack_channel_id, exc)
-            summary = (
-                f"Review re-ask held for {post.mr_url}: {exc}"
-                if held
-                else f"Slack post failed for {post.mr_url}: {exc}"
-            )
+            logger.warning("review_nag: post failed for %s on %s: %s", post.mr_url, post.slack_channel_id, exc)
             return ScanSignal(
-                kind="review_nag.mention_held" if held else "review_nag.post_failed",
-                summary=summary,
+                kind="review_nag.post_failed",
+                summary=f"Slack post failed for {post.mr_url}: {exc}",
                 payload={"mr_url": post.mr_url, "error": str(exc), "post_id": post.pk},
             )
 
         if response.get("ok") is not True:
             claim.release()
             error = str(response.get("error") or "empty response")
-            return ScanSignal(
+            outcome = ScanSignal(
                 kind="review_nag.post_failed",
                 summary=f"Slack post failed for {post.mr_url}: {error}",
                 payload={"mr_url": post.mr_url, "error": error, "post_id": post.pk},
             )
-        reply_ts = str(response.get("ts") or "")
-        if not reply_ts:
-            msg = f"review nag post for {post.mr_url} succeeded without a reply timestamp"
-            raise ReviewNagPostReconciliationError(msg)
-        claim.persist_reply_ts(reply_ts)
+        else:
+            reply_ts = str(response.get("ts") or "")
+            if not reply_ts:
+                msg = f"review nag post for {post.mr_url} succeeded without a reply timestamp"
+                raise ReviewNagPostReconciliationError(msg)
+            claim.persist_reply_ts(reply_ts)
 
-        post.last_nag_at = right_now
-        post.nag_count = claim.nag_count
-        post.last_nag_reply_ts = reply_ts
-        return ScanSignal(
-            kind="review_nag.ping",
-            summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
-            payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
-        )
+            post.last_nag_at = right_now
+            post.nag_count = claim.nag_count
+            post.last_nag_reply_ts = reply_ts
+            outcome = ScanSignal(
+                kind="review_nag.ping",
+                summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
+                payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
+            )
+        return outcome
 
 
 def _ask_owner_for_state(post: ReviewRequestPost, interval: dt.timedelta) -> ScanSignal | None:

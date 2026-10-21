@@ -46,6 +46,12 @@ class TestReaskMention(TestCase):
 
         assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
 
+    def test_slackbot_reply_is_not_an_engager(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "USLACKBOT"}])
+
+        assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
+
     def test_malformed_slack_id_is_not_mentioned(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "peer!"}])

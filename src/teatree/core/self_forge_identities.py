@@ -33,6 +33,8 @@ from urllib.parse import urlparse
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.types import RawAPIDict
 
+IDENTITY_LOOKUP_ERRORS = (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError)
+
 logger = logging.getLogger(__name__)
 
 SELF_FORGE_IDENTITIES_SETTING = "self_forge_identities"
