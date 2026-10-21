@@ -3,22 +3,15 @@
 A bare sibling module (like ``unknown_repo_push_gate`` / ``mr_cli_fields``):
 ``hook_router`` is a god-module at its public-function / LOC cap, so the
 AskUserQuestion-decision logic lives here and is imported back into the router's
-chains rather than growing the router. Two cohesive concerns.
+chains rather than growing the router. Three cohesive concerns.
 
 ``is_user_directed_question`` is the #807 detection heuristic: does the final
 assistant prose pose a decision question directed at the user? Used by the Stop
 gate ``handle_enforce_structured_question`` (which keeps the routing decision —
 loop ownership, transcript parsing, the block emit).
 
-``handle_warn_batched_questions`` is the one-decision-per-call advisory: warn
-(never block) when an ``AskUserQuestion`` call batches more than one question.
-The prose rule (``skills/rules/SKILL.md`` "One decision per question") asks every
-decision through its OWN call, never a multi-item batch (unevaluable; one
-confusing Slack screen). The #807 Stop gate forces a question through the TOOL
-but not one-at-a-time, so this closes that gap. WARN, not block (the user's
-choice): a multi-question call still proceeds — stderr (the router's documented
-warn channel) carries the nudge so the NEXT decision is split. Fires on EVERY
-session. The AI eval ``asks_decisions_one_at_a_time`` pins the behaviour.
+``find_decision_prose`` is the attended Stop check's narrow detector: an owner-decision label carrying
+content, a bare group header over owner asks, or a list of choices put to the owner.
 
 ``denied_question_dedupe_key`` / ``denied_question_row_marker`` restore the
 away-mode-only guard #4202's postureless merge dropped for every loop-driven
@@ -28,7 +21,6 @@ deny (#1174): a denied call is the one a harness retry can replay verbatim.
 import hashlib
 import json
 import re
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
@@ -521,28 +513,105 @@ def preceding_user_rejected_question_and_asked_clarify(entries: list[dict]) -> b
     return bool(_CLARIFY_REQUEST_RE.search("\n".join(user_texts)))
 
 
-_BATCHED_QUESTION_WARN = (
-    "[teatree] AskUserQuestion carried {n} questions in one call. Ask ONE decision "
-    "per call (skills/rules/SKILL.md 'One decision per question') — a batched ask "
-    "is unevaluable and reads as one confusing Slack screen. Split the rest; ask "
-    "the next after this answer."
+_OWNER_DECISION_LABELS = (
+    r"needs you|needs(?: your)? input|needs your (?:decision|call|answer|approval|go-ahead|sign-off)"
+    r"|decisions? for you|questions? for you|choices? for you|for you to decide|your call"
+    r"|waiting on you|blocked on you"
 )
+_OWNER_DECISION_MARKER_RE = re.compile(
+    rf"^(?:(?P<label>{_OWNER_DECISION_LABELS})\s*(?P<punct>[:?—\u2013-]|$)|approve\?)\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_OWNER_CHOICE_CUE_RE = re.compile(
+    r"\b(?:do you|would you|could you|should i|shall i|can i|may i|want me to|ok to)\b", re.IGNORECASE
+)
+_OWNER_CHOICE_ASK_RE = re.compile(
+    r"(?:^|[.!]\s+)(?:do you|would you|could you|should i|shall i|can i|may i|want me to|"
+    r"(?:which|what|how)\b.{0,60}\b(?:do you|would you|should i|shall i))\b",
+    re.IGNORECASE,
+)
+_CHOICE_VERB_RE = re.compile(r"^(?:approve|confirm|decide|choose|pick|select|sign off)\b", re.IGNORECASE)
+_RECAP_RE = re.compile(r"\b(?:asked|answered|chose|recorded|filed|relayed|raised|posed|went with)\b", re.IGNORECASE)
+_NO_DECISION_RE = re.compile(
+    r"^(?:\(?none\)?(?: yet| right now| at the moment)?|"
+    r"nothing(?: right now| blocking| pending| to decide)?|n/?a|"
+    r"no(?: (?:outstanding )?(?:decisions?|input|questions?|actions?|blockers?)(?: needed)?)?|"
+    r"all clear|clear|0|zero|[—\u2013-])(?=$|[.!?;,\s])",
+    re.IGNORECASE,
+)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_LIST_ITEM_RE = re.compile(r"^(?:[-*+•]|\d+[.)])\s+(.+)$")
+_LEADING_MARKUP_RE = re.compile(r"^(?:#{1,6}|[-+•]|\d+[.)])\s*")
+_MIN_CHOICES = 2
 
 
-def handle_warn_batched_questions(data: dict) -> None:
-    """PreToolUse: warn (never block) when an ``AskUserQuestion`` batches >1 question.
+def _plain(line: str) -> str:
+    return _LEADING_MARKUP_RE.sub("", re.sub(r"[*_~]+", "", line).strip()).strip()
 
-    Advisory only — emits a one-line stderr nudge and returns ``None`` so the
-    call always proceeds (warn-don't-block). Silent for a single-question call,
-    a non-question tool, or a malformed payload (crash-proof: no ``questions``
-    key is treated as zero, never an error).
-    """
-    if data.get("tool_name") != "AskUserQuestion":
-        return
-    questions = data.get("tool_input", {}).get("questions")
-    if not isinstance(questions, list) or len(questions) <= 1:
-        return
-    sys.stderr.write(_BATCHED_QUESTION_WARN.format(n=len(questions)) + "\n")
+
+def find_decision_prose(text: str) -> str | None:
+    visible = _INLINE_CODE_RE.sub("", FENCED_CODE_RE.sub("", text))
+    lines = [line for raw in visible.splitlines() if not (line := raw.strip()).startswith(">")]
+    for index, line in enumerate(lines):
+        marker = _OWNER_DECISION_MARKER_RE.match(_plain(line))
+        if marker is None:
+            continue
+        if marker["label"] and not marker["punct"]:
+            if any(item.endswith("?") or _CHOICE_VERB_RE.match(item) for item in _list_run(lines, index + 1)):
+                return line
+            continue
+        following = next((_plain(later) for later in lines[index + 1 :] if later), "")
+        rest = marker["rest"].strip()
+        candidate = rest or following
+        if not candidate:
+            continue
+        empty = _NO_DECISION_RE.match(candidate)
+        if empty:
+            tail = candidate[empty.end() :]
+            directive = re.sub(r"(?i)^please\s+", "", tail.lstrip(" .,:;()—\u2013-"))
+            if (
+                "?" not in tail
+                and not _OWNER_CHOICE_CUE_RE.search(tail)
+                and (tail.startswith(". ") or not _CHOICE_VERB_RE.match(directive))
+            ):
+                continue
+        if _RECAP_RE.search(rest) and "?" not in rest and not _OWNER_CHOICE_CUE_RE.search(rest):
+            continue
+        return line
+
+    return _choice_list_decision(lines)
+
+
+def _list_run(lines: list[str], start: int) -> list[str]:
+    items: list[str] = []
+    for line in lines[start:]:
+        if not line:
+            continue
+        if (item := _LIST_ITEM_RE.match(line)) is None:
+            break
+        items.append(_plain(item.group(1)))
+    return items
+
+
+def _choice_list_decision(lines: list[str]) -> str | None:
+    previous = ""
+    for index, line in enumerate(lines):
+        if not line:
+            continue
+        intro, previous = previous, line
+        if _LIST_ITEM_RE.match(line) is None or _LIST_ITEM_RE.match(intro) is not None:
+            continue
+        items = _list_run(lines, index)
+        intro = _plain(intro)
+        if len(items) < _MIN_CHOICES or _RECAP_RE.search(intro):
+            continue
+        if (intro.endswith("?") and _OWNER_CHOICE_CUE_RE.search(intro)) or (
+            intro.endswith(":") and _OWNER_CHOICE_ASK_RE.search(intro)
+        ):
+            return intro
+        if sum(item.endswith("?") and bool(_OWNER_CHOICE_CUE_RE.search(item)) for item in items) >= _MIN_CHOICES:
+            return line
+    return None
 
 
 def ask_questions(data: dict) -> list[dict]:
