@@ -1641,6 +1641,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           a label, review the corpus.                        │
 │ quarantine                The known-red quarantine: scenarios the bounded PR │
 │                           lane does not select.                              │
+│ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2437,6 +2438,8 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     this many times          │
 │                                                     (pass@k).                │
 │                                                     [default: 1]             │
+│ --verdict-cache                            PATH     Reuse clean passes from  │
+│                                                     this ledger.             │
 │ --require                                  TEXT     With --trials > 1: 'any' │
 │                                                     (pass@k) or 'all'        │
 │                                                     (pass^k regression       │
@@ -2588,8 +2591,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     --trials/--models (a     │
 │                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
-│                                                     fails loud); the flag    │
-│                                                     only matters for the     │
+│                                                     fails loud; cached       │
+│                                                     passes count as coverage │
+│                                                     when --verdict-cache is  │
+│                                                     set); the flag only      │
+│                                                     matters for the          │
 │                                                     transcript backend,      │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
@@ -3116,6 +3122,53 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verdict-cache`
+
+```
+Usage: t3 eval verdict-cache [OPTIONS] COMMAND [ARGS]...
+
+ Manage content-keyed eval pass verdicts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ merge                                                                        │
+│ record                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache merge`
+
+```
+Usage: t3 eval verdict-cache merge [OPTIONS] LEDGER SOURCES...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger       PATH        Ledger JSON to update. [required]              │
+│ *    sources      SOURCES...  Other verdict ledgers to combine. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache record`
+
+```
+Usage: t3 eval verdict-cache record [OPTIONS] LEDGER [SUMMARIES]...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger         PATH            Ledger JSON to update. [required]        │
+│      summaries      [SUMMARIES]...  Single-trial summary JSON files or       │
+│                                     directories.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --run-url        TEXT  Source run URL shown beside reused verdicts.       │
+│                           [required]                                         │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7589,6 +7642,9 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                       (self-rescue).                                         │
 │ delegation            Orchestrator delegation gate (an unbounded read        │
 │                       belongs in a sub-agent) kill-switch (self-rescue).     │
+│ owner-question        Attended owner-question gate (one plain question per   │
+│                       call, no decisions in reply prose) kill-switch         │
+│                       (self-rescue).                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8849,6 +8905,60 @@ Usage: t3 teatree gate delegation disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate delegation enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate owner-question`
+
+```
+Usage: t3 teatree gate owner-question [OPTIONS] COMMAND [ARGS]...
+
+ Attended owner-question gate (one plain question per call, no decisions in
+ reply prose) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question status`
+
+```
+Usage: t3 teatree gate owner-question status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question disable`
+
+```
+Usage: t3 teatree gate owner-question disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question enable`
+
+```
+Usage: t3 teatree gate owner-question enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -10662,6 +10772,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │                    discharge.                                                │
 │ void-merge         Void a merge whose content never reached the default      │
 │                    branch (a human at a terminal).                           │
+│ request-void       Ask the owner on Slack to correct a merge whose content   │
+│                    is absent.                                                │
 │ check-gates        Check whether session gates allow a phase transition.     │
 │ fetch-issue        Fetch issue details from the configured tracker.          │
 │ detect-tenant      Detect the current tenant variant from the overlay.       │
@@ -10683,8 +10795,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  queue. The result carries an explicit ``warning`` so a no-worker
  context does not look like a completed ship (#708).
 
- ``--sync``: run ``execute_ship`` inline in this process so the push
- and PR happen before the command returns — no worker required. Use
+ ``--sync``: push and open the PR inline before advancing the FSM, so
+ both finish before the command returns — no worker required. Use
  this for interactive / ``uv run`` invocations where nothing is
  draining the queue.
 
@@ -10692,7 +10804,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  bare issue number (resolved against ``Ticket.issue_url``).
 
  ``--title`` overrides the PR title (default: last commit subject).
- Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+ ``--sync`` hands it to the ship; the queued ship reads
+ ``ticket.extra['pr_title_override']``.
 
  ``--skip-validation`` skips the heavy ship gates (visual QA, branch
  currency, FSM phase check) but STILL runs the cheap MR
@@ -10828,6 +10941,22 @@ Usage: t3 teatree pr void-merge [OPTIONS] PR_URL
 │ --dry-run              Print the forge evidence and planned changes; write   │
 │                        nothing.                                              │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr request-void`
+
+```
+Usage: t3 teatree pr request-void [OPTIONS] PR_URL REASON
+
+ Ask the owner on Slack to approve a merge correction.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+│ *    reason      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11731,7 +11860,8 @@ Usage: t3 teatree handover create [OPTIONS]
  failure this command is supposed to make impossible.
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
- for whichever session starts next. Per directive #8, every in-flight
+ for whichever session starts next. ``--park`` parks even with a live owner
+ and cannot be combined with ``--to``. Per directive #8, every in-flight
  sub-agent worktree is driven through leak-gated fast-push so their work is
  committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
  barrier runs on the refused path too, since a session with nothing to hand
@@ -11760,6 +11890,9 @@ Usage: t3 teatree handover create [OPTIONS]
 │ --json                                             Emit JSON.                │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+│ --park                                             Park for the next session │
+│                                                    instead of the live loop  │
+│                                                    owner.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -14580,7 +14713,7 @@ Usage: t3 teatree retro finding [OPTIONS]
  This is what retro persists a lesson WITH: the finding becomes a VERIFIED
  core-gap ledger row queued on the umbrella host's pending ledger — the same
  drain dreaming Pass 2 uses, so the prose retires itself once the host that
- absorbs it merges. With ``memory_promote`` off the row is
+ absorbs it merges. With ``dream_memory_promote`` off the row is
  still recorded and the promotion reported ``deferred``, reaching no umbrella.
  Emits the result as JSON; a refusal prints its payload and raises
  ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real

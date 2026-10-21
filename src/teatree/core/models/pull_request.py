@@ -156,6 +156,9 @@ class PullRequestQuerySet(models.QuerySet):
         )
         return row
 
+    def is_confirmed(self, url: str) -> bool:
+        return self.filter(url=url, create_verification=PullRequest.CreateVerification.CONFIRMED).exists()
+
     def record_forge_merge(self, *, slug: str, pr_id: int) -> int:
         """Transition every non-merged row for *(slug, pr_id)* to MERGED; return the count.
 

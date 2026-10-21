@@ -16,7 +16,8 @@ pass over the exact files it publishes, run with every credential the job holds,
 ships only when that pass succeeded (it deletes any file it cannot prove clean); every
 artifact printed into the job log or the step summary goes through the filter; no
 checkout in a job that runs the agent under test leaves its token on disk; and every
-``--docker`` run hands the agent a fresh, empty staging directory as its writable
+``--docker`` run hands the agent a fresh staging directory, with at most a
+requested verdict-ledger copy, as its writable
 mount, never the reports' own directory (``$RUNNER_TEMP`` also holds the run log).
 """
 

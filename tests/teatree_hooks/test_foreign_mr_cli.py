@@ -150,6 +150,29 @@ class TestGitLabRemotesAreResolved:
 
 
 class TestGitHubRemotesKeepWorking:
+    def test_unresolved_identity_reaches_the_guard_scrubbed(
+        self, forge_bin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sentinel = "gh" + "p_" + "s" * 36
+        monkeypatch.setenv("GH_TOKEN", sentinel)
+        _write_shim(
+            forge_bin,
+            "gh",
+            "if args[:2] == ['pr', 'list']:\n"
+            "    print(json.dumps([{'number': 42, 'headRefName': 'feature-x', 'author': {'login': 'them'}}]))\n"
+            "    sys.exit(0)\n"
+            "if args[:2] == ['api', 'user']:\n"
+            f"    print('x' * 390 + {sentinel!r}, file=sys.stderr)\n"
+            "    sys.exit(4)\n",
+        )
+
+        verdict = foreign_mr_verdict(_GITHUB_REMOTE, "feature-x")
+
+        assert verdict.startswith("UNKNOWN 42 them gh exit 4:")
+        assert sentinel not in verdict
+        assert sentinel[:15] not in verdict
+        assert "<redacted>" in verdict
+
     def test_a_foreign_open_pr_on_a_github_remote_is_reported(self, forge_bin: Path) -> None:
         _gh_shim(forge_bin, login="me", prs=[{"number": 42, "headRefName": "feature-x", "author": {"login": "them"}}])
         assert foreign_mr_verdict(_GITHUB_REMOTE, "feature-x") == "FOREIGN 42 them me"

@@ -19,7 +19,6 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
@@ -43,8 +42,9 @@ from teatree.core.gates.directive_interpret_gate import record_returned_directiv
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
+from teatree.core.models.task_claim import atomic_after_checkout_exit
 
 if TYPE_CHECKING:
     from teatree.agents.pydantic_ai_turn import ToolCallEntry
@@ -164,7 +164,8 @@ def record_result_envelope(
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
     Validation order: the measured key-drift aliases are normalized
-    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → OUTAGE check (#1764) → ACTION check
+    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → routed push-credential fault
+    (coding/debugging only) → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
     LANDING check (coding/debugging must have committed) → the PLAN record (a planning
     envelope whose plan is refused fails the attempt, never the recorder) —
@@ -220,12 +221,13 @@ def record_result_envelope(
 
     record_reactive_envelopes(task, result, phase=phase)
 
+    ended_at = timezone.now()
     try:
-        with transaction.atomic():
+        with atomic_after_checkout_exit(task):
             recorded_result = with_transport_records(result, usage)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                ended_at=timezone.now(),
+                ended_at=ended_at,
                 exit_code=0,
                 result=recorded_result,
                 **usage_fields(usage),
@@ -354,6 +356,12 @@ def _check_before_recording(
     schema_error = validate_result_keys(result)
     if schema_error:
         return _PreRecordCheck(schema_error, result)
+
+    if (
+        normalize_phase(phase or task.phase) in {"coding", "debugging"}
+        and result.get("push_ownership_venue_fault") is True
+    ):
+        return _PreRecordCheck(PUSH_OWNERSHIP_VENUE_FAULT, result)
 
     signature = outage_signature(result)
     if signature:

@@ -7,6 +7,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.merge.void_merge import VoidPlan, VoidRefusedError, apply_void, check_operator, plan_void
+from teatree.core.merge.void_request import request_void
 from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.core.models.merge_void import PullRequestClose, TicketKept, TicketRestore
 from teatree.url_classify import pr_ref
@@ -69,6 +70,16 @@ def _ticket_lines(ticket: Ticket) -> list[str]:
 
 
 class VoidMergeCommands(TyperCommand):
+    @command(name="request-void")
+    def request_void(self, pr_url: str, reason: str) -> None:
+        """Ask the owner on Slack to approve a merge correction."""
+        try:
+            row = request_void(pr_url, reason)
+        except VoidRefusedError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from exc
+        self.stdout.write(f"Asked the owner on Slack (question {row.pk}).")
+
     @command(name="void-merge")
     def void_merge(
         self,

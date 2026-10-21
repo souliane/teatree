@@ -29,6 +29,8 @@ LeaseRenewer = Callable[[Task], None]
 
 #: Beats a drain waits on an open tool call, so a push or merge is not cut in half yet the wait fits the drain grace.
 CHECKPOINT_MAX_DEFER_BEATS = 3
+HEARTBEAT_INTERVAL_SECONDS = 60
+CHECKPOINT_GRACE_SECONDS = HEARTBEAT_INTERVAL_SECONDS * (CHECKPOINT_MAX_DEFER_BEATS + 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,8 +165,8 @@ class _Heartbeat:
             self.deferred_beats += 1
             return False
         self.checkpointed = True
-        logger.warning("Task %s checkpointing for a deploy drain: %s", self.task.pk, drain)
-        return await self._interrupt(f"deploy checkpoint: {drain}")
+        logger.warning("Task %s checkpointing for a drain: %s", self.task.pk, drain)
+        return await self._interrupt(f"checkpoint: {drain}")
 
     async def _breached(self) -> bool:
         watchdog = self.runtime.watchdog

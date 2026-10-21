@@ -7,6 +7,8 @@ stay in ``test_pr_command`` because they drive ``call_command("pr",
 "ensure-pr")`` end to end.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn, override
@@ -24,10 +26,12 @@ from teatree.core.management.commands._ensure_pr import (
     _ticket_extra_for_branch,
     _ticket_for_branch,
     create_or_defer_pr,
+    defer_unpushed_pr,
 )
 from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.models import PendingPullRequest, PullRequest, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.hooks import _repo_visibility
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, run_checked
 from tests.teatree_core.conftest import CommandOverlay
@@ -137,6 +141,100 @@ class NonAssignableHost:
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
         return PrOpenState.OPEN
+
+
+@pytest.mark.usefixtures("configured_banned_term_registry")
+class TestEnsurePrGenericPrivacyGate(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._tmp_path = tmp_path
+        self._monkeypatch = monkeypatch
+
+    def test_generated_body_is_refused_before_create(self) -> None:
+        repo = _orphan_repo(self._tmp_path)
+        host = NonAssignableHost()
+        with (
+            patch.object(ensure_pr_mod, "code_host_for_repo_from_overlay", return_value=host),
+            patch.object(
+                ensure_pr_mod,
+                "_branch_own_commit_message",
+                return_value=("fix: subject", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+            ),  # privacy-scan:allow synthetic fixture
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = create_or_defer_pr(str(repo), ORPHAN_BRANCH)
+
+        assert "email" in result.get("error", "")
+        assert "person@firm.tld" not in result.get("error", "")  # privacy-scan:allow synthetic fixture
+        assert host.created_specs == []
+
+    def test_first_push_refuses_generated_body_before_deferring(self) -> None:
+        repo = _orphan_repo(self._tmp_path)
+        with (
+            patch.object(
+                ensure_pr_mod,
+                "_branch_own_commit_message",
+                return_value=("fix: subject", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+            ),  # privacy-scan:allow synthetic fixture
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = defer_unpushed_pr(str(repo), ORPHAN_BRANCH)
+
+        assert "email" in result.get("error", "")
+        assert not PendingPullRequest.objects.filter(branch=ORPHAN_BRANCH).exists()
+
+    def test_first_push_refuses_ticket_url_in_generated_body(self) -> None:
+        repo = _orphan_repo(self._tmp_path)
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.corp.local/group/repo/issues/5",  # privacy-scan:allow synthetic fixture
+        )
+        with (
+            patch.object(ensure_pr_mod, "_ticket_for_branch", return_value=ticket),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = defer_unpushed_pr(str(repo), ORPHAN_BRANCH)
+
+        assert "internal_hostname" in result.get("error", "")
+        assert not PendingPullRequest.objects.filter(branch=ORPHAN_BRANCH).exists()
+
+    def test_generated_pr_check_respects_host_qualified_private_remote(self) -> None:
+        remote = "git@gitlab.corp.example:group/repo.git"
+        spec = PullRequestSpec(
+            repo="/tmp/repo",
+            branch="fix/test",
+            title="fix",
+            description="Contact person@firm.tld",  # privacy-scan:allow synthetic fixture
+        )
+        db = self._tmp_path / "config.sqlite3"
+        connection = sqlite3.connect(db)
+        try:
+            connection.execute(
+                "CREATE TABLE teatree_config_setting ("
+                "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+                (json.dumps(["gitlab.corp.example/group/repo"]),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self._monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        self._monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        host = NonAssignableHost()
+        private_result = ensure_pr_mod._open_pr(host, spec, remote=remote, owning_ticket=None)
+        self._monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        public_result = ensure_pr_mod._open_pr(
+            host, spec, remote="git@github.com:souliane/teatree.git", owning_ticket=None
+        )
+
+        assert private_result.get("url") == "https://github.com/souliane/teatree/pull/9999"
+        assert "generic:email" in public_result.get("error", "")
+        assert len(host.created_specs) == 1
 
 
 class TestNonAssignableIdentityRegression3100(TestCase):

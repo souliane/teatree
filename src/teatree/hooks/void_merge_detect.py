@@ -19,8 +19,8 @@ _REWRITTEN = re.compile(r"[$`*?\[{<>]")
 
 DENY_REASON = (
     "BLOCKED: `pr void-merge` rewrites a recorded merge, so only a human at a terminal runs it. "
-    "Ask the operator to type `t3 <overlay> pr void-merge <pr-url> --reason '<why>' --by <their name>` "
-    "in their own shell; it shows the forge evidence and asks them to type yes. "
+    "Use `t3 <overlay> pr request-void <pr-url> '<why>'` to ask the owner on Slack; "
+    "the card shows the forge evidence and the owner approves or declines there. "
     "Only a standalone `t3 <overlay> pr void-merge <pr-url> --dry-run` (or `--help`) runs here: any other "
     "command naming void-merge is refused, a grep or an echo included, because an inner shell could run "
     "that text. To search, use the Grep tool or a pattern such as `void.merge`; in a commit message or note, "

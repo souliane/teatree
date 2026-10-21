@@ -379,7 +379,7 @@ def _session_permission_mode_from(raw: object) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
-def resolve_agent_config(scope: str = "") -> AgentConfig:
+def resolve_agent_config() -> AgentConfig:
     """Resolve the effective :class:`AgentConfig` from the DB ``ConfigSetting`` store.
 
     Each ``[agent]`` value is read as its own DB key via
@@ -392,18 +392,18 @@ def resolve_agent_config(scope: str = "") -> AgentConfig:
     ``agent_session_effort`` still raises (fail loud), since that is a
     misconfiguration the user must see, not an absence to tolerate.
     """
-
-    def read(key: str) -> object | None:
-        return cold_reader.overlay_then_global(key, scope) if scope else cold_reader.read_setting(key)
-
     return AgentConfig(
-        skill_models=parse_skill_models(read("agent_skill_models")),
-        session_model=_session_model_from(read("agent_session_model")),
-        session_effort=_session_effort_from(read("agent_session_effort")),
-        session_permission_mode=_session_permission_mode_from(read("agent_session_permission_mode")),
-        honesty_model=_honesty_model_from(read("agent_honesty_model")),
-        tier_models=_tier_models_from(read("agent_tier_models")),
-        pydantic_ai_tier_models=_pydantic_ai_tier_models_from(read("agent_pydantic_ai_tier_models")),
-        tier_effort=_tier_effort_from(read("agent_tier_effort")),
-        phase_harness=_phase_harness_from(read("agent_phase_harness")),
+        skill_models=parse_skill_models(cold_reader.read_setting("agent_skill_models")),
+        session_model=_session_model_from(cold_reader.read_setting("agent_session_model")),
+        session_effort=_session_effort_from(cold_reader.read_setting("agent_session_effort")),
+        session_permission_mode=_session_permission_mode_from(
+            cold_reader.read_setting("agent_session_permission_mode")
+        ),
+        honesty_model=_honesty_model_from(cold_reader.read_setting("agent_honesty_model")),
+        tier_models=_tier_models_from(cold_reader.read_setting("agent_tier_models")),
+        pydantic_ai_tier_models=_pydantic_ai_tier_models_from(
+            cold_reader.read_setting("agent_pydantic_ai_tier_models")
+        ),
+        tier_effort=_tier_effort_from(cold_reader.read_setting("agent_tier_effort")),
+        phase_harness=_phase_harness_from(cold_reader.read_setting("agent_phase_harness")),
     )

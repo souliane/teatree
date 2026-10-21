@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote, quote_plus
 
 import pytest
@@ -257,6 +258,41 @@ def test_write_artifact_writes_and_appends_the_redacted_text(tmp_path: Path) -> 
     write_artifact(target, f"second {POOL[0]}\n", append=True)
 
     assert target.read_text(encoding="utf-8") == f"first {REDACTED}\nsecond {REDACTED}\n"
+
+
+def test_atomic_artifact_redacts_and_replaces_without_leaving_a_staging_file(tmp_path: Path) -> None:
+    target = tmp_path / "verdicts.json"
+    target.write_text("old", encoding="utf-8")
+    before = set(tmp_path.iterdir())
+
+    write_artifact(target, f'{{"token":"{SUBSCRIPTION}"}}', atomic=True)
+
+    assert target.read_text(encoding="utf-8") == f'{{"token":"{REDACTED}"}}'
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_atomic_artifact_keeps_old_file_when_the_redacting_write_fails(tmp_path: Path) -> None:
+    target = tmp_path / "verdicts.json"
+    target.write_text("old", encoding="utf-8")
+    before = set(tmp_path.iterdir())
+
+    with (
+        patch.object(Redactor, "write", side_effect=OSError("write failed")),
+        pytest.raises(OSError, match="write failed"),
+    ):
+        write_artifact(target, "new", atomic=True)
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_atomic_artifact_rejects_append(tmp_path: Path) -> None:
+    target = tmp_path / "verdicts.json"
+
+    with pytest.raises(ValueError, match="append"):
+        write_artifact(target, "new", append=True, atomic=True)
+
+    assert not target.exists()
 
 
 def _stdin(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
