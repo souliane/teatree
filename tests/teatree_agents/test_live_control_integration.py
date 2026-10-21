@@ -17,11 +17,13 @@ import uuid
 from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from django.core.management import call_command
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
@@ -133,6 +135,62 @@ class LiveControlIntegrationTests(TestCase):
 
     def pending(self) -> int:
         return int(self.live.inspect(self.task.pk)["pending_inputs"])
+
+    def test_idle_follow_up_starts_one_new_cli_turn_and_duplicate_replays_receipt(self) -> None:
+        run = _FakeCliRun(self.root, follow_up_final_text=json.dumps({"summary": "second"}))
+
+        def operator() -> tuple[dict[str, object], dict[str, object], ReceiptPayload, ReceiptPayload]:
+            _until(
+                lambda: any(row["state"] == "idle" for row in shared_registry().sessions()),
+                "idle session",
+            )
+            idle_steer = self.live.steer(self.task.pk, "wrong turn", command_id="idle-steer", wait=1)
+            receipts = []
+            for _ in range(2):
+                out = StringIO()
+                call_command(
+                    "live",
+                    "follow-up",
+                    str(self.task.pk),
+                    "--text",
+                    "second prompt",
+                    "--command-id",
+                    "same",
+                    "--json",
+                    stdout=out,
+                )
+                receipts.append(json.loads(out.getvalue()))
+            reused_by_steer = self.live.steer(self.task.pk, "second prompt", command_id="same", wait=1)
+            return receipts[0], receipts[1], idle_steer, reused_by_steer
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 2.0):
+            first, replay, idle_steer, reused_by_steer = self.dispatch(run, operator)
+
+        assert first == replay
+        assert first["outcome"] == "accepted_new_turn"
+        assert idle_steer["code"] == "turn_ended"
+        assert reused_by_steer["code"] == "duplicate_mismatch"
+        assert run.user_turns() == 2
+        assert run.saw("follow_up_turn")
+        assert "second prompt" in json.dumps(run.events())
+        assert self.attempt.exit_code == 0
+        assert self.attempt.result["summary"] == "second"
+
+    def test_a_prose_only_follow_up_keeps_the_first_turns_complete_envelope(self) -> None:
+        run = _FakeCliRun(self.root, follow_up_final_text="Second turn had no envelope.")
+
+        def operator() -> ReceiptPayload:
+            _until(lambda: any(row["state"] == "idle" for row in shared_registry().sessions()), "idle session")
+            return self.live.follow_up(self.task.pk, "continue", command_id="prose", wait=1)
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 0.2):
+            receipt = self.dispatch(run, operator)
+
+        assert receipt["outcome"] == "accepted_new_turn"
+        assert run.user_turns() == 2
+        assert self.attempt.exit_code == 0
+        assert self.attempt.result["summary"] == _ENVELOPE["summary"]
+        assert self.attempt.result["files_modified"] == _ENVELOPE["files_modified"]
 
     def test_inspect_is_passive_and_reports_the_open_tool(self) -> None:
         run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])

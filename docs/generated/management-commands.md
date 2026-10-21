@@ -232,6 +232,7 @@ Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``st
 | `inspect` | Show one live session's state, tool and progress without contacting the agent |
 | `steer` | Send input into a running agent's current turn and print its receipt (active) |
 | `list` | List every live session on this host's workers (passive) |
+| `follow-up` | Start one new turn in a still-open idle session and print its receipt (active) |
 
 ## `loop_directive_set`
 

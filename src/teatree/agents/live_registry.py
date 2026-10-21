@@ -65,15 +65,24 @@ class LiveSessionRegistry:
 
     async def steer(self, task_pk: int, text: str, *, command_id: str, wait: float) -> ControlReceipt:
         """Hand the command to the session's owning loop and await its receipt from any other loop."""
+        return await self._operator_command(task_pk, text, command_id=command_id, wait=wait, kind="steer")
+
+    async def follow_up(self, task_pk: int, text: str, *, command_id: str, wait: float) -> ControlReceipt:
+        return await self._operator_command(task_pk, text, command_id=command_id, wait=wait, kind="follow_up")
+
+    async def _operator_command(
+        self, task_pk: int, text: str, *, command_id: str, wait: float, kind: str
+    ) -> ControlReceipt:
         with self._lock:
             entry = self._live.get(task_pk)
             tombstone = self._closed.get(task_pk)
         if entry is None:
             if tombstone is None:
                 return ControlReceipt.rejected(command_id, task_pk, RejectCode.UNKNOWN_SESSION)
-            known = tombstone.known_receipt(command_id, text)
+            known = tombstone.known_receipt(command_id, text, kind)
             return known or ControlReceipt.rejected(command_id, task_pk, RejectCode.SESSION_CLOSED)
-        command = entry.controller.steer(text, command_id=command_id, wait=wait)
+        method = entry.controller.follow_up if kind == "follow_up" else entry.controller.steer
+        command = method(text, command_id=command_id, wait=wait)
         return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
 
     async def push(self, task_pk: int, framed: str, *, command_id: str, wait: float) -> ControlReceipt:

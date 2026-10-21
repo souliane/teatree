@@ -90,7 +90,8 @@ class MailboxClient:
     async def send(self, to: str, text: str, key: str, *, timeout_seconds: float = 20) -> SendReceipt:
         """Send one idempotent message to an addressed live peer and wait for session acceptance.
 
-        The receipt's outcome is accepted_current_turn (pushed into the peer's running turn), accepted_inbox_read
+        The receipt's outcome is accepted_current_turn (pushed into the peer's running turn), accepted_new_turn
+        (an idle Claude session started a new turn), accepted_inbox_read
         (the peer read its inbox), or rejected with a code: not_accepted_in_time (still queued in the peer's inbox),
         session_closed or dropped_unread. Acceptance is not obedience. Retry with the same key to keep waiting;
         a new key sends a second copy.
@@ -111,7 +112,7 @@ class MailboxClient:
         return await self._read_and_ack("inbox", after_id=after_id, limit=limit)
 
     async def wait(self, *, after_id: int = 0, timeout_seconds: float = 20) -> InboxPage:
-        """Wait briefly for mail, which acknowledges what it returns; an idle or parked task is not woken."""
+        """Wait briefly for mail, which acknowledges what it returns; a parked task is never woken."""
         return await self._read_and_ack("wait", after_id=after_id, timeout_seconds=timeout_seconds)
 
 

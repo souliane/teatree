@@ -60,6 +60,11 @@ class _NotSteerableSession:
         return None
 
 
+class _FollowUpSession(_AcceptingSession):
+    async def follow_up(self, prompt: str) -> None:
+        self.delivered.append(prompt)
+
+
 def _controller(session: InterruptibleSession, capture: _Capture | None = None) -> LiveSessionController:
     controller = LiveSessionController(_TASK, capture or _Capture())
     controller.bind(session)
@@ -76,6 +81,49 @@ def test_the_input_reaches_the_agent_named_as_operator_input_that_keeps_its_enve
     assert first.startswith("[TeaTree operator input id=c-1]")
     assert body == ["use docs/x.md"]
     assert "result envelope" in last
+
+
+def test_an_idle_follow_up_claims_one_turn_and_a_duplicate_returns_its_receipt() -> None:
+    session = _FollowUpSession()
+    controller = _controller(session, _Capture(result_message=object()))
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt, ControlReceipt, ControlReceipt]:
+        window = controller.begin_idle()
+        first_task = asyncio.create_task(controller.follow_up("next step", command_id="c-1", wait=1))
+        await asyncio.sleep(0)
+        duplicate_task = asyncio.create_task(controller.follow_up("next step", command_id="c-1", wait=1))
+        busy = await controller.follow_up("another step", command_id="c-2", wait=1)
+        follow_up = await controller.wait_idle(window, 1)
+        assert follow_up is not None
+        await session.follow_up(follow_up.prompt)
+        follow_up.started.set_result(None)
+        first, duplicate = await asyncio.gather(first_task, duplicate_task)
+        mismatch = await controller.follow_up("changed", command_id="c-1", wait=1)
+        controller.close()
+        return first, duplicate, busy, mismatch
+
+    first, duplicate, busy, mismatch = asyncio.run(run())
+
+    assert first == duplicate
+    assert first.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert (busy.code, mismatch.code) == (RejectCode.NOT_IDLE, RejectCode.DUPLICATE_MISMATCH)
+    assert len(session.delivered) == 1
+    assert "result envelope" in session.delivered[0]
+
+
+def test_an_expired_idle_window_closes_without_starting_a_turn() -> None:
+    session = _FollowUpSession()
+    controller = _controller(session, _Capture(result_message=object()))
+
+    async def run() -> ControlReceipt:
+        window = controller.begin_idle()
+        assert await controller.wait_idle(window, 0.001) is None
+        controller.close()
+        return await controller.follow_up("late", command_id="late", wait=1)
+
+    receipt = asyncio.run(run())
+    assert receipt.code is RejectCode.SESSION_CLOSED
+    assert session.delivered == []
 
 
 def test_a_peer_message_reaches_the_agent_as_peer_information_not_operator_input() -> None:

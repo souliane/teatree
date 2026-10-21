@@ -97,9 +97,17 @@ class LiveClient:
         command_id: str,
         wait: float = DEFAULT_STEER_WAIT_SECONDS,
     ) -> ReceiptPayload:
+        return self._operator_command("live.steer", task, text, command_id=command_id, wait=wait)
+
+    def follow_up(
+        self, task: int, text: str, *, command_id: str, wait: float = DEFAULT_STEER_WAIT_SECONDS
+    ) -> ReceiptPayload:
+        return self._operator_command("live.follow_up", task, text, command_id=command_id, wait=wait)
+
+    def _operator_command(self, method: str, task: int, text: str, *, command_id: str, wait: float) -> ReceiptPayload:
         worker = self._owner(task)
         request: LiveRequest = {
-            "method": "live.steer",
+            "method": method,
             "task": task,
             "text": text,
             "command_id": command_id,
@@ -108,7 +116,7 @@ class LiveClient:
         try:
             return cast("ReceiptPayload", self._call(worker, request, timeout=wait + _STEER_GRACE_SECONDS))
         except _UnreachableError as exc:
-            msg = f"worker {worker.stem} stopped answering before the steer was sent: {exc}"
+            msg = f"worker {worker.stem} stopped answering before the command was sent: {exc}"
             raise LiveOfflineError(msg) from exc
         except _AnswerLostError as exc:
             raise LiveDeliveryUnknownError(str(exc)) from exc

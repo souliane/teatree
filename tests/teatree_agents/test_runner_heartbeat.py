@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -22,9 +23,16 @@ from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, RejectCode
+from teatree.agents.live_control import (
+    DEFAULT_IDLE_WINDOW_SECONDS,
+    MAX_FOLLOW_UP_TURNS,
+    ControlOutcome,
+    ControlReceipt,
+    RejectCode,
+)
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import (
+    CHECKPOINT_GRACE_SECONDS,
     CHECKPOINT_MAX_DEFER_BEATS,
     HeartbeatRuntime,
     drain_reason_closing_connection,
@@ -34,7 +42,7 @@ from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
 from teatree.loop.drain import set_worker_quiescing
-from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, result_message
+from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, assistant_text, result_message
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
@@ -49,6 +57,7 @@ class _Ceilings:
     watchdog: LoopWatchdog = _WATCHDOG
     heartbeat_interval: float = 0.005
     turns: int = 0
+    idle_window_seconds: float = 0.0
 
 
 _NO_BREACH = _Ceilings()
@@ -92,12 +101,147 @@ def _drive(
         sample_usage=lambda _task: TaskUsage(turns=ceilings.turns, cost_usd=0.0),
         renew_lease=renew_lease,
         drain_reason=drain_reason,
+        idle_window_seconds=ceilings.idle_window_seconds,
     )
     return asyncio.run(
         drive_with_heartbeat(
             task or Task(phase="coding"), "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime
         )
     )
+
+
+class _TwoTurnSession(InterruptibleSession):
+    def __init__(self) -> None:
+        super().__init__([], session_id=_SESSION)
+        self.prompts: list[str] = []
+
+    async def follow_up(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        text = "second" if self.prompts else "first"
+        yield assistant_text(text)
+        yield result_message(session_id=_SESSION, result=text)
+
+
+def test_an_idle_follow_up_keeps_the_claim_and_records_the_second_turn() -> None:
+    session = _TwoTurnSession()
+    renewals: list[int] = []
+
+    def renew(_task: Task) -> None:
+        renewals.append(1)
+
+    with ThreadPoolExecutor(1) as worker:
+        driven = worker.submit(
+            _drive,
+            session,
+            drain_reason=lambda: "",
+            renew_lease=renew,
+            task=Task(pk=_TASK_PK, phase="coding"),
+            ceilings=_Ceilings(idle_window_seconds=0.2),
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not any(row["state"] == "idle" for row in shared_registry().sessions()):
+            if driven.done():
+                driven.result()
+                break
+            time.sleep(0.005)
+        assert any(row["state"] == "idle" for row in shared_registry().sessions())
+        receipt = asyncio.run(shared_registry().follow_up(_TASK_PK, "continue", command_id="next", wait=0.1))
+        outcome = driven.result(timeout=3)
+
+    assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert len(session.prompts) == 1
+    assert outcome.agent_text == "first\nsecond"
+    assert len(renewals) > 1
+
+
+def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
+    session = _TwoTurnSession()
+    assert MAX_FOLLOW_UP_TURNS == 4
+
+    with ThreadPoolExecutor(1) as worker:
+        driven = worker.submit(
+            _drive,
+            session,
+            drain_reason=lambda: "",
+            task=Task(pk=_TASK_PK, phase="coding"),
+            ceilings=_Ceilings(idle_window_seconds=2),
+        )
+        receipts = []
+        for index in range(MAX_FOLLOW_UP_TURNS):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                row["state"] == "idle" for row in shared_registry().sessions()
+            ):
+                if driven.done():
+                    driven.result()
+                time.sleep(0.005)
+            assert any(row["state"] == "idle" for row in shared_registry().sessions())
+            receipts.append(
+                asyncio.run(shared_registry().follow_up(_TASK_PK, "continue", command_id=str(index), wait=0.1))
+            )
+        driven.result(timeout=3)
+
+    assert all(receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN for receipt in receipts), receipts
+    assert len(session.prompts) == MAX_FOLLOW_UP_TURNS
+    assert not shared_registry().sessions()
+
+
+def test_a_drain_during_idle_records_success_without_checkpointing() -> None:
+    session = _TwoTurnSession()
+    started = time.monotonic()
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: _DRAIN,
+        ceilings=_Ceilings(idle_window_seconds=1),
+    )
+
+    assert time.monotonic() - started < 0.5
+    assert outcome.stuck_reason is None
+    assert outcome.checkpointed is False
+    assert outcome.agent_text == "first"
+    assert session.prompts == []
+    assert session.interrupts == 0
+
+
+def test_the_runtime_ceiling_does_not_interrupt_a_finished_idle_turn() -> None:
+    class RuntimeProbe(LoopWatchdog):
+        def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:
+            return "runtime ceiling would fire" if elapsed_seconds > 0.03 else None
+
+    session = _TwoTurnSession()
+    short_runtime = RuntimeProbe(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: "",
+        ceilings=_Ceilings(watchdog=short_runtime, idle_window_seconds=0.1),
+    )
+
+    assert outcome.stuck_reason is None
+    assert outcome.checkpointed is False
+    assert session.interrupts == 0
+
+
+def test_a_lost_lease_during_idle_remains_a_lost_lease() -> None:
+    session = _TwoTurnSession()
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: "",
+        renew_lease=_lease_lost_on_beat(1),
+        ceilings=_Ceilings(idle_window_seconds=0.1),
+    )
+
+    assert outcome.lease_lost is True
+    assert outcome.checkpointed is False
+    assert session.interrupts == 0
+
+
+def test_the_idle_window_is_shorter_than_the_drain_grace() -> None:
+    assert 0 < DEFAULT_IDLE_WINDOW_SECONDS < CHECKPOINT_GRACE_SECONDS
 
 
 def _open_tool_call() -> AssistantMessage:

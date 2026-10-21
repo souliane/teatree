@@ -11,6 +11,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.harness import Harness
 from teatree.agents.live_control import LiveSessionController, LiveTask
+from teatree.agents.live_idle import IdleWindowBudget, hold_idle_window
 from teatree.agents.live_mailbox import bound_task_mailbox
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.round_ceiling import RoundCeiling
@@ -40,6 +41,7 @@ class HeartbeatRuntime:
     sample_usage: UsageSampler
     renew_lease: LeaseRenewer
     drain_reason: Callable[[], str]
+    idle_window_seconds: float = 0.0
 
 
 def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
@@ -119,6 +121,9 @@ class _Heartbeat:
                 await asyncio.sleep(self.runtime.heartbeat_interval)
                 if await self._lost_the_lease():
                     continue
+                if self.live.idle:
+                    await self._close_idle_on_drain()
+                    continue
                 # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
                 if self.breach or await self._checkpointed():
                     continue
@@ -168,6 +173,15 @@ class _Heartbeat:
         logger.warning("Task %s checkpointing for a drain: %s", self.task.pk, drain)
         return await self._interrupt(f"checkpoint: {drain}")
 
+    async def _close_idle_on_drain(self) -> None:
+        try:
+            drain = await asyncio.to_thread(self.runtime.drain_reason)
+        except Exception:
+            logger.warning("Drain check failed for task %s; the idle window continues", self.task.pk, exc_info=True)
+            return
+        if drain:
+            self.live.close()
+
     async def _breached(self) -> bool:
         watchdog = self.runtime.watchdog
         live_usage = self.usage
@@ -200,6 +214,13 @@ async def _drive_bound_session(
         try:
             timeout = runtime.watchdog.max_runtime_seconds or None
             outcome = await asyncio.wait_for(_collect(session, prompt, capture), timeout=timeout)
+            if runtime.idle_window_seconds > 0 and not (
+                isinstance(harness, GuardedHarness) and harness.guard.stopped_run
+            ):
+                deadline = started_at + timeout if timeout is not None else None
+                outcome = await hold_idle_window(
+                    session, capture, live, outcome, budget=IdleWindowBudget(runtime.idle_window_seconds, deadline)
+                )
         except TimeoutError:
             await live.interrupt()
             elapsed = time.monotonic() - started_at

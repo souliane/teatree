@@ -115,6 +115,7 @@ _STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds
         pytest.param("live.inspect", {"task": True}, "positive integer task", id="task-bool"),
         pytest.param("live.inspect", {"task": "7"}, "positive integer task", id="task-string"),
         pytest.param("live.steer", {**_STEER, "text": ""}, "non-empty text", id="empty-text"),
+        pytest.param("live.follow_up", {**_STEER, "text": ""}, "non-empty text", id="follow-up-empty-text"),
         pytest.param("live.steer", {**_STEER, "text": 5}, "non-empty text", id="text-not-a-string"),
         pytest.param("live.steer", {**_STEER, "command_id": ""}, "1-128 byte command_id", id="empty-command-id"),
         pytest.param("live.steer", {**_STEER, "command_id": "é" * 65}, "1-128 byte command_id", id="over-128-bytes"),
@@ -139,6 +140,18 @@ def test_a_request_at_every_bound_reaches_the_registry() -> None:
 
     assert receipt == {
         "command_id": "c" * 128,
+        "task": 7,
+        "outcome": "rejected",
+        "code": "unknown_session",
+        "mode": "active",
+        "accepted_at": None,
+    }
+
+
+def test_a_valid_follow_up_reaches_the_registry() -> None:
+    receipt = _served_by_an_operator("live.follow_up", _STEER)
+    assert receipt == {
+        "command_id": "c-1",
         "task": 7,
         "outcome": "rejected",
         "code": "unknown_session",

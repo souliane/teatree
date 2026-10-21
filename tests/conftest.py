@@ -77,6 +77,13 @@ os.environ["T3_BANNED_TERMS_SCAN_TIMEOUT_S"] = "45"
 # Synthetic /host-proc tables model a Linux host; the refusal tests unset or change it themselves.
 os.environ["TEATREE_HOST_OS"] = "Linux"
 
+
+@pytest.fixture(autouse=True)
+def _no_idle_window_in_existing_tests() -> Iterator[None]:
+    with patch("teatree.agents.runner.DEFAULT_IDLE_WINDOW_SECONDS", 0.0):
+        yield
+
+
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
 _IMPORT_SANDBOX = tempfile.TemporaryDirectory(prefix="teatree-tests-import-")

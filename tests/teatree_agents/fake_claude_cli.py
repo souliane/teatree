@@ -223,8 +223,28 @@ class FakeClaudeCli:
             }
         )
         self.record("result_emitted")
-        while self.read() is not None:
-            pass
+        while (message := self.read()) is not None:
+            if message.get("type") != "user":
+                continue
+            self.record("follow_up_turn", message=message)
+            self.turns += 1
+            follow_up_text = self.script.get("follow_up_final_text", "follow-up done")
+            self.assistant({"type": "text", "text": follow_up_text})
+            self.stop_boundaries()
+            self.emit(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 5,
+                    "duration_api_ms": 4,
+                    "is_error": False,
+                    "num_turns": self.turns,
+                    "result": follow_up_text,
+                    "total_cost_usd": 0.0,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+            self.record("result_emitted")
 
 
 def main() -> int:

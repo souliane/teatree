@@ -25,7 +25,12 @@ EXIT_UNKNOWN_DELIVERY = 4
 EXIT_OFFLINE = 5
 PASSIVE_LABEL = "PASSIVE — read-only; the agent is not contacted"
 ACTIVE_LABEL = "ACTIVE — enters the agent's context"
-_EXIT_BY_OUTCOME = {"accepted_current_turn": 0, "rejected": EXIT_REJECTED, "unknown_delivery": EXIT_UNKNOWN_DELIVERY}
+_EXIT_BY_OUTCOME = {
+    "accepted_current_turn": 0,
+    "accepted_new_turn": 0,
+    "rejected": EXIT_REJECTED,
+    "unknown_delivery": EXIT_UNKNOWN_DELIVERY,
+}
 
 _JsonOption = Annotated[bool, typer.Option("--json", help="Emit JSON on stdout instead of the human view.")]
 _TaskArgument = Annotated[int, typer.Argument(help="The task id, as `live list` shows it.")]
@@ -161,6 +166,49 @@ class Command(TyperCommand):
                 f"unknown_delivery for command {command_id}: {exc}. It may or may not have reached the agent; "
                 f"never resend blindly — `live inspect {task}` shows whether the agent is still running.\n"
             )
+        emit(
+            receipt,
+            json_output=json_output,
+            out=self._out(),
+            err=self._err(),
+            human=lambda stream: _render_fields(receipt, stream),
+        )
+        code = _EXIT_BY_OUTCOME.get(receipt["outcome"], EXIT_UNKNOWN_DELIVERY)
+        if code:
+            raise SystemExit(code)
+
+    @command(name="follow-up")
+    def follow_up(
+        self,
+        task: _TaskArgument,
+        *,
+        text: Annotated[str, typer.Option(help="The input for one new turn in an idle session (at most 16 KiB).")] = "",
+        command_id: Annotated[str, typer.Option(help="Idempotency key; the same text returns the first receipt.")] = "",
+        wait: Annotated[
+            float, typer.Option(help="Seconds to wait for the new turn to start (at most 900).")
+        ] = DEFAULT_STEER_WAIT_SECONDS,
+        json_output: _JsonOption = False,
+    ) -> None:
+        """Start one new turn in a still-open idle session and print its receipt (active)."""
+        self.print_result = False
+        if not text:
+            self._exit("--text is required\n", 2)
+        self._err().write(f"{ACTIVE_LABEL}\n")
+        command_id = command_id or uuid.uuid4().hex
+        try:
+            receipt = LiveClient().follow_up(task, text, command_id=command_id, wait=wait)
+        except LiveOfflineError as exc:
+            self._exit(_offline_message(task, str(exc)), EXIT_OFFLINE)
+        except LiveRefusedError as exc:
+            receipt = self._local_receipt(task, command_id, "rejected", exc.code or "invalid_request")
+            self._err().write(f"{exc}\n")
+        except LiveDeliveryUnknownError as exc:
+            receipt = self._local_receipt(task, command_id, "unknown_delivery", None)
+            self._err().write(f"unknown_delivery for command {command_id}: {exc}; never resend blindly.\n")
+        if receipt["code"] in {"session_closed", "unknown_session"}:
+            self._exit(_offline_message(task, receipt["code"] or "session closed"), EXIT_OFFLINE)
+        if receipt["code"] == "not_idle":
+            self._err().write("The session is busy; use live steer for its current turn.\n")
         emit(
             receipt,
             json_output=json_output,

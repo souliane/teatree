@@ -41,8 +41,9 @@ from teatree.agents.live_mailbox import (
     reset_shared_brokers,
     shared_broker,
 )
-from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.agents.runner_stream import StreamCapture
 from teatree.cli.mcp import serve
 from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.core.models import Session, Task, TaskAttempt
@@ -53,6 +54,7 @@ from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 from teatree.utils.thread_db import close_thread_db_connections
 from tests.factories import planned_ticket
 from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
+from tests.teatree_agents._sdk_fake import result_message
 from tests.teatree_agents.test_live_control_integration import _FakeCliRun, _in_background
 from tests.teatree_agents.test_live_control_integration import _until as wait_until
 from tests.teatree_mcp._call_tool_result import structured
@@ -277,6 +279,48 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             assert self.runs["recipient"].user_turns() == 1
             assert recipient_attempt.exit_code == sender_attempt.exit_code == 0
             assert recipient_attempt.result["summary"] == "Done"
+
+    def test_a_peer_send_to_an_idle_claude_session_wakes_it_once(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="t3-peer-idle-") as directory:
+            self._prepare_runs(Path(directory))
+            with (
+                patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
+                patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 2.0),
+                patch.object(
+                    runner_mod.TaskUsage,
+                    "for_task",
+                    classmethod(lambda cls, task: TaskUsage(turns=0, cost_usd=0.0)),
+                ),
+            ):
+                sender = _in_background(lambda: self._dispatch("sender"))
+
+                def wake() -> SendReceipt:
+                    wait_until(lambda: self.runs["recipient"].saw("holding_tool"), "recipient's first turn")
+                    self.runs["recipient"].release_tool.touch()
+                    task_pk = self.tasks["recipient"].pk
+                    wait_until(
+                        lambda: (facts := shared_registry().facts(task_pk)) is not None and facts["state"] == "idle",
+                        "recipient's idle window",
+                    )
+                    peers = asyncio.run(self.clients["sender"].peers())
+                    [target] = [peer for peer in peers if peer["ticket"] == str(self.tasks["recipient"].ticket_id)]
+                    return asyncio.run(self.clients["sender"].send(target["address"], "new schema", "wake-1"))
+
+                try:
+                    wait_until(lambda: self.runs["sender"].saw("holding_tool"), "sender's first turn")
+                    sending = _in_background(wake)
+                    recipient_attempt = self._dispatch("recipient")
+                    receipt = sending.result(timeout=30)
+                finally:
+                    self.runs["sender"].release_tool.touch()
+                    self.runs["recipient"].release_tool.touch()
+                sender.result(timeout=30)
+
+            assert (receipt["outcome"], receipt["code"]) == ("accepted_new_turn", None)
+            assert self.runs["recipient"].user_turns() == 2
+            assert "new schema" in json.dumps(self.runs["recipient"].events())
+            assert recipient_attempt.exit_code == 0
 
 
 def _rejected(message_id: int, to: str, code: str, *, queued: bool) -> SendReceipt:
@@ -1227,6 +1271,65 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
     assert [(peer["address"], peer["can_receive"]) for peer in peers] == [(codex.address, True)]
     assert sent["to"] == codex.address
     assert inbox["messages"][0]["text"] == "please review"
+
+
+def test_stdio_mcp_send_wakes_an_idle_claude_peer_once(
+    tmp_path: Path, routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    script = tmp_path / "mailbox_mcp_child.py"
+    script.write_text(
+        "from mcp.server.mcpserver import MCPServer\n"
+        "from teatree.mcp.agent_mailbox import register\n"
+        "server = MCPServer('teatree-mailbox-test')\n"
+        "assert register(server)\n"
+        "server.run('stdio')\n"
+    )
+    sender = routed_broker.register(room="ticket", harness="codex_app_server", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    child = StdioServerParameters(command=sys.executable, args=[str(script)], env=sender.mcp_env())
+    prompts: list[str] = []
+
+    class Session:
+        async def follow_up(self, prompt: str) -> None:
+            prompts.append(prompt)
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            raise SteerRejectedError(RejectCode.TURN_ENDED)
+
+        async def interrupt(self) -> None:
+            return None
+
+    async def exchange() -> SendReceipt:
+        capture = StreamCapture()
+        capture.observe(result_message())
+        async with registry.attach(_TASK, capture) as controller:
+            session = Session()
+            controller.bind(session)
+            window = controller.begin_idle()
+
+            async def accept() -> None:
+                follow_up = await controller.wait_idle(window, 10)
+                assert follow_up is not None
+                await session.follow_up(follow_up.prompt)
+                follow_up.started.set_result(None)
+
+            accepting = asyncio.create_task(accept())
+            async with stdio_client(child) as (reader, writer), ClientSession(reader, writer) as client:
+                await client.initialize()
+                result = structured(
+                    await client.call_tool(
+                        "agent_mailbox_send", {"to": recipient.address, "text": "new schema", "key": "wake-stdio"}
+                    )
+                )
+            await accepting
+            return cast("SendReceipt", result)
+
+    receipt = asyncio.run(exchange())
+    assert (receipt["outcome"], receipt["code"]) == ("accepted_new_turn", None)
+    assert len(prompts) == 1
+    assert "[TeaTree peer message" in prompts[0]
+    assert "new schema" in prompts[0]
+    assert "complete result envelope" in prompts[0]
 
 
 def test_the_published_socket_is_private_and_close_removes_only_it() -> None:

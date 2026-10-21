@@ -13,6 +13,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +24,7 @@ from django.test import TestCase
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_mailbox import LiveMailboxBroker
-from teatree.core.models import Task
+from teatree.core.models import Task, TaskAttempt
 from tests.factories import SessionFactory, TicketFactory
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -81,6 +82,46 @@ def test_list_with_no_worker_socket_is_offline(control_dir: Path) -> None:
     assert "offline" in completed.stderr
 
 
+def test_follow_up_to_an_offline_task_names_the_durable_route(control_dir: Path) -> None:
+    completed = _Cli(control_dir)("follow-up", "999", "--text", "continue", "--command-id", "next")
+
+    assert completed.returncode == 5
+    assert "task 999 in the task list" in completed.stderr
+    assert "tasks create" in completed.stderr
+
+
+def test_a_worker_restart_leaves_old_follow_ups_offline_and_replays_nothing(
+    control_dir: Path, worker: subprocess.Popen[str]
+) -> None:
+    cli = _Cli(control_dir)
+    lost = cli("follow-up", "106", "--text", "start", "--command-id", "lost")
+    assert lost.returncode == 4
+    worker.wait(timeout=10)
+    offline = cli("follow-up", "106", "--text", "start", "--command-id", "lost")
+    assert offline.returncode == 5
+
+    new_env = {**_env(control_dir), "T3_HELPER_TASK_BASE": "200"}
+    with subprocess.Popen(
+        [sys.executable, str(_HELPER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=new_env,
+        start_new_session=True,
+    ) as restarted:
+        assert restarted.stdout is not None
+        assert restarted.stdout.readline().strip() == "ready"
+        still_offline = cli("follow-up", "106", "--text", "start", "--command-id", "lost")
+        calls_before = (control_dir / "follow-up-calls.log").read_text(encoding="utf-8").splitlines()
+        explicit = cli("follow-up", "205", "--text", "new", "--command-id", "new")
+        calls_after = (control_dir / "follow-up-calls.log").read_text(encoding="utf-8").splitlines()
+
+    assert still_offline.returncode == 5
+    assert len(calls_before) == 1
+    assert explicit.returncode == 0
+    assert len(calls_after) == 2
+
+
 @pytest.mark.usefixtures("worker")
 def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
     cli = _Cli(control_dir)
@@ -91,7 +132,7 @@ def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
 
     assert listed.returncode == 0, listed.stderr
     rows = {row["task"]: row for row in json.loads(listed.stdout)}
-    assert set(rows) == {101, 102, 103, 104}
+    assert set(rows) == {101, 102, 103, 104, 105, 106}
     assert (rows[101]["harness"], rows[101]["state"], rows[101]["steerable"]) == ("claude_sdk", "busy", True)
     assert rows[104]["steerable"] is False
     assert inspected.returncode == 0, inspected.stderr
@@ -206,3 +247,21 @@ class OfflineNamesTheDurableRouteTests(TestCase):
         # An owner question is answered in its Slack thread; `questions answer` refuses it.
         assert "Slack thread" in message
         assert "questions answer" not in message
+
+    def test_follow_up_cannot_wake_a_parked_task_or_change_its_attempts(self) -> None:
+        parked_until = datetime.now(UTC) + timedelta(hours=1)
+        self.task.status = Task.Status.PENDING
+        self.task.not_before = parked_until
+        self.task.save(update_fields=["status", "not_before"])
+        before = TaskAttempt.objects.filter(task=self.task).count()
+        err = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command("live", "follow-up", str(self.task.pk), "--text", "continue", stderr=err)
+
+        self.task.refresh_from_db()
+        assert exit_info.value.code == 5
+        assert "pending" in err.getvalue()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before == parked_until
+        assert TaskAttempt.objects.filter(task=self.task).count() == before
