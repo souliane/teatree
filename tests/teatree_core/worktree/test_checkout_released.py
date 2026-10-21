@@ -8,7 +8,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.agents import runner
 from teatree.core import forge_pr_probe
@@ -22,7 +24,6 @@ from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
 from teatree.utils.git import check, run_strict
-from teatree.utils.run import CommandFailedError
 from tests._process_table_venue import table_with_unreadable_pid
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -186,6 +187,12 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.worktree.refresh_from_db()
         assert self.direct_recovery()
 
+    def test_released_custody_reads_prior_tasks_once(self) -> None:
+        with CaptureQueriesContext(connection) as queries:
+            assert self.claim() is None
+        task_reads = [query for query in queries if "SELECT" in query["sql"] and Task._meta.db_table in query["sql"]]
+        assert len(task_reads) == 1
+
     def test_second_state_read_must_match_first(self) -> None:
         def change_checkout() -> None:
             (self.path / "feature.txt").write_text("checkout changed")
@@ -217,8 +224,21 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
     def test_git_failure_parks_and_releases_occupancy(self) -> None:
         original = self.worktree.get_extra()["attested_state"]
-        failure = CommandFailedError(["git", "reflog"], 128, "", "fatal: unreadable reflog")
-        with patch("teatree.core.worktree.checkout_released.git.run_strict", side_effect=failure):
+        real_git = shutil.which("git")
+        assert real_git is not None
+        bin_dir = self.path.parent / "git-bin"
+        bin_dir.mkdir()
+        wrapper = bin_dir / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$3" = "reflog" ]; then\n'
+            '  printf "%s\\n" "fatal: unreadable reflog" >&2\n'
+            "  exit 128\n"
+            "fi\n"
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        with patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
             parked = self.claim()
         assert parked is not None
         self.worktree.refresh_from_db()

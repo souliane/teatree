@@ -17,7 +17,6 @@ from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_recovery import (
     checkout_process_evidence,
     checkout_state_unchanged,
-    holder_task_for_ticket,
     persist_checkout_recovery_attestation,
     pr_owned_by_ticket,
 )
@@ -62,10 +61,17 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
         or any(entry.ended != "released" for entry in previous)
     ):
         return False
-    prior_tasks = [holder_task_for_ticket(entry.holder, task) for entry in previous]
+    holder_ids: set[int] = set()
+    for entry in previous:
+        pk = entry.holder.removeprefix("task:")
+        if not entry.holder.startswith("task:") or not pk.isdigit():
+            return False
+        holder_ids.add(int(pk))
+    prior_tasks = list(Task.objects.filter(pk__in=holder_ids, ticket=task.ticket))
     return bool(
-        all(prior is not None and prior.failure_kind != FailureKind.CANCELLED for prior in prior_tasks)
-        and any(prior is not None and phase_writes_checkout(prior.phase) for prior in prior_tasks)
+        len(prior_tasks) == len(holder_ids)
+        and all(prior.failure_kind != FailureKind.CANCELLED for prior in prior_tasks)
+        and any(phase_writes_checkout(prior.phase) for prior in prior_tasks)
     )
 
 
