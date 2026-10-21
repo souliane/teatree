@@ -94,7 +94,7 @@ class AgentAdmission:
     _announced: set[str] = field(default_factory=set)
 
     def lane_for(self, cost: PhaseCost, *, cheap_class: CheapClass | None = None) -> LaneBound:
-        """The bound governing *cost*'s lane — the one seam both the check and the seat read."""
+        """The class bound used for headroom and booking; cheap total is checked separately."""
         if cost is PhaseCost.EXPENSIVE:
             return self.expensive_lane
         return self.retiring_lane if cheap_class is CheapClass.RETIRING else self.review_lane
@@ -129,6 +129,7 @@ class AgentAdmission:
         return self.denied_for(phase_cost(phase), cheap_class=CheapClass.of(phase))
 
     def claim_denied_reason(self, phase: str, *, seated: bool) -> str | None:
+        """A seated row has paid for its lane; independent brakes can still refuse its claim."""
         if not seated:
             return self.denied_reason(phase)
         return self.cheap_guard_denied if phase_cost(phase) is PhaseCost.CHEAP else self.expensive_guard_denied
@@ -227,9 +228,6 @@ def _admit_all() -> AgentAdmission:
         cheap_denied=None,
         review_denied=None,
         retiring_denied=None,
-        cheap_lane=LaneBound(),
-        review_lane=LaneBound(),
-        retiring_lane=LaneBound(),
     )
 
 

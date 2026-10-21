@@ -10,7 +10,8 @@ from django.utils import timezone
 from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core.cycle_time.timeline import _engagements
-from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW, AdmissionLane, _lane_occupancy_q
+from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW, _lane_occupancy_q
+from teatree.core.modelkit.phases import CheapClass, PhaseCost
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.worktree.checkout_fence import park_task_checkout
 
@@ -113,10 +114,10 @@ class TestAdmissionSeatPredicates(TestCase):
         )
 
         assert set(
-            Task.objects.filter(_lane_occupancy_q(now, lane=AdmissionLane.REVIEW)).values_list("pk", flat=True)
+            Task.objects.filter(_lane_occupancy_q(now, lane=CheapClass.REVIEW)).values_list("pk", flat=True)
         ) == {reviewing.pk}
         assert set(
-            Task.objects.filter(_lane_occupancy_q(now, lane=AdmissionLane.EXPENSIVE)).values_list("pk", flat=True)
+            Task.objects.filter(_lane_occupancy_q(now, lane=PhaseCost.EXPENSIVE)).values_list("pk", flat=True)
         ) == {coding.pk}
 
     def test_future_park_is_not_reported_as_a_released_cheap_seat(self) -> None:

@@ -21,7 +21,6 @@ from teatree.core.loop_lease_manager import (
 )
 from teatree.core.managers_admission import (
     ADMITTED_INFLIGHT_WINDOW,
-    AdmissionLane,
     _cheap_phase_q,
     _lane_occupancy_q,
     _lane_under_ceiling,
@@ -40,7 +39,7 @@ from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
-from teatree.core.modelkit.phases import CheapClass
+from teatree.core.modelkit.phases import CheapClass, PhaseCost
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
@@ -454,12 +453,15 @@ class TaskQuerySet(models.QuerySet):
         ).count()
 
     def cheap_lane_occupancy(self) -> int:
-        """Aggregate occupancy of both cheap classes, including recent pending seats."""
-        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.CHEAP_TOTAL)).count()
+        """Count both cheap classes, including seats still pending in the runner handoff.
+
+        A one-row post-save admission cannot see its own burst if it counts only claimed rows.
+        """
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.CHEAP)).count()
 
     def cheap_class_occupancy(self, cheap_class: CheapClass) -> int:
         """Occupancy of one bounded cheap class, including recent pending seats."""
-        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.for_class(cheap_class))).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=cheap_class)).count()
 
     def expensive_lane_occupancy(self) -> int:
         """How much of the box the EXPENSIVE class holds — what the coding ceiling is measured against.
@@ -471,7 +473,7 @@ class TaskQuerySet(models.QuerySet):
         a burst of ``post_save`` admissions is still PENDING, so a count of CLAIMED rows
         alone cannot see the seats it just handed out.
         """
-        return self.filter(_lane_occupancy_q(timezone.now(), lane=AdmissionLane.EXPENSIVE)).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.EXPENSIVE)).count()
 
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
@@ -518,10 +520,10 @@ class TaskQuerySet(models.QuerySet):
         now = timezone.now()
         seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:
-            lane = AdmissionLane.CHEAP_TOTAL if cheap_class is not None else AdmissionLane.EXPENSIVE
+            lane = PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))
         if cheap_class is not None and class_ceiling is not None:
-            seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=AdmissionLane.for_class(cheap_class)))
+            seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=cheap_class))
         return bool(seat.update(admitted_at=now))
 
     def waiting_for_admission(self) -> models.QuerySet:

@@ -219,8 +219,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "metered_token_ceiling": _parse_strict_int,
     # #4816 The window the metered token ceiling is measured over. Per-overlay overridable.
     "metered_spend_window_hours": _parse_strict_int,
-    # #4098 #5051 Review lane width: reviewing/critic/shipping agents admitted outside the
-    # coding ceiling, one review executor each (min 1). Per-overlay overridable.
+    # #4098 #5051 Each cheap class gets this width beside coding, sharing W+1
+    # cheap seats in total; the worker runs one executor per seat. Min 1; per-overlay overridable.
     "cheap_phase_admission_ceiling": _parse_strict_int,
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap — the measured p90 worker RSS. A non-positive value drops

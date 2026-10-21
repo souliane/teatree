@@ -199,9 +199,11 @@ class PhaseCost(StrEnum):
 #: deliberately harness-owned (beside :data:`SUBAGENT_BY_PHASE`) and NOT
 #: operator-configurable: a per-deployment override could move ``coding`` into the
 #: exempt lane, which is the unbounded-lane failure this exemption must never become.
+#: Verdict producers unblock work waiting for review.
 REVIEW_PHASES: frozenset[str] = frozenset(
     {"reviewing", "e2e_reviewing", "codex_reviewing", "codex_adversarial_reviewing", "critic_reviewing"}
 )
+#: Opening or merging a PR frees the worktree and agent, so these must retain a seat under load.
 RETIRING_PHASES: frozenset[str] = frozenset({"shipping", "requesting_review"})
 CHEAP_PHASES: frozenset[str] = REVIEW_PHASES | RETIRING_PHASES
 

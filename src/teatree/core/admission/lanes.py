@@ -7,7 +7,11 @@ from teatree.core.admission.write_ceiling import AdmissionCeiling
 
 @dataclass
 class LaneBound:
-    """A lane's ceiling and seats already booked during one admission pass."""
+    """A lane's ceiling and seats booked during one admission pass.
+
+    Headroom is local to the pass; the conditional seat write rechecks the ceiling
+    because another process cannot see this pass's counter.
+    """
 
     ceiling: int | None = None
     headroom: int | None = None

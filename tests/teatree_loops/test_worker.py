@@ -1129,7 +1129,7 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
 
                 assert self._executors()["default"] == len(seated)
 
-    def test_every_admitted_review_seat_gets_a_cheap_executor(self) -> None:
+    def test_every_admitted_cheap_seat_gets_a_cheap_executor(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
         reviews = self._admit("reviewing")
         retiring = self._admit("shipping")
@@ -1138,7 +1138,7 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
         assert len(retiring) == 1
         assert self._executors()["cheap"] == len(reviews) + len(retiring) == 3
 
-    def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
+    def test_a_wider_review_lane_keeps_a_retiring_executor(self) -> None:
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
         seated = self._admit("reviewing")
 

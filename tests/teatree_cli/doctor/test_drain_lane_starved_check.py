@@ -61,15 +61,6 @@ class DrainLaneStarvedDoctorCheckTests(TestCase):
         assert "1 reviewing/shipping task(s) queued" in output
         assert "oldest waiting 34m" in output
         assert "cheap_phase_admission_ceiling" in output
-
-    def test_the_warning_states_the_cheap_lane_the_machine_brake_leaves_open(self) -> None:
-        self._queued_review(waited=DRAIN_STARVED_AFTER * 2)
-
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            _check_drain_lane_starved()
-        output = buffer.getvalue()
-
         assert "Cheap work is exempt from the machine brake" in output
         assert "one seat more than the review width" in output
 

@@ -31,6 +31,10 @@ class TestPhaseCost:
     def test_reviewing_is_cheap(self) -> None:
         assert phase_cost("reviewing") is PhaseCost.CHEAP
 
+    def test_work_retiring_phases_are_cheap(self) -> None:
+        assert phase_cost("shipping") is PhaseCost.CHEAP
+        assert phase_cost("requesting_review") is PhaseCost.CHEAP
+
     def test_a_short_verb_spelling_resolves_the_same_as_the_gerund(self) -> None:
         # ``Task.phase`` legitimately stores either spelling; the canonical form is the
         # key, so ``review`` must not fall through to the fail-safe EXPENSIVE default.
@@ -63,7 +67,6 @@ class TestPhaseCost:
         assert CHEAP_PHASES
 
     def test_cheap_classes_partition_the_existing_cheap_phases(self) -> None:
-        assert CHEAP_PHASES == REVIEW_PHASES | RETIRING_PHASES
         assert not REVIEW_PHASES & RETIRING_PHASES
         assert CheapClass.of("review") is CheapClass.REVIEW
         assert CheapClass.of("ship") is CheapClass.RETIRING
