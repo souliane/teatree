@@ -16,7 +16,8 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree import standing_directives_cache
 from teatree.core.mode_resolution import ResolvedMode
-from teatree.core.models import DmContext, Mode, PendingChatInjection, Prompt
+from teatree.core.modelkit.relay import RELAY_LISTING_CHARS
+from teatree.core.models import DmContext, Mode, PendingChatInjection, Prompt, Task
 from teatree.loop.standing_directives import DISPATCH_LOOP, override_prompt_name, resolve_standing_directives
 from teatree.loops import timer_reconciler
 from teatree.loops.standing_directives_publish import (
@@ -24,7 +25,9 @@ from teatree.loops.standing_directives_publish import (
     ensure_standing_directives_publish_chain,
     publish_standing_directives,
 )
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests._factory_slack import OWNER_DM, OWNER_ID, SLACK_OVERLAY, FakeOwnerDm, live_factory_slack
+from tests.factories import TaskFactory, TicketFactory
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
@@ -158,6 +161,31 @@ class TestTheFactorySlackVerdictRidesTheSameChain(django.test.TestCase):
                 }
             ]
         }
+
+    def test_a_failed_delegation_is_published_as_delegated_and_cut_to_the_listing_length(self) -> None:
+        failed = PendingChatInjection.record(
+            channel=OWNER_DM,
+            slack_ts="2.0",
+            text="x" * (RELAY_LISTING_CHARS + 30),
+            overlay=SLACK_OVERLAY,
+            context=DmContext(user_id=OWNER_ID, relayed_by_session="s1"),
+        )
+        assert failed is not None
+        PendingChatInjection.objects.filter(pk=failed.pk).update(
+            answer_kind=PendingChatInjection.AnswerKind.DELEGATED,
+            received_at=timezone.now() - dt.timedelta(minutes=10),
+            loop_response_confirmed_at=timezone.now(),
+        )
+        ticket = TicketFactory(issue_url=slack_conversation_anchor(channel=OWNER_DM, slack_ts="2.0"))
+        TaskFactory(ticket=ticket, phase="answering", status=Task.Status.FAILED)
+
+        with live_factory_slack(FakeOwnerDm()):
+            self._fire()
+
+        published = standing_directives_cache.read_factory_slack()
+        assert published is not None
+        [entry] = published["open_relays"]["s1"]
+        assert (entry["state"], entry["text"]) == ("delegated", "x" * RELAY_LISTING_CHARS)
 
     def test_a_box_without_slack_publishes_not_live_with_the_reason(self) -> None:
         with mock.patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[]):

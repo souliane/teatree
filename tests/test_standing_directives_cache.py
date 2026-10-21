@@ -184,7 +184,7 @@ class TestThePublishedFactorySlackVerdict:
         "open_relays",
         [
             [],
-            {"s1": "not-a-list"},
+            {"s1": ""},
             {"s1": ["not-a-dict"]},
             {"s1": [{"id": 7, "slack_ts": "1.0", "channel": "D1", "state": "unanswered"}]},
             {"s1": [{"id": "7", "slack_ts": "1.0", "channel": "D1", "text": "ship it?", "state": "unanswered"}]},
