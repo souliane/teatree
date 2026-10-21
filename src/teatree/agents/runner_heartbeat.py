@@ -10,8 +10,8 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.harness import Harness
+from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_control import LiveSessionController, LiveTask
-from teatree.agents.live_mailbox import bound_task_mailbox
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
@@ -73,19 +73,6 @@ def _arm_round_ceiling(options: ClaudeAgentOptions, harness: Harness) -> RoundCe
         hooks["PreToolUse"] = [*hooks.get("PreToolUse", []), ceiling.matcher()]
         options.hooks = hooks
     return ceiling
-
-
-async def drive_with_heartbeat(
-    task: Task,
-    prompt: str,
-    options: ClaudeAgentOptions,
-    harness: Harness,
-    *,
-    runtime: HeartbeatRuntime,
-) -> HarnessOutcome:
-    """Drive one session while renewing ownership and enforcing watchdog ceilings."""
-    with bound_task_mailbox(options, _live_task(task, options, harness)):
-        return await _drive_bound_session(task, prompt, options, harness, runtime=runtime)
 
 
 def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> LiveTask:
@@ -180,7 +167,7 @@ class _Heartbeat:
         return await self._interrupt(reason)
 
 
-async def _drive_bound_session(
+async def drive_with_heartbeat(
     task: Task,
     prompt: str,
     options: ClaudeAgentOptions,
@@ -188,26 +175,31 @@ async def _drive_bound_session(
     *,
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
+    """Drive one session while renewing ownership and enforcing watchdog ceilings."""
     usage = await asyncio.to_thread(runtime.sample_usage, task)
     started_at = time.monotonic()
     capture = StreamCapture(round_ceiling=_arm_round_ceiling(options, harness))
 
     registry = shared_registry()
-    async with registry.attach(_live_task(task, options, harness), capture) as live, harness.open(options) as session:
-        live.bind(session)
-        beat = _Heartbeat(task=task, runtime=runtime, live=live, capture=capture, usage=usage, started_at=started_at)
-        heartbeat_task = asyncio.create_task(beat.run())
-        try:
-            timeout = runtime.watchdog.max_runtime_seconds or None
-            outcome = await asyncio.wait_for(_collect(session, prompt, capture), timeout=timeout)
-        except TimeoutError:
-            await live.interrupt()
-            elapsed = time.monotonic() - started_at
-            reason = runtime.watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
-                f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"
+    live_task = _live_task(task, options, harness)
+    with bound_task_mailbox(options, live_task):
+        async with registry.attach(live_task, capture) as live, harness.open(options) as session:
+            live.bind(session)
+            beat = _Heartbeat(
+                task=task, runtime=runtime, live=live, capture=capture, usage=usage, started_at=started_at
             )
-            outcome = capture.outcome(stuck_reason=reason)
-        finally:
-            heartbeat_task.cancel()
+            heartbeat_task = asyncio.create_task(beat.run())
+            try:
+                timeout = runtime.watchdog.max_runtime_seconds or None
+                outcome = await asyncio.wait_for(_collect(session, prompt, capture), timeout=timeout)
+            except TimeoutError:
+                await live.interrupt()
+                elapsed = time.monotonic() - started_at
+                reason = runtime.watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
+                    f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"
+                )
+                outcome = capture.outcome(stuck_reason=reason)
+            finally:
+                heartbeat_task.cancel()
 
     return beat.folded(outcome)
