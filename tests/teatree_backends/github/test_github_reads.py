@@ -1,10 +1,11 @@
 import json
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teatree.backends.errors import IssueNotFoundError
-from teatree.backends.github import client as github_client
+from teatree.backends.forge_merge_rpc import Runner
 from teatree.backends.github import reads as github_reads
 from teatree.backends.github.api import is_not_found
 from teatree.backends.github.client import GitHubCodeHost
@@ -20,6 +21,14 @@ def _gh_answers(payload: object) -> MagicMock:
 
 def _gh_fails(stderr: str) -> CommandFailedError:
     return CommandFailedError(["gh"], 1, "", stderr)
+
+
+def _merge_runner_answering(stdout: str, seen_tokens: list[str]) -> Callable[[str], Runner]:
+    def runner(token: str) -> Runner:
+        seen_tokens.append(token)
+        return lambda _argv: (0, stdout, "")
+
+    return runner
 
 
 def test_list_pr_reviews_reads_every_review_page() -> None:
@@ -70,32 +79,69 @@ def test_list_pr_comments_reads_the_paginated_issue_endpoint() -> None:
 
 
 @pytest.mark.parametrize(
-    ("method", "binding", "arguments"),
+    ("method", "arguments", "payload", "transport"),
     [
-        ("list_pr_reviews", "_list_pr_reviews", {"repo": "o/r", "pr_iid": 5}),
-        ("list_repo_open_issues", "_list_repo_open_issues", {"repo": "o/r"}),
-        ("fetch_required_checks_rollup", "_fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}),
-        ("fetch_workflow_runs_at_head", "_fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}),
+        ("list_pr_reviews", {"repo": "o/r", "pr_iid": 5}, [[{"id": 9}]], "api"),
+        ("list_repo_open_issues", {"repo": "o/r"}, [[{"id": 9}]], "api"),
+        ("fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}, [{"id": 9}], "merge"),
+        (
+            "fetch_workflow_runs_at_head",
+            {"slug": "o/r", "head_sha": "a" * 40},
+            [{"workflow_runs": [{"id": 9}]}],
+            "merge",
+        ),
     ],
 )
-def test_host_delegates_reads_with_its_token(method: str, binding: str, arguments: dict[str, object]) -> None:
-    with patch.object(github_client, binding, return_value=[{"id": 9}]) as read:
-        result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
+def test_host_delegates_reads_with_its_token(
+    method: str, arguments: dict[str, object], payload: object, transport: str
+) -> None:
+    seen_tokens: list[str] = []
+
+    def api_run(*_argv: str, token: str, **_kwargs: object) -> MagicMock:
+        seen_tokens.append(token)
+        return _gh_answers(payload)
+
+    if transport == "api":
+        with patch(_RUN_GH, side_effect=api_run):
+            result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
+    else:
+        with patch(
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            side_effect=_merge_runner_answering(json.dumps(payload), seen_tokens),
+        ):
+            result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
 
     assert result == [{"id": 9}]
-    read.assert_called_once_with(**arguments, token="t")
+    assert seen_tokens == ["t"]
 
 
 @pytest.mark.parametrize(
-    ("method", "binding", "arguments"),
+    ("method", "arguments", "payload"),
     [
-        ("fetch_required_checks_rollup", "_fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}),
-        ("fetch_workflow_runs_at_head", "_fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}),
+        ("fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}, [{"id": 9}]),
+        ("fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}, [{"workflow_runs": [{"id": 9}]}]),
     ],
 )
-def test_rollup_reads_pass_the_token_to_the_transport(method: str, binding: str, arguments: dict[str, object]) -> None:
-    with patch.object(github_reads, binding, return_value=[{"id": 9}]) as read:
+def test_rollup_reads_pass_the_token_to_the_transport(
+    method: str, arguments: dict[str, object], payload: object
+) -> None:
+    seen_tokens: list[str] = []
+    with patch(
+        "teatree.backends.forge_merge_rpc.gh_runner",
+        side_effect=_merge_runner_answering(json.dumps(payload), seen_tokens),
+    ):
         result = getattr(github_reads, method)(**arguments, token="t")
 
     assert result == [{"id": 9}]
-    read.assert_called_once_with(**arguments, token="t")
+    assert seen_tokens == ["t"]
+
+
+def test_host_merge_rpc_passes_its_token_to_the_transport() -> None:
+    seen_tokens: list[str] = []
+    with patch(
+        "teatree.backends.forge_merge_rpc.gh_runner", side_effect=_merge_runner_answering("a" * 40, seen_tokens)
+    ):
+        result = GitHubCodeHost(token="t").fetch_live_head_sha(slug="o/r", pr_id=5)
+
+    assert result == "a" * 40
+    assert seen_tokens == ["t"]
