@@ -585,6 +585,14 @@ class TestAdmissionScore:
 
         assert self._admission_order([newer, older]) == [older.pk, newer.pk]
 
+    def test_started_pull_request_has_its_own_stage_score(self) -> None:
+        started = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/804"
+        )
+
+        assert self._score(started) == 150
+
     def test_the_loop_claim_takes_a_newer_review_before_an_older_coding_row(self) -> None:
         self._task(phase="coding")
         review = self._task(phase="reviewing")

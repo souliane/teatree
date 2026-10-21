@@ -185,6 +185,16 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
         assert row.reading.status == SignalStatus.INSTRUMENTATION_GAP
         assert row.evidence["unmeasured_open"] == 1
 
+    def test_old_open_pull_request_stays_red_with_an_unmeasured_peer(self) -> None:
+        self._pr(age_hours=80)
+        PullRequestFactory(ticket=Ticket.objects.create())
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+        assert row.verdict == SignalVerdict.RED
+        assert row.evidence["unmeasured_open"] == 1
+
     def test_open_pull_request_without_a_ticket_clock_ages_from_its_creation(self) -> None:
         PullRequestFactory(ticket=Ticket.objects.create(), create_verified_at=self.now - timedelta(hours=30))
 

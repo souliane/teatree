@@ -273,6 +273,19 @@ class CycleTimePageTestCase(TestCase):
         assert 'class="chip warn"' not in young_row.group()
         assert re.search(rf'{re.escape(young.url)}</a></td>\s*<td class="num">5h</td>', body)
 
+    def test_the_flow_band_shows_empty_open_and_unmeasured_median_states(self) -> None:
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Median of 0 merged pull requests: <strong>—</strong>" in body
+        assert "No open pull requests." in body
+
+    def test_an_open_pull_request_without_a_clock_is_labelled_unmeasured(self) -> None:
+        row = PullRequestFactory(ticket=Ticket.objects.create())
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert re.search(rf'{re.escape(row.url)}</a></td>\s*<td class="num">unmeasured</td>', body)
+
     def test_stale_pull_request_chip_uses_the_threshold(self) -> None:
         started_pull_request(hours_ago=80)
 

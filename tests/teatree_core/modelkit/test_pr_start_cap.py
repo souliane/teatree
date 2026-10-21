@@ -77,7 +77,7 @@ class TestNewPullRequestStartEligibility(TestCase):
         with pytest.raises(InvalidTransitionError, match="pull requests are open"):
             held.claim(claimed_by="worker")
 
-    def test_reviewer_role_cannot_start_an_author_pull_request(self) -> None:
+    def test_reviewer_shipping_is_eligible_at_the_author_pull_request_cap(self) -> None:
         for index in range(OPEN_PR_START_CAP):
             ticket = Ticket.objects.create()
             PullRequest.objects.record_opened(

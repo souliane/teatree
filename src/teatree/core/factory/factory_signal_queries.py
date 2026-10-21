@@ -1,6 +1,11 @@
-"""Derived-on-read factory signal queries over the merge, review, repair and PR ledgers.
+"""Derived-on-read ledger queries for the factory signals (SIG-PR-1).
 
-Every provider here is a read-only select; report composition lives in factory_signals.
+The query engine behind :mod:`teatree.core.factory.factory_signals`: the low-level
+value types (:class:`SignalReading`, :class:`Window`) plus the six per-signal
+``_compute_s*`` functions that read the merge/review/CI/repair ledgers, and the
+rolling-baseline regression predicates. Kept separate from the report-model +
+composition concern so each file stays single-purpose; every function here is a
+read-only ``select`` — no mutation, no LLM calls, no network.
 """
 
 import enum

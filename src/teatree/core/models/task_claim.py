@@ -145,6 +145,10 @@ def claim(
     Without it a parked task claimed at entry would be pre-flight re-parked
     every drain, churning junk park attempts (F5); with it the claim itself
     refuses a parked row and the drain never re-surfaces one.
+
+    ``cleanup_unknown_overlay`` claims only a pending task on a ticket with no
+    dispatchable overlay; it still respects a future park, but bypasses the
+    new-PR cap so an invalid row can be failed while ordinary work is held.
     """
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
