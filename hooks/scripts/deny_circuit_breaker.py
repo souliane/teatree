@@ -65,8 +65,8 @@ _FP_GRANT_SUFFIX = "fp-grants"
 _DENY_CIRCUIT_BREAKER_THRESHOLD = 3
 
 _SIGNATURE_STRIP_RE = re.compile(
-    r"\[(?:gate-escape|quote-ok):[^\]]*\]"
-    r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
+    r"\[gate-escape:[^\]]*\]"
+    r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK)=\S+"
 )
 
 # The PUBLIC-egress leak gate is fail-CLOSED always (BLUEPRINT §17 hard
@@ -202,10 +202,9 @@ def _deny_fingerprint(gate_id: str, reason: str, signature: str) -> str:
     streak — a denied self-bypass no longer poisons unrelated later commands.
     Returns a short hex digest; never raises.
     """
-    # Strip escape/override tokens from the reason FIRST — a gate that echoes the
-    # offending command into its reason (the heavy-Bash gate) would otherwise let
-    # the ``[fp-confirmed:]`` token split the tokened confirming call and the
-    # later tokenless call into two fingerprints, breaking confirm-once-reuse.
+    # Strip escape tokens from the reason FIRST — a gate that echoes the offending
+    # command into its reason would otherwise split the tokened call and its
+    # tokenless retry into two fingerprints.
     normalised = _SIGNATURE_STRIP_RE.sub(" ", reason)
     for pattern in _DENY_FP_VOLATILE_RES:
         normalised = pattern.sub(" ", normalised)

@@ -27,6 +27,7 @@ from hooks.scripts import visible_plan_gate as gate
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.eval.loader import load_eval_yaml
 from teatree.hooks.self_rescue import is_self_rescue
+from tests._gate_escape_audit import audited_escape
 
 _USER = (
     "Handle PROJ-4521 and PROJ-4242. Binding rule: present a per-ticket "
@@ -364,19 +365,9 @@ class TestNeverLockoutEscapes:
         event = _event(_write_transcript(tmp_path), "Bash")
         event["tool_input"] = {"command": "touch notes.md # [gate-escape:visible_plan_gate: scratch file]"}
 
-        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+        with audited_escape(event) as requests:
             assert _verdict(event)[0] is False
-
-    def test_a_token_with_an_empty_reason_does_not_unlock(self, tmp_path: Path) -> None:
-        event = _event(_write_transcript(tmp_path), "Bash")
-        event["tool_input"] = {"command": "touch notes.md  # [visible-plan-ok: ]"}
-
-        assert _verdict(event)[0] is True
-
-    def test_a_token_with_an_empty_reason_on_read_only_bash_does_not_unlock(self, tmp_path: Path) -> None:
-        event = _event(_write_transcript(tmp_path), "Bash")
-        event["tool_input"] = {"command": "ls # [visible-plan-ok: ]"}
-        assert _verdict(event)[0] is False
+        assert [request["gate"] for request in requests] == ["visible_plan_gate"]
 
     def test_kill_switch_disables_the_gate(self, tmp_path: Path) -> None:
         with patch.object(gate, "_gate_enabled", lambda: False):

@@ -8,7 +8,6 @@ from teatree.core.gates.cron_loop_shell_gate import (
     deny_reason,
     find_cron_loop_shell,
 )
-from teatree.hooks.gate_escape import find_escape
 from teatree.loop.loop_cadences import REACTIVE_SLOTS
 
 _TICK_PROMPTS = [
@@ -95,21 +94,6 @@ class TestDenyReason:
         assert finding is not None
 
         assert "t3 loop drain-queue run" in deny_reason(finding)
-
-
-class TestEscapeToken:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("[gate-escape:block-cron-loop-shell: pre-flip box, worker is down]", "pre-flip box, worker is down"),
-            ("prefix [gate-escape:block-cron-loop-shell: reason] suffix", "reason"),
-            ("[gate-escape:block-cron-loop-shell: ]", None),
-            ("[cron-loop-ok: old marker]", None),
-            ("", None),
-        ],
-    )
-    def test_shared_token_extraction(self, text: str, expected: str | None) -> None:
-        assert find_escape(text, "block-cron-loop-shell") == expected
 
 
 class TestFindingShape:

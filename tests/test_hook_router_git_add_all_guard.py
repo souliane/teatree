@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from tests._gate_escape_audit import audited_escape
 
 
 def _bash_event(command: str) -> dict:
@@ -187,16 +188,13 @@ class TestNarrowlyScoped:
 
 
 class TestNeverLockout:
-    def test_a_token_inside_the_wrapped_script_allows(self) -> None:
-        with patch.object(router._gate_escape, "escape_allows", return_value=True):
-            blocked, _payload = _run("bash -c 'git add -A # [gate-escape:git_add_all: scaffold]'")
-        assert blocked is False
-
-    def test_per_call_token_allows(self) -> None:
-        with patch.object(router._gate_escape, "escape_allows", return_value=True):
-            blocked, payload = _run("git add -A # [gate-escape:git_add_all: scaffold]")
+    def test_an_audited_token_allows_once_recorded(self) -> None:
+        command = "git add -A # [gate-escape:git_add_all: scaffold]"
+        with audited_escape(_bash_event(command)) as requests:
+            blocked, payload = _run(command)
         assert blocked is False
         assert payload is None
+        assert [request["gate"] for request in requests] == ["git_add_all"]
 
     def test_kill_switch_disables_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(

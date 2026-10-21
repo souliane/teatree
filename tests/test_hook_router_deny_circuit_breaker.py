@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._gate_escape_audit import write_recording_t3
+
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
@@ -279,6 +281,29 @@ class TestSelfBypassDoesNotPoisonDistinctCommands:
             _assert_streak_count(env, "poison", 1)
 
         assert _circuit_broken(env, "poison") == [], "distinct commands never trip the breaker"
+
+
+class TestRefusedEscapeStillCountsTowardTheBreaker:
+    def test_a_ux_gate_still_relaxes_when_the_escape_cannot_be_audited(
+        self, env: dict[str, str], tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        write_recording_t3(bin_dir, allowed=False)
+        env = {**env, "PATH": f"{bin_dir}:{env['PATH']}"}
+        _seed_pending(env, "tok", ["ac-reviewing-codebase"])
+        call = _skill_deny(env, "tok")
+        call["cwd"] = str(tmp_path)
+        call["tool_input"]["new_string"] = "x = 1  # [gate-escape:skill-loading-enforcement: probe]"
+
+        for _ in range(2):
+            rc, payload, stderr = _run(env, call)
+            _assert_denied(rc, payload)
+            assert "audit unavailable" in stderr
+        rc3, payload3, stderr3 = _run(env, call)
+
+        assert rc3 == 0
+        assert payload3 is None
+        assert "CIRCUIT BREAKER" in stderr3
 
 
 class TestLegacyFalsePositiveToken:

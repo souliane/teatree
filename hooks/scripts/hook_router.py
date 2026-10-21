@@ -313,24 +313,23 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     The caller still returns ``True`` to short-circuit the handler chain
     in ``main()``; ``main()`` translates that into ``sys.exit(2)``.
 
-    Every deny is routed through the repeated-denial circuit breaker
-    (:func:`_apply_deny_circuit_breaker`) so a session that loops on one
-    identical gate cannot burn tokens indefinitely: a UX/non-safety gate
-    auto-relaxes once (the breaker returns ``False`` here, allowing the
-    call), while a safety gate keeps denying with an escalation appended to
-    the reason. The breaker is crash-proof and falls back to the original
-    deny on any internal error.
+    A call carrying ``[gate-escape:<gate_id>: <reason>]`` is allowed only after
+    :func:`~hooks.scripts.gate_escape.escape_allows` has recorded the audit row.
+    Every other deny, including a refused escape, is routed through the
+    repeated-denial circuit breaker (:func:`_apply_deny_circuit_breaker`) so a
+    session that loops on one identical gate cannot burn tokens indefinitely: a
+    UX/non-safety gate auto-relaxes once (the breaker returns ``False`` here,
+    allowing the call), while a safety gate keeps denying with an escalation
+    appended to the reason. The breaker is crash-proof and falls back to the
+    original deny on any internal error.
 
     Returns ``True`` so handlers can ``return emit_pretooluse_deny(...)``,
-    or ``False`` when the breaker auto-relaxed a UX gate.
+    or ``False`` when an escape was recorded or the breaker auto-relaxed a UX gate.
     """
     context = _current_hook_context()
     if gate_id and _gate_escape.escape_allows(context[1], gate_id):
         _record_gate_decision(reason, decision="escape", gate_id=gate_id, context=context)
         return False
-    if gate_id and _gate_escape.escape_requested(context[1], gate_id):
-        reason_out = _suppress_self_auth_hint_for_subagent(reason, context[1], gate_id)
-        return _write_pretooluse_deny(reason_out, gate_id=gate_id, context=context)
     decision = _apply_deny_circuit_breaker(reason, gate_id=gate_id)
     if decision.allow:
         _record_gate_decision(reason, decision="override", gate_id=gate_id, context=_current_hook_context())
@@ -1629,11 +1628,6 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
     r")",
 )
-
-# ``[gate-escape:orchestrator_bash: <non-empty-reason>]`` anywhere in the command is the per-call
-# opt-out for the rare case the loop owner truly needs heavy output inline,
-# mirroring the ``[gate-escape:skill-loading-enforcement: <reason>]`` token. An empty reason does not
-# unblock.
 
 # A heavy verb invoked purely to print its ``--help``/``-h``/``--version`` (and
 # exit immediately) is trivially fast and read-only — NOT the long-running shape

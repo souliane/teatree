@@ -137,7 +137,8 @@ def handle_answer_first_gate(data: dict) -> bool | None:
 
 def _run(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import answer_first_scanner, gate_escape  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks import answer_first_scanner  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.gate_escape import strip_escape  # noqa: PLC0415 — deferred: cold-hook import
 
     if data.get("stop_hook_active") or not _gate_enabled():
         return None
@@ -146,9 +147,7 @@ def _run(data: dict) -> bool | None:
     if turn is None:
         return None
     agent_text = turn[0]
-    verdict = answer_first_scanner.find_unanswered_question(
-        _last_user_text(transcript_path), gate_escape.strip_stop_control_tokens(agent_text)
-    )
+    verdict = answer_first_scanner.find_unanswered_question(_last_user_text(transcript_path), strip_escape(agent_text))
     if verdict is None:
         return None
     if escape_allows(data, "answer_first", turn_text=agent_text):

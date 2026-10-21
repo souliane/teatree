@@ -3,7 +3,6 @@
 import pytest
 
 from teatree.core.gates.standing_grant_ask_gate import StandingGrantAsk, deny_reason, find_standing_grant_ask, repo_refs
-from teatree.hooks.gate_escape import find_escape
 
 _GRANT_COVERED_ASKS = [
     (
@@ -75,24 +74,6 @@ class TestStatusNoiseStillFlags:
         finding = find_standing_grant_ask([question])
 
         assert finding == StandingGrantAsk(question=question)
-
-
-class TestEscapeToken:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            (
-                "[gate-escape:block-standing-grant-ask: the owner asked to be consulted]",
-                "the owner asked to be consulted",
-            ),
-            ("prefix [gate-escape:block-standing-grant-ask: spaced] suffix", "spaced"),
-            ("[gate-escape:block-standing-grant-ask: ]", None),
-            ("[grant-ask-ok: old marker]", None),
-            ("", None),
-        ],
-    )
-    def test_shared_token_extraction(self, text: str, expected: str | None) -> None:
-        assert find_escape(text, "block-standing-grant-ask") == expected
 
 
 class TestRepoRefs:

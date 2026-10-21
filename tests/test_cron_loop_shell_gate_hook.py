@@ -13,6 +13,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import cron_loop_shell_gate
 from hooks.scripts.hook_router import handle_block_cron_loop_shell
+from tests._gate_escape_audit import audited_escape
 
 _PROBE_FAILURE = RuntimeError("probe unavailable")
 
@@ -90,22 +91,21 @@ class TestNeverLockout:
 
         assert handle_block_cron_loop_shell(_cron_event(_TICK_PROMPT)) is False
 
-    def test_per_call_token_allows_and_notes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_audited_token_allows_once_recorded(self) -> None:
+        event = _cron_event(f"[gate-escape:block-cron-loop-shell: pre-flip box] {_TICK_PROMPT}")
+        with audited_escape(event) as requests:
+            assert handle_block_cron_loop_shell(event) is False
+        assert [request["gate"] for request in requests] == ["block-cron-loop-shell"]
 
-        prompt = f"[gate-escape:block-cron-loop-shell: pre-flip box] {_TICK_PROMPT}"
-        monkeypatch.setattr(
-            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "block-cron-loop-shell"
-        )
-        assert handle_block_cron_loop_shell(_cron_event(prompt)) is False
-
-    def test_token_in_the_wakeup_reason_also_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-
+    def test_token_in_the_wakeup_reason_also_allows(self) -> None:
         event = _wakeup_event(_TICK_PROMPT)
         event["tool_input"]["reason"] = "[gate-escape:block-cron-loop-shell: worker is down]"
-        monkeypatch.setattr(
-            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "block-cron-loop-shell"
-        )
-        assert handle_block_cron_loop_shell(event) is False
+        with audited_escape(event) as requests:
+            assert handle_block_cron_loop_shell(event) is False
+        assert [request["gate"] for request in requests] == ["block-cron-loop-shell"]
+
+    def test_a_retired_marker_does_not_allow(self) -> None:
+        assert handle_block_cron_loop_shell(_cron_event(f"[cron-loop-ok: pre-flip box] {_TICK_PROMPT}")) is True
 
     def test_cold_env_without_the_core_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cron_loop_shell_gate, "_load_core", lambda: None)

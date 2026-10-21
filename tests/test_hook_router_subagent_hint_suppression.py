@@ -68,11 +68,9 @@ class TestSuppressHelperUnit:
     def test_main_agent_unchanged(self) -> None:
         assert router._suppress_self_auth_hint_for_subagent(self._HINTED, {}) == self._HINTED
 
-    def test_privacy_deny_has_no_inline_approval_hint(self) -> None:
+    def test_a_never_escapable_gate_message_is_left_untouched_for_a_subagent(self) -> None:
         out = router._suppress_self_auth_hint_for_subagent(self._HINTED, {"agent_id": "a-1"}, "dispatch_quote_scanner")
         assert out == self._HINTED
-        assert "quote-ok" not in out
-        assert "does not accept an inline escape" in out
 
     def test_human_only_hint_is_rewritten_for_subagent(self) -> None:
         reason = "BLOCKED: raw review post. Use `[gate-escape:raw_review_post: <reason>]` after owner approval."

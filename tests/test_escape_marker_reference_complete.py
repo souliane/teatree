@@ -56,7 +56,7 @@ def _implemented_markers(roots: tuple[str, ...] = _GATE_ROOTS) -> set[str]:
 
 def _stripped_tokens() -> set[str]:
     """The `[<token>: …]` names the circuit breaker folds out of a call signature."""
-    alternation = re.search(r"\\\[\(\?:([^)]+)\)", dcb._SIGNATURE_STRIP_RE.pattern)
+    alternation = re.search(r"\\\[(?:\(\?:)?([a-z0-9|-]+)\)?:", dcb._SIGNATURE_STRIP_RE.pattern)
     assert alternation is not None, "could not parse _SIGNATURE_STRIP_RE bracket alternation"
     return set(alternation.group(1).split("|"))
 

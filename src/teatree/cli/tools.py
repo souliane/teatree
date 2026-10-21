@@ -3,18 +3,17 @@
 import json
 import os
 import sys
-from dataclasses import fields
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.core.modelkit.escape_scope import ESCAPE_SCOPE_FIELDS, EscapeScope
 from teatree.core.overlay_loader import get_all_overlays, get_overlay, get_overlay_for_repo
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
-    from teatree.core.models.gate_escape import EscapeScope
     from teatree.core.overlay import OverlayBase
 
 _GATE_ESCAPE_INPUT_LIMIT = 32768
@@ -62,13 +61,10 @@ def privacy_scan(
 
 class GateEscapeTool:
     @staticmethod
-    def _read_scope() -> "EscapeScope":
-        from teatree.core.models.gate_escape import EscapeScope  # noqa: PLC0415 — load after Django bootstrap
-
+    def _read_scope() -> EscapeScope:
         raw = sys.stdin.read(_GATE_ESCAPE_INPUT_LIMIT + 1)
         payload = json.loads(raw)
-        names = {field.name for field in fields(EscapeScope)}
-        if len(raw) > _GATE_ESCAPE_INPUT_LIMIT or not isinstance(payload, dict) or set(payload) != names:
+        if len(raw) > _GATE_ESCAPE_INPUT_LIMIT or not isinstance(payload, dict) or set(payload) != ESCAPE_SCOPE_FIELDS:
             message = "Gate escape scope is malformed"
             raise ValueError(message)
         if any(not isinstance(value, str) for value in payload.values()):
@@ -77,7 +73,7 @@ class GateEscapeTool:
         return EscapeScope(**payload)
 
     @staticmethod
-    def _record_scope(scope: "EscapeScope") -> None:
+    def _record_scope(scope: EscapeScope) -> None:
         from teatree.core.models.gate_escape import GateEscape  # noqa: PLC0415 — load after Django bootstrap
         from teatree.hooks.gate_escape import (  # noqa: PLC0415 — keep audit policy with its CLI call
             EscapePolicy,
@@ -86,9 +82,9 @@ class GateEscapeTool:
 
         policy = policy_for(scope.gate)
         if policy is EscapePolicy.AUDITED:
-            GateEscape.record_agent(scope)
+            GateEscape.objects.record_agent(scope)
         elif policy is EscapePolicy.HUMAN_ONLY:
-            if GateEscape.consume_human(scope) is None:
+            if GateEscape.objects.consume_human(scope) is None:
                 from teatree.core.gates.gate_escape_request import request_owner_escape  # noqa: PLC0415 — grant only
 
                 request_owner_escape(scope)

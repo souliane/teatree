@@ -2,8 +2,11 @@ import json
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 from hooks.scripts import gate_escape as hook_escape
 from hooks.scripts import hook_router
+from tests._gate_escape_audit import NEVER_ESCAPABLE_GATES
 
 
 def _data(command: str) -> dict:
@@ -18,7 +21,6 @@ def _data(command: str) -> dict:
 
 def test_no_token_does_not_attempt_audit() -> None:
     with patch.object(hook_escape, "run_t3") as run:
-        assert hook_escape.escape_requested(_data("git status"), "main_clone") is False
         assert hook_escape.escape_allows(_data("git status"), "main_clone") is False
     run.assert_not_called()
 
@@ -32,13 +34,28 @@ def test_matching_token_audits_the_exact_call_before_allow() -> None:
         patch.object(hook_escape, "t3_argv", return_value=["/usr/local/bin/t3", "tool", "gate-escape"]),
         patch.object(hook_escape, "_head", return_value="a" * 40),
     ):
-        assert hook_escape.escape_requested(data, "main_clone") is True
         assert hook_escape.escape_allows(data, "main_clone") is True
     request = json.loads(run.call_args.kwargs["stdin_text"])
     assert request["gate"] == "main_clone"
+    assert request["excerpt"] == "git status"
     assert request["session_id"] == "session-1"
     assert request["call_id"] == "call-1"
     assert request["head"] == "a" * 40
+
+
+def test_the_audited_excerpt_carries_no_credential() -> None:
+    data = _data("git push https://user:hunter2@example.test/r.git # [gate-escape:main_clone: fixture]")
+    with (
+        patch.object(
+            hook_escape, "run_t3", return_value=subprocess.CompletedProcess([], 0, '{"allowed": true}', "")
+        ) as run,
+        patch.object(hook_escape, "t3_argv", return_value=["/usr/local/bin/t3", "tool", "gate-escape"]),
+        patch.object(hook_escape, "_head", return_value=""),
+    ):
+        assert hook_escape.escape_allows(data, "main_clone") is True
+    excerpt = json.loads(run.call_args.kwargs["stdin_text"])["excerpt"]
+    assert "hunter2" not in excerpt
+    assert excerpt.startswith("git push")
 
 
 def test_audit_failure_preserves_the_deny() -> None:
@@ -64,25 +81,6 @@ def test_shared_deny_writer_uses_escape_before_breaker() -> None:
     breaker.assert_not_called()
 
 
-def test_unrecorded_escape_cannot_be_auto_relaxed_by_breaker() -> None:
-    data = _data("git status # [gate-escape:skill-loading-enforcement: fixture]")
-    with (
-        patch.object(hook_router, "_current_hook_context", return_value=("PreToolUse", data)),
-        patch.object(hook_escape, "escape_allows", return_value=False),
-        patch.object(hook_router, "_apply_deny_circuit_breaker") as breaker,
-        patch.object(hook_router, "_write_pretooluse_deny", return_value=True) as deny,
-    ):
-        assert hook_router.emit_pretooluse_deny("blocked", gate_id="skill-loading-enforcement") is True
-    breaker.assert_not_called()
-    deny.assert_called_once()
-
-
-def test_unreadable_parser_keeps_escape_request_in_deny_path() -> None:
-    data = _data("git status # [gate-escape:main_clone: fixture]")
-    with patch.object(hook_escape, "teatree_src_on_path", side_effect=OSError("unavailable")):
-        assert hook_escape.escape_requested(data, "main_clone") is True
-
-
 def test_missing_t3_refuses_and_names_the_cause(capsys) -> None:
     data = _data("git status # [gate-escape:main_clone: fixture]")
     with (
@@ -93,3 +91,20 @@ def test_missing_t3_refuses_and_names_the_cause(capsys) -> None:
         assert hook_escape.escape_allows(data, "main_clone") is False
     run.assert_not_called()
     assert "t3 is not on PATH" in capsys.readouterr().err
+
+
+def test_a_payload_without_a_session_id_refuses_and_names_the_cause(capsys) -> None:
+    data = _data("git status # [gate-escape:main_clone: fixture]") | {"session_id": ""}
+    with patch.object(hook_escape, "run_t3") as run:
+        assert hook_escape.escape_allows(data, "main_clone") is False
+    run.assert_not_called()
+    assert "no session id or working directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("gate", NEVER_ESCAPABLE_GATES)
+def test_a_never_escapable_gate_is_refused_before_any_audit(gate: str, capsys) -> None:
+    data = _data(f"git status # [gate-escape:{gate}: fixture]")
+    with patch.object(hook_escape, "run_t3") as run:
+        assert hook_escape.escape_allows(data, gate) is False
+    run.assert_not_called()
+    assert "never accepts an escape" in capsys.readouterr().err

@@ -7,11 +7,9 @@ from enum import StrEnum
 
 _TOKEN_RE = re.compile(r"\[gate-escape:([a-z0-9_.-]+):\s*(\S[^\]]*?)\s*\]")
 _STRIP_RE = re.compile(r"[ \t]*(?:#[ \t]*)?\[gate-escape:[a-z0-9_.-]+:[^\]]*\]")
-_STOP_LEGACY_RE = re.compile(
-    r"\[(?:skip-answer-gate|skip-completion-gate|skip-evidence-gate|standing-goal-hold):[^\]]*\]"
-)
 _MAX_NESTING = 3
 _SCAN_WINDOW = 512
+_EXCERPT_LIMIT = 200
 
 
 class EscapePolicy(StrEnum):
@@ -28,6 +26,7 @@ _NEVER = frozenset(
         "foreign_branch_push_force_delete",
         "quote_scanner",
         "secret_file_print",
+        "self_dm",
         "verbatim_operator_paste",
         "void_merge",
     }
@@ -61,7 +60,6 @@ _AUDITED = frozenset(
         "plan_gate",
         "protect_default_branch",
         "raw_pid_kill",
-        "self_dm",
         "single_branch_repo",
         "skill-loading-enforcement",
         "unapprovable_author_create",
@@ -111,10 +109,6 @@ def strip_escape(text: str) -> str:
     return _STRIP_RE.sub("", text).strip()
 
 
-def strip_stop_control_tokens(text: str) -> str:
-    return _STOP_LEGACY_RE.sub("", strip_escape(text))
-
-
 def _without_escape(value: object) -> object:
     if isinstance(value, str):
         return strip_escape(value)
@@ -133,3 +127,10 @@ def action_digest(tool_name: str, tool_input: object) -> str:
         ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def action_excerpt(value: object) -> str:
+    text = value.get("command") if isinstance(value, dict) else value
+    if not isinstance(text, str):
+        text = json.dumps(_without_escape(value), sort_keys=True, ensure_ascii=False, default=str)
+    return " ".join(strip_escape(text).split())[:_EXCERPT_LIMIT]

@@ -25,6 +25,7 @@ import pytest
 import hooks.scripts.hook_router as router
 import hooks.scripts.unknown_repo_push_gate as scope_gate
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from tests._gate_escape_audit import audited_escape
 
 if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
@@ -253,16 +254,11 @@ class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = _repo_with_remote(tmp_path / "tok", "git@github.com:randomuser/randomrepo.git")
         command = "git push origin HEAD # [gate-escape:unknown_repo_push: vetted one-off]"
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setattr(router._gate_escape, "escape_allows", lambda data, gate_id: True)
-            assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is False
+        event = _push_event(command, repo)
+        with audited_escape(event) as requests:
+            assert router.handle_block_unknown_repo_push(event) is False
         assert _parse_deny(capsys) is None
-
-    def test_empty_token_does_not_allow(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        repo = _repo_with_remote(tmp_path / "tok2", "git@github.com:randomuser/randomrepo.git")
-        command = "git push origin HEAD  # [scope-push-ok: ]"
-        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is True
-        assert _parse_deny(capsys) is not None
+        assert [request["gate"] for request in requests] == ["unknown_repo_push"]
 
     def test_kill_switch_disables_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo_with_remote(tmp_path / "killed", "git@github.com:randomuser/randomrepo.git")

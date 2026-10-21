@@ -118,33 +118,9 @@ class TestHandlerDeny:
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
 
-    def test_a_copied_fenced_token_does_not_authorise_the_whole_dispatch(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # MAJOR (MR !225 finding): a `[quote-ok: ...]` token merely quoted, on its
-        # own line, INSIDE a copied fenced document must NOT authorise a HIGH match
-        # elsewhere in the same dispatch. The decoy sits well past the 512-char
-        # window (padding + fenced block), where only the prior own-line-anywhere
-        # scan ever recognised it.
-        padding = "Implement the described feature end to end, in full. " * 20
-        assert len(padding) > 512, "the decoy must sit past the window, or this proves nothing"
-        fenced_decoy = (
-            "```text\n"
-            "Notes pasted from an old planning doc:\n"
-            "[quote-ok: relaying an old, unrelated authorisation]\n"
-            "End of pasted notes.\n"
-            "```\n"
-        )
-        data = _agent(padding + "\n\n" + fenced_decoy, description="## User ask (verbatim, 2026-05-20)")
-        blocked = handle_dispatch_prompt_quote_scanner(data)
-        assert blocked is True, "the copied token must not clear the HIGH match on the description field"
-        decision = json.loads(capsys.readouterr().out)
-        assert decision["permissionDecision"] == "deny"
-        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
-
 
 class TestHandlerAllow:
-    """The opt-out token and clean/MEDIUM prompts pass without false-deny."""
+    """A legacy opt-out token never clears a HIGH match; clean/MEDIUM prompts pass without false-deny."""
 
     def test_legacy_quote_token_cannot_clear_high_match(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -179,25 +155,6 @@ class TestHandlerAllow:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
-
-    def test_genuine_author_override_in_description_still_clears_a_high_match_beside_a_decoy(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # Over-block check, symmetric to the bypass check above: the SAME decoy
-        # shape (a copied fenced block past the window) must not stop the
-        # LEGITIMATE escape — an author-written token in the one-line
-        # `description` field — from clearing the dispatch.
-        padding = "Implement the described feature end to end, in full. " * 20
-        fenced_decoy = (
-            "```text\nNotes pasted from an old planning doc:\n"
-            "[quote-ok: relaying an old, unrelated authorisation]\nEnd of pasted notes.\n```\n"
-        )
-        prompt = padding + "\n\n" + fenced_decoy
-        description = "## User ask (verbatim, 2026-05-20) [quote-ok: relaying the owner's verbatim authorisation]"
-        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt, description=description))
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
-        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
 
 class TestToolScope:

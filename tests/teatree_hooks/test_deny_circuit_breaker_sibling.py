@@ -92,13 +92,6 @@ class TestLeakGateNeverGranted:
         assert "foreign_branch_push_force_delete" in dcb.NON_GRANTABLE_GATE_IDS
         assert "foreign_branch_push" not in dcb.NON_GRANTABLE_GATE_IDS
 
-    def test_non_leak_deny_with_legacy_token_still_denies(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        self._ctx(monkeypatch, tmp_path, "uv run pytest --no-cov -q [fp-confirmed: known quick]")
-        decision = dcb.apply_deny_circuit_breaker("BLOCKED: the orchestrator ran a heavy command.")
-        assert decision.allow is False
-
 
 class TestCallSignatureDiscrimination:
     """#3252 — the call signature distinguishes commands and folds out escape tokens."""

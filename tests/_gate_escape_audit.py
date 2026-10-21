@@ -14,6 +14,17 @@ from hooks.scripts import gate_escape
 from teatree.cli import app
 
 _ARGV = ["/usr/local/bin/t3", "tool", "gate-escape"]
+NEVER_ESCAPABLE_GATES = (
+    "ai_signature",
+    "banned_terms",
+    "dispatch_quote_scanner",
+    "foreign_branch_push_force_delete",
+    "quote_scanner",
+    "secret_file_print",
+    "self_dm",
+    "verbatim_operator_paste",
+    "void_merge",
+)
 type Budget = Callable[[float], float | None]
 
 
@@ -43,11 +54,12 @@ def audited_escape(
         yield requests
 
 
-def write_recording_t3(bin_dir: Path) -> Path:
+def write_recording_t3(bin_dir: Path, *, allowed: bool = True) -> Path:
+    """Put a fake ``t3`` first on PATH that records the audit request and answers *allowed*."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / "t3"
-    script.write_text(
-        '#!/bin/sh\ncat > "$(dirname "$0")/gate-escape-request.json"\necho \'{"allowed": true}\'\n', encoding="utf-8"
-    )
+    verdict = '{"allowed": true}' if allowed else '{"allowed": false, "reason": "audit unavailable"}'
+    record = 'cat > "$(dirname "$0")/gate-escape-request.json"'
+    script.write_text(f"#!/bin/sh\n{record}\necho '{verdict}'\nexit {0 if allowed else 1}\n", encoding="utf-8")
     script.chmod(0o755)
     return bin_dir / "gate-escape-request.json"

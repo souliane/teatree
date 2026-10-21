@@ -25,6 +25,7 @@ from django.test import TestCase
 import hooks.scripts.hook_router as router
 import hooks.scripts.standing_goal_stop_gate as gate
 from teatree.core.models import StandingGoal
+from tests._gate_escape_audit import audited_escape
 
 
 def _assistant(text: str) -> dict:
@@ -184,13 +185,10 @@ class TestAuditedStandingGoalEscape(_GateTest):
         assert result is True
         assert blocked["decision"] == "block"
 
-    def test_audited_escape_allows_one_stop(self) -> None:
+    def test_audited_escape_is_recorded_for_this_session_then_allows_the_stop(self) -> None:
         StandingGoal.objects.set_goal("evals-green", "false")
-        text = "blocked [gate-escape:standing_goal_stop: infra]"
-        with patch.object(gate, "escape_allows", return_value=True) as audit:
-            result, decision = self._run(text=text)
+        with audited_escape({}, event="Stop") as requests:
+            result, decision = self._run(text="blocked [gate-escape:standing_goal_stop: infra]", extra={"cwd": "/work"})
         assert result is None
         assert decision == {}
-        audit.assert_called_once()
-        assert audit.call_args.args[1] == "standing_goal_stop"
-        assert audit.call_args.kwargs["turn_text"] == text
+        assert [(request["gate"], request["session_id"]) for request in requests] == [("standing_goal_stop", "s-goal")]

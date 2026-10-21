@@ -469,21 +469,6 @@ def test_legacy_token_does_not_let_the_final_reply_end(tmp_path: Path) -> None:
     assert json.loads(result.stdout)["decision"] == "block"
 
 
-def test_empty_escape_reason_still_blocks(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    result = _run_hook(
-        tmp_path,
-        "Stop",
-        {
-            "session_id": "owner-turn",
-            "transcript_path": str(transcript),
-            "last_assistant_message": _DECISION_LIST + "\n[owner-question-ok: ]",
-        },
-    )
-
-    assert json.loads(result.stdout)["decision"] == "block"
-
-
 def test_kill_switch_lets_both_arms_through(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     payload = {"session_id": "owner-turn", "transcript_path": str(transcript)}
@@ -804,23 +789,6 @@ def test_question_escape_requires_an_audit(*, recorded: bool, capsys: pytest.Cap
         assert "recorded for this action" in capsys.readouterr().err
 
 
-def test_legacy_owner_question_marker_does_not_bypass_question() -> None:
-    data = {
-        "tool_name": "AskUserQuestion",
-        "tool_input": {"questions": [_ask("Merge ticket 42 now? [owner-question-ok: old]")]},
-    }
-    with (
-        patch.object(owner_gate, "_dispatched_agent", return_value=False),
-        patch.object(owner_gate, "_gate_enabled", return_value=True),
-        patch.object(owner_gate, "_owner_reads_this_turn", return_value=True),
-        patch.object(owner_gate, "_fit_problems", return_value=["question too specific"]),
-        audited_escape(data) as requests,
-    ):
-        assert owner_gate.handle_block_unfit_question(data)
-
-    assert requests == []
-
-
 @pytest.mark.parametrize("recorded", [False, True])
 def test_final_reply_escape_requires_an_audit(*, recorded: bool, capsys: pytest.CaptureFixture[str]) -> None:
     data = {
@@ -840,18 +808,3 @@ def test_final_reply_escape_requires_an_audit(*, recorded: bool, capsys: pytest.
     assert [request["gate"] for request in requests] == ["owner-question-decision"]
     if recorded:
         assert "recorded for this action" in capsys.readouterr().err
-
-
-def test_legacy_owner_question_marker_does_not_bypass_final_reply() -> None:
-    data = {"last_assistant_message": "Needs you: merge this now?\n[owner-question-ok: old]"}
-    with (
-        patch.object(owner_gate, "_dispatched_agent", return_value=False),
-        patch.object(owner_gate, "_gate_enabled", return_value=True),
-        patch.object(owner_gate, "_owner_reads_this_turn", return_value=True),
-        patch.object(owner_gate, "_sanctioned_prose", return_value=False),
-        patch.object(owner_gate, "find_decision_prose", return_value="merge this now?"),
-        audited_escape(data, event="Stop") as requests,
-    ):
-        assert owner_gate.handle_block_decision_prose(data) is True
-
-    assert requests == []

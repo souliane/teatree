@@ -10,12 +10,13 @@ from django.db.models import Max, Min
 from django.utils import timezone
 
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
+from teatree.core.modelkit.escape_scope import EscapeScope
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.gate_escape import EscapeScope, GateEscape, GateEscapeError
+from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
@@ -106,7 +107,7 @@ def _prepare_escape(_row: DeferredQuestion, action: ActionRequest, actor: str) -
 
     def write() -> str:
         try:
-            grant = GateEscape.grant_human(scope, issuer_id=actor, ttl=timedelta(hours=1))
+            grant = GateEscape.objects.grant_human(scope, issuer_id=actor, ttl=timedelta(hours=1))
         except GateEscapeError as exc:
             raise OwnerActionRefusedError(str(exc)) from exc
         return f"Approved one gate escape {grant.pk}."

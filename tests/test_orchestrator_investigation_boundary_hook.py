@@ -268,25 +268,15 @@ class TestSubagentNeverNudged:
         assert capsys.readouterr().err.strip() == ""
 
 
-class TestOrchestrationOkEscapeHatch:
+class TestRetiredOrchestrationMarker:
     """The retired marker cannot suppress an advisory."""
 
     @pytest.fixture(autouse=True)
     def _is_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gate, "_session_is_loop_owner", lambda _sid: True)
 
-    def test_token_in_bash_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_the_retired_marker_does_not_suppress_the_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = _owner_bash("git show HEAD [orchestration-ok: routing the next dispatch]")
-        assert handle_enforce_orchestrator_investigation_boundary(data) is False
-        assert "[orchestration-boundary]" in capsys.readouterr().err
-
-    def test_token_in_edit_content_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _owner_call("Edit", file_path="src/x.py", new_string="x  [orchestration-ok: sanctioned memory write]")
-        assert handle_enforce_orchestrator_investigation_boundary(data) is False
-        assert "[orchestration-boundary]" in capsys.readouterr().err
-
-    def test_empty_reason_does_not_suppress(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _owner_bash("git show HEAD [orchestration-ok: ]")
         assert handle_enforce_orchestrator_investigation_boundary(data) is False
         assert "[orchestration-boundary]" in capsys.readouterr().err
 
