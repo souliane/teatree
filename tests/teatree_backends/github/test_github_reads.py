@@ -119,6 +119,34 @@ def test_host_delegates_reads_with_its_token(
     assert seen_tokens == ["t"]
 
 
+@pytest.mark.parametrize(
+    ("method", "arguments", "read_helper", "payload"),
+    [
+        ("fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}, "_fetch_required_checks_rollup", [{"id": 9}]),
+        (
+            "fetch_workflow_runs_at_head",
+            {"slug": "o/r", "head_sha": "a" * 40},
+            "_fetch_workflow_runs_at_head",
+            [{"workflow_runs": [{"id": 9}]}],
+        ),
+    ],
+)
+def test_host_check_reads_use_the_reads_interface(
+    method: str, arguments: dict[str, object], read_helper: str, payload: object
+) -> None:
+    with (
+        patch.object(github_reads, read_helper, return_value=[{"id": "from-read"}]) as read,
+        patch(
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=lambda _argv: (0, json.dumps(payload), ""),
+        ),
+    ):
+        result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
+
+    assert result == [{"id": "from-read"}]
+    read.assert_called_once_with(**arguments, token="t")
+
+
 def test_host_merge_rpc_passes_its_token_to_the_transport() -> None:
     seen_tokens: list[str] = []
     with patch(
