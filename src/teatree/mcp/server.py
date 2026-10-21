@@ -21,8 +21,9 @@ tools carry ``read_only_hint``; the write tools name their gated seam in
 phase without the ``mcp_write`` capability launches) registers only the tools
 annotated ``read_only_hint`` — every core, service, mailbox and overlay tool passes
 the one registration choke point, and a tool with no annotation counts as a write.
-*allowed_writes* (``--allow-write``) names the write tools such a server still
-registers: the one a phase's own deliverable goes through.
+*allowed_writes* (``--allow-write``) names non-read-only tools such a server still
+registers: a phase's deliverable tool or, for planning, reviewing and critic_reviewing,
+the three peer-mailbox tools. Other read-only phases retain only mailbox self and peers.
 
 The live agent mailbox is a separate, addressed communication surface, present
 only when the runner binds this MCP child to a running TeaTree task.
