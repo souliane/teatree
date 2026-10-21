@@ -328,10 +328,13 @@ def render_open_relays(relays: Sequence[OpenRelayPayload]) -> str:
         return ""
     header = (
         f"Open Slack relays from this session ({len(relays)}) — follow each thread on Slack, and step in there "
-        "when the factory's reply is missing, late, failed or weaker than yours:"
+        "when the factory's reply is missing, late, failed or weaker than yours; once the owner is answered "
+        "there, `t3 <overlay> pending_chat mark-answered <ts>` closes the relay:"
     )
     lines = [header]
-    lines.extend(f"  relay {relay['id']} ({relay['state']}): {relay['text']}" for relay in relays)
+    lines.extend(
+        f"  relay {relay['id']} ts={relay['slack_ts']} ({relay['state']}): {relay['text']}" for relay in relays
+    )
     return "\n".join(lines)
 
 

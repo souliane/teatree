@@ -150,6 +150,24 @@ class TestARelayInTheFinalTurnSatisfiesTheGate:
 
         assert handle_slack_first_gate(_stop(transcript)) is None
 
+    @pytest.mark.parametrize(
+        "source_read",
+        [
+            f'RELAY_RECEIPT_MARKER: Final = "{RELAY_RECEIPT_MARKER}"',
+            f"the command prints `{RELAY_REFUSED_MARKER}` with exit 3 when the prompt is blank",
+            f"{RELAY_RECEIPT_MARKER} is the line the relay prints",
+        ],
+        ids=["constant", "prose-refusal", "prose-receipt"],
+    )
+    def test_reading_the_relay_source_or_docs_in_the_turn_is_not_a_relay(
+        self, tmp_path: Path, source_read: str
+    ) -> None:
+        transcript = _transcript(
+            tmp_path, _user(_PROMPT), _tool_call(), _tool_result(source_read), _assistant("The relay prints a marker.")
+        )
+
+        assert handle_slack_first_gate(_stop(transcript)) is True
+
     def test_a_marker_the_agent_typed_into_its_own_prose_does_not_count(self, tmp_path: Path) -> None:
         transcript = _transcript(tmp_path, _user(_PROMPT), _assistant(f"All done. {_RECEIPT}"))
 

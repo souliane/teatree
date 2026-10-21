@@ -145,7 +145,7 @@ def _run(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
     from hooks.scripts.owner_prompts import last_owner_turn  # noqa: PLC0415 deferred cold-hook import
     from teatree.hooks import answer_first_scanner  # noqa: PLC0415 — deferred: cold-hook import
-    from teatree.hooks.slack_first_scanner import has_relay_marker  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.slack_first_scanner import has_relay_receipt  # noqa: PLC0415 — deferred: cold-hook import
 
     if data.get("stop_hook_active") or not _gate_enabled():
         return None
@@ -157,7 +157,7 @@ def _run(data: dict) -> bool | None:
     if reason := _skip_token(agent_text):
         sys.stderr.write(f"NOTE: answer-first gate skipped via [skip-answer-gate: {reason}].\n")
         return None
-    relay_receipt = has_relay_marker(last_owner_turn(transcript_path).tool_results)
+    relay_receipt = has_relay_receipt(last_owner_turn(transcript_path).tool_results)
     verdict = answer_first_scanner.find_unanswered_question(
         _last_user_text(transcript_path), agent_text, relay_receipt=relay_receipt
     )

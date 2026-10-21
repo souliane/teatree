@@ -358,6 +358,14 @@ class TestOpenRelaysRideTheDelivery:
         assert "ship the docs?" in theirs
         assert "is it merged?" not in theirs
 
+    def test_the_block_names_each_relays_ts_and_the_command_that_closes_it(self, published: None) -> None:
+        _publish_relays({"sess-1": [_relay(12, "is it merged?")]})
+
+        block = _due("sess-1")
+
+        assert "ts=12.0" in block
+        assert "pending_chat mark-answered" in block
+
     def test_a_session_with_no_open_relay_is_told_nothing_extra(self, published: None) -> None:
         _publish_relays({"sess-9": [_relay(12, "is it merged?")]})
 

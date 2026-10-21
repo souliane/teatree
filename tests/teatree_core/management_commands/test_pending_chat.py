@@ -242,6 +242,22 @@ class TestRelaySubcommand:
         assert code is None
         assert PendingChatInjection.objects.get().text == PROMPT
 
+    @pytest.mark.parametrize("content", [None, b"\xff\xfe not utf-8"], ids=["missing", "not-utf8"])
+    def test_an_unreadable_prompt_file_is_a_refusal_sending_the_prompt_back_to_the_terminal(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], content: bytes | None
+    ) -> None:
+        prompt_file = tmp_path / "prompt.txt"
+        if content is not None:
+            prompt_file.write_bytes(content)
+        dm = FakeOwnerDm()
+        with live_factory_slack(dm), patch(_WAKE) as wake:
+            code = _relay_argv("--relay-id", "r1", "--text-file", str(prompt_file))
+
+        assert code == 3
+        assert capsys.readouterr().out.startswith(f"t3-relay-refused: unreadable: {prompt_file}")
+        assert (dm.posts, PendingChatInjection.objects.count()) == ([], 0)
+        wake.enqueue.assert_not_called()
+
     def test_a_retry_with_the_same_relay_id_prints_the_same_receipt_and_wakes_once(
         self, capsys: pytest.CaptureFixture[str], django_capture_on_commit_callbacks
     ) -> None:

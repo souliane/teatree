@@ -10,9 +10,8 @@ from typing import Final, NamedTuple
 RELAY_RECEIPT_MARKER: Final = "t3-relay-receipt:"
 RELAY_REFUSED_MARKER: Final = "t3-relay-refused:"
 
-_MARKER_RE: Final[re.Pattern[str]] = re.compile(
-    rf"(?:{re.escape(RELAY_RECEIPT_MARKER)}|{re.escape(RELAY_REFUSED_MARKER)})", re.MULTILINE
-)
+_RECEIPT_RE: Final[re.Pattern[str]] = re.compile(rf"{re.escape(RELAY_RECEIPT_MARKER)} pending_chat=\d+ ts=\S")
+_REFUSAL_RE: Final[re.Pattern[str]] = re.compile(rf"{re.escape(RELAY_REFUSED_MARKER)} \S")
 
 
 _PROMPT_PREVIEW_CHARS: Final = 120
@@ -24,9 +23,14 @@ class SlackFirstVerdict(NamedTuple):
     prompt: str
 
 
+def has_relay_receipt(text: str) -> bool:
+    """Whether *text* carries the line the relay prints once the ask is posted and queued."""
+    return _RECEIPT_RE.search(text) is not None
+
+
 def has_relay_marker(text: str) -> bool:
-    """Whether *text* carries a relay receipt or a relay refusal."""
-    return _MARKER_RE.search(text) is not None
+    """Whether *text* carries a relay receipt or a relay refusal: the relay was attempted either way."""
+    return has_relay_receipt(text) or _REFUSAL_RE.search(text) is not None
 
 
 def find_unrelayed_prompt(owner_words: str, turn_tool_results: str, *, slack_live: bool) -> SlackFirstVerdict | None:

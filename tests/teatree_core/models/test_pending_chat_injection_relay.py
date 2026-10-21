@@ -8,7 +8,9 @@ import datetime as dt
 from dataclasses import dataclass
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -237,3 +239,34 @@ class TestRelayFollowUp(TestCase):
 
         assert {row.pk for row in mine} == {silent.pk, failed.pk, stalled.pk}
         assert {row.pk for row in everyone} == {silent.pk, failed.pk, stalled.pk, other_session.pk}
+
+    def test_a_relay_the_owner_was_answered_on_is_closed_even_when_its_lane_failed_or_the_reply_never_confirmed(
+        self,
+    ) -> None:
+        failed = _relay_row("5.1", session="s1", age_minutes=10)
+        _delegated(failed, Task.Status.FAILED)
+        silent = _relay_row("5.2", session="s1", age_minutes=10)
+        still_open = _relay_row("5.3", session="s1", age_minutes=10)
+        assert {row.pk for row in PendingChatInjection.objects.open_relays("s1", now=_NOW)} == {
+            failed.pk,
+            silent.pk,
+            still_open.pk,
+        }
+
+        PendingChatInjection.agent_answered_question(failed.slack_ts)
+        PendingChatInjection.agent_answered_question(silent.slack_ts)
+
+        assert [row.pk for row in PendingChatInjection.objects.open_relays("s1", now=_NOW)] == [still_open.pk]
+
+    def test_open_relays_reads_every_delegated_lane_in_a_constant_number_of_queries(self) -> None:
+        for index in range(2):
+            _delegated(_relay_row(f"4.{index}", session="s1", age_minutes=10), Task.Status.FAILED)
+        with CaptureQueriesContext(connection) as few:
+            assert len(list(PendingChatInjection.objects.open_relays(now=_NOW))) == 2
+        for index in range(2, 6):
+            _delegated(_relay_row(f"4.{index}", session="s1", age_minutes=10), Task.Status.FAILED)
+
+        with CaptureQueriesContext(connection) as many:
+            assert len(list(PendingChatInjection.objects.open_relays(now=_NOW))) == 6
+
+        assert len(many) == len(few)

@@ -336,24 +336,50 @@ class TestRegisteredOnTheStopChain:
         assert names.index("handle_answer_first_gate") < names.index("handle_hand_back_answers")
 
 
+_RELAY_RECEIPT = "t3-relay-receipt: pending_chat=7 ts=1700000000.000001 permalink=https://slack.test/p1"
+
+
+def _delegating_turn(tmp_path: Path, tool_output: str) -> dict:
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            _user(_QUESTION),
+            _tool_call("Let me get a lane on it."),
+            _tool_result(tool_output),
+            _assistant(_DISPATCH_ONLY),
+        ],
+    )
+    return {"transcript_path": str(transcript)}
+
+
 class TestARelayReceiptIsTheAnswer:
-    """The question went to the factory's DM through the relay, so the factory — not this turn — answers it."""
+    """The question went to the factory's DM through the relay, so the factory — not this turn — answers it.
 
-    def test_a_dispatch_report_after_a_relay_receipt_is_allowed_while_the_same_turn_without_one_blocks(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    Every case is the same delegating turn; only the tool output differs, so the verdict can only come from it.
+    """
+
+    @pytest.mark.parametrize(
+        "tool_output", [_RELAY_RECEIPT, json.dumps({"marker": _RELAY_RECEIPT})], ids=["cli", "mcp-json"]
+    )
+    def test_a_receipt_in_the_tool_output_lets_the_dispatch_report_through(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], tool_output: str
     ) -> None:
-        receipt = "t3-relay-receipt: pending_chat=7 ts=1700000000.000001 permalink=https://slack.test/p1"
-        relayed = _write_transcript(
-            tmp_path,
-            [_user(_QUESTION), _tool_call("Relaying it."), _tool_result(receipt), _assistant(_DISPATCH_ONLY)],
-        )
-
-        assert handle_answer_first_gate({"transcript_path": str(relayed)}) is None
+        assert handle_answer_first_gate(_delegating_turn(tmp_path, tool_output)) is None
         assert capsys.readouterr().out == ""
 
-        unrelayed = _write_transcript(
-            tmp_path,
-            [_user(_QUESTION), _tool_call("Let me get a lane on it."), _tool_result(), _assistant(_DISPATCH_ONLY)],
-        )
-
-        assert handle_answer_first_gate({"transcript_path": str(unrelayed)}) is True
+    @pytest.mark.parametrize(
+        "tool_output",
+        [
+            "agent dispatched",
+            "t3-relay-refused: slack_not_live: heartbeat_stale",
+            "t3-relay-refused: delivery_failed: the post did not read back",
+            json.dumps({"marker": "t3-relay-refused: slack_not_live: heartbeat_stale"}),
+            'RELAY_RECEIPT_MARKER: Final = "t3-relay-receipt:"',
+        ],
+        ids=["no-relay", "not-live", "delivery-failed", "mcp-json-refusal", "source-read"],
+    )
+    def test_anything_but_a_receipt_keeps_the_dispatch_report_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], tool_output: str
+    ) -> None:
+        assert handle_answer_first_gate(_delegating_turn(tmp_path, tool_output)) is True
+        assert "ANSWER-FIRST GATE" in _decision(capsys)["reason"]

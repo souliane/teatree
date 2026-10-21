@@ -17,6 +17,7 @@ truth for "this row needs a reply".
 
 import datetime as dt
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from functools import partial
 from typing import ClassVar, cast
@@ -117,16 +118,16 @@ class PendingChatInjectionQuerySet(models.QuerySet):
 
         *session_id* narrows to one session's relays (``""`` is a session with no id); ``None`` covers all.
         A delegated relay stays open while its lane's work failed or stalled, because a confirmed
-        reply proves a response, not that the delegated work finished.
+        reply proves a response, not that the delegated work finished. A relay the owner was answered on
+        in Slack (``answered_at``) is closed, which is how ``pending_chat mark-answered`` closes a failed one.
         """
         moment = now or timezone.now()
-        relays = self.filter(is_relayed=True)
+        relays = self.filter(is_relayed=True, answered_at__isnull=True)
         if session_id is not None:
             relays = relays.filter(relayed_by_session=session_id)
         unreplied = Q(loop_response_confirmed_at__isnull=True, received_at__lte=moment - RELAY_QUIET_AFTER)
-        gone_wrong = relays.filter(answer_kind=self.model.AnswerKind.DELEGATED)
-        failed = [row.pk for row in gone_wrong if _lane_gone_wrong(row, moment)]
-        return relays.filter(unreplied | Q(pk__in=failed)).order_by("received_at")
+        delegated = list(relays.filter(answer_kind=self.model.AnswerKind.DELEGATED))
+        return relays.filter(unreplied | Q(pk__in=_pks_with_lane_gone_wrong(delegated, moment))).order_by("received_at")
 
     @staticmethod
     def relay_required(overlay: str) -> bool:
@@ -461,18 +462,26 @@ class PendingChatInjection(models.Model):
         return answered
 
 
-def _lane_gone_wrong(relay: PendingChatInjection, now: dt.datetime) -> bool:
-    """A failed answering task with none finished, or an active one older than the stall bound."""
-    anchor = slack_conversation_anchor(channel=relay.channel, slack_ts=relay.slack_ts)
-    tasks = list(apps.get_model("core", "Task").objects.filter(ticket__issue_url=anchor).values("status", "created_at"))
-    statuses = {task["status"] for task in tasks}
+type _LaneTask = tuple[str, dt.datetime | None]
+
+
+def _pks_with_lane_gone_wrong(relays: list[PendingChatInjection], now: dt.datetime) -> list[int]:
+    """The delegated *relays* whose answering lane has a failed task with none finished, or an active one gone stale."""
+    pk_by_anchor = {slack_conversation_anchor(channel=r.channel, slack_ts=r.slack_ts): r.pk for r in relays}
+    lanes: defaultdict[str, list[_LaneTask]] = defaultdict(list)
+    tasks = apps.get_model("core", "Task").objects.filter(ticket__issue_url__in=list(pk_by_anchor))
+    for anchor, status, created_at in tasks.values_list("ticket__issue_url", "status", "created_at"):
+        lanes[anchor].append((status, created_at))
+    return [pk for anchor, pk in pk_by_anchor.items() if _lane_gone_wrong(lanes[anchor], now)]
+
+
+def _lane_gone_wrong(tasks: list[_LaneTask], now: dt.datetime) -> bool:
+    statuses = {status for status, _ in tasks}
     if "failed" in statuses and "completed" not in statuses:
         return True
     return any(
-        task["status"] in {"pending", "claimed"}
-        and task["created_at"] is not None
-        and task["created_at"] <= now - RELAY_STALLED_AFTER
-        for task in tasks
+        status in {"pending", "claimed"} and created_at is not None and created_at <= now - RELAY_STALLED_AFTER
+        for status, created_at in tasks
     )
 
 

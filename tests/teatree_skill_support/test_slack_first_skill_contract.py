@@ -48,6 +48,7 @@ def test_the_rules_say_a_relay_receipt_is_the_answer() -> None:
     assert RELAY_RECEIPT_MARKER in rules
     assert RELAY_RECEIPT_MARKER in reference
     assert "relay_receipt=True" in reference
+    assert f"a `{RELAY_REFUSED_MARKER}` line does not" in reference
 
 
 def test_the_blueprint_names_the_relay_as_the_second_pending_chat_writer() -> None:

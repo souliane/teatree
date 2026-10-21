@@ -71,6 +71,17 @@ class TestVerdict:
 
         assert t3_master_verdict(caller_session="").outcome is T3MasterGate.FOREIGN_OWNER
 
+    @pytest.mark.parametrize("owner", ["sess-mine", "sess-other"])
+    def test_the_verdict_reads_the_lease_once_so_the_owner_it_names_is_the_row_it_judged(
+        self, django_assert_num_queries, owner: str
+    ) -> None:
+        _claim(owner, owner_pid=os.getpid())
+
+        with django_assert_num_queries(1):
+            verdict = t3_master_verdict(caller_session="sess-mine")
+
+        assert verdict.owner_session == owner
+
     def test_caller_session_defaults_to_the_loop_principal(self) -> None:
         _claim("sess-env", owner_pid=os.getpid())
 

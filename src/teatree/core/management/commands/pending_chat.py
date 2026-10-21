@@ -130,7 +130,16 @@ class Command(TyperCommand):
         if not relay_id.strip() or bool(text) == bool(text_file):
             self.stderr.write("give --relay-id and exactly one of --text or --text-file")
             raise SystemExit(EXIT_USAGE)
-        prompt = Path(text_file).read_text(encoding="utf-8") if text_file else text
+        try:
+            prompt = Path(text_file).read_text(encoding="utf-8") if text_file else text
+        except (OSError, UnicodeDecodeError) as exc:
+            self._report(
+                f"{RELAY_REFUSED_MARKER} unreadable: {text_file} ({type(exc).__name__})",
+                json_output=json_output,
+                status="refused",
+                reason=f"unreadable: {text_file}",
+            )
+            raise SystemExit(EXIT_REFUSED) from exc
         result = PendingChatInjection.objects.relay_attended_ask(
             os.environ.get("T3_OVERLAY_NAME", ""),
             prompt,

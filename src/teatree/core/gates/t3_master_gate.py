@@ -93,9 +93,9 @@ def t3_master_verdict(caller_session: str | None = None) -> T3MasterVerdict:
     seam ``t3 loop claim``/``release`` and the per-loop tick already share — so the
     principal a claim binds is exactly the one this gate matches.
     """
-    if not t3_master_lease_held():
-        return T3MasterVerdict(outcome=T3MasterGate.UNCLAIMED, owner_session="")
     status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
+    if not status.is_live:
+        return T3MasterVerdict(outcome=T3MasterGate.UNCLAIMED, owner_session="")
     session = loop_principal()[0] if caller_session is None else caller_session
     # The worker is the machine-wide driver, never a rival: its own caller runs too.
     if (
