@@ -305,9 +305,10 @@ _FIX_REASON_BY_KIND: dict[str, str] = {
         "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
         "into the head branch, never by rebasing"
     ),
+    # A quiet fix must leave review threads unresolved as well as unanswered.
     RedMrFixAttempt.Kind.REVIEW_FINDINGS: _REVIEW_FINDINGS_BASE
     + (
-        "Then fix and push only. "
+        "Never reply to or resolve a thread. "
         "Never answer a finding on our own MR with another comment. "
         "Escalate only if the fix cannot proceed"
     ),
@@ -338,7 +339,6 @@ def _handle_debug(action: DispatchAction) -> Task | None:
     if not pr_url:
         logger.debug("Skipping t3:debug action with no pr_url: %r", action.detail)
         return None
-    reason = _fix_reason(payload, pr_url)
     with transaction.atomic():
         ticket, _created = _get_or_create_ticket(
             pr_url,
@@ -356,7 +356,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             return None
         return ticket.schedule_implementing(
             "debugging",
-            reason=reason,
+            reason=_fix_reason(payload, pr_url),
         )
 
 

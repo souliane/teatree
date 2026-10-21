@@ -698,8 +698,10 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         assert created[0].phase == "debugging"
         return created[0].execution_reason
 
-    def test_permitted_voice_answers_and_resolves_in_threads_after_one_push(self) -> None:
+    def test_a_permitting_posture_asks_for_thread_answers_one_push_and_resolution(self) -> None:
         reason = self._reason(permitted=True, pr_id=201)
+        assert "https://gitlab.com/group/repo/-/merge_requests/201" in reason
+        assert "Never answer a finding on our own MR with another comment" not in reason
         assert "questions and push-backs" in reason
         assert "push once" in reason
         assert "Fixed in <short sha>." in reason
@@ -718,25 +720,28 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         assert "top-level comment" in reason
         assert "change reviewers" in reason
 
-    def test_forbidden_voice_fixes_and_pushes_without_replying(self) -> None:
+    def test_a_forbidding_posture_says_fix_and_push_only(self) -> None:
         reason = self._reason(permitted=False, pr_id=202)
-        assert "fix and push only" in reason
+        assert "IMPLEMENT" in reason
+        assert "push once" in reason
+        assert "Never reply to or resolve a thread" in reason
         assert "reply-to-discussion" not in reason
         assert "resolve-discussion" not in reason
         assert "Fixed in" not in reason
         assert "Never answer a finding on our own MR with another comment" in reason
         assert "Escalate only if the fix cannot proceed" in reason
 
-    def test_unresolvable_posture_keeps_the_remedy_quiet(self) -> None:
+    def test_an_unresolvable_posture_says_fix_and_push_only(self) -> None:
         ModeOverride.objects.all().delete()
         Mode.objects.all().delete()
         assert owner_voice_permitted() is False
         assert egress_forbidden() is False
         reason = self._reason(permitted=None, pr_id=203)
-        assert "fix and push only" in reason
+        assert "push once" in reason
+        assert "Never reply to or resolve a thread" in reason
         assert "reply-to-discussion" not in reason
 
-    def test_other_fix_kinds_keep_their_remedies_under_a_permitting_posture(self) -> None:
+    def test_other_fix_kinds_keep_their_remedy_under_a_permitting_posture(self) -> None:
         for pr_id, signal_kind, fix_kind in (
             (204, "my_pr.failed", RedMrFixAttempt.Kind.CI_RED),
             (205, "my_pr.conflicted", RedMrFixAttempt.Kind.MERGE_CONFLICT),
