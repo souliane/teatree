@@ -5,7 +5,7 @@ import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, timedelta
+from datetime import UTC
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -16,11 +16,10 @@ from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.agents.harness_dispatch import DispatchHarness, paid_fallback_hold, resolve_dispatch_harness, task_overlay
 from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
-    HarnessRejection,
     InvalidHarnessProviderError,
     NoAvailableHarnessError,
     UnknownHarnessError,
@@ -28,6 +27,7 @@ from teatree.agents.harness_registry import (
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
+from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError
 from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_heartbeat import HEARTBEAT_INTERVAL_SECONDS as _HEARTBEAT_INTERVAL
@@ -130,8 +130,6 @@ class _RouteRetry:
     dispatch: DispatchHarness
 
     def after(self, record: _RouteFailureRecord) -> TaskAttempt:
-        if self.dispatch.harness.capabilities.read_only_venue and not _paid_route_fallback_enabled(self.task):
-            return _park_read_only_route_failure(self.task, self.dispatch, record.reason)
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
         if record.outcome is not None:
             release_finished_thread(self.task)
@@ -189,8 +187,8 @@ def _retry_route_exception(
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
         _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
-    if preflight.dispatch.harness.capabilities.read_only_venue and not _paid_route_fallback_enabled(task):
-        return _park_read_only_route_failure(task, preflight.dispatch, str(exc))
+    if isinstance(exc, ReadOnlyBriefRefusedError) and not _paid_route_fallback_enabled(task):
+        return _park_refused_read_only_brief(task, preflight.dispatch, str(exc))
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
@@ -199,19 +197,12 @@ def _retry_route_exception(
 
 
 def _paid_route_fallback_enabled(task: Task) -> bool:
-    return get_effective_settings(task.ticket.overlay or None).agent_route_paid_fallback
+    return get_effective_settings(task_overlay(task)).agent_route_paid_fallback
 
 
-def _park_read_only_route_failure(task: Task, dispatch: DispatchHarness, reason: str) -> TaskAttempt:
-    detail = f"{reason}; metered fallback requires agent_route_paid_fallback"
-    rejection = HarnessRejection(
-        dispatch.name,
-        detail,
-        retry_at=timezone.now() + timedelta(minutes=2),
-        held=True,
-    )
-    parked = park_on_timed_rejections(task, (rejection,))
-    return parked or _record_failure(task, error=detail)  # no-usage: the brief was refused before a model turn
+def _park_refused_read_only_brief(task: Task, dispatch: DispatchHarness, refusal: str) -> TaskAttempt:
+    hold = paid_fallback_hold(dispatch.name, refusal)
+    return park_on_timed_rejections(task, (hold,)) or _record_failure(task, error=str(hold))  # no-usage: no turn ran
 
 
 def _prepare_run(

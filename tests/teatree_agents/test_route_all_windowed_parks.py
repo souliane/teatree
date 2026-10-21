@@ -86,6 +86,45 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         assert "agent_route_paid_fallback" in attempt.error
         assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
 
+    def test_a_long_codex_window_parks_through_the_metered_gate_until_it_resets(self) -> None:
+        task = self._task()
+        self._register_resolved_paid_harness()
+        window = UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.MANAGED, cause="subscription_session", resets_at=timezone.now() + timedelta(hours=3)
+        )
+        with patch.object(
+            harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
+        ):
+            attempts = [self._dispatch(task, MANAGED, "resolved_paid") for _ in range(3)]
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == window.resets_at
+        assert all(attempt.error.startswith(LIMIT_PARKED_PREFIX) for attempt in attempts)
+
+    def test_a_gated_metered_candidate_after_a_barred_one_fails_after_two_parks_with_a_readable_reason(self) -> None:
+        capabilities = HarnessCapabilities(managed_lane=True)
+        register_harness(
+            HarnessSpec(
+                name=MANAGED,
+                factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
+                capabilities=capabilities,
+                allows_provider=False,
+                unavailable_reason=lambda _context: "no Codex login in the private home",
+            )
+        )
+        task = self._task()
+        self._register_resolved_paid_harness()
+        with patch.object(
+            harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
+        ):
+            attempts = [self._dispatch(task, MANAGED, "resolved_paid") for _ in range(3)]
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert [attempt.error.startswith(LIMIT_PARKED_PREFIX) for attempt in attempts] == [True, True, False]
+        assert "agent_route_paid_fallback" in attempts[-1].error
+
     def test_owner_authorization_permits_a_resolved_metered_second_candidate(self) -> None:
         task = self._task()
         self._register_resolved_paid_harness()

@@ -109,8 +109,12 @@ def read_only_text(text: str) -> str:
     return _TEATREE_COMMAND.sub(f"{ABSENT_TOOL} ", rewritten)
 
 
-def _refused(reason: str) -> HarnessFallbackError:
-    return HarnessFallbackError(
+class ReadOnlyBriefRefusedError(HarnessFallbackError):
+    """The brief cannot be built for this task, so the same task would be refused again on any route."""
+
+
+def _refused(reason: str) -> ReadOnlyBriefRefusedError:
+    return ReadOnlyBriefRefusedError(
         f"read-only executor brief refused: {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False
     )
 

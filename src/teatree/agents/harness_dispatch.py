@@ -105,16 +105,23 @@ def candidate_selection(context: HarnessBuildContext, candidates: list[str]) -> 
     return select_harness(list(pinned), context)
 
 
+_METERED_PROVIDERS = frozenset(
+    {AgentHarnessProvider.API_KEY, AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}
+)
+_PAID_FALLBACK_RECHECK = timedelta(minutes=2)
+_PAID_FALLBACK_REQUIRED = "metered route fallback requires agent_route_paid_fallback"
+
+
+def _is_metered_route(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> bool:
+    return not capabilities.managed_lane and (capabilities.metered_lane or provider in _METERED_PROVIDERS)
+
+
 def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> str:
     from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred Django model import
 
     if capabilities.managed_lane:
         return TaskAttempt.Lane.MANAGED
-    if capabilities.metered_lane or provider in {
-        AgentHarnessProvider.API_KEY,
-        AgentHarnessProvider.OPENAI_COMPATIBLE,
-        AgentHarnessProvider.ANTHROPIC_API,
-    }:
+    if _is_metered_route(capabilities, provider):
         return TaskAttempt.Lane.METERED
     if provider is AgentHarnessProvider.SUBSCRIPTION_OAUTH:
         return TaskAttempt.Lane.SUBSCRIPTION
@@ -122,8 +129,6 @@ def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvide
 
 
 def _active_window(lane: str) -> "UsageWindowState | None":
-    from django.utils import timezone  # noqa: PLC0415 — deferred Django import
-
     from teatree.core.models import UsageWindowState  # noqa: PLC0415 — deferred Django model import
 
     window = UsageWindowState.objects.active_for_lane(lane)
@@ -204,6 +209,7 @@ def _route_provider(
 class _EligibleCandidate:
     selection: HarnessSelection
     provider: AgentHarnessProvider | None
+    metered: bool
 
 
 def _managed_provider_name(spec: HarnessSpec, provider: AgentHarnessProvider | None) -> str:
@@ -224,7 +230,7 @@ def _static_rejection(context: HarnessBuildContext, candidate: AgentRouteCandida
 
 
 def _eligible_candidate(
-    context: HarnessBuildContext, candidate: AgentRouteCandidate, *, is_fallback: bool = False
+    context: HarnessBuildContext, candidate: AgentRouteCandidate
 ) -> _EligibleCandidate | tuple[HarnessRejection, ...]:
     spec, registration_rejections = _registered_route_spec(context, candidate)
     if spec is None:
@@ -233,23 +239,27 @@ def _eligible_candidate(
         provider = _route_provider(context, candidate, spec)
     except (CredentialError, ValueError) as exc:
         return (HarnessRejection(candidate.harness, str(exc)),)
-    lane = _route_lane(spec.capabilities, provider)
-    if (
-        is_fallback
-        and lane == "metered"
-        and context.settings is not None
-        and not context.settings.agent_route_paid_fallback
-    ):
-        reason = "metered route fallback requires agent_route_paid_fallback"
-        return (HarnessRejection(candidate.harness, reason, retry_at=timezone.now() + timedelta(minutes=2), held=True),)
-    if window := _active_window(lane):
+    if window := _active_window(_route_lane(spec.capabilities, provider)):
         reason = f"{window.cause or 'quota'} window on lane {window.lane or 'ambient'!r} is active"
         return (HarnessRejection(candidate.harness, reason, retry_at=window.resets_at),)
     candidate_context = replace(context, model=candidate.model, provider=_managed_provider_name(spec, provider))
     try:
-        return _EligibleCandidate(select_harness([candidate.harness], candidate_context), provider)
+        selection = select_harness([candidate.harness], candidate_context)
     except NoAvailableHarnessError as exc:
         return exc.rejected
+    return _EligibleCandidate(selection, provider, _is_metered_route(spec.capabilities, provider))
+
+
+def paid_fallback_hold(harness: str, cause: str = "") -> HarnessRejection:
+    """A re-checkable refusal: only the owner's ``agent_route_paid_fallback`` lets this dispatch spend."""
+    reason = f"{cause}; {_PAID_FALLBACK_REQUIRED}" if cause else _PAID_FALLBACK_REQUIRED
+    return HarnessRejection(harness, reason, retry_at=timezone.now() + _PAID_FALLBACK_RECHECK, held=True)
+
+
+def _paid_fallback_rejection(harness: str, earlier: list[HarnessRejection]) -> HarnessRejection:
+    if any(rejection.retry_at is not None for rejection in earlier):
+        return HarnessRejection(harness, _PAID_FALLBACK_REQUIRED)
+    return paid_fallback_hold(harness)
 
 
 def _skill_route_selection(
@@ -275,15 +285,19 @@ def _skill_route_selection(
     failed = context.task.attempts.failed_route_candidates(source_skill) if context.task is not None else {}
     scalar_floors = [floor for skill in skills if isinstance((floor := config.skill_models.get(skill)), str)]
     floor_rank = max((tier_rank(floor) for floor in scalar_floors), default=-1)
+    paid_fallback_allowed = context.settings is not None and context.settings.agent_route_paid_fallback
     rejected: list[HarnessRejection] = []
     retry: SkillRouteSelection | None = None
     for index, candidate in enumerate(candidates):
         if reason := _static_rejection(context, candidate, floor_rank):
             rejected.append(HarnessRejection(candidate.harness, reason))
             continue
-        eligible = _eligible_candidate(context, candidate, is_fallback=index > 0)
+        eligible = _eligible_candidate(context, candidate)
         if not isinstance(eligible, _EligibleCandidate):
             rejected.extend(eligible)
+            continue
+        if index and eligible.metered and not paid_fallback_allowed:
+            rejected.append(_paid_fallback_rejection(candidate.harness, rejected))
             continue
         passing = SkillRouteSelection(
             source_skill,

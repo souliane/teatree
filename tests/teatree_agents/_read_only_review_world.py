@@ -26,18 +26,21 @@ RUBRIC = (
     "  #15 Run t3 teatree ticket show 123 and check the result.",
 )
 SEAMS = ("", "PLAN — declared integration seams:", "  - Run t3 teatree ticket show 123 for the plan.")
+STAND_IN_BYTES = {"ac-django": 28_300, "ac-python": 12_800, "writing-plans": 5_000}
 
 
 @contextmanager
 def read_only_review_world() -> Generator[None]:
     with TemporaryDirectory() as home:
-        for name, size in (("ac-django", 28_300), ("ac-python", 12_800), ("writing-plans", 5_000)):
-            skill = Path(home) / ".agents" / "skills" / name / "SKILL.md"
+        install_root = Path(home) / ".agents" / "skills"
+        for name, size in STAND_IN_BYTES.items():
+            skill = install_root / name / "SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text(f"---\nname: {name}\n---\n" + "x" * size, encoding="utf-8")
         overlay = TeatreeOverlay()
         with (
             patch.dict(os.environ, {"HOME": home}),
+            patch.object(skill_index, "install_roots", lambda: [install_root]),
             patch.object(skill_index, "DEFAULT_SKILLS_DIR", SKILLS),
             patch("teatree.core.overlay_loader.get_overlay", return_value=overlay),
             patch.object(phase_blocks, "rubric_brief_lines", return_value=RUBRIC),

@@ -338,18 +338,24 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
   the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
   target ref in the ticket checkout first. An unreadable body or comment list, a missing planning survey, a failed
-  fetch or a part over its cap refuses the run before it opens, so the next route candidate runs instead.
+  fetch or a part over its cap refuses the run before it opens. The task then parks for two minutes (twice) and
+  fails with the refusal's reason on the third; the next route candidate runs instead only when
+  `agent_route_paid_fallback` is on.
   A remote reviewing task also gets the full PR file diff, its dispatched head, and the worker's live
   workflow-run status at that head. The worker reads the
   live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
   skill the phase requires, stack skills included, names the others as not available, and points at no
-  skill path. It embeds `RULES.md` before the rules skill body, resolving the document beside the selected
+  skill path. `reviewing` and `critic_reviewing` embed only `rules`, their lifecycle skill and `code-review`
+  (no stack style guides, no overlay companion), and the lifecycle skill leaves out the sections that only
+  drive the `t3` CLI (`skill_injection._READ_ONLY_SKILL_SECTIONS`); the diff, the rubric and the declared
+  plan seams stay out of the system context. It embeds `RULES.md` before the rules skill body, resolving the document beside the selected
   `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
   a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
-  `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
-  context budget, refuses the run rather than being cut.
+  `<teatree tool, absent here>`, and so does every bare `t3` command in the per-ticket text (rubric, declared
+  plan seams, the task message with its diff); a system context that still names a `t3` command, or that is
+  over the context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an
@@ -363,7 +369,9 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
 - **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
   may run `planning`, `reviewing`, or `critic_reviewing` after the live probe. Other write-barring
-  phases still reject that candidate. The configured skill route and its fallback order remain in force.
+  phases still reject that candidate. The configured skill route and its fallback order remain in force, except
+  that a candidate after the first whose resolved lane is metered is rejected unless `agent_route_paid_fallback`
+  is on (see [`docs/blueprint/configuration.md`](blueprint/configuration.md)).
 
 ## Rotation, recovery, and revocation
 

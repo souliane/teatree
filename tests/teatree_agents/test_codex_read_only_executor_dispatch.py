@@ -15,7 +15,14 @@ from django.utils import timezone
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import codex_app_server_options, codex_read_only_server, harness_registry
-from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
+from teatree.agents.harness_registry import (
+    HarnessBuildContext,
+    HarnessCapabilities,
+    HarnessFallbackError,
+    HarnessFallbackKind,
+    HarnessSpec,
+    register_harness,
+)
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config import get_effective_settings
@@ -62,6 +69,22 @@ class _Harness:
     async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield FakeHarnessSession(success_stream({"summary": "claude planned instead", "plan_text": ""}))
+
+
+class _QuotaSession(FakeHarnessSession):
+    async def query(self, prompt: str) -> None:
+        del prompt
+        message = "ChatGPT quota exhausted"
+        raise HarnessFallbackError(message, kind=HarnessFallbackKind.QUOTA)
+
+
+class _QuotaHarness:
+    capabilities = HarnessCapabilities(read_only_venue=True)
+
+    @contextlib.asynccontextmanager
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
+        del options
+        yield _QuotaSession([])
 
 
 class TestPlanningOnTheReadOnlyExecutor(TestCase):
@@ -163,6 +186,22 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
         assert self.built == []
         assert not [call for call in self.fake.calls if "setsid" in call]
+
+    def test_a_read_only_run_that_fails_mid_run_is_recorded_and_held_then_parks_at_the_metered_gate(self) -> None:
+        self._register_claude()
+        register_harness(HarnessSpec(name="quota_ro", factory=lambda _context: _QuotaHarness(), allows_provider=False))
+        self.addCleanup(harness_registry._REGISTRY.pop, "quota_ro", None)
+
+        attempt = self._run("quota_ro", "claude_like")
+
+        attempt.task.refresh_from_db()
+        failed = attempt.task.attempts.get(selected_harness="quota_ro")
+        assert "ChatGPT quota exhausted" in failed.error
+        assert AgentRouteAvailability.objects.filter(harness="quota_ro").exclude(unavailable_reason="").exists()
+        assert attempt.task.status == Task.Status.PENDING
+        assert attempt.task.not_before > timezone.now()
+        assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert self.built == []
 
     def test_third_read_only_refusal_fails_with_a_readable_reason(self) -> None:
         task = self._task()
