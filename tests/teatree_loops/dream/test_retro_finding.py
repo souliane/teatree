@@ -4,7 +4,7 @@ A retro finding is recorded as a VERIFIED core-gap ``ConsolidatedMemory`` row an
 queued on the umbrella host's pending ledger for the backlog sweep. These tests drive that with
 real rows — no LLM, no live forge.
 
-The queueing is the ``memory_promote`` mechanism whoever fires it,
+The queueing is the ``dream_memory_promote`` mechanism whoever fires it,
 so every promoting case here opts in explicitly; the OFF case is its own class.
 """
 
@@ -113,7 +113,7 @@ class PromoteFindingTestCase(TestCase):
 
 @patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "0"})
 class PromotionToggleTestCase(TestCase):
-    """Queueing for the sweep is the ``memory_promote`` mechanism, however it is fired."""
+    """Queueing for the sweep is the ``dream_memory_promote`` mechanism, however it is fired."""
 
     def test_the_toggle_off_records_the_gap_and_queues_nothing(self) -> None:
         Ticket.objects.create(issue_url=UMBRELLA)
@@ -122,3 +122,13 @@ class PromotionToggleTestCase(TestCase):
         assert outcome.deferred is True
         assert _pending() == []
         assert list(ConsolidatedMemory.objects.needs_ticket()) == [row]
+
+    def test_unreadable_settings_defer_promotion(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+        with (
+            patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "1"}),
+            patch("teatree.config.get_effective_settings", side_effect=RuntimeError("settings unavailable")),
+        ):
+            outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
+        assert outcome.deferred is True
+        assert _pending() == []

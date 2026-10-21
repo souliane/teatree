@@ -69,16 +69,23 @@ done
 
 if [[ "$FULL" == "1" ]]; then
     echo "=== affected-tests: --full — running the whole suite ==="
-    exec uv run pytest --no-cov -n auto --reuse-db ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    exec uv run pytest --no-cov -n auto --reuse-db --teatree-selected-full ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
 fi
 
 # The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
 # a scoped run adds `--tach --tach-base <base> -p teatree.quality.force_keep_plugin`
 # (plugin deselects, force-keep layer re-adds our escalations) plus any --doctest-modules
-# targets and --create-db; a FULL run emits at most --create-db and runs the whole suite.
+# targets and --create-db; a FULL run emits --teatree-selected-full and any DB flag.
 t3 tool affected-tests --base "$BASE"
 echo "==="
 
-read -r -a SELECTED <<< "$(t3 tool affected-tests --base "$BASE" --pytest-args)"
-# A FULL verdict emits no --tach flag ⇒ the whole suite runs.
+if ! SELECTED_OUTPUT="$(t3 tool affected-tests --base "$BASE" --pytest-args)"; then
+    echo "affected-tests: selector failed; refusing to run pytest" >&2
+    exit 4
+fi
+if [[ -z "$SELECTED_OUTPUT" ]]; then
+    echo "affected-tests: selector returned no pytest arguments; refusing to run pytest" >&2
+    exit 4
+fi
+read -r -a SELECTED <<< "$SELECTED_OUTPUT"
 exec uv run pytest --no-cov -n auto --reuse-db ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
