@@ -156,8 +156,9 @@ class TestARelayInTheFinalTurnSatisfiesTheGate:
             f'RELAY_RECEIPT_MARKER: Final = "{RELAY_RECEIPT_MARKER}"',
             f"the command prints `{RELAY_REFUSED_MARKER}` with exit 3 when the prompt is blank",
             f"{RELAY_RECEIPT_MARKER} is the line the relay prints",
+            f"{RELAY_RECEIPT_MARKER} pending_chat=7 ts=",
         ],
-        ids=["constant", "prose-refusal", "prose-receipt"],
+        ids=["constant", "prose-refusal", "prose-receipt", "receipt-shape-without-a-ts"],
     )
     def test_reading_the_relay_source_or_docs_in_the_turn_is_not_a_relay(
         self, tmp_path: Path, source_read: str

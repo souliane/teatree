@@ -14,7 +14,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.relay import RelayReceipt, RelayRefusal
+from teatree.core.modelkit.relay import RELAY_MAX_CHARS, RelayReceipt, RelayRefusal
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Task
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import RawAPIDict
@@ -84,6 +84,13 @@ class TestRelayAttendedAsk(TestCase):
         assert first.created
         assert not again.created
         assert len(dm.posts) == 1
+        assert PendingChatInjection.objects.count() == 1
+
+    def test_a_prompt_of_exactly_the_slack_limit_is_still_relayed(self) -> None:
+        with live_factory_slack(FakeOwnerDm()):
+            receipt = _relay("x" * RELAY_MAX_CHARS)
+
+        assert isinstance(receipt, RelayReceipt)
         assert PendingChatInjection.objects.count() == 1
 
 
@@ -257,6 +264,13 @@ class TestRelayFollowUp(TestCase):
         PendingChatInjection.agent_answered_question(silent.slack_ts)
 
         assert [row.pk for row in PendingChatInjection.objects.open_relays("s1", now=_NOW)] == [still_open.pk]
+
+    def test_a_failed_attempt_followed_by_a_completed_one_closes_the_delegated_relay(self) -> None:
+        retried = _relay_row("6.1", session="s1", age_minutes=10)
+        _delegated(retried, Task.Status.FAILED)
+        TaskFactory(ticket=Task.objects.get().ticket, phase="answering", status=Task.Status.COMPLETED)
+
+        assert not PendingChatInjection.objects.open_relays("s1", now=_NOW).exists()
 
     def test_open_relays_reads_every_delegated_lane_in_a_constant_number_of_queries(self) -> None:
         for index in range(2):

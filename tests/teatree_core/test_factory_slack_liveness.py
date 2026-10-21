@@ -77,7 +77,7 @@ def test_absent_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> 
         verdict = factory_slack_live(_OVERLAY)
 
     assert not verdict.live
-    assert "heartbeat" in verdict.reason
+    assert "heartbeat_absent" in verdict.reason
 
 
 def test_stale_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> None:

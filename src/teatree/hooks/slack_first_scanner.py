@@ -10,7 +10,7 @@ from typing import Final, NamedTuple
 RELAY_RECEIPT_MARKER: Final = "t3-relay-receipt:"
 RELAY_REFUSED_MARKER: Final = "t3-relay-refused:"
 
-_RECEIPT_RE: Final[re.Pattern[str]] = re.compile(rf"{re.escape(RELAY_RECEIPT_MARKER)} pending_chat=\d+ ts=\S")
+_RECEIPT_RE: Final[re.Pattern[str]] = re.compile(rf"{re.escape(RELAY_RECEIPT_MARKER)} pending_chat=\d+ ts=\d")
 _REFUSAL_RE: Final[re.Pattern[str]] = re.compile(rf"{re.escape(RELAY_REFUSED_MARKER)} \S")
 
 
