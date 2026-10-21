@@ -71,7 +71,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
 - **Needs you** — pending `DeferredQuestion` rows (not window-bounded — an old pending question still needs you) plus failed `TaskAttempt` runs (the durable "blocked" proxy). `DeferredQuestion` is queried ONCE for the whole report (not once per overlay) so a pending question never appears more than once. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
-- **Metered** — every `TaskAttempt` that ran on the metered lane inside the window, overlay-scoped, with its cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
+- **Metered** — one row per ticket with metered attempts inside the window, overlay-scoped, with attempt count and total cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
 
 Resist adding a dashboard. The terse text IS the surface.
 

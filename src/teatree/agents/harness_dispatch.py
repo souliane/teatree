@@ -81,6 +81,14 @@ class DispatchHarness:
     availability_provider: str = ""
 
 
+def route_has_later_candidate(dispatch: DispatchHarness) -> bool:
+    index = dispatch.route_candidate_index
+    if index is None or not dispatch.route_source_skill:
+        return False
+    route = resolve_agent_config().skill_models.get(dispatch.route_source_skill)
+    return isinstance(route, tuple) and index + 1 < len(route)
+
+
 def task_overlay(task: "Task | None") -> str | None:
     if task is None:
         return None
@@ -102,13 +110,32 @@ def candidate_selection(context: HarnessBuildContext, candidates: list[str]) -> 
     if not candidates:
         return None
     pinned = dict.fromkeys(resolve_phase_harness(candidate, context.phase) for candidate in candidates)
-    return select_harness(list(pinned), context)
+    rejected: list[HarnessRejection] = []
+    for index, name in enumerate(pinned):
+        try:
+            selection = select_harness([name], context)
+        except NoAvailableHarnessError as exc:
+            rejected.extend(exc.rejected)
+            continue
+        if index:
+            try:
+                provider = _route_provider(context, AgentRouteCandidate(name, ""), selection.spec)
+            except (CredentialError, ValueError) as exc:
+                rejected.append(HarnessRejection(name, str(exc)))
+                continue
+            if _is_metered_route(selection.spec.capabilities, provider) and (
+                context.settings is None or not context.settings.agent_route_paid_fallback
+            ):
+                rejected.append(_paid_fallback_rejection(name, rejected))
+                continue
+        return HarnessSelection(selection.spec, tuple(rejected))
+    raise NoAvailableHarnessError(tuple(rejected))
 
 
 _METERED_PROVIDERS = frozenset(
     {AgentHarnessProvider.API_KEY, AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}
 )
-_PAID_FALLBACK_RECHECK = timedelta(minutes=2)
+_ROUTE_RECHECK = timedelta(minutes=2)
 _PAID_FALLBACK_REQUIRED = "metered route fallback requires agent_route_paid_fallback"
 
 
@@ -138,18 +165,30 @@ def _active_window(lane: str) -> "UsageWindowState | None":
 def another_lane_can_dispatch(parked_lane: str) -> bool:
     """Whether the configured harness or a global route candidate could dispatch on a lane other than *parked_lane*."""
     settings = get_effective_settings(None)
-    routes = [c for policy in resolve_agent_config().skill_models.values() if isinstance(policy, tuple) for c in policy]
-    candidates = [AgentRouteCandidate(settings.agent_harness, ""), *routes]
-    return any(_dispatchable_off_lane(settings, candidate, parked_lane) for candidate in candidates)
+    routes = [
+        (candidate, index > 0)
+        for policy in resolve_agent_config().skill_models.values()
+        if isinstance(policy, tuple)
+        for index, candidate in enumerate(policy)
+    ]
+    candidates = [(AgentRouteCandidate(settings.agent_harness, ""), False), *routes]
+    return any(
+        _dispatchable_off_lane(settings, candidate, parked_lane, fallback=fallback)
+        for candidate, fallback in candidates
+    )
 
 
-def _dispatchable_off_lane(settings: "UserSettings", candidate: AgentRouteCandidate, parked_lane: str) -> bool:
+def _dispatchable_off_lane(
+    settings: "UserSettings", candidate: AgentRouteCandidate, parked_lane: str, *, fallback: bool
+) -> bool:
     try:
         spec = resolve_harness_spec(candidate.harness)
-    except UnknownHarnessError:
+        provider = _route_provider(HarnessBuildContext(settings=settings, model=candidate.model), candidate, spec)
+    except (UnknownHarnessError, CredentialError, ValueError):
         return False
-    provider = AgentHarnessProvider.parse(candidate.provider) if candidate.provider else settings.agent_harness_provider
     lane = _route_lane(spec.capabilities, provider if spec.allows_provider else None)
+    if fallback and _is_metered_route(spec.capabilities, provider) and not settings.agent_route_paid_fallback:
+        return False
     if lane == parked_lane or _active_window(lane) is not None:
         return False
     return spec.unavailable_reason(HarnessBuildContext(settings=settings, model=candidate.model)) is None
@@ -250,10 +289,14 @@ def _eligible_candidate(
     return _EligibleCandidate(selection, provider, _is_metered_route(spec.capabilities, provider))
 
 
+def route_hold(harness: str, reason: str) -> HarnessRejection:
+    return HarnessRejection(harness, reason, retry_at=timezone.now() + _ROUTE_RECHECK, held=True)
+
+
 def paid_fallback_hold(harness: str, cause: str = "") -> HarnessRejection:
     """A re-checkable refusal: only the owner's ``agent_route_paid_fallback`` lets this dispatch spend."""
     reason = f"{cause}; {_PAID_FALLBACK_REQUIRED}" if cause else _PAID_FALLBACK_REQUIRED
-    return HarnessRejection(harness, reason, retry_at=timezone.now() + _PAID_FALLBACK_RECHECK, held=True)
+    return route_hold(harness, reason)
 
 
 def _paid_fallback_rejection(harness: str, earlier: list[HarnessRejection]) -> HarnessRejection:

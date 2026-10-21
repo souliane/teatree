@@ -114,6 +114,23 @@ class TestMeteredGroup(CheckingTestBase):
         assert all_report.to_dict()["metered"]["total"] == 1
         assert "[acme]" in all_report.to_terse()
 
+    def test_repeated_metered_attempts_share_one_ticket_row_with_total_cost(self) -> None:
+        for number, costs in ((5399, [0.50] * 6), (5400, [1.25])):
+            ticket = self._ticket(number=number)
+            task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+            for cost in costs:
+                attempt = TaskAttempt.objects.create(
+                    task=task, lane=TaskAttempt.Lane.METERED, cost_usd=cost, exit_code=0
+                )
+                TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(minutes=number - 5398))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert report.metered.total == 2
+        assert [item.label for item in report.metered.items] == ["#5399", "#5400"]
+        assert "6 attempts" in report.metered.items[0].detail
+        assert "estimated $3.00" in report.metered.items[0].detail
+
 
 class TestMergedGroup(CheckingTestBase):
     def test_merge_in_window_is_reported(self) -> None:

@@ -149,7 +149,6 @@ class TestSkillRouteRuntimeFallback(TestCase):
         settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
         with (
             patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
-            patch.object(runner_mod, "get_effective_settings", return_value=settings),
             patch.object(runner_mod, "notify_user") as notify,
         ):
             paid = self._run(config, skills=["code"], phase="coding")

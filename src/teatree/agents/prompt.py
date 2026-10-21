@@ -8,7 +8,11 @@ from typing import cast
 
 from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
-from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
+from teatree.agents.dispatch_preflight import (
+    declared_seams_brief_lines,
+    head_state_brief_lines,
+    review_diff_brief_lines,
+)
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
 from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts, read_only_text
@@ -189,14 +193,16 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if facts.review_diff:
         lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
         lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
+    elif normalize_phase(task.phase) == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
+        lines.extend(review_diff_brief_lines(task))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
-    lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
+    lines.extend(("", "Instructions:", *(read_only_text(line) for line in _OWNER_STOP_LINES)))
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
     lines.append(final_output_reminder_line(task.phase))
-    return read_only_text("\n".join(lines))
+    return "\n".join(lines)
 
 
 def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
@@ -260,7 +266,8 @@ def read_only_required_skills(
 ) -> set[str]:
     """What the read-only executor must receive in full: it has neither a Skill tool nor a skill file to read."""
     if normalize_phase(phase) in {"reviewing", "critic_reviewing"}:
-        needed = {"rules", lifecycle_skill, *_REVIEW_PHASE_ALWAYS_FULL}
+        review_full, review_explicit = _review_phase_scoping(skills)
+        needed = {"rules", lifecycle_skill, *review_full, *review_explicit}
         return {name for name in skills if _explicit_load_name(name) in needed}
     full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
     return full | explicit

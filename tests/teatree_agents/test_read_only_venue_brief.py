@@ -17,6 +17,7 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.phase_agent_skills import declared_skills_for_phase
+from teatree.agents.prompt import build_read_only_task_prompt, read_only_required_skills
 from teatree.agents.read_only_venue_brief import (
     ABSENT_TOOL,
     HANDOFF_CAP_BYTES,
@@ -24,6 +25,7 @@ from teatree.agents.read_only_venue_brief import (
     ISSUE_COMMENTS_CAP_BYTES,
     READ_ONLY_DIRECTIVE,
     TICKET_CONTEXT_CAP_BYTES,
+    ReadOnlyFacts,
     read_only_system_context,
 )
 from teatree.agents.runner_preparation import PreparedRun
@@ -178,16 +180,37 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert json.dumps(_SURVEY, sort_keys=True) not in context
         assert json.dumps(_SURVEY, sort_keys=True) in prepared.prompt
 
-    def test_real_review_and_critic_briefs_rewrite_commands_in_all_text(self) -> None:
+    def test_real_review_and_critic_system_context_rewrites_commands(self) -> None:
         with read_only_review_world():
             for phase in ("reviewing", "critic_reviewing"):
                 context = read_only_system_context(read_only_context(phase))
                 message = read_only_task_message(phase)
                 assert not _T3_INVOCATION.search(context)
-                assert not _T3_INVOCATION.search(message)
                 if phase == "reviewing":
                     assert "teatree ticket show 123" in context
-                assert "teatree ticket show 123" in message
+                assert "t3 teatree ticket show 123" in message
+
+    def test_task_evidence_preserves_distinct_command_changes(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        diff = "```diff\n-Run `t3 setup --old`\n+Run `t3 setup --new`\n```"
+        facts = ReadOnlyFacts(
+            issue_body="The owner quoted `t3 setup --old`.",
+            issue_comments="Use `t3 setup --new` in the proposed change.",
+            ticket_context="",
+            handoff="",
+            survey="",
+            review_head="a" * 40,
+            review_diff=diff,
+            review_checks="pending",
+        )
+
+        prompt = build_read_only_task_prompt(task, facts)
+
+        assert diff in prompt
+        assert "The owner quoted `t3 setup --old`." in prompt
+        assert "Use `t3 setup --new` in the proposed change." in prompt
 
     def test_a_stack_skill_reaches_the_executor_in_full_with_its_teatree_commands_rewritten(self) -> None:
         self._stack_skill("Before planning, run `t3 placeholder check` and follow the style rules.\n")
@@ -198,6 +221,16 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert f"Before planning, run {ABSENT_TOOL} and follow the style rules." in context
         assert "REQUIRED: Load /fastapi" not in context
         assert [str(root) for root in harness_skills_dirs() if str(root) in context] == []
+
+    def test_review_companions_are_required_in_the_read_only_bundle(self) -> None:
+        skills = ["rules", "review", "code-review", "overlay-review", "companion-review"]
+        with patch(
+            "teatree.agents.skill_bundle.active_overlay_review_skills",
+            return_value=["overlay-review", "companion-review"],
+        ):
+            required = read_only_required_skills("reviewing", skills, lifecycle_skill="review", stage_skills=[])
+
+        assert required == set(skills)
 
     def test_a_brief_that_still_names_a_teatree_command_refuses_the_executor_run(self) -> None:
         self._stack_skill("Run t3 doctor check before planning.\n")
@@ -213,7 +246,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         prepared = self._prepare(child)
 
-        assert f"intake done; next run {ABSENT_TOOL} teatree pr create" in prepared.prompt
+        assert "intake done; next run t3 teatree pr create" in prepared.prompt
         assert "Prior Task Result" not in self._system_context(prepared)
 
     def test_an_over_budget_system_context_refuses_the_executor_run(self) -> None:
@@ -360,6 +393,17 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Use the dispatched head in the DIFF UNDER REVIEW block" in context
         assert "Set gh_verify_result green only when WORKER CI says green" in context
         assert "git rev-parse HEAD" not in context
+
+    def test_author_review_receives_its_branch_diff_in_the_task_message(self) -> None:
+        task = self._task(Ticket.objects.create(issue_url=f"{_ISSUE_URL}0", role=Ticket.Role.AUTHOR))
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        diff = "```diff\n-Run `t3 setup --old`\n+Run `t3 setup --new`\n```"
+        with patch("teatree.agents.prompt.review_diff_brief_lines", return_value=("", "DIFF UNDER REVIEW:", diff)):
+            prepared = self._prepare(task)
+
+        assert diff in prepared.prompt
+        assert "DIFF UNDER REVIEW" in prepared.prompt
 
     def test_remote_review_cannot_claim_green_when_ci_is_unreadable(self) -> None:
         head = "a" * 40

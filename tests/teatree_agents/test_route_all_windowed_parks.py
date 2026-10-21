@@ -4,12 +4,19 @@ from dataclasses import replace
 from datetime import timedelta
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 from teatree.agents import harness_registry
-from teatree.agents.harness_registry import HarnessCapabilities, HarnessSpec, register_harness
+from teatree.agents.harness_registry import (
+    HarnessBuildContext,
+    HarnessCapabilities,
+    HarnessSpec,
+    NoAvailableHarnessError,
+    register_harness,
+)
 from teatree.agents.runner import _resolve_backend_or_failure
 from teatree.agents.skill_routing import QUOTA_AUTH_HOLD, record_route_unavailable
 from teatree.config import AgentHarnessProvider, get_effective_settings
@@ -70,6 +77,56 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
             )
         )
         self.addCleanup(harness_registry._REGISTRY.pop, name, None)
+
+    def test_gated_metered_fallback_does_not_count_as_an_open_lane(self) -> None:
+        capabilities = HarnessCapabilities(metered_lane=True)
+        register_harness(
+            HarnessSpec(
+                name="metered_side",
+                factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
+                capabilities=capabilities,
+                allows_provider=False,
+            )
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, "metered_side", None)
+        settings = replace(
+            get_effective_settings(None),
+            agent_harness=MANAGED,
+            agent_harness_provider=None,
+            agent_route_paid_fallback=False,
+        )
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            routed_by(route_config("route-skill", MANAGED, "metered_side")),
+        ):
+            assert not harness_dispatch_mod.another_lane_can_dispatch(TaskAttempt.Lane.MANAGED)
+
+    def test_overlay_phase_candidates_gate_a_later_metered_lane(self) -> None:
+        capabilities = HarnessCapabilities(metered_lane=True)
+        register_harness(
+            HarnessSpec(
+                name="metered_phase",
+                factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
+                capabilities=capabilities,
+                allows_provider=False,
+            )
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, "metered_phase", None)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=False)
+        context = HarnessBuildContext(settings=settings, phase=_PHASE)
+
+        with pytest.raises(NoAvailableHarnessError) as refused:
+            harness_dispatch_mod.candidate_selection(context, ["missing_first", "metered_phase"])
+
+        assert "agent_route_paid_fallback" in str(refused.value)
+
+    def test_overlay_phase_candidates_allow_a_later_free_lane_without_settings(self) -> None:
+        selection = harness_dispatch_mod.candidate_selection(
+            HarnessBuildContext(phase=_PHASE), ["missing_first", MANAGED]
+        )
+
+        assert selection is not None
+        assert selection.spec.name == MANAGED
 
     def test_providerless_second_candidate_resolving_to_metered_parks_without_authorization(self) -> None:
         task = self._task()

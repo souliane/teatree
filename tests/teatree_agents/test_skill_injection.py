@@ -87,6 +87,18 @@ def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monke
     assert len(raw) - len(rendered) > 8_000
 
 
+def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = Path(__file__).resolve().parents[2] / "skills"
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
+
+    rendered = read_only_venue_skill_contents(["slack-formatting"], {"slack-formatting"})
+
+    assert "--- SKILL: slack-formatting ---" in rendered
+    assert "## Be concise" in rendered
+    assert "## Tables" not in rendered
+    assert "## mrkdwn gotchas" not in rendered
+
+
 def test_read_only_venue_section_drop_ends_at_the_next_heading_of_the_same_or_higher_level(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

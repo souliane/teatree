@@ -31,6 +31,14 @@ _READ_ONLY_SKILL_SECTIONS = {
             "## Commands",
         }
     ),
+    "slack-formatting": frozenset(
+        {
+            "## Tables — use the formatter, never a hand-rolled pipe table",
+            "## mrkdwn gotchas",
+            "## Line length — wrapped at 90, at the transport",
+            "## CLI tables",
+        }
+    ),
 }
 _HEADING = re.compile(r"^(#{2,6}) ")
 

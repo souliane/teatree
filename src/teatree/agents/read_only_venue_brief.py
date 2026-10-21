@@ -110,7 +110,7 @@ def read_only_text(text: str) -> str:
 
 
 class ReadOnlyBriefRefusedError(HarnessFallbackError):
-    """The brief cannot be built for this task, so the same task would be refused again on any route."""
+    """The selected read-only executor cannot run this brief."""
 
 
 def _refused(reason: str) -> ReadOnlyBriefRefusedError:
@@ -127,7 +127,7 @@ def _issue(ticket: "Ticket") -> tuple[str, str]:
     try:
         host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
         issue = host.get_issue(ticket.issue_url) if host is not None else {}
-    except Exception as exc:  # an unreadable body refuses the run; the next route candidate plans instead
+    except Exception as exc:
         reason = f"the issue body could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
     body = next((issue.get(key) for key in ("description", "body") if key in issue), None)

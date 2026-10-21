@@ -62,8 +62,8 @@ _PLAN = {
 
 
 class _Harness:
-    def __init__(self) -> None:
-        self.capabilities = HarnessCapabilities(metered_lane=True)
+    def __init__(self, *, metered: bool = True) -> None:
+        self.capabilities = HarnessCapabilities(metered_lane=metered)
 
     @contextlib.asynccontextmanager
     async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
@@ -171,7 +171,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert thread_start["sandbox"] == "danger-full-access"
         assert self.fake.keeper_alive
 
-    def test_a_refused_read_only_brief_parks_without_learning_or_spending(self) -> None:
+    def test_a_refused_read_only_brief_records_failure_and_parks_without_spending(self) -> None:
         self._register_claude()
 
         before = timezone.now()
@@ -182,10 +182,26 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert attempt.task.not_before > before
         assert "the issue body could not be read" in attempt.error
         assert "agent_route_paid_fallback" in attempt.error
-        assert not AgentRouteAvailability.objects.exclude(unavailable_reason="").exists()
+        assert AgentRouteAvailability.objects.filter(harness="codex_app_server").exclude(unavailable_reason="").exists()
         assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
         assert self.built == []
         assert not [call for call in self.fake.calls if "setsid" in call]
+
+    def test_a_refused_brief_tries_a_later_free_candidate(self) -> None:
+        register_harness(
+            HarnessSpec(
+                name="other_free",
+                factory=lambda _context: _Harness(metered=False),
+                capabilities=HarnessCapabilities(),
+                allows_provider=False,
+            )
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, "other_free", None)
+
+        attempt = self._run("codex_app_server", "other_free", issue={"error": "Not a GitHub issue URL"})
+
+        assert attempt.selected_harness == "other_free"
+        assert attempt.lane != TaskAttempt.Lane.METERED
 
     def test_a_read_only_run_that_fails_mid_run_is_recorded_and_held_then_parks_at_the_metered_gate(self) -> None:
         self._register_claude()
@@ -215,7 +231,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert second.error.startswith("limit_parked:")
         assert task.status == Task.Status.FAILED
         assert "issue body could not be read" in third.error
-        assert "agent_route_paid_fallback" in third.error
+        assert "agent_route_paid_fallback" not in third.error
 
     def test_enabled_paid_fallback_runs_after_read_only_refusal(self) -> None:
         self._register_claude()
@@ -223,7 +239,6 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
 
         with (
             patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
-            patch.object(runner_mod, "get_effective_settings", return_value=settings),
             patch.object(runner_mod, "notify_user"),
         ):
             attempt = self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"})

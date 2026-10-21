@@ -16,7 +16,12 @@ from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness, paid_fallback_hold, resolve_dispatch_harness, task_overlay
+from teatree.agents.harness_dispatch import (
+    DispatchHarness,
+    resolve_dispatch_harness,
+    route_has_later_candidate,
+    route_hold,
+)
 from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
@@ -78,7 +83,6 @@ from teatree.agents.skill_routing import (
 )
 from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import park_on_timed_rejections
-from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -131,6 +135,7 @@ class _RouteRetry:
 
     def after(self, record: _RouteFailureRecord) -> TaskAttempt:
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
+        _alert_owner_of_metered_fallback(attempt)
         if record.outcome is not None:
             release_finished_thread(self.task)
             if record.outcome.tool_calls:
@@ -185,24 +190,21 @@ def _retry_route_exception(
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
+        _alert_owner_of_metered_fallback(attempt)
         _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
-    if isinstance(exc, ReadOnlyBriefRefusedError) and not _paid_route_fallback_enabled(task):
-        return _park_refused_read_only_brief(task, preflight.dispatch, str(exc))
+    if (
+        isinstance(exc, ReadOnlyBriefRefusedError)
+        and preflight.dispatch.route_candidate_index is not None
+        and not route_has_later_candidate(preflight.dispatch)
+    ):
+        hold = route_hold(preflight.dispatch.name, str(exc))
+        return park_on_timed_rejections(task, (hold,)) or _record_failure(task, error=str(hold))
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
         return route_retry.after(record)
     return None
-
-
-def _paid_route_fallback_enabled(task: Task) -> bool:
-    return get_effective_settings(task_overlay(task)).agent_route_paid_fallback
-
-
-def _park_refused_read_only_brief(task: Task, dispatch: DispatchHarness, refusal: str) -> TaskAttempt:
-    hold = paid_fallback_hold(dispatch.name, refusal)
-    return park_on_timed_rejections(task, (hold,)) or _record_failure(task, error=str(hold))  # no-usage: no turn ran
 
 
 def _prepare_run(
@@ -293,7 +295,6 @@ def run_agent(
 ) -> TaskAttempt:
     """Hold checkout occupancy before driving the task claim and harness."""
     namespace = nested_pid_namespace()
-    prior_attempt_id = task.attempts.order_by("-pk").values_list("pk", flat=True).first() or 0
     try:
         with occupy_ticket_checkout(
             task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session, namespace=namespace
@@ -304,7 +305,7 @@ def run_agent(
                     attempt = _run_agent(
                         task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff
                     )
-                    _alert_owner_of_metered_fallback(task, after_attempt_id=prior_attempt_id)
+                    _alert_owner_of_metered_fallback(attempt)
                     return attempt
                 finally:
                     if path:
@@ -314,12 +315,8 @@ def run_agent(
         return park_refused_checkout(task, exc)
 
 
-def _alert_owner_of_metered_fallback(task: Task, *, after_attempt_id: int) -> None:
-    if not task.attempts.filter(
-        pk__gt=after_attempt_id,
-        lane=TaskAttempt.Lane.METERED,
-        route_candidate_index__gt=0,
-    ).exists():
+def _alert_owner_of_metered_fallback(attempt: TaskAttempt) -> None:
+    if attempt.lane != TaskAttempt.Lane.METERED or not attempt.route_candidate_index:
         return
     day = timezone.now().astimezone(UTC).date().isoformat()
     try:
