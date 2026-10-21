@@ -127,7 +127,7 @@ def test_a_steer_racing_the_turn_end_is_unknown_and_written_once(tmp_path: Path)
         await written.wait()
         session._turn_closed()
         with pytest.raises(CodexSteerUnknownError) as caught:
-            await steering
+            await asyncio.wait_for(steering, 0.2)
         assert type(caught.value).__name__ == "CodexSteerUnknownError"
         release.set()
 
