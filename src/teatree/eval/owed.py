@@ -353,17 +353,10 @@ class OwedHarvest:
         )
         return [(pull.number, pull.head_sha) for pull in pulls if pull.merged_at and pull.merged_at >= since]
 
-    def pr_owed(self, heads: Sequence[tuple[int, str]], *, since: dt.datetime | None = None) -> OwedLedger:
+    def pr_owed(self, heads: Sequence[tuple[int, str]]) -> OwedLedger:
         if not heads:
             return OwedLedger()
-        if since is not None:
-            return self._pr_owed_by_head(heads)
-        wanted = {sha for _, sha in heads}
-        artifacts = self._artifacts(
-            PR_OWED_ARTIFACT,
-            done=lambda seen: wanted <= {artifact.head_sha for artifact in seen},
-        )
-        return self._pr_owed_from_artifacts(heads, artifacts)
+        return self._pr_owed_by_head(heads)
 
     def _pr_owed_by_head(self, heads: Sequence[tuple[int, str]]) -> OwedLedger:
         repository_id, _ = self.repository_identity
@@ -428,7 +421,7 @@ class OwedHarvest:
             )
         since = previous.harvested_through or now - self.first_harvest_lookback
         heads = self.merged_pr_heads(since)
-        harvested = previous.merged(self.pr_owed(heads, since=since))
+        harvested = previous.merged(self.pr_owed(heads))
         harvested = harvested.merged(self.leg_owed({sha for _, sha in heads}, since))
         return replace(harvested, harvested_through=now)
 
@@ -453,9 +446,7 @@ class OwedHarvest:
             return OwedLedger()
         return OwedLedger.from_json(self._member(artifact, None))
 
-    def _artifacts(
-        self, name: str, *, done: Callable[[list[_Artifact]], bool], older_than: dt.datetime | None = None
-    ) -> list[_Artifact]:
+    def _artifacts(self, name: str, *, done: Callable[[list[_Artifact]], bool]) -> list[_Artifact]:
         repository_id, default_branch = self.repository_identity
 
         def trusted(seen: list[_Artifact]) -> list[_Artifact]:
@@ -471,7 +462,7 @@ class OwedHarvest:
             "artifacts",
             _Artifact.from_fields,
             what=f"{name} artifacts",
-            stop=lambda seen: done(trusted(seen)) or (older_than is not None and seen[-1].created_at < older_than),
+            stop=lambda seen: done(trusted(seen)),
         )
         return trusted(rows)
 

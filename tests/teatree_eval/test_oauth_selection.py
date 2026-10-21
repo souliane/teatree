@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from scripts.eval import select_oauth
 from teatree import account_headroom
 from teatree.ci_oauth_switch import WEIGHT_5H as SWITCH_WEIGHT_5H
 from teatree.ci_oauth_switch import WEIGHT_7D as SWITCH_WEIGHT_7D
@@ -142,6 +143,18 @@ class TestSelectFreshest:
         assert selection.winner is None
         assert selection.candidates[0].status is TokenProbeStatus.BELOW_RESERVE
 
+    def test_low_seven_day_reserve_parks_the_only_account(self) -> None:
+        reader = _MockReader({MIDDLING: _snapshot(u5h=0.10, u7d=0.90)})
+        selection = select_freshest([MIDDLING], reader=reader, now=RUN_START)
+        assert selection.winner is None
+        assert selection.candidates[0].status is TokenProbeStatus.BELOW_RESERVE
+
+    def test_missing_five_hour_header_parks_the_only_account(self) -> None:
+        reader = _MockReader({FRESH: replace(_snapshot(u5h=0.1, u7d=0.1), unified_5h_utilization=None)})
+        selection = select_freshest([FRESH], reader=reader, now=RUN_START)
+        assert selection.winner is None
+        assert selection.candidates[0].status is TokenProbeStatus.UNKNOWN
+
     @pytest.mark.parametrize(
         ("reset", "expected_label"),
         [
@@ -191,6 +204,29 @@ class TestSelectFreshest:
         # SPENT_5H projects to 5h=1.0 / 7d=0.80 → binding 0.80, beating FRESH's 0.50.
         assert selection.winner is not None
         assert selection.winner.label == "token[1]"
+
+
+@pytest.mark.parametrize("missing_five_hour", [False, True])
+def test_select_oauth_parks_missing_five_hour_or_low_weekly_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    *,
+    missing_five_hour: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshot = replace(
+        _snapshot(u5h=0.1, u7d=0.90),
+        unified_5h_utilization=None if missing_five_hour else 0.1,
+        unified_5h_reset=dt.datetime.now(dt.UTC) + dt.timedelta(hours=2),
+        unified_7d_reset=dt.datetime.now(dt.UTC) + dt.timedelta(days=3),
+    )
+    reader = _MockReader({FRESH: snapshot})
+    monkeypatch.setattr("teatree.eval.oauth_selection.read_rate_limits", reader)
+    github_output = tmp_path / "output"
+    result = select_oauth.main({"EVAL_OAUTH_TOKENS": FRESH, "GITHUB_OUTPUT": str(github_output)})
+    assert result == 75
+    assert github_output.read_text(encoding="utf-8") == "parked=true\n"
+    assert ("usage window unreadable" if missing_five_hour else "below eval reserve") in capsys.readouterr().out
 
 
 class TestNoTokenLeak:

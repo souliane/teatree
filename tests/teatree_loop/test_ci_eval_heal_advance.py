@@ -657,9 +657,22 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.PENDING
         assert session.fix_attempts == 1
-        assert session.park_failures == 0
+        assert session.park_cycles == 1
         assert outcome.to_state == CiEvalHealSession.State.PENDING
         assert "parked" in outcome.note
+
+    def test_repeated_successful_parks_halt_without_spending_a_fix_attempt(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        CiEvalHealSession.objects.filter(pk=session.pk).update(park_cycles=2)
+        session.refresh_from_db()
+        client = _FakeClient(runs=[_completed("success")], artifact=_parked())
+
+        advance_session(session, client=client, escalate=_noop)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.fix_attempts == 0
+        assert "parked" in session.halt_reason
 
     def test_a_superseded_park_reports_the_owner_lost_the_claim(self) -> None:
         session = _awaiting()
@@ -677,11 +690,11 @@ class TestParkOnTheSubscriptionReserve(TestCase):
 
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.PENDING
-        assert session.park_failures == 1
+        assert session.park_cycles == 1
 
     def test_repeated_failed_runs_with_parked_legs_eventually_halt(self) -> None:
         session = _awaiting(head_sha="a" * 40)
-        CiEvalHealSession.objects.filter(pk=session.pk).update(park_failures=2)
+        CiEvalHealSession.objects.filter(pk=session.pk).update(park_cycles=2)
         session.refresh_from_db()
         client = _FakeClient(runs=[_completed("failure")], artifact=_parked())
 

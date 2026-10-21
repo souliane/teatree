@@ -45,11 +45,11 @@ class TestGitHubEvalTriggers:
         daily = [cron for cron in crons if cron.split()[4] == "*"]
         assert crons == ["0 6 * * *"]
         assert not daily or (
-            sweep["env"]["EVAL_SWEEP_WITHIN_HOURS"] == "25"
+            sweep["env"]["EVAL_SWEEP_WITHIN_HOURS"] == "24"
             and "EVAL_API_KEY_FALLBACK" not in sweep["env"]
             and "needs.prepare.outputs.parked != 'true'" in jobs["eval"]["if"]
             and "--days 7" in gate["run"]
-        ), f"A daily eval cron must be gated to the 25h before a 7-day reset; got {crons}."
+        ), f"A daily eval cron must be gated to the 24h before a 7-day reset; got {crons}."
 
     def test_backend_input_defaults_to_api_and_command_threads_it(self) -> None:
         # #3222 exposes a `backend` dispatch input so a CLI-free lane can be selected;

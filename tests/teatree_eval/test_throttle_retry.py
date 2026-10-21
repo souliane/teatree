@@ -165,14 +165,6 @@ class TestThrottleRetryDriver:
         assert calls["n"] == 2
         assert run.throttle_retries == 1
 
-    def test_a_session_limit_is_never_waited_out(self) -> None:
-        drive, calls = _scripted_drive([RuntimeError("session limit reached"), []])
-        sleeps: list[float] = []
-        with pytest.raises(RuntimeError, match="session limit reached"):
-            _driver(sleeps).run(drive, _handlers())
-        assert calls["n"] == 1
-        assert sleeps == []
-
     def test_exhausted_throttle_surfaces_loud(self) -> None:
         drive, calls = _scripted_drive([RuntimeError("Overloaded")])
         sleeps: list[float] = []

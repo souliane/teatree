@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddField(
             model_name="cievalhealsession",
-            name="park_failures",
+            name="park_cycles",
             field=models.PositiveSmallIntegerField(default=0),
         ),
     ]

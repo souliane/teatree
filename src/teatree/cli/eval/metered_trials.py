@@ -12,6 +12,7 @@ from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.report import ScenarioResult
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.surface import is_advisory
 
 
@@ -71,7 +72,7 @@ def exit_on_usage_limit_or_prior_red(
         write_artifact(summary_md, message + "\n")
     if html_out is not None:
         write_artifact(html_out, f"<html><body><p>{message}</p></body></html>\n")
-    raise typer.Exit(code=1 if failed_before_limit else 75)
+    raise typer.Exit(code=1 if failed_before_limit else MEASURED_NOTHING_EXIT_CODE)
 
 
 def run_pass_at_k_results(

@@ -24,8 +24,8 @@ from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_
 from teatree.cli.eval.metered_trials import exit_on_usage_limit_or_prior_red
 from teatree.cli.eval.multi_trial import (
     MatrixColumn,
+    MatrixUsageLimitError,
     TrialPolicy,
-    _MatrixUsageLimitError,
     collect_matrix_rows,
     parse_model_tags,
     parse_preset_columns,
@@ -143,7 +143,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     )
     try:
         rows = collect_matrix_rows(specs, columns, runner=runner, policy=TrialPolicy(trials=trials))
-    except _MatrixUsageLimitError as exc:
+    except MatrixUsageLimitError as exc:
         exit_on_usage_limit_or_prior_red(failed_before_limit=exc.failed_before_limit(specs))
     RunGuards.hooks_registered(rows)
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)

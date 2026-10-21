@@ -26,7 +26,7 @@ def is_usage_limit_skip_reason(terminal_reason: str) -> bool:
 
 
 class UsageLimitReachedError(RuntimeError):
-    """The Messages API refused with HTTP 400: the organisation reached the usage limit set in its console."""
+    """The account's subscription window or API usage limit stopped the eval."""
 
 
 #: The ``terminal_reason`` prefix a throttle that outlasted its bounded retry

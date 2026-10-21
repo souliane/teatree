@@ -96,7 +96,7 @@ def changed_scenarios(
         quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
     )
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
-    # visible in the CI log — the deferred scenarios run in the scheduled lanes.
+    # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
     if note := selection.truncation_note():
         typer.echo(note, err=True)
     # Same reason for a quarantine suppression (#4173) — a shrunken lane must be visible.

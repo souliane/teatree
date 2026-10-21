@@ -66,7 +66,7 @@ REPO_ROOT = SCENARIOS_DIR.parents[1]
 #: sequential single-trial run of this many finishes well inside the 80-min step
 #: cap. A diff that selects MORE than this (a corpus-wide mechanical edit) is
 #: truncated to a deterministic sorted-name prefix; the deferred tail is owed to the
-#: scheduled lanes (teatree's nightly runs it first), never silently dropped.
+#: weekly sharded lane (teatree's nightly runs it first), never silently dropped.
 MAX_SELECTIVE_PR_SCENARIOS = MAX_SCENARIOS_PER_SHARD
 
 
@@ -76,7 +76,7 @@ class ScenarioSelection:
 
     ``names`` is the bounded subset the lane runs; ``total_matched`` is how many the
     diff selected BEFORE the cap. When ``total_matched`` exceeds the cap the extra
-    scenarios are deferred to the scheduled lanes — :meth:`truncation_note` renders
+    scenarios are deferred to the weekly sharded lane — :meth:`truncation_note` renders
     the one-line signal so a corpus-wide PR's truncated coverage is visible in the CI
     log instead of hidden.
 
@@ -107,7 +107,7 @@ class ScenarioSelection:
         return (
             f"coverage incomplete: {self.deferred} deferred; "
             f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
-            f"selective-PR lane; deferred {self.deferred} to the scheduled lanes"
+            f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
         )
 
     def quarantine_note(self) -> str | None:

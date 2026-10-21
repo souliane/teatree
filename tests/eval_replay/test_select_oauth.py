@@ -66,6 +66,7 @@ class TestFreshestWinnerExported:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
         # winner is the SECOND candidate (index 1) → tokens[1] == TOK_B.
         _stub_selection(monkeypatch, OAuthSelection(candidates=(_healthy(0), _healthy(1)), ranked=(_healthy(1),)))
         code = main(
@@ -73,12 +74,14 @@ class TestFreshestWinnerExported:
                 "EVAL_CREDENTIAL": "subscription_oauth",
                 "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}\n",
                 "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
             }
         )
         assert code == 0
         lines = _env_lines(env_file)
         assert f"CLAUDE_CODE_OAUTH_TOKEN={TOK_B}" in lines
         assert "T3_AGENT_HARNESS_PROVIDER=subscription_oauth" in lines
+        assert _env_lines(output_file) == ["parked=false"]
         out = capsys.readouterr().out
         assert f"::add-mask::{TOK_B}" in out
 

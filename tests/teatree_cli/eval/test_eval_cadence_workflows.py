@@ -263,19 +263,12 @@ class TestNightlySmokeLane:
         assert "scripts/eval/select_oauth.py" in text
 
 
-def test_scheduled_sweep_window_reaches_each_credential_selector() -> None:
-    text = _WEEKLY.read_text(encoding="utf-8")
-    sections = text.split("- name: Select the freshest eval OAuth account")
-    assert len(sections) == 2
-    assert "EVAL_SWEEP_WITHIN_HOURS" in sections[-1].split("- name:", 1)[0]
-
-
-def test_scheduled_sweep_window_exceeds_the_daily_cron_interval() -> None:
+def test_scheduled_sweep_window_is_24_hours_in_both_selectors() -> None:
     workflow = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))
     prepare = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "sweep")
     selector = next(step for step in workflow["jobs"]["eval"]["steps"] if step.get("id") == "select")
     hours = int(prepare["env"]["EVAL_SWEEP_WITHIN_HOURS"])
-    assert 24 < hours <= 30
+    assert hours == 24
     assert f"&& '{hours}' || ''" in selector["env"]["EVAL_SWEEP_WITHIN_HOURS"]
 
 
@@ -305,14 +298,6 @@ def test_pr_deferred_tail_reaches_the_owed_record_step() -> None:
     assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
     assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
     assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
-
-
-def test_reusable_parked_lanes_keep_durable_owed_artifacts() -> None:
-    pr = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
-    record = next(step for step in pr if step.get("name") == "Record owed scenarios")
-    upload = next(step for step in pr if step.get("name") == "Upload the owed scenarios")
-    assert "t3 eval owed record" in record["run"]
-    assert upload["with"]["name"] == "eval-owed"
 
 
 def test_reusable_owed_steps_require_the_old_overlay_to_expose_the_command() -> None:

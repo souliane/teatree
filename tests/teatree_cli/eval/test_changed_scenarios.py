@@ -63,7 +63,7 @@ class TestChangedScenarios:
         result = CliRunner().invoke(app, ["eval", "changed-scenarios"], input="\n".join(all_files) + "\n")
         assert result.exit_code == 0, result.output
         assert "capped to" in result.stderr
-        assert "scheduled lanes" in result.stderr
+        assert "weekly sharded lane" in result.stderr
         assert len([line for line in result.stdout.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
 
 

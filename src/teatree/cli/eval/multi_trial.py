@@ -264,7 +264,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         rows = collect_matrix_rows(
             specs, model_list, runner=runner, policy=TrialPolicy(trials=trials, require=require), grader=grader
         )
-    except _MatrixUsageLimitError as exc:
+    except MatrixUsageLimitError as exc:
         exit_on_usage_limit_or_prior_red(html_out=html_out, failed_before_limit=exc.failed_before_limit(specs))
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
@@ -398,7 +398,7 @@ class _MatrixCell:
     policy: TrialPolicy
 
 
-class _MatrixUsageLimitError(UsageLimitReachedError):
+class MatrixUsageLimitError(UsageLimitReachedError):
     def __init__(self, rows: list[MatrixRow], *, failed_within_cell: bool) -> None:
         super().__init__("usage limit reached during matrix collection")
         self.rows = rows
@@ -442,7 +442,7 @@ def collect_matrix_rows(
                     )
                 )
             except UsageLimitReachedError as exc:
-                raise _MatrixUsageLimitError(
+                raise MatrixUsageLimitError(
                     rows, failed_within_cell=isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)
                 ) from exc
     return rows

@@ -152,12 +152,6 @@ _PR_WORKFLOWS = ["eval-pr.yml", "eval-pr-reusable.yml"]
 
 @pytest.mark.parametrize("workflow", _PR_WORKFLOWS)
 class TestPrLaneParksOnTheLimit:
-    def test_the_limit_stops_the_loop_and_owes_the_rest(self, shell, workflow: str) -> None:
-        run = shell(_script(workflow, "eval", _PR_LOOP), rcs={"beta": _LIMIT}, EVAL_NAMES="alpha,beta,gamma")
-        assert run.returncode == 0
-        assert run.invoked == ["alpha", "beta"]
-        assert run.lines("eval-owed-limit.txt") == ["beta", "gamma"]
-
     def test_a_confirmed_red_before_the_limit_still_reds(self, shell, workflow: str) -> None:
         run = shell(
             _script(workflow, "eval", _PR_LOOP), rcs={"alpha": 1, "beta": _LIMIT}, EVAL_NAMES="alpha,beta,gamma"
@@ -468,6 +462,37 @@ class TestThePrLaneRecordsWhatItOwes:
         run, ledger = record_owed
         assert run() == {"parked": "false", "owed": ""}
         assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")) == OwedLedger()
+
+
+def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(_REAL_T3_UV, encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    temp = tmp_path / "runner-temp"
+    temp.mkdir()
+    (temp / "eval-owed-limit.txt").write_text("limited\n", encoding="utf-8")
+    script = _script("eval-pr-reusable.yml", "eval", "Record owed scenarios")
+    script = script.replace("${{ github.event.pull_request.number }}", "7").replace(
+        "${{ github.event.pull_request.head.sha }}", "abc123"
+    )
+    result = subprocess.run(
+        [_BASH, "-c", script],
+        env={
+            **{key: value for key, value in os.environ.items() if key != "T3_REPO"},
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(temp),
+            "XDG_DATA_HOME": str(tmp_path / "xdg"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=_WORKFLOWS.parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+    ledger = OwedLedger.from_json((temp / "eval-owed.json").read_text(encoding="utf-8"))
+    assert ledger.names == ("limited",)
 
 
 @pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml"])

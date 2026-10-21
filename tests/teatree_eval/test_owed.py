@@ -24,7 +24,6 @@ from teatree.eval.owed import (
     OwedLedgerError,
     OwedReason,
     OwedScenario,
-    TruncatedListingError,
 )
 
 REPO = "souliane/teatree"
@@ -475,13 +474,19 @@ class TestMergedPrHeads:
 
 
 class TestPrOwed:
-    def test_foreign_head_repository_cannot_poison_pr_debt(self) -> None:
+    def test_no_merged_pr_reads_nothing(self) -> None:
+        harvest, gh, _ = _harvest({})
+        assert harvest.pr_owed([]) == OwedLedger()
+        assert gh.calls == []
+
+    def test_fork_artifact_on_a_merged_head_cannot_poison_pr_debt(self) -> None:
         head = "a" * 40
         trusted = _ledger(_owed("trusted"))
         routes = {
-            _artifacts_url(PR_OWED_ARTIFACT): _listing(
+            _head_runs_url(head): _runs(_run(77, created=NOW, head_sha=head, branch="feature")),
+            _run_artifacts_url(77): _listing(
                 [
-                    _artifact(2, created=NOW, head_sha=head, provenance=("main", 2)),
+                    _artifact(2, created=NOW, head_sha=head, provenance=("feature", 2)),
                     _artifact(1, created=NOW - DAY, head_sha=head, provenance=("feature", 1)),
                 ]
             ),
@@ -491,79 +496,45 @@ class TestPrOwed:
         assert harvest.pr_owed([(10, head)]) == trusted
         assert _zip_url(2) not in gh.calls
 
-    def test_only_the_artifact_on_the_final_head_sha_is_harvested(self) -> None:
+    def test_only_the_final_head_artifact_is_harvested(self) -> None:
         final, older = "a" * 40, "0" * 40
-        on_final = _ledger(_owed("owed_on_final", reason=OwedReason.LIMIT))
-        on_older = _ledger(_owed("owed_on_older_push"))
         routes = {
-            _artifacts_url(PR_OWED_ARTIFACT): _listing(
-                [
-                    _artifact(5, created=NOW - DAY, head_sha=final),
-                    _artifact(4, created=NOW - 2 * DAY, head_sha=older),
-                ]
+            _head_runs_url(final): _runs(_run(77, created=NOW, head_sha=final, branch="feature")),
+            _run_artifacts_url(77): _listing(
+                [_artifact(5, created=NOW - DAY, head_sha=final), _artifact(4, created=NOW, head_sha=older)]
             ),
-            _zip_url(5): _zip(PR_OWED_FILENAME, on_final.to_json()),
-            _zip_url(4): _zip(PR_OWED_FILENAME, on_older.to_json()),
+            _zip_url(5): _zip(PR_OWED_FILENAME, _ledger(_owed("final")).to_json()),
         }
         harvest, gh, _ = _harvest(routes)
-        assert harvest.pr_owed([(10, final)]).names == ("owed_on_final",)
+        assert harvest.pr_owed([(10, final)]).names == ("final",)
         assert _zip_url(4) not in gh.calls
 
-    def test_the_newest_artifact_wins_when_a_head_ran_twice(self) -> None:
+    def test_newest_final_head_rerun_wins(self) -> None:
         head = "a" * 40
-        rerun = _ledger(_owed("from_rerun"))
         routes = {
-            _artifacts_url(PR_OWED_ARTIFACT): _listing(
-                [_artifact(6, created=NOW - 2 * DAY, head_sha=head), _artifact(7, created=NOW - DAY, head_sha=head)]
+            _head_runs_url(head): _runs(_run(77, created=NOW, head_sha=head, branch="feature")),
+            _run_artifacts_url(77): _listing(
+                [_artifact(6, created=NOW - DAY, head_sha=head), _artifact(7, created=NOW, head_sha=head)]
             ),
-            _zip_url(7): _zip(PR_OWED_FILENAME, rerun.to_json()),
+            _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("newest")).to_json()),
         }
         harvest, _, _ = _harvest(routes)
-        assert harvest.pr_owed([(10, head)]).names == ("from_rerun",)
+        assert harvest.pr_owed([(10, head)]).names == ("newest",)
 
-    def test_an_expired_artifact_warns_naming_the_pr(self) -> None:
+    def test_expired_final_head_artifact_warns(self) -> None:
         head = "a" * 40
         routes = {
-            _artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(5, created=NOW - DAY, head_sha=head, expired=True)])
+            _head_runs_url(head): _runs(_run(77, created=NOW, head_sha=head, branch="feature")),
+            _run_artifacts_url(77): _listing([_artifact(5, created=NOW, head_sha=head, expired=True)]),
         }
         harvest, _, warnings = _harvest(routes)
         assert harvest.pr_owed([(42, head)]) == OwedLedger()
         assert len(warnings) == 1
-        assert warnings[0].startswith("::warning::")
         assert "PR #42" in warnings[0]
-
-    def test_a_pr_with_no_artifact_owes_nothing(self) -> None:
-        routes = {_artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(5, created=NOW, head_sha="b" * 40)])}
-        harvest, _, warnings = _harvest(routes)
-        assert harvest.pr_owed([(42, "a" * 40)]) == OwedLedger()
-        assert warnings == []
-
-    def test_no_merged_pr_reads_nothing(self) -> None:
-        harvest, gh, _ = _harvest({})
-        assert harvest.pr_owed([]) == OwedLedger()
-        assert gh.calls == []
-
-    def test_paging_stops_once_every_head_is_found(self) -> None:
-        head = "a" * 40
-        full_page = [_artifact(1000 + index, created=NOW, head_sha="b" * 40) for index in range(PAGE_SIZE - 1)]
-        routes = {
-            _artifacts_url(PR_OWED_ARTIFACT, 1): _listing([*full_page, _artifact(5, created=NOW, head_sha=head)]),
-            _zip_url(5): _zip(PR_OWED_FILENAME, _ledger(_owed("found")).to_json()),
-        }
-        harvest, gh, _ = _harvest(routes)
-        assert harvest.pr_owed([(42, head)]).names == ("found",)
-        assert _artifacts_url(PR_OWED_ARTIFACT, 2) not in gh.calls
-
-    def test_an_unfound_head_past_the_page_bound_fails_loud_never_truncates(self) -> None:
-        page = _listing([_artifact(1000 + index, created=NOW, head_sha="b" * 40) for index in range(PAGE_SIZE)])
-        routes = {_artifacts_url(PR_OWED_ARTIFACT, index): page for index in range(1, MAX_LISTING_PAGES + 1)}
-        harvest, _, _ = _harvest(routes)
-        with pytest.raises(TruncatedListingError, match=PR_OWED_ARTIFACT):
-            harvest.pr_owed([(42, "a" * 40)])
 
     def test_no_runs_for_a_merged_head_owe_nothing(self) -> None:
         harvest, gh, _ = _harvest({_head_runs_url("a" * 40): _runs()})
-        assert harvest.pr_owed([(42, "a" * 40)], since=NOW) == OwedLedger()
+        assert harvest.pr_owed([(42, "a" * 40)]) == OwedLedger()
         assert gh.calls[-1] == _head_runs_url("a" * 40)
 
     def test_nightly_harvest_queries_only_the_merged_head_even_for_an_old_artifact(self) -> None:
@@ -574,7 +545,7 @@ class TestPrOwed:
             _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("still_owed")).to_json()),
         }
         harvest, gh, _ = _harvest(routes)
-        assert harvest.pr_owed([(42, head)], since=NOW - DAY).names == ("still_owed",)
+        assert harvest.pr_owed([(42, head)]).names == ("still_owed",)
         assert _artifacts_url(PR_OWED_ARTIFACT) not in gh.calls
 
 
