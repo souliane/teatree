@@ -22,6 +22,11 @@ _ADAPTER = _ROUTER.with_name("codex_hook_adapter.py")
 _DISPATCHED = {"T3_DISPATCHED_AGENT": "1"}
 
 
+@pytest.fixture(autouse=True)
+def _isolated_hook_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(router, "STATE_DIR", tmp_path / "state")
+
+
 def _transcript(tmp_path: Path, *, final: str = "") -> Path:
     path = tmp_path / "turn.jsonl"
     entries = [
