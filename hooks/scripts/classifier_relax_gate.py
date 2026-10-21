@@ -44,9 +44,9 @@ flow (the never-lockout contract, ``test_gate_never_lockout_contract``).
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib
-plus the ``question_gates`` sibling (the transcript-parsing home). The router
-helpers ``_entry_role`` / ``_entry_content`` / ``_fail_open_or_deny`` stay in the
-router (shared with other handlers) and are back-imported lazily.
+plus the ``question_gates`` sibling (the transcript-parsing home). The
+transcript entry helpers come from ``question_gates``; only
+``_fail_open_or_deny`` is back-imported lazily from the router.
 """
 
 import json
@@ -55,6 +55,8 @@ import sys
 from pathlib import Path
 
 from hooks.scripts.pretooluse_verdict import Verdict, emit_pretooluse_allow
+from hooks.scripts.question_gates import _entry_message_blocks as _entry_content
+from hooks.scripts.question_gates import _entry_message_role as _entry_role
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -136,8 +138,6 @@ def _ask_question_has_relax_option(block: dict) -> bool:
 
 def _user_entry_affirms_relax(entry: dict) -> bool:
     """True when a user transcript ``entry`` affirmatively selects the relax option."""
-    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
-
     texts = [str(b.get("text", "")) for b in _entry_content(entry) if isinstance(b, dict) and b.get("type") == "text"]
     return bool(_CLASSIFIER_RELAX_AFFIRMATIVE.search(" ".join(texts).strip()))
 
@@ -151,8 +151,6 @@ def _denied_settings_write_ids(entries: list, start: int) -> set[str]:
     survives a denied attempt (a false-block, or any deny) so a corrected retry is
     still allowed (#3/#4). Fail-safe: an unparsable block is skipped.
     """
-    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
-
     denied: set[str] = set()
     for k in range(start, len(entries)):
         for block in _entry_content(entries[k]):
@@ -172,8 +170,6 @@ def _consent_unconsumed(entries: list, start: int) -> bool:
     survives a denied attempt, #3/#4). Any other settings write since the approval
     is a completed write that spends it (a replay of consumed consent).
     """
-    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
-
     denied_ids = _denied_settings_write_ids(entries, start)
     for k in range(start, len(entries)):
         for block in _entry_content(entries[k]):
@@ -194,8 +190,6 @@ def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
     does NOT consume the consent — the approval survives a denied attempt. Fail-safe
     to "no allow" on any missing/unmatched condition.
     """
-    from hooks.scripts.hook_router import _entry_content, _entry_role  # noqa: PLC0415 deferred back-import
-
     entries = _read_transcript_entries(transcript_path)
     for idx in range(len(entries) - 1, -1, -1):
         entry = entries[idx]
