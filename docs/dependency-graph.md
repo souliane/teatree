@@ -485,7 +485,6 @@ graph TD
     teatree.settings --> teatree.paths
     teatree.settings --> teatree.timeouts
     teatree.webhook_settings --> teatree.settings
-    teatree.webhook_urls --> teatree.core
     teatree.cli_reference --> teatree.cli
     teatree.triage --> teatree.utils
     teatree.answer_handback --> teatree.paths
@@ -529,6 +528,7 @@ graph TD
     teatree.instance_id
     teatree.generation
     teatree.slack_mrkdwn
+    teatree.webhook_urls
     teatree.webhook_wsgi
     teatree.memory_audit
 ```

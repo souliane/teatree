@@ -1194,7 +1194,7 @@ depends_on = ["teatree.settings"]
 [[modules]]
 path = "teatree.webhook_urls"
 layer = "interface"
-depends_on = ["teatree.core"]
+depends_on = []
 
 [[modules]]
 path = "teatree.webhook_wsgi"
