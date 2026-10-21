@@ -49,24 +49,30 @@ class TestGateEscape(TestCase):
         assert used.recorded_at is not None
         assert GateEscape.objects.consume_human(scope) is None
 
-    def test_human_grant_is_bound_to_every_part_of_the_action(self) -> None:
+    def _assert_grant_refuses_changed_field(self, field: str, replacement: str) -> None:
         scope = _scope(gate="raw_review_post")
         GateEscape.objects.grant_human(scope, issuer_id="owner", ttl=timedelta(minutes=5))
-        changed = {
-            "gate": "raw_issue_write",
-            "actor": "other-agent",
-            "subject": "/work/other",
-            "head": "c" * 40,
-            "action_digest": "d" * 64,
-            "session_id": "session-2",
-        }
-        for name, value in changed.items():
-            with self.subTest(name):
-                other = _scope(**{"gate": "raw_review_post", name: value})
-                assert GateEscape.objects.consume_human(other) is None
-        assert GateEscape.objects.count() == 1
+        assert GateEscape.objects.consume_human(_scope(**{"gate": "raw_review_post", field: replacement})) is None
         assert GateEscape.objects.get().recorded_at is None
         assert GateEscape.objects.consume_human(scope) is not None
+
+    def test_human_grant_is_bound_to_gate(self) -> None:
+        self._assert_grant_refuses_changed_field("gate", "raw_issue_write")
+
+    def test_human_grant_is_bound_to_actor(self) -> None:
+        self._assert_grant_refuses_changed_field("actor", "other-agent")
+
+    def test_human_grant_is_bound_to_subject(self) -> None:
+        self._assert_grant_refuses_changed_field("subject", "/work/other")
+
+    def test_human_grant_is_bound_to_head(self) -> None:
+        self._assert_grant_refuses_changed_field("head", "c" * 40)
+
+    def test_human_grant_is_bound_to_action_digest(self) -> None:
+        self._assert_grant_refuses_changed_field("action_digest", "d" * 64)
+
+    def test_human_grant_is_bound_to_session_id(self) -> None:
+        self._assert_grant_refuses_changed_field("session_id", "session-2")
 
     def test_expired_grant_refuses_without_an_audit_write(self) -> None:
         scope = _scope(gate="raw_review_post")
@@ -87,7 +93,7 @@ class TestGateEscape(TestCase):
             GateEscape.objects.grant_human(scope, issuer_id="session-agent-7", ttl=timedelta(minutes=5))
         assert GateEscape.objects.count() == 0
 
-    def test_a_never_escapable_gate_records_no_agent_escape_and_no_human_grant(self) -> None:
+    def test_never_policy_refuses_agent_and_human_escapes_for_every_gate(self) -> None:
         for gate in NEVER_ESCAPABLE_GATES:
             with self.subTest(gate):
                 with pytest.raises(GateEscapeError):
