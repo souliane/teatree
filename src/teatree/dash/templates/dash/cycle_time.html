@@ -44,7 +44,7 @@
           {% for row in view.open_prs %}
             <tr>
               <td><a href="{{ row.url }}">{{ row.url }}</a></td>
-              <td class="num">{{ row.age }}{% if row.stale %} <span class="chip warn">72h+</span>{% endif %}</td>
+              <td class="num">{{ row.age }}{% if row.stale %} <span class="chip warn">{{ view.open_pr_red_hours|floatformat:0 }}h+</span>{% endif %}</td>
             </tr>
           {% endfor %}
         </tbody>

@@ -31,6 +31,7 @@ from teatree.core.factory.factory_signals import (
     first_try_green_rate,
     merge_latency,
     net_hand_written_loc,
+    pr_start_to_merged,
     repair_iteration_burn,
     review_catch_rate,
 )
@@ -205,6 +206,19 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
 
         assert row.reading.status == SignalStatus.OK
         assert row.reading.value == pytest.approx(6, abs=0.1)
+
+    def test_pull_request_provider_reads_the_merge_flow(self) -> None:
+        for hours in (2, 4, 6, 8, 10):
+            pr = self._pr(age_hours=hours, state=PullRequest.State.MERGED)
+            edge = TicketTransitionFactory(
+                ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now - timedelta(seconds=1))
+
+        reading = pr_start_to_merged(now=self.now)
+
+        assert reading.status == SignalStatus.OK
+        assert reading.value == pytest.approx(6, abs=0.1)
 
 
 class S1FirstTryGreenTests(FactorySignalsTestBase):
@@ -771,6 +785,7 @@ class ReportShapeTests(FactorySignalsTestBase):
             defect_escape_rate,
             review_catch_rate,
             merge_latency,
+            pr_start_to_merged,
             repair_iteration_burn,
         ):
             reading = provider(now=self.now)

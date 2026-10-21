@@ -185,11 +185,11 @@ class AgentAdmission:
         """
         cost = phase_cost(phase)
         lane = self.lane_for(cost)
-        if not _task_model().objects.filter(pk=task_pk).filter(new_pr_start_allowed_q()).exists():
-            return f"{OPEN_PR_START_CAP} or more pull requests are open; this task could start another"
         if not _task_model().objects.record_admission(
             task_pk, cheap=cost is PhaseCost.CHEAP, lane_ceiling=lane.ceiling
         ):
+            if not _task_model().objects.filter(pk=task_pk).filter(new_pr_start_allowed_q()).exists():
+                return f"{OPEN_PR_START_CAP} or more pull requests are open; this task could start another"
             if lane.ceiling is None:
                 return "already dispatched this window"
             return f"no {cost}-phase seat: already dispatched this window, or a racer took the last one"

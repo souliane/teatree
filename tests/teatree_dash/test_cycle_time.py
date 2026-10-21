@@ -9,6 +9,7 @@ different time scales while the page shows one set of labels).
 
 import re
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.db.models.signals import post_save
@@ -250,14 +251,6 @@ class CycleTimePageTestCase(TestCase):
     def test_the_page_is_in_the_nav(self) -> None:
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
 
-    def test_open_pull_requests_are_shown_with_the_flow_measure(self) -> None:
-        pr = PullRequestFactory(ticket=self.ticket)
-
-        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
-
-        assert "Pull requests: start to merged" in body
-        assert pr.url in body
-
     def test_the_flow_band_shows_the_merged_median_and_open_ages_oldest_first(self) -> None:
         for hours in (4, 6, 8):
             merged = started_pull_request(hours_ago=hours, state=PullRequest.State.MERGED)
@@ -269,6 +262,7 @@ class CycleTimePageTestCase(TestCase):
 
         body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
 
+        assert "Pull requests: start to merged" in body
         assert "Median of 3 merged pull requests: <strong>6h</strong>" in body
         assert body.index(old.url) < body.index(young.url)
         old_row = re.search(rf'<tr>\s*<td><a href="{re.escape(old.url)}">.*?</tr>', body, re.DOTALL)
@@ -278,6 +272,14 @@ class CycleTimePageTestCase(TestCase):
         assert young_row is not None
         assert 'class="chip warn"' not in young_row.group()
         assert re.search(rf'{re.escape(young.url)}</a></td>\s*<td class="num">5h</td>', body)
+
+    def test_stale_pull_request_chip_uses_the_threshold(self) -> None:
+        started_pull_request(hours_ago=80)
+
+        with patch("teatree.dash.cycle_time.OPEN_PR_RED_HOURS", 48.0):
+            body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert '<span class="chip warn">48h+</span>' in body
 
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)

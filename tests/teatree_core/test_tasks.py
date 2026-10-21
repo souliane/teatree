@@ -26,6 +26,7 @@ from teatree.core.models import (
     ConfigSetting,
     Mode,
     ModeOverride,
+    PullRequest,
     Session,
     Task,
     TaskAttempt,
@@ -217,6 +218,75 @@ class TestDrainHeadlessQueue(TestCase):
         assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    def test_cap_held_unknown_overlay_fails_and_drain_still_admits(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create(overlay="test")
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 200}"
+            )
+
+        for phase in ("coding", "testing", "debugging", "e2e", "shipping"):
+            with self.subTest(phase=phase):
+                poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+                poison = Task.objects.create(
+                    ticket=poison_ticket,
+                    session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+                    phase=phase,
+                )
+                live_ticket = Ticket.objects.create(overlay="test")
+                live = Task.objects.create(
+                    ticket=live_ticket,
+                    session=Session.objects.create(ticket=live_ticket, overlay="test"),
+                    phase="reviewing",
+                )
+
+                with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+                    result = drain_queue_body()
+
+                assert result["failed_unknown_overlay"] == [poison.pk]
+                assert live.pk in result["enqueued"]
+                poison.refresh_from_db()
+                assert poison.status == Task.Status.FAILED
+                assert TaskAttempt.objects.filter(task=poison, exit_code=1).exists()
+                Task.objects.filter(pk=live.pk).update(status=Task.Status.COMPLETED)
+
+    def test_poison_cleanup_leaves_a_rival_claim_and_still_admits(self) -> None:
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+            phase="coding",
+        )
+        live_ticket = Ticket.objects.create(overlay="test")
+        live = Task.objects.create(
+            ticket=live_ticket,
+            session=Session.objects.create(ticket=live_ticket, overlay="test"),
+            phase="reviewing",
+        )
+        original = Ticket.has_dispatchable_overlay
+
+        def rival_claims_first(ticket: Ticket) -> bool:
+            if ticket.pk == poison_ticket.pk:
+                Task.objects.filter(pk=poison.pk).update(
+                    status=Task.Status.CLAIMED,
+                    claimed_by="rival",
+                    lease_expires_at=timezone.now() + timedelta(hours=1),
+                )
+                return False
+            return original(ticket)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(Ticket, "has_dispatchable_overlay", new=rival_claims_first),
+        ):
+            result = drain_queue_body()
+
+        assert result["failed_unknown_overlay"] == []
+        assert live.pk in result["enqueued"]
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=poison).exists()
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_quiescing_withholds_every_live_row_but_still_fails_poison_rows(self) -> None:

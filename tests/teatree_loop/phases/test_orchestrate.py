@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from teatree.config import UserSettings, Wip
 from teatree.core.backend_factory import OverlayBackends
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.loop.phases.orchestrate import _dispatchable_filter, orchestrate_phase
 
@@ -128,6 +128,21 @@ class TestOrchestratePhaseManifestGolden(django.test.TestCase):
 
 
 class TestOrchestratePhaseClaimSemantics(django.test.TestCase):
+    def test_held_starters_do_not_consume_the_planning_claim_slot(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 300}"
+            )
+        held = [_dispatchable_task(phase="coding") for _ in range(2)]
+        planning = _dispatchable_task(phase="planning")
+
+        with _with_wip(Wip.SLOW):
+            manifest = orchestrate_phase(backends=[OverlayBackends(name="a", max_concurrent_auto_starts=1)], claim=True)
+
+        assert [entry.task_id for entry in manifest.entries] == [planning.pk]
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.PENDING for task in held)
+
     def test_default_plan_is_read_only_and_claims_nothing(self) -> None:
         task = _dispatchable_task()
         backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]

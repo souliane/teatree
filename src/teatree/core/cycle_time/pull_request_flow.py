@@ -11,7 +11,7 @@ from teatree.core.models.pull_request import PullRequest
 @dataclass(frozen=True, slots=True)
 class OpenPullRequestAge:
     url: str
-    age_hours: float | None
+    age_seconds: float | None
 
 
 def merged_pull_request_seconds(*, since: datetime, until: datetime, overlay: str = "") -> tuple[float, ...]:
@@ -34,7 +34,7 @@ def open_pull_requests(*, now: datetime, overlay: str = "") -> tuple[OpenPullReq
     return tuple(
         OpenPullRequestAge(
             url=row.url,
-            age_hours=max(0.0, (now - row.flow_started_at).total_seconds() / 3600)
+            age_seconds=max(0.0, (now - row.flow_started_at).total_seconds())
             if row.flow_started_at is not None
             else None,
         )

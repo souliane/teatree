@@ -186,8 +186,11 @@ def drain_queue_body() -> dict[str, list[int]]:
             continue
         reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
         logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
-        task_obj.claim(claimed_by="unknown-overlay-guard")
-        task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
+        with transaction.atomic():
+            if not Task.objects.filter(pk=task_obj.pk, status=Task.Status.PENDING).update(status=Task.Status.CLAIMED):
+                continue
+            task_obj.refresh_from_db()
+            task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
         failed_unknown_overlay.append(task_obj.pk)
     return {"enqueued": admit_waiting_tasks(at="queue drain"), "failed_unknown_overlay": failed_unknown_overlay}
 

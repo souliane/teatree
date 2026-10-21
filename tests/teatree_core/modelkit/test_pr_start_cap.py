@@ -1,4 +1,7 @@
+from unittest.mock import patch
+
 import pytest
+from django.db.models import QuerySet
 from django.db.models.signals import post_save
 from django.test import TestCase
 
@@ -62,6 +65,18 @@ class TestNewPullRequestStartEligibility(TestCase):
         held.refresh_from_db()
         assert held.status == Task.Status.PENDING
 
+    def test_record_admission_refuses_new_start_at_cap(self) -> None:
+        for index in range(OPEN_PR_START_CAP):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 110}"
+            )
+        held = self._task("shipping", Ticket.objects.create())
+
+        assert Task.objects.record_admission(held.pk, cheap=False, lane_ceiling=None) is False
+        held.refresh_from_db()
+        assert held.admitted_at is None
+
     def test_loop_claim_skips_held_starter_and_claims_started_pr(self) -> None:
         tickets = [Ticket.objects.create() for _ in range(OPEN_PR_START_CAP)]
         for index, ticket in enumerate(tickets):
@@ -75,5 +90,33 @@ class TestNewPullRequestStartEligibility(TestCase):
 
         assert claimed is not None
         assert claimed.pk == started.pk
+        held.refresh_from_db()
+        assert held.status == Task.Status.PENDING
+
+    def test_loop_claim_rechecks_cap_after_candidate_selection(self) -> None:
+        tickets = [Ticket.objects.create() for _ in range(3)]
+        for index, ticket in enumerate(tickets[:2]):
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 120}"
+            )
+        held = self._task("shipping", Ticket.objects.create())
+        original_first = QuerySet.first
+        changed = False
+
+        def open_third_pr(queryset: QuerySet) -> object:
+            nonlocal changed
+            selected = original_first(queryset)
+            if not changed and queryset.model is Task and selected == held.pk:
+                changed = True
+                PullRequest.objects.record_opened(
+                    ticket=tickets[2], url="https://github.com/example-org/example-repo/pull/122"
+                )
+            return selected
+
+        with patch.object(QuerySet, "first", new=open_third_pr):
+            claimed = Task.objects.claim_next_pending(claimed_by="worker")
+
+        assert changed
+        assert claimed is None
         held.refresh_from_db()
         assert held.status == Task.Status.PENDING

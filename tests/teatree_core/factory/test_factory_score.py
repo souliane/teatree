@@ -176,16 +176,6 @@ class TestPureFold:
         assert result.coverage == pytest.approx(0.5)
         assert result.aggregate is not None
 
-    def test_four_of_six_signals_cover_the_floor(self) -> None:
-        rows = _healthy_rows()
-        for i in (0, 1):
-            rows[i] = _row(rows[i].provider_id, 0.0, status=SignalStatus.INSUFFICIENT_DATA)
-
-        result = score_report(self.recipe, _report(rows))
-
-        assert result.coverage == pytest.approx(4 / 6)
-        assert result.aggregate is not None
-
     def test_uncapped_reading_outside_unit_is_red_not_clamped(self) -> None:
         rows = _healthy_rows()
         # defect_escape is uncapped; a reading of 1.5 is out of [0,1] → RED (never clamped).

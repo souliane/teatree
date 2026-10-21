@@ -38,6 +38,7 @@ MIN_SAMPLE = 5
 # failure fraction is this high AND the window carries at least MIN_SAMPLE work attempts,
 # so a small sample is treated as noise, not a fleet-scale collapse.
 HIGH_FAILURE_FRACTION = 0.5
+# A three-day open PR is already stalled; report it even without a merged sample.
 OPEN_PR_RED_HOURS = 72.0
 
 
@@ -512,9 +513,9 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
 def compute_s6(window: Window, overlay: str, now: datetime) -> Computation:
     durations = merged_pull_request_seconds(since=window.start, until=window.end, overlay=overlay)
     open_rows = open_pull_requests(now=now, overlay=overlay)
-    measured = [row for row in open_rows if row.age_hours is not None]
+    measured = [row for row in open_rows if row.age_seconds is not None]
     oldest = measured[0] if measured else None
-    oldest_hours = oldest.age_hours if oldest is not None and oldest.age_hours is not None else 0.0
+    oldest_hours = oldest.age_seconds / 3600 if oldest is not None and oldest.age_seconds is not None else 0.0
     hard_red = oldest_hours >= OPEN_PR_RED_HOURS
     evidence: S6Evidence = {
         "merged": len(durations),

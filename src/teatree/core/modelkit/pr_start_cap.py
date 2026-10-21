@@ -12,6 +12,7 @@ from teatree.core.modelkit.phases import phase_spellings
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest
+    from teatree.core.models.ticket import Ticket
 
 OPEN_PR_START_CAP = 3
 _PR_START_PHASES = tuple(
@@ -20,10 +21,11 @@ _PR_START_PHASES = tuple(
 
 
 def new_pr_start_allowed_q() -> Q:
+    ticket = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
     open_prs = pull_request.objects.live()
     open_count = open_prs.order_by().values(_all=Value(1)).annotate(total=models.Count("*")).values("total")[:1]
     below_cap = LessThan(Coalesce(models.Subquery(open_count), Value(0)), OPEN_PR_START_CAP)
     own_pr = Exists(open_prs.filter(ticket_id=OuterRef("ticket_id")))
-    might_start_pr = Q(ticket__role="author", phase__in=_PR_START_PHASES)
+    might_start_pr = Q(ticket__role=ticket.Role.AUTHOR, phase__in=_PR_START_PHASES)
     return ~might_start_pr | Q(ticket__expedited=True) | Q(own_pr) | Q(below_cap)

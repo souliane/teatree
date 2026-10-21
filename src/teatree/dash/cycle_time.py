@@ -97,6 +97,7 @@ class CycleTimeView:
     pr_median: str
     pr_merged_count: int
     open_prs: tuple[OpenPullRequestRow, ...]
+    open_pr_red_hours: float
 
 
 def clamp_window_days(raw: str) -> int:
@@ -129,11 +130,12 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
         bar_scale=_humanize_duration(scale),
         pr_median=_humanize_duration(percentile(merged, 0.5)) if merged else "—",
         pr_merged_count=len(merged),
+        open_pr_red_hours=OPEN_PR_RED_HOURS,
         open_prs=tuple(
             OpenPullRequestRow(
                 url=row.url,
-                age=_humanize_duration(row.age_hours * 3600) if row.age_hours is not None else "unmeasured",
-                stale=row.age_hours is not None and row.age_hours >= OPEN_PR_RED_HOURS,
+                age=_humanize_duration(row.age_seconds) if row.age_seconds is not None else "unmeasured",
+                stale=row.age_seconds is not None and row.age_seconds >= OPEN_PR_RED_HOURS * 3600,
             )
             for row in open_rows
         ),
