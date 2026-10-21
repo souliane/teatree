@@ -135,6 +135,10 @@ class TestAgentAdmissionDeniedReason(TestCase):
             verdict = agent_admission_verdict()
 
         assert verdict.denied_reason("shipping") == "worker quiescing"
+        assert verdict.retiring_denied == "worker quiescing"
+        assert verdict.cheap_lane.ceiling == 0
+        assert verdict.review_lane.ceiling == 0
+        assert verdict.retiring_lane.ceiling == 0
 
 
 class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
@@ -392,7 +396,7 @@ class TestHeadlessAdmissionStatus(TestCase):
             "expensive_lane": 6,
             "cheap_lane": 3,
             "review_lane": 2,
-            "retiring_lane": 1,
+            "retiring_lane": 2,
             "expensive_occupied": 2,
             "cheap_occupied": 1,
             "review_occupied": 1,
@@ -400,9 +404,9 @@ class TestHeadlessAdmissionStatus(TestCase):
         }
         assert parts["band"] == str(status.pressure.band)
         assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
-        assert "lanes 6 expensive + 2 review" in status.line()
-        assert "+ 1 retiring (requesting_review, shipping)" in status.line()
-        assert "occupied 2 expensive + 1 review + 0 retiring" in status.line()
+        assert "lanes 6 expensive + 3 cheap (up to 2 review" in status.line()
+        assert "+ up to 2 retiring (requesting_review, shipping)" in status.line()
+        assert "occupied 2 expensive + 1 cheap (1 review + 0 retiring)" in status.line()
         assert parts["review_phases"] == sorted(REVIEW_PHASES)
         assert parts["retiring_phases"] == sorted(RETIRING_PHASES)
 
@@ -440,7 +444,7 @@ class TestHeadlessAdmissionStatus(TestCase):
         assert status.as_json()["expensive_denied"] == status.as_json()["review_denied"] == quiescing
         assert status.as_json()["retiring_denied"] == quiescing
         assert status.verdict().review_lane.ceiling == 2
-        assert status.verdict().retiring_lane.ceiling == 1
+        assert status.verdict().retiring_lane.ceiling == 2
         assert (
             f"expensive denied: {quiescing}; cheap denied: {quiescing}; review denied: {quiescing}; "
             f"retiring denied: {quiescing}" in status.line()
@@ -598,7 +602,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         assert shipping.admitted_at is not None
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_machine_brake_restores_the_two_seat_cheap_limit(self) -> None:
+    def test_machine_brake_keeps_the_retiring_seat_beside_two_reviews(self) -> None:
         for _ in range(2):
             review = self._pending("reviewing")
             Task.objects.filter(pk=review.pk).update(
@@ -609,11 +613,8 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
 
         braked, _ = self._drain_under_load(self._MELTED)
         shipping.refresh_from_db()
-        assert braked["enqueued"] == []
-        assert shipping.admitted_at is None
-
-        clear, _ = self._drain_under_load(1.0)
-        assert clear["enqueued"] == [shipping.pk]
+        assert braked["enqueued"] == [shipping.pk]
+        assert shipping.admitted_at is not None
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_an_unbraked_drain_admits_both_classes(self) -> None:
@@ -758,24 +759,28 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         assert racer_two.admit(second.pk, "reviewing", at="racer-two") is False
         assert Task.objects.cheap_lane_occupancy() == 2
 
-    def test_two_retiring_chokepoints_cannot_both_take_the_one_seat(self) -> None:
+    def test_two_retiring_chokepoints_cannot_both_take_the_last_class_seat(self) -> None:
+        occupied = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
+        Task.objects.filter(pk=occupied.pk).update(admitted_at=timezone.now())
         first = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
         second = Task.objects.create(ticket=self.ticket, session=self.session, phase="requesting_review")
         racer_one, racer_two = self._probe(), self._probe()
 
         assert racer_one.admit(first.pk, first.phase, at="racer-one") is True
         assert racer_two.admit(second.pk, second.phase, at="racer-two") is False
-        assert Task.objects.cheap_class_occupancy(CheapClass.RETIRING) == 1
+        assert Task.objects.cheap_class_occupancy(CheapClass.RETIRING) == 2
 
     def test_braked_lane_total_rejects_a_stale_cross_class_booking(self) -> None:
         self._seated_row()
+        occupied = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
+        Task.objects.filter(pk=occupied.pk).update(admitted_at=timezone.now())
         retiring = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
         reviewing = self._cheap_row()
         first, second = self._probe(load1=41.0), self._probe(load1=41.0)
 
         assert first.admit(retiring.pk, retiring.phase, at="first") is True
         assert second.admit(reviewing.pk, reviewing.phase, at="second") is False
-        assert Task.objects.cheap_lane_occupancy() == 2
+        assert Task.objects.cheap_lane_occupancy() == 3
 
     def test_a_row_already_holding_a_live_seat_is_not_admitted_twice(self) -> None:
         # Re-admitting a row already in the runner's hand is a duplicate dispatch, which
@@ -823,6 +828,30 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
                 assert verdict.admit(row.pk, "reviewing", at="headless drain") is False
 
         assert len([line for line in logs.output if "review lane occupancy" in line]) == 1
+
+    def test_a_full_retiring_class_is_announced_once(self) -> None:
+        for _ in range(2):
+            occupied = Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping")
+            Task.objects.filter(pk=occupied.pk).update(admitted_at=timezone.now())
+        held = [Task.objects.create(ticket=self.ticket, session=self.session, phase="shipping") for _ in range(2)]
+        verdict = self._probe()
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            verdict.log_denials()
+            for row in held:
+                assert verdict.admit(row.pk, row.phase, at="headless drain") is False
+
+        assert (
+            len(
+                [
+                    line
+                    for line in logs.output
+                    if "headless admission of retiring work: retiring lane occupancy 2 at/over the retiring ceiling 2"
+                    in line
+                ]
+            )
+            == 1
+        )
 
     def test_a_pass_announces_the_seats_the_window_released(self) -> None:
         # The ceiling goes soft exactly when the box is saturated — the state an operator
@@ -1030,10 +1059,10 @@ class TestReviewingIsNeverQueuedBehindCoding(TestCase):
         assert any("cheap lane occupancy 3 at/over the cheap ceiling 3" in line for line in logs.output)
 
     def test_full_retiring_lane_leaves_review_seats(self) -> None:
-        self._claimed("shipping", 1)
+        self._claimed("shipping", 2)
 
-        assert self._admitted(self._task("reviewing"))
         assert not self._admitted(self._task("requesting_review"))
+        assert self._admitted(self._task("reviewing"))
 
     def test_running_reviews_do_not_hold_back_a_coding_row(self) -> None:
         self._claimed("reviewing", 2)

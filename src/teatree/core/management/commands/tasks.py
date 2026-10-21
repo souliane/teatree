@@ -5,6 +5,7 @@ from functools import partial
 from typing import IO, Annotated, cast
 
 import typer
+from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
@@ -19,8 +20,8 @@ from teatree.core.management.commands.tasks_session_view import (
     render_session_view,
     render_tasks_table,
 )
+from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.managers_task_claim import claim_when_admitted
-from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
@@ -486,9 +487,7 @@ class Command(TyperCommand):
 
         Enqueue and claim are two ways to START work, so the governor's verdict decides both:
         a box braked enough to stop the drain enqueueing kept claiming through this seam.
-        A shed EXPENSIVE lane narrows the candidates to the review-lane phases IN THE
-        QUERY rather than walking a backed-up queue row by row, so the review that retires
-        work is reachable behind a coding row instead of stuck behind it.
+        A denied row is skipped so another class can claim a row behind it.
 
         It reads the lane verdict and does NOT book a seat: the seat is per-task and the
         enqueue that produced this row already took it, so booking again is refused as an
@@ -497,17 +496,20 @@ class Command(TyperCommand):
         admission = agent_admission_verdict()
         admission.log_denials()
         claimable = Task.objects.claimable()
-        if admission.denied_for(PhaseCost.EXPENSIVE) is not None:
-            if admission.denied_for(PhaseCost.CHEAP) is not None:
-                return None
-            claimable = claimable.filter(phase__in=cheap_phase_spellings())
-        task = claimable.first()
-        if task is None or admission.denied_reason(task.phase) is not None:
-            return None
-        refusal = claim_when_admitted(
-            partial(task.claim, claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
-        )
-        return None if refusal else task
+        now = timezone.now()
+        for task in claimable.iterator():
+            seated = (
+                task.status == Task.Status.PENDING
+                and task.admitted_at is not None
+                and task.admitted_at > now - ADMITTED_INFLIGHT_WINDOW
+            )
+            if admission.claim_denied_reason(task.phase, seated=seated) is not None:
+                continue
+            refusal = claim_when_admitted(
+                partial(task.claim, claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
+            )
+            return None if refusal else task
+        return None
 
     @staticmethod
     def _execute(task: Task) -> dict[str, str]:

@@ -69,8 +69,8 @@ SETTING_HELP: dict[str, str] = {
     "brief_anchor_gate_enabled": "refuse a sub-agent brief that asserts specifics it anchors to nothing",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
     "cheap_phase_admission_ceiling": (
-        "stored review width (min 1): this many review seats plus one retiring seat for shipping/review"
-        " requests; under the machine brake total cheap admission falls back to this width"
+        "per-class width (min 1): reviews and shipping/review requests are each capped at this width"
+        " inside a cheap lane one seat wider; machine brakes spare both classes"
     ),
     "clean_ignore": "branch globs the cleanup reapers never touch",
     "colleague_repo_url_pattern": "regex matching repo URLs owned by colleagues rather than the operator",

@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.models import ModeOverride, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.task_dispatch import admit_waiting_tasks
 from teatree.core.tasks import drain_queue_body
@@ -116,6 +116,37 @@ class TestTheDrainAdmitsExpeditedWorkFirst(_AdmissionCase):
 
         assert drain_queue_body()["enqueued"] == [older.pk]
         assert not self._admitted(newer)
+
+    def test_full_reviews_leave_the_expedited_push_reachable_behind_an_older_review(self) -> None:
+        self._fill_the_review_lane()
+        older_review = self._task("reviewing")
+        shipping = self._task("shipping", ticket=Ticket.objects.create(expedited=True))
+
+        assert drain_queue_body()["enqueued"] == [shipping.pk]
+        assert not self._admitted(older_review)
+        assert self._admitted(shipping)
+
+    def test_a_shipping_and_reviewing_claim_leave_room_for_another_review(self) -> None:
+        self._task("shipping", status=Task.Status.CLAIMED)
+        self._task("reviewing", status=Task.Status.CLAIMED)
+        waiting = self._task("reviewing")
+
+        assert drain_queue_body()["enqueued"] == [waiting.pk]
+        assert self._admitted(waiting)
+
+    def test_two_shipping_tasks_share_the_retiring_class(self) -> None:
+        shipping = [self._task("shipping") for _ in range(_REVIEW_WIDTH)]
+
+        assert drain_queue_body()["enqueued"] == [task.pk for task in shipping]
+        assert all(self._admitted(task) for task in shipping)
+
+    def test_retiring_width_tracks_the_setting(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        shipping = [self._task("shipping") for _ in range(4)]
+
+        assert drain_queue_body()["enqueued"] == [task.pk for task in shipping[:3]]
+        assert all(self._admitted(task) for task in shipping[:3])
+        assert not self._admitted(shipping[3])
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):

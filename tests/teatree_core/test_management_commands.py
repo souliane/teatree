@@ -1,3 +1,4 @@
+import datetime as dt
 import io
 import json
 import tempfile
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 import teatree.agents.runner as runner_mod
 import teatree.core.management.commands.tasks as tasks_cmd
@@ -19,6 +21,8 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config.settings import TeaTreeConfig, UserSettings
+from teatree.core import agent_admission as gate_mod
+from teatree.core.admission_pressure import MachineSignal, QuotaSignal
 from teatree.core.agent_admission import AgentAdmission
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
@@ -38,6 +42,7 @@ from tests._ansi import strip_ansi as _strip_ansi
 from tests._pr_open_state_stub import mint_open_pr_review
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
+from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SIGNAL
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -1633,3 +1638,66 @@ class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
             assert call_command("tasks", "claim", claimed_by="worker-1") is None
         pending.refresh_from_db()
         assert pending.status == Task.Status.PENDING
+
+    def test_a_seated_shipping_row_can_be_claimed_when_its_class_is_full(self) -> None:
+        shipping = [self._pending("shipping") for _ in range(2)]
+        Task.objects.filter(pk__in=[task.pk for task in shipping]).update(admitted_at=timezone.now())
+
+        with (
+            mock.patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            mock.patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+        ):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == shipping[0].pk
+
+    def test_a_refused_review_at_the_head_does_not_hide_a_seated_push(self) -> None:
+        for _ in range(2):
+            claimed = self._pending("reviewing")
+            Task.objects.filter(pk=claimed.pk).update(
+                status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + dt.timedelta(hours=1)
+            )
+        review = self._pending("reviewing")
+        shipping = self._pending("shipping")
+        Task.objects.filter(pk=shipping.pk).update(admitted_at=timezone.now())
+
+        with (
+            mock.patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            mock.patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+        ):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == shipping.pk
+        review.refresh_from_db()
+        assert review.status == Task.Status.PENDING
+
+    def test_a_seated_shipping_row_still_waits_for_a_spent_token_budget(self) -> None:
+        shipping = self._pending("shipping")
+        Task.objects.filter(pk=shipping.pk).update(admitted_at=timezone.now())
+        exhausted = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=True,
+            weekly_utilization=1.0,
+            short_utilization=1.0,
+            seconds_to_weekly_reset=60.0,
+        )
+
+        with (
+            mock.patch.object(gate_mod, "read_quota_signal", return_value=exhausted),
+            mock.patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+        ):
+            assert call_command("tasks", "claim", claimed_by="worker-1") is None
+        shipping.refresh_from_db()
+        assert shipping.status == Task.Status.PENDING
+
+    def test_a_seated_push_can_claim_at_the_machine_brake_when_the_cheap_total_is_full(self) -> None:
+        shipping = [self._pending("shipping") for _ in range(2)]
+        Task.objects.filter(pk__in=[task.pk for task in shipping]).update(admitted_at=timezone.now())
+        review = self._pending("reviewing")
+        Task.objects.filter(pk=review.pk).update(
+            status=Task.Status.CLAIMED,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+        )
+        braked = MachineSignal(cores=8, load1=41.0, ram_available_gb=20.0)
+
+        with (
+            mock.patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            mock.patch.object(gate_mod, "read_machine_signal", return_value=braked),
+        ):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == shipping[0].pk
