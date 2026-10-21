@@ -152,6 +152,10 @@ class CheckingReport:
     needs_you: CheckGroup
     metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
 
+    @property
+    def groups(self) -> list[CheckGroup]:
+        return [self.merged, self.in_flight, self.needs_you, self.metered]
+
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
             since=self.since.isoformat(),
@@ -175,7 +179,7 @@ class CheckingReport:
 
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
-        groups = [self.merged, self.in_flight, self.needs_you, self.metered]
+        groups = self.groups
         if all(group.total == 0 for group in groups):
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
@@ -202,6 +206,10 @@ class AllOverlaysReport:
     needs_you: CheckGroup
     metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
 
+    @property
+    def groups(self) -> list[CheckGroup]:
+        return [self.merged, self.in_flight, self.needs_you, self.metered]
+
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
             all_overlays=self.all_overlays,
@@ -225,7 +233,7 @@ class AllOverlaysReport:
             timezone.localtime(self.earliest_since) if timezone.is_aware(self.earliest_since) else self.earliest_since
         )
         stamp = local.strftime("%H:%M")
-        groups = [self.merged, self.in_flight, self.needs_you, self.metered]
+        groups = self.groups
         if all(group.total == 0 for group in groups):
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]

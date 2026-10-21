@@ -60,7 +60,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`. Group header is the bare word; items are `-` indented, one idea per line.
+- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`. Group header is the bare word; items are `-` indented, one idea per line.
 - Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
@@ -71,6 +71,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
 - **Needs you** — pending `DeferredQuestion` rows (not window-bounded — an old pending question still needs you) plus failed `TaskAttempt` runs (the durable "blocked" proxy). `DeferredQuestion` is queried ONCE for the whole report (not once per overlay) so a pending question never appears more than once. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
+- **Metered** — every `TaskAttempt` that ran on the metered lane inside the window, overlay-scoped, with its cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
 
 Resist adding a dashboard. The terse text IS the surface.
 

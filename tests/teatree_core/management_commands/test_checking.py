@@ -23,7 +23,7 @@ from django.utils import timezone
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, Session, Task, TaskAttempt
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
@@ -184,7 +184,7 @@ class TestCheckingShow:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
-        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "terse"}
+        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "metered", "terse"}
         assert payload["merged"]["items"][0]["label"] == "acme/widgets#7"
 
     def test_overlay_scoping_excludes_other_overlay(
@@ -300,6 +300,29 @@ class TestCheckingNotify:
         assert row.audience == NotifyAudience.OWNER_DELIVERY.value
         assert "```" in row.text
         assert "acme/widgets#7" in row.text
+
+    def test_a_metered_attempt_reaches_the_table_and_the_recap(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/5399",
+            short_description="paid fall-through",
+        )
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        attempt = TaskAttempt.objects.create(
+            task=task, lane=TaskAttempt.Lane.METERED, route_candidate_index=1, cost_usd=1.25, exit_code=0
+        )
+        TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=timezone.now() - timedelta(minutes=5))
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            out = _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+        assert "Metered" in out
+        assert "estimated $1.25" in out
+        row = BotPing.objects.get(idempotency_key__startswith="checking_recap:acme:")
+        assert "Metered" in row.text
+        assert "estimated $1.25" in row.text
 
     def test_notify_skipped_when_nothing_to_report(self, checkpoint_file: Path) -> None:
         backend = _notify_backend()
