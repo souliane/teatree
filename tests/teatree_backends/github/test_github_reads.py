@@ -53,8 +53,9 @@ def test_get_issue_raises_issue_not_found_on_a_404() -> None:
         get_issue(issue_url="https://github.com/o/r/issues/9", token="t")
 
 
-def test_get_issue_propagates_a_failure_that_is_not_a_404() -> None:
-    with patch(_RUN_GH, side_effect=_gh_fails("gh: Server Error (HTTP 502)")), pytest.raises(CommandFailedError):
+@pytest.mark.parametrize("stderr", ["gh: Server Error (HTTP 500)", "gh: Server Error (HTTP 502)"])
+def test_get_issue_propagates_a_failure_that_is_not_a_404(stderr: str) -> None:
+    with patch(_RUN_GH, side_effect=_gh_fails(stderr)), pytest.raises(CommandFailedError):
         get_issue(issue_url="https://github.com/o/r/issues/9", token="t")
 
 
