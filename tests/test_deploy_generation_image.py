@@ -22,6 +22,7 @@ RUNTIME_SERVICES = (*ROLES, "teatree-watchdog")
 SOURCE_TARGET = "/home/teatree/teatree"
 UV_VOLUME_TARGET = "/opt/teatree/uv"
 BAKED_ENTRYPOINT = ["/usr/local/bin/entrypoint.sh"]
+CHECKOUT_ENTRYPOINT_TARGET = str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy/entrypoint.sh")
 BASH = shutil.which("bash") or ""
 
 
@@ -86,12 +87,6 @@ class TestTheOverrideDropsEverythingTheCheckoutSupplies:
     def test_the_clone_dir_is_left_to_the_image(self, name: str) -> None:
         assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
 
-    def test_no_mount_shadows_the_baked_source_or_its_install(self, name: str) -> None:
-        override = _load(GENERATION)["services"][name]
-        volumes = override["volumes"] if "volumes" in override else _load(BASE)["services"][name].get("volumes", [])
-
-        assert not {SOURCE_TARGET, UV_VOLUME_TARGET}.intersection(_target(volume) for volume in volumes)
-
 
 def test_the_roller_is_a_one_shot_that_cannot_write_the_checkout() -> None:
     roller = _load(GENERATION)["services"]["teatree-roller"]
@@ -136,6 +131,8 @@ class TestTheRenderedGenerationStack:
             targets = _rendered_targets(services[name])
             assert SOURCE_TARGET not in targets, name
             assert UV_VOLUME_TARGET not in targets, name
+            if name == "teatree-webhooks":
+                assert CHECKOUT_ENTRYPOINT_TARGET not in targets
             assert services[name]["entrypoint"] == BAKED_ENTRYPOINT, name
             assert "build" not in services[name], name
             assert "TEATREE_CLONE_DIR" not in services[name]["environment"], name
@@ -147,6 +144,8 @@ class TestTheRenderedGenerationStack:
 
         for name in ROLES:
             kept = [t for t in _rendered_targets(base[name]) if t not in {SOURCE_TARGET, UV_VOLUME_TARGET}]
+            if name == "teatree-webhooks":
+                kept.remove(CHECKOUT_ENTRYPOINT_TARGET)
             assert _rendered_targets(generation[name]) == kept, name
 
     def test_host_identity_still_merges_on_top_of_the_override(self, tmp_path: Path) -> None:

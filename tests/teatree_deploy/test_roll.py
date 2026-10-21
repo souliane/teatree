@@ -14,8 +14,8 @@ from django.utils import timezone
 
 from teatree.core.models import Task, WorkerGeneration
 from teatree.deploy.roll import (
-    CLAIMING_SERVICES,
     RUNTIME_SERVICES,
+    WRITING_SERVICES,
     Roller,
     RollError,
     RollInterruptedError,
@@ -75,7 +75,7 @@ class TestAHappyRoll(TestCase):
 
     def test_the_stack_is_replaced_in_order(self) -> None:
         assert self.engine.verbs() == ["image_revision", "stop", "run_init", "up", "promote"]
-        assert self.engine.calls[1] == ("stop", *CLAIMING_SERVICES)
+        assert self.engine.calls[1] == ("stop", *WRITING_SERVICES)
         assert self.engine.calls[3] == ("up", N1, *RUNTIME_SERVICES)
 
     def test_every_runtime_service_runs_the_new_generation(self) -> None:
@@ -123,6 +123,31 @@ class TestAFailedInitRollsBack(TestCase):
 
     def test_nothing_is_promoted(self) -> None:
         assert "promote" not in self.engine.verbs()
+
+
+class TestRollbackAcrossFirstListenerGeneration(TestCase):
+    def test_previous_generation_without_listener_restores_its_own_services(self) -> None:
+        WorkerGeneration.objects.boot(N)
+        engine = _engine(serving=N)
+        engine.fail_init = True
+        previous = tuple(service for service in RUNTIME_SERVICES if service != "teatree-webhooks")
+        engine.topology[N] = previous
+        engine.running = dict.fromkeys(previous, N)
+
+        report = _roller(engine).roll(N1)
+
+        assert report.outcome is RollOutcome.ROLLED_BACK
+        assert [call for call in engine.calls if call[0] == "up"][-1] == ("up", N, *previous)
+        assert engine.running == dict.fromkeys(previous, N)
+
+    def test_a_previous_topology_without_admin_fails_loud(self) -> None:
+        WorkerGeneration.objects.boot(N)
+        engine = _engine(serving=N)
+        engine.fail_init = True
+        engine.topology[N] = tuple(service for service in RUNTIME_SERVICES if service != "teatree-admin")
+
+        with pytest.raises(RollError, match="previous topology lacks essential service: teatree-admin"):
+            _roller(engine).roll(N1)
 
 
 class TestPromotionFailure(TestCase):
@@ -230,11 +255,6 @@ class TestOnlyAServiceThatStaysUpVerifies(TestCase):
 
         assert report.outcome is RollOutcome.ROLLED
         assert self.engine.calls.count(("admin_answers",)) >= 3
-
-    def test_a_crash_looping_forge_listener_declared_optional_does_not_gate_the_roll(self) -> None:
-        self.engine.crash_looping = {"teatree-webhooks"}
-
-        assert _roller(self.engine, optional=frozenset({"teatree-webhooks"})).roll(N1).outcome is RollOutcome.ROLLED
 
     def test_the_worker_and_the_admin_can_never_be_optional(self) -> None:
         for essential in ("teatree-worker", "teatree-admin"):

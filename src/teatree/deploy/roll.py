@@ -28,8 +28,8 @@ from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, DrainPacing, drain
 
 logger = logging.getLogger(__name__)
 
-CLAIMING_SERVICES = ("teatree-worker", "teatree-slack-listener", "teatree-webhooks")
-RUNTIME_SERVICES = (*CLAIMING_SERVICES, "teatree-admin", "teatree-watchdog")
+WRITING_SERVICES = ("teatree-worker", "teatree-slack-listener", "teatree-webhooks")
+RUNTIME_SERVICES = (*WRITING_SERVICES, "teatree-admin", "teatree-watchdog")
 _ESSENTIAL_SERVICES = ("teatree-worker", "teatree-admin")
 _TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 
@@ -78,6 +78,8 @@ class ComposeEngine(Protocol):
     def run_init(self, generation: str) -> None: ...
 
     def up(self, generation: str, services: Sequence[str]) -> None: ...
+
+    def topology_services(self, generation: str) -> frozenset[str]: ...
 
     def stop(self, services: Sequence[str]) -> None: ...
 
@@ -141,6 +143,14 @@ def _applied_migrations() -> frozenset[tuple[str, str]]:
 
 def _describe(generation: str) -> str:
     return short_sha(generation) if generation else "the legacy stack"
+
+
+def _restoring_services(available: frozenset[str]) -> tuple[str, ...]:
+    missing = set(_ESSENTIAL_SERVICES) - available
+    if missing:
+        msg = f"previous topology lacks essential service: {', '.join(sorted(missing))}"
+        raise RollError(msg)
+    return tuple(service for service in RUNTIME_SERVICES if service in available)
 
 
 @dataclass(slots=True)
@@ -287,7 +297,7 @@ class Roller:
             pacing=self._timing.pacing,
         )
         self._step("stop")
-        self._engine.stop(CLAIMING_SERVICES)
+        self._engine.stop(WRITING_SERVICES)
         self._step("init")
         self._engine.run_init(to)
         if register:
@@ -301,19 +311,19 @@ class Roller:
         self._verify(to)
         return drained.still_claimed
 
-    def _verify(self, generation: str) -> None:
+    def _verify(self, generation: str, *, required: Sequence[str] | None = None) -> None:
         pacing = self._timing.pacing
         deadline = pacing.monotonic() + self._timing.verify_timeout
         stability = _Stability(window=self._timing.stable_seconds, clock=pacing.monotonic)
-        while problems := self._verification_problems(generation, stability):
+        while problems := self._verification_problems(generation, stability, required or self._required):
             if pacing.monotonic() >= deadline:
                 msg = f"{_describe(generation)} did not verify within {self._timing.verify_timeout:.0f}s: "
                 raise RollError(msg + "; ".join(problems))
             pacing.sleep(pacing.poll_interval)
 
-    def _verification_problems(self, generation: str, stability: _Stability) -> list[str]:
+    def _verification_problems(self, generation: str, stability: _Stability, required: Sequence[str]) -> list[str]:
         problems = []
-        for service, state in self._engine.inspect(self._required).items():
+        for service, state in self._engine.inspect(required).items():
             if not (state.running and (state.revision == generation or not generation)):
                 running = f"running {state.revision or 'a legacy image'}" if state.running else "not running"
                 problems.append(f"{service} is {running}")
@@ -347,7 +357,7 @@ class Roller:
     def _roll_back(self, current: str, to: str, *, reason: str, reopen_gate: bool) -> None:
         self._step("rollback")
         try:
-            self._engine.stop(CLAIMING_SERVICES)
+            self._engine.stop(WRITING_SERVICES)
         except Exception as exc:
             msg = f"roll to {short_sha(to)} failed ({reason}) and restoring {_describe(current)} failed too ({exc})"
             raise RollError(msg) from exc
@@ -360,13 +370,15 @@ class Roller:
                 WorkerGeneration.objects.reinstate(current)
             if reopen_gate:
                 set_worker_quiescing(value=False)
-            self._engine.up(current, RUNTIME_SERVICES)
+            available = self._engine.topology_services(current)
+            restoring = _restoring_services(available)
+            self._engine.up(current, restoring)
         except Exception as exc:
             msg = f"roll to {short_sha(to)} failed ({reason}) and restoring {_describe(current)} failed too ({exc})"
             raise RollError(msg) from exc
         self._step("verify")
         try:
-            self._verify(current)
+            self._verify(current, required=tuple(service for service in self._required if service in available))
         except RollError as exc:
             restored = _describe(current)
             msg = f"roll to {short_sha(to)} failed ({reason}); restored {restored} but it did not verify: {exc}"

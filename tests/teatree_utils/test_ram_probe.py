@@ -268,8 +268,8 @@ class TestDockerDaemonCpuCount:
 
 class TestDeriveWorkerMemLimitMib:
     def test_reserves_siblings_and_headroom(self) -> None:
-        # (32000 - 3328) * 0.8 = 22937.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
+        # (32000 - 4352) * 0.8 = 22118.
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
 
     def test_a_tiny_host_has_no_workable_cap_and_says_so(self) -> None:
         # Was a 2 GiB floor. A 2 GiB cap is HALF the floor `t3 doctor check` hard-FAILs as
@@ -289,7 +289,7 @@ class TestDeriveWorkerMemLimitMib:
             patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000),
             patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=0),
         ):
-            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 22937
+            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 22118
 
 
 class TestWorkerCapNeverExceedsTheDockerVm:
@@ -303,9 +303,8 @@ class TestWorkerCapNeverExceedsTheDockerVm:
     """
 
     def test_daemon_vm_smaller_than_host_wins(self) -> None:
-        # 24 GiB host, 12 GiB Docker Desktop VM: (12288 - 3328) * 0.8 = 7168, and the
-        # 24 GiB host would have derived 16998 — a cap the VM could never hold.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=24576, daemon_ram_mib=12288).mem_limit_mib == 7168
+        # 24 GiB host, 12 GiB Docker Desktop VM: (12288 - 4352) * 0.8 = 6348.
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=24576, daemon_ram_mib=12288).mem_limit_mib == 6348
 
     def test_a_daemon_vm_too_small_for_a_workable_cap_refuses_rather_than_using_the_host(self) -> None:
         # The same property at a VM below the fit threshold: the host's roomier figure
@@ -318,21 +317,21 @@ class TestWorkerCapNeverExceedsTheDockerVm:
 
     def test_host_wins_when_it_is_the_smaller_of_the_two(self) -> None:
         # Linux box: the daemon shares the host kernel, so neither figure inflates.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=32000).mem_limit_mib == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=32000).mem_limit_mib == 22118
 
     def test_unreadable_daemon_falls_back_to_host(self) -> None:
         # No docker binary / unreachable daemon must not zero out a good host read.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
 
     def test_daemon_alone_still_sizes_when_host_is_unreadable(self) -> None:
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=12288).mem_limit_mib == 7168
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=12288).mem_limit_mib == 6348
 
     def test_probes_the_daemon_by_default(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=24576),
             patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=12288),
         ):
-            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 7168
+            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 6348
 
 
 class TestDockerDaemonTotalRamMib:
@@ -540,7 +539,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
     #: Daemon totals whose UNCLAMPED arithmetic lands at or under the resume floor.
     BAND_DAEMON_MIB: ClassVar[tuple[int, int]] = (8448, 11008)
     #: The smallest daemon total that can hold a floor-clearing cap beside the siblings.
-    MIN_WORKABLE_DAEMON_MIB: ClassVar[int] = 9473
+    MIN_WORKABLE_DAEMON_MIB: ClassVar[int] = 10497
 
     @staticmethod
     def _sizing(daemon_mib: int) -> ram_probe.WorkerSizing:
@@ -556,15 +555,15 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         """
         assert int(RAM_RESUME_FLOOR_GB * 1024) == ram_probe._RESUME_FLOOR_MIB
 
-    def test_the_measured_incident_total_now_clears_the_resume_floor(self) -> None:
+    def test_the_measured_incident_total_now_refuses_without_sibling_room(self) -> None:
         sizing = self._sizing(self.MEASURED_INCIDENT_DAEMON_MIB)
 
-        assert sizing.refusal is None
-        assert sizing.mem_limit_mib > int(RAM_RESUME_FLOOR_GB * 1024)
-        assert sizing.mem_limit_mib != 5286, "the 5.16 GiB cap that braked the factory for a whole session"
+        assert sizing.mem_limit_mib == 0
+        assert sizing.refusal
+        assert str(self.MIN_WORKABLE_DAEMON_MIB) in sizing.refusal
 
     def test_the_emitted_cap_clears_the_conflict_predicate_that_names_the_fault(self) -> None:
-        assert resume_ceiling_conflict(self._sizing(self.MEASURED_INCIDENT_DAEMON_MIB).mem_limit_mib / 1024) is None
+        assert resume_ceiling_conflict(self._sizing(self.MIN_WORKABLE_DAEMON_MIB).mem_limit_mib / 1024) is None
 
     def test_the_emitted_cap_is_box_scoped_so_the_cgroup_still_governs(self) -> None:
         """The direction that matters: a cap must not buy safety by ceasing to govern.
@@ -574,7 +573,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         answers from the host component, so a freer host admits MORE work into a container
         that cannot hold it — unbounded, and invisible on every health surface.
         """
-        cap = self._sizing(self.MEASURED_INCIDENT_DAEMON_MIB).mem_limit_mib
+        cap = self._sizing(self.MIN_WORKABLE_DAEMON_MIB).mem_limit_mib
 
         assert RamHeadroom(available_mib=cap, cgroup_limit_mib=cap, host_available_mib=cap).cgroup_is_box_scoped
 
@@ -591,7 +590,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
     def test_the_sweep_visits_totals_that_would_otherwise_offend(self) -> None:
         """Positive control: without the clamp the sweep above HAS offenders to find."""
         unclamped = [
-            int((daemon - 3328) * 0.8) for daemon in range(self.BAND_DAEMON_MIB[0], self.BAND_DAEMON_MIB[1] + 1, 64)
+            int((daemon - 4352) * 0.8) for daemon in range(self.BAND_DAEMON_MIB[0], self.BAND_DAEMON_MIB[1] + 1, 64)
         ]
 
         assert unclamped, "the control range is empty — the sweep would pass vacuously"
@@ -634,7 +633,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
 
     def test_a_daemon_total_above_the_band_is_unchanged(self) -> None:
         """TOO-HIGH control: a real box sizes byte-identically — this is no blanket clamp."""
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
 
     def test_an_unreadable_basis_still_defers_to_the_compose_default(self) -> None:
         sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=0)

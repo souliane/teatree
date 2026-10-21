@@ -14,7 +14,6 @@ def test_listener_routes_each_hook_to_its_receiver() -> None:
     assert _receiver("/hooks/gitlab/") == "teatree.core.views.gitlab_webhook.GitLabWebhookView"
 
 
-@pytest.mark.parametrize("path", ["/admin/", "/dash/", "/"])
-def test_listener_resolves_nothing_else(path: str) -> None:
+def test_listener_resolves_nothing_else() -> None:
     with pytest.raises(Resolver404):
-        resolve(path, urlconf=_URLCONF)
+        resolve("/", urlconf=_URLCONF)

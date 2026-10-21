@@ -1,10 +1,8 @@
 """Shared persistence helper for inbound webhook receivers (#654).
 
-Each platform view extracts a normalized record from its payload and calls
-:func:`persist_incoming_event`. The helper wraps the
-``IncomingEvent.objects.create()`` call in a nested ``transaction.atomic()``
-so a duplicate insert under Django's test transaction doesn't poison the
-outer block — it just lets the platform-specific replay path no-op.
+Each platform view extracts a normalized record and calls :func:`ingest_response`.
+A nested transaction lets duplicate deliveries no-op without poisoning a caller's transaction.
+Only database lock errors become retryable HTTP responses.
 """
 
 import logging

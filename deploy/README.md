@@ -196,6 +196,7 @@ A second stack can be rolled on the same daemon without touching the live one:
 | `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, host `t3` routing, and the container the host hooks probe |
 | `TEATREE_PROMOTED_TAG` | `teatree-headless:latest` | the tag a verified generation is promoted to |
 | `TEATREE_ADMIN_PORT` | `8000` | the admin's loopback bind and the roller's probe |
+| `TEATREE_WEBHOOK_PORT` | `8001` | the forge webhook listener's loopback bind |
 | `TEATREE_DEPLOY_LOCK` | `/tmp/teatree-deploy.lock` | the deploy lock; must sit under `TEATREE_HOST_TMP` |
 
 ## How the one-click deploy works

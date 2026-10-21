@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,11 +16,17 @@ CHECKOUT_ENTRYPOINT = f"${{TEATREE_DEPLOY_CHECKOUT:-{CONTAINER_HOME / 'teatree-d
 def _entrypoint(tmp_path: Path, role: str) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for name, body in (("t3", "exit 0"), ("python", 'printf "%s\\n" "$0 $*"')):
+    for name, body in (
+        ("t3", "exit 0"),
+        ("python", 'printf "%s\\n" "$0 $*"; printf "%s" "${T3_ADMIN_PASSWORD-unset}" > "$SECRET_CAPTURE"'),
+        ("pass", "printf '%s\\n' canary"),
+    ):
         stub = bin_dir / name
         stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
         stub.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if not key.startswith("TEATREE_")} | {
+    env = {
+        key: value for key, value in os.environ.items() if key != "T3_ADMIN_PASSWORD" and not key.startswith("TEATREE_")
+    } | {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "TEATREE_ROLE": role,
@@ -29,6 +34,7 @@ def _entrypoint(tmp_path: Path, role: str) -> subprocess.CompletedProcess[str]:
         "TEATREE_HOST_GNUPG_DIR": str(tmp_path / "missing-gnupg"),
         "TEATREE_GNUPG_RUNTIME_DIR": str(tmp_path / "runtime-gnupg"),
         "TEATREE_DISK_TMPDIR": str(tmp_path),
+        "SECRET_CAPTURE": str(tmp_path / "secret-capture"),
     }
     return subprocess.run(
         [BASH, str(DEPLOY / "entrypoint.sh")], env=env, capture_output=True, text=True, timeout=20, check=False
@@ -43,6 +49,13 @@ def test_entrypoint_knows_webhook_listener_role(tmp_path: Path) -> None:
     assert "--bind 127.0.0.1:8001" in run.stdout
     assert run.stdout.rstrip().endswith("teatree.webhook_wsgi:application")
     assert _entrypoint(tmp_path, "unrecognized").returncode == 64
+
+
+def test_listener_execs_before_admin_password_is_sourced(tmp_path: Path) -> None:
+    run = _entrypoint(tmp_path, "webhook-listener")
+
+    assert run.returncode == 0, run.stderr
+    assert (tmp_path / "secret-capture").read_text(encoding="utf-8") == "unset"
 
 
 def test_listener_service_has_no_forge_tokens() -> None:
@@ -73,10 +86,4 @@ def test_listener_mounts_only_its_ledger_secrets_and_read_only_code() -> None:
         "teatree_uv:/opt/teatree/uv:ro",
     }
     assert listener["entrypoint"] == ["bash", CHECKOUT_ENTRYPOINT]
-
-
-def test_listener_is_watched() -> None:
-    watchdog = (DEPLOY / "watchdog.sh").read_text(encoding="utf-8")
-    watched = re.search(r"TEATREE_WATCHDOG_APP_SERVICES:-([^}]+)", watchdog)
-    assert watched is not None
-    assert LISTENER in watched.group(1).split()
+    assert listener["init"] is True

@@ -105,10 +105,6 @@ services:
       - teatree_control_db:/var/lib/teatree/control-db
       - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home
       - ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg:/home/teatree/.gnupg  # privacy-scan:allow — the box's public, documented deploy home
-      - type: bind
-        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
-        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
-        read_only: true
   teatree-watchdog:
     image: ${TEATREE_IMAGE:-teatree-headless:latest}
     pull_policy: never

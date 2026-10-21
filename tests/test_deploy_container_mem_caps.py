@@ -31,7 +31,7 @@ _ADMIN_HEALTH_PROBE = 380 * _MIB
 _SLACK_LISTENER_OBSERVED = 264 * _MIB
 _WATCHDOG_OBSERVED = 61 * _MIB
 
-_SIBLING_SERVICES = ("teatree-admin", "teatree-slack-listener", "teatree-watchdog")
+_SIBLING_SERVICES = ("teatree-admin", "teatree-slack-listener", "teatree-webhooks", "teatree-watchdog")
 
 _SUFFIX_BYTES = {"b": 1, "k": 1024, "m": _MIB, "g": _GIB}
 
@@ -88,7 +88,7 @@ class TestSiblingReserveMatchesTheDeclaredCaps:
         # ram_probe carves a fixed sibling reserve off host RAM before sizing the
         # worker. A reserve below the siblings' own ceilings is a stale reference.
         siblings_mib = sum(_cap(name) for name in _SIBLING_SERVICES) // _MIB
-        assert siblings_mib <= _SIBLING_RESERVE_MIB
+        assert siblings_mib == _SIBLING_RESERVE_MIB
 
     def test_derived_worker_ceiling_still_leaves_the_siblings_their_caps(self) -> None:
         host_mib = 32000

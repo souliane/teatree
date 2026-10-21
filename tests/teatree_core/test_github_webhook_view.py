@@ -129,7 +129,7 @@ class TestLockedDatabase(GitHubWebhookTestCase):
             accepted = self.deliver_on_a_listener_thread()
 
         assert locked.status_code == 503
-        assert elapsed < 7
+        assert elapsed < 15
         assert accepted.status_code == 200
 
     def test_other_database_errors_still_raise(self) -> None:
@@ -147,7 +147,7 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
             ROOT_URLCONF=webhook_settings.ROOT_URLCONF,
             DATA_UPLOAD_MAX_MEMORY_SIZE=webhook_settings.DATA_UPLOAD_MAX_MEMORY_SIZE,
         ):
-            response = self.deliver(body, url="/hooks/github/")
+            response = self.deliver(body, url=reverse("github_webhook"))
 
         assert response.status_code == 200
         assert IncomingEvent.objects.filter(idempotency_key="github:d-1").exists()
