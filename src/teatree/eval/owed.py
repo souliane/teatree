@@ -184,7 +184,7 @@ class OwedLedger:
                         default=None,
                     ),
                 )
-            elif held is not None and entry.last_attempted is not None:
+            elif entry.last_attempted is not None:
                 by_name[entry.name] = replace(
                     held, last_attempted=max(mark for mark in (held.last_attempted, entry.last_attempted) if mark)
                 )

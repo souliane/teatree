@@ -87,7 +87,7 @@ from teatree.eval.toolset import (
     scenario_exposes_subagent_spawn,
 )
 from teatree.eval.under_load import build_user_prompt
-from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, CreditExhaustedError, LimitCause, classify_limit
 from teatree.llm.credentials import AnthropicApiKeyCredential
 
 #: The runner's default credential-conflict strip set — the metered lane's conflicts
@@ -606,7 +606,7 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
         limit = classify_limit(str(exc))
         if limit is not None and limit.cause is LimitCause.API_CREDIT:
             raise CreditExhaustedError(limit.remediation) from exc
-        if limit is not None and limit.cause in {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY}:
+        if limit is not None and limit.cause in SUBSCRIPTION_LIMIT_CAUSES:
             raise UsageLimitReachedError(str(exc)) from exc
         reason = classify_terminal_error(str(exc))
         if reason is None:

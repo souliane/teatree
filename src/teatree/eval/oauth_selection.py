@@ -168,16 +168,6 @@ def _health_from_snapshot(
         return CandidateHealth(
             index=index, label=label, status=TokenProbeStatus.UNKNOWN, reason="usage window unreadable"
         )
-    if not reserve.allows(
-        snapshot.unified_5h_utilization,
-        snapshot.unified_5h_reset,
-        snapshot.unified_7d_utilization,
-        snapshot.unified_7d_reset,
-        run_start,
-    ) and not _is_exhausted(snapshot):
-        return CandidateHealth(
-            index=index, label=label, status=TokenProbeStatus.BELOW_RESERVE, reason="below eval reserve"
-        )
     if _is_exhausted(snapshot):
         reason = (
             f"exhausted — 5h {used_fraction(snapshot.unified_5h_utilization) * 100:.0f}% used, "
@@ -189,6 +179,16 @@ def _health_from_snapshot(
             status=TokenProbeStatus.EXHAUSTED,
             organization_id=snapshot.organization_id,
             reason=reason,
+        )
+    if not reserve.allows(
+        snapshot.unified_5h_utilization,
+        snapshot.unified_5h_reset,
+        snapshot.unified_7d_utilization,
+        snapshot.unified_7d_reset,
+        run_start,
+    ):
+        return CandidateHealth(
+            index=index, label=label, status=TokenProbeStatus.BELOW_RESERVE, reason="below eval reserve"
         )
     return CandidateHealth(
         index=index,

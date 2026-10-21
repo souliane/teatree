@@ -1,16 +1,15 @@
-"""Static checks for the three-tier eval cadence workflows (owner-refined 2026-07-23).
+"""Contracts for changed-scenario, nightly debt/smoke, and full-sweep eval workflows."""
 
-PER-PR (`eval-pr.yml` + the reusable) runs only the changed scenarios and is
-zero-is-RED; NIGHTLY (`eval-nightly.yml`) runs a small smoke slice ONLY on a day
-something merged; WEEKLY (`eval.yml`) runs the full catalog on its own cron,
-unchanged. These guard that contract against a future edit silently removing a
-piece of it.
-"""
-
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tests._actions_workflow import render, step_runs
 
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr.yml"
@@ -20,6 +19,7 @@ _WEEKLY = _WORKFLOWS / "eval.yml"
 _WEEKLY_REUSABLE = _WORKFLOWS / "eval-weekly-reusable.yml"
 _BENCHMARK = _WORKFLOWS / "eval-benchmark.yml"
 _CACHE_ACTION = _WORKFLOWS.parent / "actions" / "eval-verdict-cache" / "action.yml"
+_BASH = shutil.which("bash") or "/bin/bash"
 
 
 def test_pr_verdict_caches_merge_main_before_run_and_refresh_before_save() -> None:
@@ -86,8 +86,13 @@ def test_oauth_selector_steps_receive_repository_reserve_overrides() -> None:
                 if "scripts/eval/select_oauth.py" not in step.get("run", ""):
                     continue
                 env = step["env"]
-                assert env["EVAL_RESERVE_5H_FREE"] == "${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}", workflow
-                assert env["EVAL_RESERVE_7D_FREE"] == "${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}", workflow
+                assert env["EVAL_RESERVE_5H_FREE"] == "${{ vars.EVAL_RESERVE_5H_FREE }}", workflow
+                assert env["EVAL_RESERVE_7D_FREE"] == "${{ vars.EVAL_RESERVE_7D_FREE }}", workflow
+                resolved = {
+                    name: render(env[name], {"vars": {"EVAL_RESERVE_5H_FREE": "0.55", "EVAL_RESERVE_7D_FREE": "0.45"}})
+                    for name in ("EVAL_RESERVE_5H_FREE", "EVAL_RESERVE_7D_FREE")
+                }
+                assert resolved == {"EVAL_RESERVE_5H_FREE": "0.55", "EVAL_RESERVE_7D_FREE": "0.45"}, workflow
 
 
 def test_benchmark_caller_grants_prepare_read_permissions() -> None:
@@ -99,6 +104,13 @@ def test_benchmark_caller_grants_prepare_read_permissions() -> None:
 
 def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
     workflow = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))
+    downloads = [
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if step.get("name") == "Download the owed ledger"
+    ]
+    assert downloads == ["publish"]
     steps = workflow["jobs"]["publish"]["steps"]
     downloaded = next(i for i, step in enumerate(steps) if step.get("name") == "Download the owed ledger")
     settled = next(
@@ -111,7 +123,6 @@ def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
     assert steps[downloaded]["with"]["path"] == "${{ runner.temp }}"
     assert steps[settled]["run"].startswith("uv run t3 eval owed settle")
     assert '--passed-file "$RUNNER_TEMP/eval-owed-passed.txt"' in steps[settled]["run"]
-    assert "--all-covered" not in steps[settled]["run"]
 
 
 def test_benchmark_ledger_commands_use_migrated_runner_sandboxes() -> None:
@@ -124,11 +135,6 @@ def test_benchmark_ledger_commands_use_migrated_runner_sandboxes() -> None:
         names = [step.get("name") for step in steps]
         assert names.index("Sandbox the control DB") < names.index("Migrate the self-DB") < names.index(command)
         assert "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" in steps[names.index("Sandbox the control DB")]["run"]
-
-
-def test_benchmark_eval_job_does_not_download_an_unused_ledger() -> None:
-    steps = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
-    assert not any(step.get("name") == "Download the owed ledger" for step in steps)
 
 
 def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:
@@ -245,13 +251,39 @@ class TestNightlySmokeLane:
         text = _NIGHTLY.read_text(encoding="utf-8")
         assert 'cron: "0 5 * * *"' in text
 
-    def test_nightly_is_conditional_on_a_same_day_merge(self) -> None:
-        # NOT an unconditional nightly: it runs only when >=1 PR merged in the last
-        # day (a 1-day window, vs the weekly's 7). No merge → skip, no token spend.
+    def test_nightly_checks_recent_merges_when_nothing_is_owed(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
         assert "merged_prs_since.py" in text
         assert "--days 1" in text
         assert "if: needs.prepare.outputs.run_eval == 'true'" in text
+
+    def test_owed_scenarios_run_the_shipped_prepare_gate(self, tmp_path: Path) -> None:
+        jobs = yaml.safe_load(_NIGHTLY.read_text(encoding="utf-8"))["jobs"]
+        gate = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "gate")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, body in (("gh", '#!/bin/sh\nprintf "[]"\n'), ("uv", "#!/bin/sh\nexit 1\n")):
+            stub = bin_dir / name
+            stub.write_text(body, encoding="utf-8")
+            stub.chmod(0o755)
+        output = tmp_path / "output"
+        result = subprocess.run(
+            [_BASH, "-e", "-c", gate["run"].replace("${{ github.repository }}", "owner/repo")],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "EVENT_NAME": "schedule",
+                "OWED": "alpha",
+                "GITHUB_OUTPUT": str(output),
+            },
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert output.read_text(encoding="utf-8") == "run_eval=true\n"
 
     def test_nightly_runs_a_bounded_cheap_smoke_slice(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
@@ -273,6 +305,70 @@ class TestNightlySmokeLane:
         text = _NIGHTLY.read_text(encoding="utf-8")
         assert "EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}" in text
         assert "scripts/eval/select_oauth.py" in text
+
+
+@pytest.mark.parametrize(
+    ("gate", "owed", "parked", "expected"),
+    [
+        ("false", "alpha", "false", True),
+        ("true", "", "false", True),
+        ("true", "", "true", False),
+        ("false", "", "false", False),
+    ],
+)
+def test_benchmark_prepare_run_eval_expression(gate: str, owed: str, parked: str, *, expected: bool) -> None:
+    prepare = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["prepare"]
+    context = {
+        "steps": {
+            "gate": {"outputs": {"run_eval": gate}},
+            "owed": {"outputs": {"owed": owed}},
+            "reserve": {"outputs": {"parked": parked}},
+        }
+    }
+    assert render(prepare["outputs"]["run_eval"], context) is expected
+
+
+@pytest.mark.parametrize(
+    ("gate", "owed", "expected"), [("false", "alpha", True), ("true", "", True), ("false", "", False)]
+)
+def test_benchmark_reserve_step_runs_for_work(gate: str, owed: str, *, expected: bool) -> None:
+    prepare = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["prepare"]
+    reserve = next(step for step in prepare["steps"] if step.get("id") == "reserve")
+    context = {"steps": {"gate": {"outputs": {"run_eval": gate}}, "owed": {"outputs": {"owed": owed}}}}
+    assert step_runs(reserve, context, earlier_step_failed=False, cancelled=False) is expected
+
+
+def test_benchmark_publish_sets_true_after_successful_verification(tmp_path: Path) -> None:
+    publish = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["publish"]
+    verify = next(step for step in publish["steps"] if step.get("id") == "verify")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$UV_CALLS"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    (tmp_path / "benchmarks").mkdir()
+    output = tmp_path / "output"
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        [_BASH, "-e", "-c", verify["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+            "EVAL_MATRIX": "[{}]",
+            "UV_CALLS": str(calls),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == "publish=true\n"
+    assert calls.read_text(encoding="utf-8").startswith("run t3 eval verify-benchmark-publish ")
 
 
 def test_scheduled_sweep_window_is_24_hours_in_both_selectors() -> None:

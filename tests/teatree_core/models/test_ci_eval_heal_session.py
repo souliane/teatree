@@ -114,6 +114,18 @@ class TestFixLoop(TestCase):
 
 
 class TestParkOnTheSubscriptionReserve(TestCase):
+    def test_a_received_result_resets_consecutive_park_count(self) -> None:
+        session = _session(park_cycles=2)
+        session.trigger(ci_run_id="run-3", head_sha="a" * 40)
+        session.save()
+
+        session.receive_result(red_scenarios=["rules_under_load"])
+        session.save()
+        session.refresh_from_db()
+
+        assert session.state == CiEvalHealSession.State.TRIAGING
+        assert session.park_cycles == 0
+
     def test_park_requeues_an_awaited_run_without_spending_an_attempt(self) -> None:
         session = _session(fix_attempts=1)
         session.trigger(ci_run_id="run-1", head_sha="a" * 40)

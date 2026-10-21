@@ -44,6 +44,12 @@ def _write_shard(directory: Path, name: str, *, cost_usd: float, passed: bool = 
 
 
 class TestVerifyBenchmarkPublish:
+    def test_malformed_matrix_exits_one(self, tmp_path: Path) -> None:
+        (tmp_path / "eval-benchmark-broken.html").write_text("<html>missing tally</html>", encoding="utf-8")
+        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path), "--expected-shards", "1"])
+        assert result.exit_code == 1
+        assert "no per-model tally table" in result.output
+
     def test_passed_file_requires_every_recorded_cell_to_pass(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "first", cost_usd=0.31, passed=True)
         _write_shard(tmp_path, "second", cost_usd=0.31)

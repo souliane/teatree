@@ -90,7 +90,7 @@ _MINIMUM_GRANTS: dict[JobKey, dict[str, str]] = {
     ("dependabot-sbom-sync.yml", "dependabot-sbom-sync"): {"contents": "read", "actions": "read"},
     ("docs.yml", "deploy"): {"contents": "read", "pages": "write", "id-token": "write"},
     ("eval.yml", "prepare"): {"contents": "read", "pull-requests": "read"},
-    ("eval-nightly.yml", "prepare"): {"contents": "read", "pull-requests": "read"},
+    ("eval-nightly.yml", "prepare"): {"contents": "read", "pull-requests": "read", "actions": "read"},
     ("force-push-alert.yml", "alert"): {"contents": "read"},
     ("lock-refresh-scope.yml", "scope"): {"contents": "write", "pull-requests": "write"},
     ("needs-triage.yml", "label"): {"issues": "write"},

@@ -11,6 +11,7 @@ history/regression gates. The multi-trial and model-matrix shapes live in
 import dataclasses
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -136,33 +137,31 @@ def _usage_limit_result(spec: EvalSpec) -> ScenarioResult:
     return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
 
 
-def _grade_runs(specs: list[EvalSpec], runs: list[EvalRun], grader: JudgeGrader | None) -> list[ScenarioResult]:
-    results: list[ScenarioResult] = []
-    judge_limited = False
-    for spec, run in zip(specs, runs, strict=True):
-        if judge_limited:
-            results.append(_usage_limit_result(spec))
-            continue
+class _JudgeLimitLatch:
+    def __init__(self, grader: JudgeGrader | None) -> None:
+        self.grader = grader
+        self.limited = False
+
+    def grade(self, spec: EvalSpec, run: Callable[[], EvalRun]) -> ScenarioResult:
+        if self.limited:
+            return _usage_limit_result(spec)
         try:
-            results.append(evaluate(spec, run, judge=grader))
+            return evaluate(spec, run(), judge=self.grader)
         except UsageLimitReachedError:
-            judge_limited = True
-            results.append(_usage_limit_result(spec))
-    return results
+            self.limited = True
+            return _usage_limit_result(spec)
+
+
+def _grade_runs(specs: list[EvalSpec], runs: list[EvalRun], grader: JudgeGrader | None) -> list[ScenarioResult]:
+    latch = _JudgeLimitLatch(grader)
+    return [latch.grade(spec, lambda run=run: run) for spec, run in zip(specs, runs, strict=True)]
 
 
 def _escalation_trial_runner(latch: UsageLimitLatch, grader: JudgeGrader | None) -> TrialRunner:
-    judge_limited = False
+    judge_latch = _JudgeLimitLatch(grader)
 
     def trial(spec: EvalSpec) -> ScenarioResult:
-        nonlocal judge_limited
-        if judge_limited:
-            return _usage_limit_result(spec)
-        try:
-            return evaluate(spec, latch.run(spec), judge=grader)
-        except UsageLimitReachedError:
-            judge_limited = True
-            return _usage_limit_result(spec)
+        return judge_latch.grade(spec, lambda: latch.run(spec))
 
     return trial
 

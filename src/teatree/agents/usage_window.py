@@ -39,7 +39,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
 from teatree.core.models.checkout_exit import attest_checkout_on_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, LimitCause, LimitMatch, window_horizon
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
@@ -72,12 +72,6 @@ class LimitSignal:
 #: this one instance is safe; ruff B008 bans a call directly in an argument default).
 _NO_SIGNAL = LimitSignal()
 
-#: The subscription causes a mid-run limit can ROTATE off (an account hit its 5h/weekly
-#: window while others may still be healthy). A transient rate limit is lane-wide and
-#: API-credit exhaustion has no rotation, so both stay on the plain lane park.
-_ROTATABLE_SUBSCRIPTION_CAUSES: frozenset[LimitCause] = frozenset(
-    {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY},
-)
 #: How far ahead an ALREADY-ELAPSED reset is clamped when parking. A park keyed on a past
 #: instant is dead on arrival — ``usage_window_recovery`` clears it on its very next tick, so
 #: a caller that keeps re-deriving an elapsed reset re-parks at the poll cadence. A stale
@@ -227,7 +221,7 @@ def park_or_rotate_on_limit(
     reset = effective_resets_at(match.cause, _reported_reset(match, signal), moment)
     if reset is None:
         return None
-    if lane == TaskAttempt.Lane.SUBSCRIPTION and match.cause in _ROTATABLE_SUBSCRIPTION_CAUSES:
+    if lane == TaskAttempt.Lane.SUBSCRIPTION and match.cause in SUBSCRIPTION_LIMIT_CAUSES:
         rotated = _rotate_or_none(task, match, reset=reset, moment=moment, signal=signal)
         if rotated is not None:
             return rotated

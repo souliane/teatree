@@ -13,7 +13,7 @@ import re
 
 from claude_agent_sdk import Message
 
-from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, CreditExhaustedError, LimitCause, classify_limit
 
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
@@ -166,11 +166,9 @@ _RESULT_EVENT_WRAPPER = "returned an error result:"
 #: out inside a run (the eval parks instead), a provider spend stop only lifts on a
 #: budget reset or an operator action, and a leak block re-blocks the same context. The
 #: remaining cause, RATE_LIMIT, is a transient retry.
-_NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset(
+_NEVER_RETRY_CAUSES: frozenset[LimitCause] = SUBSCRIPTION_LIMIT_CAUSES | frozenset(
     {
         LimitCause.API_CREDIT,
-        LimitCause.SUBSCRIPTION_SESSION,
-        LimitCause.SUBSCRIPTION_WEEKLY,
         LimitCause.PROVIDER_BUDGET,
         LimitCause.LEAK_BLOCKED,
     }

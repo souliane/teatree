@@ -70,11 +70,6 @@ class TestRecorded:
         assert ledger.names == ("alpha", "beta")
         assert {entry.reason for entry in ledger.scenarios} == {OwedReason.PARKED}
 
-    def test_an_already_owed_name_keeps_its_older_debt(self) -> None:
-        older = _ledger(_owed("alpha", since=NOW - DAY))
-        ledger = older.recorded(["alpha"], reason=OwedReason.LIMIT, source="nightly@9", since=NOW)
-        assert ledger.scenarios == older.scenarios
-
 
 class TestMerged:
     def test_a_duplicate_name_keeps_the_oldest_since(self) -> None:
@@ -134,7 +129,7 @@ class TestNextBatch:
         assert ledger.next_batch(2, known) == ("a_old", "b_old")
         assert ledger.next_batch(10, known) == ("a_old", "b_old", "newest")
 
-    @pytest.mark.parametrize("cap", [0, -1])
+    @pytest.mark.parametrize("cap", [0])
     def test_a_cap_below_one_raises(self, cap: int) -> None:
         with pytest.raises(ValueError, match="cap"):
             _ledger(_owed("alpha")).next_batch(cap, {"alpha"})

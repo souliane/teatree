@@ -4,9 +4,8 @@
 #
 # The three-tier eval cadence (owner-refined 2026-07-23):
 #   * PER-PR   (eval-pr.yml)  — the scenarios a PR's diff changed, upfront-catch.
-#   * NIGHTLY  (THIS file)    — a small SMOKE slice, run ONLY on a day something
-#                               merged to main, so an idle repo spends zero budget.
-#   * WEEKLY   (eval.yml)     — the full 233-scenario catalog, sharded, unchanged.
+#   * NIGHTLY  (THIS file)    — a small SMOKE slice after a merge or while work is owed.
+#   * WEEKLY   (eval.yml)     — a full sweep when the window is near reset.
 #
 # WHY A CONDITIONAL NIGHTLY (not an unconditional one)
 #   The per-PR lane only runs the scenarios a PR TOUCHED — a regression in an
@@ -14,7 +13,7 @@
 #   would not surface until the weekly run, up to a week later. The nightly smoke
 #   closes that gap with a small representative slice — but ONLY when there is new
 #   work to test. The `prepare` job gates on "did >=1 PR merge to main in the last
-#   day": no merge that day → SKIP CLEANLY (exit 0, clear log line), zero token
+#   day or anything owed": neither → SKIP CLEANLY (exit 0, clear log line), zero token
 #   spend. This is a PRE-CHECK deciding whether to invoke the eval at all — it is
 #   NOT a skip-as-pass inside the eval (once invoked, `--require-executed` still
 #   fails loud on zero coverage). It mirrors eval.yml's weekly no-PR guard, at a
@@ -86,8 +85,8 @@ concurrency:
 jobs:
   # PREPARE: decide whether the nightly runs at all. A manual workflow_dispatch
   # run ALWAYS runs (force). A scheduled run is guarded: it SKIPS CLEANLY (exit 0,
-  # clear log line) when NO PR merged to main in the last day — nothing new to
-  # smoke-test, no API spend. This mirrors eval.yml's weekly no-PR guard at a
+  # clear log line) when NO PR merged to main in the last day and nothing is owed.
+  # This mirrors eval.yml's weekly no-PR guard at a
   # 1-day window (`merged_prs_since.py --days 1`).
   prepare:
     runs-on: ubuntu-latest
@@ -176,7 +175,7 @@ jobs:
 
 
   # EVAL: the smoke slice (clean_room, today's rotating shard of 16, single trial), in the CI
-  # container. Skipped entirely when prepare gated it out (no merge that day).
+  # container. Skipped entirely when prepare gated it out (no merge and no debt).
   eval:
     needs: prepare
     if: needs.prepare.outputs.run_eval == 'true'
@@ -245,8 +244,8 @@ jobs:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
-          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Report a parked nightly
         if: steps.select.outputs.parked == 'true'

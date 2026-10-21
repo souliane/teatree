@@ -40,7 +40,7 @@ from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.resource_caps import env_float
-from teatree.llm.anthropic_limits import LimitCause, classify_limit
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, classify_limit
 from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
@@ -190,7 +190,7 @@ class ClaudeJudge:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         except Exception as exc:
             limit = classify_limit(str(exc))
-            if limit is not None and limit.cause in {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY}:
+            if limit is not None and limit.cause in SUBSCRIPTION_LIMIT_CAUSES:
                 raise UsageLimitReachedError(str(exc)) from exc
             reason = classify_terminal_error(str(exc))
             if reason is None:

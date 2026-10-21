@@ -39,6 +39,7 @@ def run_trials_with_limit_evidence(
 
 
 def _emit_progress(line: str) -> None:
+    # Flush live so a stalled or parked suite remains distinguishable from a silent hang.
     sys.stderr.write(f"{line}\n")
     sys.stderr.flush()
 
