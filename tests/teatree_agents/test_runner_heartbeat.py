@@ -38,11 +38,17 @@ from teatree.agents.runner_heartbeat import (
     drain_reason_closing_connection,
     drive_with_heartbeat,
 )
-from teatree.agents.runner_stream import HarnessOutcome
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, drain_turn
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
 from teatree.loop.drain import set_worker_quiescing
-from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, assistant_text, result_message
+from tests.teatree_agents._sdk_fake import (
+    FakeHarnessSession,
+    InterruptibleSession,
+    OneSessionHarness,
+    assistant_text,
+    result_message,
+)
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
@@ -122,6 +128,19 @@ class _TwoTurnSession(InterruptibleSession):
         text = "second" if self.prompts else "first"
         yield assistant_text(text)
         yield result_message(session_id=_SESSION, result=text)
+
+
+def test_drain_turn_keeps_the_first_turn_text_and_uses_the_latest_result() -> None:
+    capture = StreamCapture()
+    capture.observe(assistant_text("first"))
+    capture.observe(result_message(result="first"))
+    session = FakeHarnessSession([assistant_text("second"), result_message(result="second")])
+
+    outcome = asyncio.run(drain_turn(session, capture))
+
+    assert outcome.agent_text == "first\nsecond"
+    assert outcome.result_message is not None
+    assert outcome.result_message.result == "second"
 
 
 def test_an_idle_follow_up_keeps_the_claim_and_records_the_second_turn() -> None:
