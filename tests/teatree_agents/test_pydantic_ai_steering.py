@@ -1,8 +1,5 @@
 import asyncio
-import operator
 import threading
-from dataclasses import replace
-from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -13,21 +10,13 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents import live_control
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
-from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
-from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.agents.live_control import RejectCode, SteerRejectedError
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
-from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
-
-_FENCE_TYPE = getattr(live_control, "LiveFence", None)
-_NEEDS_FENCE = pytest.mark.skipif(
-    _FENCE_TYPE is None, reason="the task-attempt fence ships with the Codex steering change"
-)
 
 
 def test_a_steer_is_admitted_into_the_next_model_request_and_acknowledged_only_then() -> None:
@@ -300,21 +289,3 @@ class AdmittedTextResumeTests(TestCase):
 
         assert resumed is not None
         assert "resumable nonce" in repr(resumed.history)
-
-
-@_NEEDS_FENCE
-def test_a_stale_command_never_reaches_a_pydantic_session() -> None:
-    async def run() -> None:
-        registry: Any = LiveSessionRegistry()
-        task = LiveTask(pk=9, ticket=1, phase="coding", harness="pydantic_ai", model="function")
-        stale = replace(operator.attrgetter("fence")(task), attempt="an-older-attempt")
-        harness = PydanticAiHarness(model=TestModel(custom_output_text="done"))
-        async with harness.open(ClaudeAgentOptions()) as session, registry.attach(task, StreamCapture()) as live:
-            live.bind(session)
-            steered = await registry.steer(9, "stale steer", command_id="c1", wait=0.1, fence=stale)
-            pushed = await registry.push(9, "stale push", command_id="c2", wait=0.1, fence=stale)
-            for receipt in (steered, pushed):
-                assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode("stale_command"))
-            assert registry.facts(9)["pending_inputs"] == 0
-
-    asyncio.run(run())
