@@ -118,13 +118,15 @@ DEFECT_ESCAPE_RED = 1.0
 # companion floor — a median clear-to-merge past a full day is a merge loop that is
 # draining, but far too slowly.
 MERGE_LATENCY_RED_HOURS = 24.0
-PR_START_TO_MERGED_RED_HOURS = 48.0
 # repair_burn (mean terminal iteration per succeeded phase, LOWER_IS_BETTER): the phase
 # cap is MAX_PHASE_ITERATIONS = 5, so a mean of 4 means the phases that DO land are
 # almost exhausting their repair budget every time. The high-failure companion detector
 # in factory_signal_queries.compute_s5 catches the orthogonal collapse the scalar mean
 # misses — a window where nearly every attempt fails and the few successes read low.
 REPAIR_BURN_RED_ITERS = 4.0
+
+# A 48h median means half of completed pull requests spent at least two days in flight.
+PR_START_TO_MERGED_RED_HOURS = 48.0
 
 
 class SignalVerdict(enum.StrEnum):

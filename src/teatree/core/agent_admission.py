@@ -66,8 +66,8 @@ from teatree.core.admission_pressure import (
 )
 from teatree.core.managers_task_claim import claim_admission_block_reason
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
-from teatree.core.modelkit.pr_start_cap import cap_hold_reason
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.pr_start_cap import cap_hold_reason
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
 

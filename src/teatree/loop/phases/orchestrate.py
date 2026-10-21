@@ -45,7 +45,7 @@ from django.db.models import Q
 
 from teatree.config import Wip, get_effective_settings
 from teatree.core.modelkit.phases import normalize_phase, subagent_for_phase
-from teatree.core.modelkit.pr_start_cap import new_pr_start_allowed_q
+from teatree.core.pr_start_cap import new_pr_start_allowed_q
 from teatree.loop.phases.conflict_area import area_key, spread_by_area
 from teatree.loop.queue_drain import ADMISSION_ORDER, admission_claim_order, admission_priority_annotations
 

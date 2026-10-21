@@ -13,6 +13,7 @@ from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, 
 from django.db.models.expressions import BaseExpression, OrderBy
 
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
+from teatree.core.pr_start_cap import ticket_has_live_pr
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest
@@ -65,9 +66,8 @@ def _stage_part(started: Exists) -> Case:
 def admission_priority_annotations() -> dict[str, BaseExpression]:
     pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
     started_rows = pull_request.objects.live().filter(ticket_id=OuterRef("ticket_id"))
-    started = Exists(started_rows)
     return {
-        ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part(started),
+        ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part(ticket_has_live_pr()),
         PR_STARTED_ALIAS: models.Subquery(
             started_rows.with_flow_stamps().order_by("flow_started_at", "pk").values("flow_started_at")[:1]
         ),

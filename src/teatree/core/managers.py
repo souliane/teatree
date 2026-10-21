@@ -39,8 +39,8 @@ from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
-from teatree.core.modelkit.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
+from teatree.core.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
 
