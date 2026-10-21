@@ -237,7 +237,10 @@ class TestOverlayFollowupScanners(TestCase):
     def test_reset_ignores_a_late_result_from_the_previous_hook(self) -> None:
         entered = Event()
         release = Event()
+        replacement_entered = Event()
+        replacement_release = Event()
         first_thread: list[Thread] = []
+        replacement_thread: list[Thread] = []
 
         class BlockingReview(OverlayReview):
             def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
@@ -246,20 +249,32 @@ class TestOverlayFollowupScanners(TestCase):
                 release.wait()
                 return []
 
-        scanner = _ExtraScanner()
+        class ReplacementReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                replacement_thread.append(current_thread())
+                replacement_entered.set()
+                replacement_release.wait()
+                return []
+
         try:
             with patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01):
                 first = MINI_LOOP.build_jobs(backends=[self._backend("alpha", BlockingReview())])
                 assert entered.is_set()
                 assert any(job.scanner.name == "overlay_followup_scanners" for job in first)
                 overlay_followup_jobs_module.reset_inflight_hooks()
-                second = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([scanner]))])
+                second = MINI_LOOP.build_jobs(backends=[self._backend("alpha", ReplacementReview())])
+                assert replacement_entered.is_set()
+                assert any(job.scanner.name == "overlay_followup_scanners" for job in second)
+                replacement = overlay_followup_jobs_module._INFLIGHT_HOOKS["alpha"]
             release.set()
             first_thread[0].join(timeout=1)
             assert not first_thread[0].is_alive()
-            assert any(job.scanner is scanner for job in second)
+            assert overlay_followup_jobs_module._INFLIGHT_HOOKS["alpha"] is replacement
         finally:
             release.set()
+            replacement_release.set()
+            if replacement_thread:
+                replacement_thread[0].join(timeout=1)
 
     def test_done_hook_is_replaced_before_its_cleanup_finishes(self) -> None:
         closing = Event()
