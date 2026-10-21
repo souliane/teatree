@@ -345,8 +345,8 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   workflow-run status at that head. The worker reads the
   live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
   the run before Codex can return a verdict.
-  The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
-  skill the phase requires, stack skills included, names the others as not available, and points at no
+  The executor has no Skill tool and mounts no skill folder, so its system context embeds every
+  selected skill in full, names the others as not available, and points at no
   skill path. `reviewing` and `critic_reviewing` embed only `rules`, their lifecycle skill and `code-review`
   (no stack style guides, no overlay companion), and the lifecycle skill leaves out the sections that only
   drive the `t3` CLI (`skill_injection._READ_ONLY_SKILL_SECTIONS`); the diff, the rubric and the declared
