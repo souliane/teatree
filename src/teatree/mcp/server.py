@@ -370,7 +370,7 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
-    Returns six signals (first-try-green, defect-escape, review-catch,
+    Returns the signals (first-try-green, defect-escape, review-catch,
     merge-latency, PR start-to-merged, repair-burn) with fail-loud statuses (``ok`` /
     ``insufficient_data`` / ``instrumentation_gap``), each signal's red-floor
     trip, and the top-level verdict (``ok`` / ``regressing`` / ``red``). Scope to
