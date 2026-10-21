@@ -18,10 +18,10 @@ from teatree.backends.slack.web_reads import is_slack_user_id
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.models import ReviewRequestPost
-from teatree.core.self_forge_identities import IDENTITY_LOOKUP_ERRORS
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
+IDENTITY_LOOKUP_ERRORS = (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError)
 
 
 @dataclass(frozen=True, slots=True)

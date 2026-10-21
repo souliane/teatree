@@ -10,6 +10,7 @@ An unresolvable project degrades to an empty list (list reads) or a structured
 
 import logging
 from collections.abc import Callable
+from typing import cast
 from urllib.parse import quote_plus, urlencode
 
 import httpx
@@ -112,12 +113,9 @@ def project_engaged_reviewers(client: GitLabAPI, project: ProjectInfo | None, *,
             name for item in reviewers if isinstance(item, dict) if isinstance(name := item.get("username"), str)
         )
     )
-    approved = client.get_mr_approvals(project.project_id, pr_iid).get("approved_by")
-    if not isinstance(approved, list):
-        msg = f"Could not read approvers for {repo}#{pr_iid}"
-        raise TypeError(msg)
+    approved = cast("list[str]", client.get_mr_approvals(project.project_id, pr_iid).get("approved_by", []))
     for name in approved:
-        if isinstance(name, str) and name not in names:
+        if name not in names:
             names.append(name)
     return names
 

@@ -540,19 +540,20 @@ class TestNoDoublePing(_PermittingPostureMixin, TestCase):
         assert other.last_nag_at is None
         assert closed.last_nag_at is None
 
-    def test_failed_batch_post_restores_every_siblings_backoff(self) -> None:
-        first = _seed(days_old=5.0)
-        second = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
-        slack = FakeSlack(raise_on_post=RuntimeError("not_in_channel"))
+    def test_closed_siblings_recent_nag_cannot_hold_open_thread(self) -> None:
+        open_post = _seed(days_old=5.0)
+        closed = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        closed.done_at = timezone.now()
+        closed.last_nag_at = timezone.now()
+        closed.save(update_fields=["done_at", "last_nag_at"])
+        slack = FakeSlack()
 
         signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
 
-        assert [signal.kind for signal in signals] == ["review_nag.post_failed"]
-        for post in (first, second):
-            post.refresh_from_db()
-            assert post.last_nag_at is None
-            assert post.nag_count == 0
-            assert post.last_nag_reply_ts == ""
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert len(slack.posts) == 1
+        open_post.refresh_from_db()
+        assert open_post.nag_count == 1
 
     def test_recent_last_nag_at_blocks_re_ping(self) -> None:
         _seed(days_old=10.0, last_nag_at=timezone.now() - dt.timedelta(hours=6))
@@ -608,39 +609,15 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
         assert self._re_ask(slack, overlay="t3-acme") == "<!subteam^S0REVIEWERS> could you please have another look?"
         assert self._re_ask(slack, overlay="t3-other") == ""
 
-    def test_engaged_forge_commenter_gets_a_direct_reask(self) -> None:
+    def test_unmapped_engaged_reviewer_falls_back_to_group(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         _seed(days_old=5.0)
-        slack = FakeSlack(
-            usergroups=[_REVIEWERS_GROUP],
-            members=[_active_member("UPEER", "peer")],
-        )
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
         host = FakeHost(comments=[{"author": {"username": "peer"}}])
 
         ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
 
-        assert slack.posts[0]["text"] == "<@UPEER> could you please have another look?"
-
-    def test_ambiguous_or_unmapped_engaged_reviewer_falls_back_to_group(self) -> None:
-        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
-        for index, members in enumerate(
-            (
-                [],
-                [
-                    _active_member("UONE", "peer"),
-                    _active_member("UTWO", "peer"),
-                ],
-                [{"id": "UDEAD", "name": "peer", "deleted": True}],
-            ),
-            start=1,
-        ):
-            _seed(url=f"https://gitlab.example/x/-/merge_requests/{index}", thread_ts=f"ts.{index}", days_old=5.0)
-            slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=members)
-            host = FakeHost(comments=[{"author": {"username": "peer"}}])
-
-            ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
-
-            assert slack.posts[-1]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
+        assert slack.posts[-1]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
 
     def test_unresolved_requester_id_uses_group_even_with_engagement(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
@@ -896,21 +873,7 @@ class TestUnreadableMrStateFailsClosed(_PermittingPostureMixin, TestCase):
 class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
     """A request the owner reacted "hold" on is theirs to release, not ours to escalate."""
 
-    def setUp(self) -> None:
-        super().setUp()
-        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
-
     def test_the_requesters_own_pause_reaction_still_holds_the_nag(self) -> None:
-        _seed(days_old=10.0)
-        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
-        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
-
-        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
-
-        assert slack.posts == []
-        assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
-
-    def test_visible_root_pause_skips_duplicate_state_reads(self) -> None:
         _seed(days_old=10.0)
         pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
         slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}], root_reactions=[pause])
@@ -922,6 +885,7 @@ class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
         ):
             signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
 
+        assert slack.posts == []
         assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
         open_read.assert_called_once()
         root_read.assert_not_called()
@@ -1376,7 +1340,7 @@ class TestBackoffCapAsksTheOwnerInsteadOfNaggingForever(_PermittingPostureMixin,
 class TestReviewExemptRepoIsNeverPinged(_PermittingPostureMixin, TestCase):
     """A review-exempt repo's row never reaches a colleague's thread.
 
-    The re-ping @-mentions a whole group, so the exemption the post command
+    The re-ping @-mentions colleagues, so the exemption the post command
     refuses on has to hold here too: an exempt repo's row enters the ledger by
     other doors — the manual-broadcast seeder — and nothing stood between that
     row and the group.

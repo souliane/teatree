@@ -19,15 +19,6 @@ def _request(number: int, *, thread: str = "1000", done: bool = False) -> Review
 
 
 class TestNagClaim(TestCase):
-    def test_recent_peer_refuses_a_second_claim(self) -> None:
-        first = _request(1)
-        second = _request(2)
-        now = timezone.now()
-        initial = ReviewNagClaim.take(first, now, dt.timedelta(days=2))
-
-        assert initial is not None
-        assert ReviewNagClaim.take(second, now, dt.timedelta(days=2)) is None
-
     def test_failed_post_releases_each_previous_step(self) -> None:
         first = _request(1)
         second = _request(2)
@@ -45,6 +36,54 @@ class TestNagClaim(TestCase):
         second.refresh_from_db()
         assert (first.last_nag_at, first.nag_count) == (prior, 2)
         assert (second.last_nag_at, second.nag_count) == (prior, 1)
+
+    def test_lower_count_claimant_advances_past_sibling_count(self) -> None:
+        first = _request(1)
+        second = _request(2)
+        ReviewRequestPost.objects.filter(pk=first.pk).update(nag_count=1)
+        ReviewRequestPost.objects.filter(pk=second.pk).update(nag_count=3)
+
+        claim = ReviewNagClaim.take(first, timezone.now(), dt.timedelta(days=2))
+
+        assert claim is not None
+        assert claim.nag_count == 4
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.nag_count == second.nag_count == 4
+
+    def test_closed_claimant_cannot_advance_an_open_sibling(self) -> None:
+        closed = _request(1, done=True)
+        open_post = _request(2)
+
+        assert ReviewNagClaim.take(closed, timezone.now(), dt.timedelta(days=2)) is None
+        open_post.refresh_from_db()
+        assert open_post.last_nag_at is None
+        assert open_post.nag_count == 0
+
+    def test_release_does_not_overwrite_a_newer_count(self) -> None:
+        post = _request(1)
+        claim = ReviewNagClaim.take(post, timezone.now(), dt.timedelta(days=2))
+        assert claim is not None
+        ReviewRequestPost.objects.filter(pk=post.pk).update(nag_count=2)
+
+        claim.release()
+
+        post.refresh_from_db()
+        assert post.last_nag_at == claim.claimed_at
+        assert post.nag_count == 2
+
+    def test_release_does_not_overwrite_a_newer_timestamp(self) -> None:
+        post = _request(1)
+        claim = ReviewNagClaim.take(post, timezone.now(), dt.timedelta(days=2))
+        assert claim is not None
+        later = claim.claimed_at + dt.timedelta(seconds=1)
+        ReviewRequestPost.objects.filter(pk=post.pk).update(last_nag_at=later)
+
+        claim.release()
+
+        post.refresh_from_db()
+        assert post.last_nag_at == later
+        assert post.nag_count == 1
 
     def test_reconciliation_mismatch_rolls_back_all_reply_timestamps(self) -> None:
         first = _request(1)

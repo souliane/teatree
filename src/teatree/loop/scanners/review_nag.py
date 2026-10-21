@@ -32,7 +32,7 @@ Merged/closed safety: a MERGED MR routes through ``react_merge_on_post`` so the
 ``:merge:`` reaction still lands; a CLOSED MR is marked done.
 
 Everything else FAILS CLOSED, because the harmful direction here is POSTING: the
-re-ping is a colleague-visible @-mention of a whole group, so an MR whose state
+re-ping may @-mention colleagues, so an MR whose state
 nothing could establish must not be nagged about. A DRAFT, an APPROVED, a PAUSED
 MR and every unreadable answer — no code-host backend, an ``UNKNOWN`` open state,
 a failed open-state lookup, an unparsable URL, an ``UNKNOWN`` draft state, an
@@ -249,9 +249,9 @@ class ReviewNagScanner:
         without closing the row, so a later merge-react still fires and the next
         tick retries.
 
-        The whole guard fails CLOSED. The re-ping @-mentions a group of
-        colleagues, so no unverifiable read may license one: a missing code-host
-        backend, a failed open-state lookup and an ``UNKNOWN`` open state each
+        The whole guard fails CLOSED. The re-ping @-mentions colleagues, so no
+        unverifiable read may license one: a missing code-host backend, a failed
+        open-state lookup and an ``UNKNOWN`` open state each
         skip rather than proceed.
         """
         host = self.host

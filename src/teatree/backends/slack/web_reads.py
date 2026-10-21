@@ -20,11 +20,11 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
-_USER_ID = re.compile(r"[UW][A-Z0-9]+")
+SLACK_USER_ID_RE = re.compile(r"[UW][A-Z0-9]+")
 
 
 def is_slack_user_id(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and _USER_ID.fullmatch(value) is not None
+    return isinstance(value, str) and SLACK_USER_ID_RE.fullmatch(value) is not None
 
 
 # A bot can be absent from a channel that the configured user can read.

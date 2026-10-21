@@ -1,8 +1,10 @@
 """``reask_mention`` resolves the configured re-ask mention through a Slack directory read."""
 
 import logging
+from hashlib import sha256
 from unittest.mock import patch
 
+from django.core.cache import cache as django_cache
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, ReviewRequestPost
@@ -34,6 +36,34 @@ class TestReaskMention(TestCase):
         host = FakeHost(comments=[{"system": True, "author": {"username": "peer"}}])
 
         assert self._mention(slack, host) == "<!subteam^S0REVIEWERS>"
+
+    def test_configured_fallback_does_not_cache_an_unmapped_reviewer(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        name = "cache-peer-with-fallback"
+        cache_key = "review-nag-unmapped:" + sha256(f"\0{name}".encode()).hexdigest()
+        django_cache.delete(cache_key)
+        host = FakeHost(comments=[{"author": {"username": name}}])
+
+        assert self._mention(FakeSlack(), host) == "<!subteam^S0REVIEWERS>"
+        assert django_cache.get(cache_key) is None
+
+    def test_unmapped_reviewer_cache_expires_after_thirty_minutes(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        host = FakeHost(comments=[{"author": {"username": "cache-peer-no-fallback"}}])
+
+        with patch.object(django_cache, "set", wraps=django_cache.set) as cache_set:
+            assert self._mention(FakeSlack(), host) == ""
+
+        assert cache_set.call_args.kwargs["timeout"] == 1800
+
+    def test_configured_fallback_bypasses_previous_negative_cache(self) -> None:
+        name = "cache-peer-recovered"
+        host = FakeHost(comments=[{"author": {"username": name}}])
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        assert self._mention(FakeSlack(), host) == ""
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+
+        assert self._mention(FakeSlack(members=[_active_member("URECOVERED", name)]), host) == "<@URECOVERED>"
 
     def test_bot_replies_are_not_engagers(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")

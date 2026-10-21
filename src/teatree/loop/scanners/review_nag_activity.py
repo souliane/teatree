@@ -1,4 +1,4 @@
-"""Find the last engagement in a review-request thread."""
+"""Find thread engagement and read the review request's pause state."""
 
 import datetime as dt
 
