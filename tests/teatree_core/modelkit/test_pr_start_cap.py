@@ -59,11 +59,33 @@ class TestNewPullRequestStartEligibility(TestCase):
             )
         held = self._task("shipping", Ticket.objects.create())
 
-        with pytest.raises(InvalidTransitionError, match="open pull request"):
+        with pytest.raises(InvalidTransitionError, match="pull requests are open"):
             held.claim(claimed_by="worker")
 
         held.refresh_from_db()
         assert held.status == Task.Status.PENDING
+
+    def test_expired_claim_refusal_names_the_cap(self) -> None:
+        for index in range(OPEN_PR_START_CAP):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 130}"
+            )
+        held = self._task("shipping", Ticket.objects.create())
+        Task.objects.filter(pk=held.pk).update(status=Task.Status.CLAIMED)
+
+        with pytest.raises(InvalidTransitionError, match="pull requests are open"):
+            held.claim(claimed_by="worker")
+
+    def test_reviewer_role_cannot_start_an_author_pull_request(self) -> None:
+        for index in range(OPEN_PR_START_CAP):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 140}"
+            )
+        reviewer_shipping = self._task("shipping", Ticket.objects.create(role=Ticket.Role.REVIEWER))
+
+        assert Task.objects.filter(pk=reviewer_shipping.pk).filter(new_pr_start_allowed_q()).exists()
 
     def test_record_admission_refuses_new_start_at_cap(self) -> None:
         for index in range(OPEN_PR_START_CAP):

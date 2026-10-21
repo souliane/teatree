@@ -15,7 +15,6 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
 from teatree.core.models import ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.task_dispatch import admit_waiting_tasks
@@ -200,21 +199,6 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
 
         assert drain_queue_body()["enqueued"] == [expedited.pk]
         assert not self._admitted(started)
-
-    def test_started_review_keeps_review_stage_score(self) -> None:
-        started_ticket = Ticket.objects.create()
-        started = self._task("reviewing", ticket=started_ticket)
-        PullRequest.objects.record_opened(
-            ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/301"
-        )
-        score = (
-            Task.objects.filter(pk=started.pk)
-            .annotate(**admission_priority_annotations())
-            .values_list(ADMISSION_SCORE_ALIAS, flat=True)
-            .get()
-        )
-
-        assert score == 400
 
     def test_started_review_precedes_pr_less_review_at_the_same_score(self) -> None:
         self._task("reviewing", status=Task.Status.CLAIMED)

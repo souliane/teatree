@@ -1,6 +1,6 @@
 """Derived-on-read factory quality/velocity signals (SIG-PR-1).
 
-Six quantitative signals computed over the ledgers the FSM and merge/review
+Quantitative signals computed over the ledgers the FSM and merge/review
 loops already record — ``MergeAudit``/``MergeClear`` (§17.4), ``ReviewVerdict``
 + ``Finding`` severities, ``RedMrFixAttempt``, ``TaskAttempt``, and
 ``Ticket``/``TicketTransition``/``RedCardSignal``. Mirrors
@@ -16,7 +16,7 @@ never fake-green: it is a **provider-shaped** function returning
 register them verbatim. A sample below :data:`~teatree.core.factory.factory_signal_queries.MIN_SAMPLE`
 reports ``insufficient_data``; a provably-silent upstream recorder reports
 ``instrumentation_gap`` — never a fabricated 100%. :func:`compute_factory_signals`
-composes the six readings against the immediately-preceding window as a rolling
+composes the readings against the immediately-preceding window as a rolling
 baseline into a :class:`FactorySignalsReport` whose per-signal rows carry the
 red-floor verdict (a rubber-stamp review window, a stalled merge loop) the outer
 loop keys on.

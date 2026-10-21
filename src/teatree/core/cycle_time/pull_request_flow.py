@@ -1,4 +1,4 @@
-"""Elapsed time from a ticket's first admission to its pull request merge."""
+"""Elapsed PR time from first admission, then first transition or PR creation when missing."""
 
 from dataclasses import dataclass
 from datetime import datetime

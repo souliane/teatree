@@ -195,7 +195,7 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
         assert row.evidence["oldest_open_hours"] == pytest.approx(30, abs=0.1)
 
     def test_merged_pull_requests_report_median_from_first_admission(self) -> None:
-        for hours in (2, 4, 6, 8, 10):
+        for hours in (1, 2, 3, 4, 100):
             pr = self._pr(age_hours=hours, state=PullRequest.State.MERGED)
             edge = TicketTransitionFactory(
                 ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
@@ -205,10 +205,10 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
         row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
 
         assert row.reading.status == SignalStatus.OK
-        assert row.reading.value == pytest.approx(6, abs=0.1)
+        assert row.reading.value == pytest.approx(3, abs=0.1)
 
     def test_pull_request_provider_reads_the_merge_flow(self) -> None:
-        for hours in (2, 4, 6, 8, 10):
+        for hours in (1, 2, 3, 4, 100):
             pr = self._pr(age_hours=hours, state=PullRequest.State.MERGED)
             edge = TicketTransitionFactory(
                 ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
@@ -218,7 +218,7 @@ class PullRequestFlowSignalTests(FactorySignalsTestBase):
         reading = pr_start_to_merged(now=self.now)
 
         assert reading.status == SignalStatus.OK
-        assert reading.value == pytest.approx(6, abs=0.1)
+        assert reading.value == pytest.approx(3, abs=0.1)
 
 
 class S1FirstTryGreenTests(FactorySignalsTestBase):

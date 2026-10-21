@@ -252,7 +252,7 @@ class CycleTimePageTestCase(TestCase):
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
 
     def test_the_flow_band_shows_the_merged_median_and_open_ages_oldest_first(self) -> None:
-        for hours in (4, 6, 8):
+        for hours in (1, 2, 100):
             merged = started_pull_request(hours_ago=hours, state=PullRequest.State.MERGED)
             TicketTransition.objects.create(
                 ticket=merged.ticket, from_state=State.REVIEW_REQUESTED, to_state=State.MERGED
@@ -263,7 +263,7 @@ class CycleTimePageTestCase(TestCase):
         body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
 
         assert "Pull requests: start to merged" in body
-        assert "Median of 3 merged pull requests: <strong>6h</strong>" in body
+        assert "Median of 3 merged pull requests: <strong>2h</strong>" in body
         assert body.index(old.url) < body.index(young.url)
         old_row = re.search(rf'<tr>\s*<td><a href="{re.escape(old.url)}">.*?</tr>', body, re.DOTALL)
         assert old_row is not None

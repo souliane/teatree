@@ -23,7 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
-from teatree.core.modelkit.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
+from teatree.core.modelkit.pr_start_cap import cap_hold_reason, new_pr_start_allowed_q
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
@@ -99,7 +99,14 @@ def drive_claim(task: "Task") -> Generator[None]:
         type(task).objects.filter(pk=task.pk).update(owner_driving_since=None)
 
 
-def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
+def claim(
+    task: "Task",
+    *,
+    claimed_by: str,
+    claimed_by_session: str = "",
+    lease_seconds: int = 300,
+    cleanup_unknown_overlay: bool = False,
+) -> None:
     """Atomically claim *task* — exactly one concurrent claimer wins (#786 shape).
 
     A single guarded conditional ``UPDATE ... WHERE pk=task AND <claimable>``
@@ -143,15 +150,19 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
 
     status = task.Status
     now = timezone.now()
+    if cleanup_unknown_overlay and task.ticket.has_dispatchable_overlay():
+        msg = "Cleanup claim requires an unknown overlay"
+        raise InvalidTransitionError(msg)
     owner_pid, owner_pid_namespace = current_owner()
-    claimable = (
-        (
+    status_q = (
+        Q(status=status.PENDING)
+        if cleanup_unknown_overlay
+        else (
             Q(status=status.PENDING)
             | (Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)))
         )
-        & _claimable_now_q(now)
-        & new_pr_start_allowed_q()
     )
+    claimable = status_q & _claimable_now_q(now) & (Q() if cleanup_unknown_overlay else new_pr_start_allowed_q())
     won = (
         type(task)
         .objects.filter(pk=task.pk)
@@ -178,11 +189,11 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         if task.status == status.PENDING and deadline is not None:
             msg = f"Task parked until {deadline.isoformat()}"
             raise InvalidTransitionError(msg)
-        if (
-            task.status == status.PENDING
-            and not type(task).objects.filter(pk=task.pk).filter(new_pr_start_allowed_q()).exists()
-        ):
-            msg = f"Task held: {OPEN_PR_START_CAP} or more open pull requests, and this task could start another"
+        reclaimable = task.status == status.PENDING or (
+            task.status == status.CLAIMED and (task.lease_expires_at is None or task.lease_expires_at <= now)
+        )
+        if reclaimable and not cleanup_unknown_overlay and (reason := cap_hold_reason(task.pk)):
+            msg = f"Task held: {reason}"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)

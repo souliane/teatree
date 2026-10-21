@@ -84,7 +84,7 @@ class ScoredSignal:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FactoryScore:
-    """The recipe-weighted aggregate over the six signals, with provenance + deltas."""
+    """The recipe-weighted aggregate over registered signals, with provenance + deltas."""
 
     aggregate: float | None
     verdict: str

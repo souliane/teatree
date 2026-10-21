@@ -26,6 +26,18 @@ def new_pr_start_allowed_q() -> Q:
     open_prs = pull_request.objects.live()
     open_count = open_prs.order_by().values(_all=Value(1)).annotate(total=models.Count("*")).values("total")[:1]
     below_cap = LessThan(Coalesce(models.Subquery(open_count), Value(0)), OPEN_PR_START_CAP)
-    own_pr = Exists(open_prs.filter(ticket_id=OuterRef("ticket_id")))
+    own_pr = ticket_has_live_pr()
     might_start_pr = Q(ticket__role=ticket.Role.AUTHOR, phase__in=_PR_START_PHASES)
     return ~might_start_pr | Q(ticket__expedited=True) | Q(own_pr) | Q(below_cap)
+
+
+def ticket_has_live_pr() -> Exists:
+    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
+    return Exists(pull_request.objects.live().filter(ticket_id=OuterRef("ticket_id")))
+
+
+def cap_hold_reason(task_pk: int) -> str | None:
+    task = apps.get_model("core", "Task")
+    if task.objects.filter(pk=task_pk).filter(new_pr_start_allowed_q()).exists():
+        return None
+    return f"{OPEN_PR_START_CAP} or more pull requests are open; this task could start another"

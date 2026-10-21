@@ -523,6 +523,7 @@ class TaskQuerySet(models.QuerySet):
         A row still holding a live seat is refused too: it is already in the runner's
         hand, so a second booking is a duplicate dispatch. ``lane_ceiling`` of ``None``
         lifts that class's width — only the kill-switch or a failed probe leaves it absent.
+        The same write refuses a new PR starter while the live PR cap is full.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from

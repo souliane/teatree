@@ -414,6 +414,24 @@ class TestAdmissionPriority(django.test.TestCase):
             manifest = orchestrate_phase(backends=backends, claim=False)
         assert [e.task_id for e in manifest.entries] == [first.pk, second.pk]
 
+    def test_planner_serves_the_oldest_started_pull_request(self) -> None:
+        newer = _dispatchable_task(phase="coding")
+        older = _dispatchable_task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=newer.ticket, url="https://github.com/example-org/example-repo/pull/804"
+        )
+        PullRequest.objects.record_opened(
+            ticket=older.ticket, url="https://github.com/example-org/example-repo/pull/805"
+        )
+        Task.objects.filter(pk=older.pk).update(admitted_at=timezone.now() - timedelta(days=3))
+        Task.objects.filter(pk=newer.pk).update(admitted_at=timezone.now() - timedelta(days=1))
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=1)]
+
+        with _with_wip(Wip.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=False)
+
+        assert [entry.task_id for entry in manifest.entries] == [older.pk]
+
 
 class TestBughuntDispatchable(django.test.TestCase):
     """PR-13: the registered bughunt phase is admittable by the orchestrate planner."""

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def pull_request_start_expression() -> models.Expression:
+def _pull_request_start_expression() -> models.Expression:
     task = apps.get_model("core", "Task")
     transition_row = apps.get_model("core", "TicketTransition")
     first_admission = (
@@ -226,7 +226,7 @@ class PullRequestQuerySet(models.QuerySet):
             .filter(ticket_id=models.OuterRef("ticket_id"))
         )
         return self.annotate(
-            flow_started_at=pull_request_start_expression(),
+            flow_started_at=_pull_request_start_expression(),
             flow_merged_at=models.Subquery(merge.order_by("-created_at", "-pk").values("created_at")[:1]),
         )
 
