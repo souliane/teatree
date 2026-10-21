@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess  # noqa: S404 — the adapter must execute TeaTree's repository-owned hook router
 import sys
 from pathlib import Path
@@ -10,6 +11,8 @@ _CLAUDE_BLOCK_EXIT = 2
 # Inside the 30 s hook budget hooks.json grants, so a hung router fails the hook instead of the turn.
 _ROUTER_TIMEOUT_SECONDS = 25.0
 _TIMEOUT_ERROR = "TeaTree Codex hook adapter timed out waiting for the shared hook router.\n"
+# Read by owner_question_gate: a Codex transcript is not in the owner-prompt format the attended check parses.
+_CLIENT_ENV = {"T3_HOOK_CLIENT": "codex"}
 
 
 def _codex_accepts_stdout_deny(event: str, returncode: int, stdout: str) -> bool:
@@ -32,6 +35,7 @@ def run_codex_hook(event: str, payload: str) -> tuple[int, str, str]:
             text=True,
             check=False,
             timeout=_ROUTER_TIMEOUT_SECONDS,
+            env=os.environ | _CLIENT_ENV,
         )
     except subprocess.TimeoutExpired:
         return 1, "", _TIMEOUT_ERROR
