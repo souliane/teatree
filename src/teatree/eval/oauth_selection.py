@@ -211,10 +211,12 @@ def select_freshest(
     """Probe every token in *tokens* and rank the eligible accounts by headroom.
 
     Each token is probed once through *reader* (default the real
-    :func:`~teatree.llm.rate_limits.read_rate_limits`). A probe error marks the candidate
-    :attr:`TokenProbeStatus.UNREACHABLE`; an exhausted snapshot marks it
-    :attr:`TokenProbeStatus.EXHAUSTED`; both are ineligible. Eligible candidates rank
-    lexicographically on binding then weighted headroom, deterministic first on a tie.
+    :func:`~teatree.llm.rate_limits.read_rate_limits`). Probe errors are UNREACHABLE;
+    missing window readings are UNKNOWN; exhausted snapshots are EXHAUSTED.
+    An account below either reserve, or whose weekly reset is outside the optional
+    sweep window, is BELOW_RESERVE; its reason distinguishes the sweep case.
+    Only eligible candidates rank by binding then weighted headroom, with input
+    order breaking a tie.
     """
     probe = reader or read_rate_limits
     run_start = now or dt.datetime.now(tz=dt.UTC)

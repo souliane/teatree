@@ -132,18 +132,22 @@ def _persist_all_cached(cached_specs: list[EvalSpec], gates: SingleTrialGates, m
         )
 
 
+def _usage_limit_result(spec: EvalSpec) -> ScenarioResult:
+    return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+
+
 def _grade_runs(specs: list[EvalSpec], runs: list[EvalRun], grader: JudgeGrader | None) -> list[ScenarioResult]:
     results: list[ScenarioResult] = []
     judge_limited = False
     for spec, run in zip(specs, runs, strict=True):
         if judge_limited:
-            results.append(ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True))
+            results.append(_usage_limit_result(spec))
             continue
         try:
             results.append(evaluate(spec, run, judge=grader))
         except UsageLimitReachedError:
             judge_limited = True
-            results.append(ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True))
+            results.append(_usage_limit_result(spec))
     return results
 
 
@@ -153,12 +157,12 @@ def _escalation_trial_runner(latch: UsageLimitLatch, grader: JudgeGrader | None)
     def trial(spec: EvalSpec) -> ScenarioResult:
         nonlocal judge_limited
         if judge_limited:
-            return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+            return _usage_limit_result(spec)
         try:
             return evaluate(spec, latch.run(spec), judge=grader)
         except UsageLimitReachedError:
             judge_limited = True
-            return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+            return _usage_limit_result(spec)
 
     return trial
 

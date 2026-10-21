@@ -235,6 +235,8 @@ jobs:
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Restore latest main eval verdicts
         continue-on-error: true

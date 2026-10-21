@@ -87,7 +87,7 @@ class TestSelectivePrCap:
     backfill, a mass rename) would select the whole catalog and exceed the 80-min
     step cap — the cancellation that reddened PR #2726's eval job. The selector
     caps the selection at :data:`MAX_SELECTIVE_PR_SCENARIOS`; full coverage of a
-    corpus-wide change is the weekly sharded lane' job, not the PR lane's.
+    corpus-wide change is the weekly sharded lane's job, not the PR lane's.
     """
 
     def _many_specs(self, count: int) -> list[EvalSpec]:

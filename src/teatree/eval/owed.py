@@ -337,7 +337,7 @@ class OwedHarvest:
         return fields.integer("id"), fields.text("default_branch")
 
     def previous_ledger(self) -> OwedLedger | None:
-        live = [artifact for artifact in self._artifacts(LEDGER_ARTIFACT, done=_any_live) if not artifact.expired]
+        live = [artifact for artifact in self._ledger_artifacts() if not artifact.expired]
         if not live:
             return None
         newest = max(live, key=lambda artifact: artifact.created_at)
@@ -446,23 +446,22 @@ class OwedHarvest:
             return OwedLedger()
         return OwedLedger.from_json(self._member(artifact, None))
 
-    def _artifacts(self, name: str, *, done: Callable[[list[_Artifact]], bool]) -> list[_Artifact]:
+    def _ledger_artifacts(self) -> list[_Artifact]:
         repository_id, default_branch = self.repository_identity
 
         def trusted(seen: list[_Artifact]) -> list[_Artifact]:
             return [
                 artifact
                 for artifact in seen
-                if artifact.head_repository_id == repository_id
-                and (name != LEDGER_ARTIFACT or artifact.head_branch == default_branch)
+                if artifact.head_repository_id == repository_id and artifact.head_branch == default_branch
             ]
 
         rows = self._listing(
-            f"actions/artifacts?name={name}",
+            f"actions/artifacts?name={LEDGER_ARTIFACT}",
             "artifacts",
             _Artifact.from_fields,
-            what=f"{name} artifacts",
-            stop=lambda seen: done(trusted(seen)),
+            what=f"{LEDGER_ARTIFACT} artifacts",
+            stop=lambda seen: _any_live(trusted(seen)),
         )
         return trusted(rows)
 

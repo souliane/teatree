@@ -263,7 +263,7 @@ jobs:
       # `env:` vars (never inlined).
       # SWEEP WINDOW (scheduled runs only): the selector probes every OAuth account and
       # parks (exit 75, parked=true) unless one keeps the eval reserve free AND resets its
-      # 7-day window within 25h. No EVAL_API_KEY_FALLBACK: a parked sweep skips every leg
+      # 7-day window within 24h. No EVAL_API_KEY_FALLBACK: a parked sweep skips every leg
       # cleanly instead of spending the metered key. A manual run is never gated here.
       - name: Check the sweep window (scheduled runs only)
         id: sweep
@@ -273,6 +273,8 @@ jobs:
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_SWEEP_WITHIN_HOURS: "24"
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Compute the lane+shard+effort matrix
         id: matrix
@@ -441,6 +443,8 @@ jobs:
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_SWEEP_WITHIN_HOURS: ${{ github.event_name == 'schedule' && '24' || '' }}
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Restore passing eval verdicts for scheduled single-trial legs
         continue-on-error: true

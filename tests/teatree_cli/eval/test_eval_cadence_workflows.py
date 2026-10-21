@@ -78,6 +78,18 @@ def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
     assert 'mkdir -p "$SUMMARY_DIRECTORY"' in _CACHE_ACTION.read_text(encoding="utf-8")
 
 
+def test_oauth_selector_steps_receive_repository_reserve_overrides() -> None:
+    for workflow in _WORKFLOWS.glob("eval*.yml"):
+        jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+        for job in jobs.values():
+            for step in job.get("steps", []):
+                if "scripts/eval/select_oauth.py" not in step.get("run", ""):
+                    continue
+                env = step["env"]
+                assert env["EVAL_RESERVE_5H_FREE"] == "${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}", workflow
+                assert env["EVAL_RESERVE_7D_FREE"] == "${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}", workflow
+
+
 def test_benchmark_caller_grants_prepare_read_permissions() -> None:
     caller = yaml.safe_load(_BENCHMARK.read_text(encoding="utf-8"))
     grants = caller["jobs"]["benchmark"]["permissions"]

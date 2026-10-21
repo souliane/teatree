@@ -120,7 +120,7 @@ class TestFreshestWinnerExported:
         assert leaking == []
 
 
-class TestBackwardSafePassthrough:
+class TestSingleSecretReserveProbe:
     def test_empty_tokens_probes_the_existing_secret(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -495,6 +495,20 @@ def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
     assert ledger.names == ("limited",)
 
 
+def test_reusable_pr_reports_limit_debt_to_gate(tmp_path: Path, shell) -> None:
+    (tmp_path / "eval-owed-limit.txt").write_text("beta\ngamma\n", encoding="utf-8")
+    output = tmp_path / "github-output"
+
+    result = shell(
+        _script("eval-pr-reusable.yml", "eval", "Report the owed scenarios"),
+        RUNNER_TEMP=str(tmp_path),
+        GITHUB_OUTPUT=str(output),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == ["parked=true", "owed=beta,gamma"]
+
+
 @pytest.mark.parametrize("workflow", ["eval-pr.yml", "eval-nightly.yml"])
 def test_every_owed_ledger_step_runs_after_the_control_db_sandbox(workflow: str) -> None:
     for job in _workflow(workflow)["jobs"].values():

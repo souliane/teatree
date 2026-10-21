@@ -311,6 +311,23 @@ class CachedEvalReserveGateTest(TestCase):
         ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
         assert cached_ci_eval_reserve_met() is True
 
+    def test_low_five_hour_headroom_parks_local_and_ci_gates(self) -> None:
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/healthy",
+            TokenHealthReading(
+                organization_id="org-short",
+                utilization_5h=0.65,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        assert cached_local_eval_reserve_met() is False
+        assert cached_ci_eval_reserve_met() is False
+
     def test_stale_local_row_never_probes_and_fails_the_reserve_decision(self) -> None:
         _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
         reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
