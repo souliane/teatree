@@ -64,6 +64,7 @@ class MergeSummary:
     working_share: str
     top_wait: str
     interventions_per_merge: str
+    inferred_hand_tasks_per_merge: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,10 +177,9 @@ def build_merge_summary(rows: tuple[MergeWaitBreakdown, ...] | None = None) -> M
         merged_count=len(rows),
         working_share=working_share,
         top_wait=WAIT_LABELS.get(top, "unmeasured"),
-        interventions_per_merge=(
-            f"{sum(row.hand_cancels + row.inferred_hand_tasks for row in rows) / len(rows):.1f}"
-            if rows
-            else "unmeasured"
+        interventions_per_merge=(f"{sum(row.hand_cancels for row in rows) / len(rows):.1f}" if rows else "unmeasured"),
+        inferred_hand_tasks_per_merge=(
+            f"{sum(row.inferred_hand_tasks for row in rows) / len(rows):.1f}" if rows else "unmeasured"
         ),
     )
 

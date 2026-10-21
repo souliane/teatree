@@ -7,6 +7,8 @@ buckets, and packing each series' own points left-to-right would draw them again
 different time scales while the page shows one set of labels).
 """
 
+import re
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -14,6 +16,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from teatree.core.cycle_time import recent_merge_breakdowns
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -26,6 +29,7 @@ from teatree.dash.cycle_time import (
     MAX_WINDOW_DAYS,
     UNMEASURED_TONE,
     build_cycle_time_view,
+    build_merge_summary,
     clamp_window_days,
 )
 from teatree.dash.views.base import NAV_ITEMS
@@ -219,6 +223,9 @@ class WindowClampTestCase(TestCase):
     def test_an_oversized_window_is_capped(self) -> None:
         assert clamp_window_days("9000") == MAX_WINDOW_DAYS
 
+    def test_a_zero_window_is_raised_to_one_day(self) -> None:
+        assert clamp_window_days("0") == 1
+
 
 class MergeWaitDisplayTestCase(TestCase):
     def setUp(self) -> None:
@@ -271,11 +278,72 @@ class MergeWaitDisplayTestCase(TestCase):
         assert response.status_code == 200
         content = response.content.decode()
         assert "Factory speed" in content
-        assert reverse("dash:cycle_time") in content
-        assert "interventions per merge" in content
+        assert f'href="{reverse("dash:cycle_time")}#merge-waits">See the wait breakdown</a>' in content
+        assert "Last 1 merged pull requests: 67% working;" in content
+        assert "top wait Review; at least 0.0 recorded hand cancels per merge;" in content
+        assert "1.0 inferred hand tasks per merge" in content
 
-    def test_a_zero_window_is_raised_to_one_day(self) -> None:
-        assert clamp_window_days("0") == 1
+    def test_board_has_no_undefined_intervention_rate_without_merges(self) -> None:
+        TicketTransition.objects.filter(to_state=State.MERGED).delete()
+        body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+        assert "No merged pull requests to measure yet." in body
+        assert "at least unmeasured" not in body
+
+    def test_merge_summary_uses_only_reliable_windows_and_recorded_actions(self) -> None:
+        base = recent_merge_breakdowns()[0]
+        unmeasured = replace(
+            base,
+            measured=False,
+            work_seconds=0,
+            hand_cancels=4,
+            inferred_hand_tasks=10,
+            wait_seconds={**base.wait_seconds, "human": 1000 * MINUTE},
+        )
+        incomplete = replace(
+            base,
+            parks_retained=False,
+            elapsed_seconds=1000 * MINUTE,
+            work_seconds=500 * MINUTE,
+            hand_cancels=2,
+            inferred_hand_tasks=4,
+            wait_seconds={**base.wait_seconds, "human": 1000 * MINUTE},
+        )
+        summary = build_merge_summary((base, unmeasured, incomplete))
+        assert summary.merged_count == 3
+        assert summary.working_share == "67%"
+        assert summary.top_wait == "Review"
+        assert summary.interventions_per_merge == "2.0"
+        assert summary.inferred_hand_tasks_per_merge == "5.0"
+
+    def test_merge_table_cells_keep_value_and_cause_order(self) -> None:
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        section = body.split('id="merge-waits"', 1)[1].split("</section>", 1)[0]
+        row = re.findall(r"<tr>(.*?)</tr>", section, re.DOTALL)[1]
+        cells = [re.sub(r"<[^>]*>", "", cell).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)]
+        assert cells[1:10] == ["1h 30m", "1h", "0s", "0s", "0s", "0s", "0s", "0s", "30m"]
+        assert cells[10].startswith("Review (30m from")
+        assert cells[11:] == ["0", "1"]
+
+    def test_unmeasured_merge_and_incomplete_park_history_are_labelled(self) -> None:
+        task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        assert "unmeasured — task admission history is missing or overwritten" in body
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(days=8))
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        assert "park history incomplete" in body
+
+    def test_intervention_line_separates_recorded_and_inferred_actions(self) -> None:
+        task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
+        TaskAttempt.objects.create(
+            task=task,
+            ended_at=recent_merge_breakdowns()[0].merged_at - timedelta(minutes=1),
+            result={"cancel_source": "owner"},
+        )
+        Task.objects.create(ticket=task.ticket, session=task.session, phase="shipping")
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        assert "at least 1.0 recorded hand cancels per merge" in body
+        assert "2.0 inferred hand tasks per merge" in body
 
 
 class CycleTimePageTestCase(TestCase):

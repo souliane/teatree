@@ -18,6 +18,8 @@ from django.utils import timezone
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets
 from teatree.core.cycle_time.timeline import engagements_for_tickets
 from teatree.core.cycle_time.work_intervals import Engagement, merged_intervals, subtract_intervals
+from teatree.core.modelkit.owner_action import MARKER_PREFIX, OwnerActionKind
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
@@ -26,11 +28,7 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.task_cancel_source import count_recorded_cancels
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import (
-    CHECKOUT_PARKED_PREFIX,
-    LIMIT_PARKED_PREFIX,
-    PARK_ATTEMPT_RETENTION_DAYS,
-)
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ATTEMPT_RETENTION_DAYS, PARK_ERROR_PREFIXES
 from teatree.core.models.worktree_occupancy import task_holder_id
 
 WAIT_CAUSES = ("not_admitted", "checkout_fence", "sibling_task", "quota", "human", "no_next_task", "review")
@@ -134,7 +132,8 @@ def recent_merge_breakdowns(limit: int = 10) -> tuple[MergeWaitBreakdown, ...]:
         "dismissed_at",
         "dedupe_marker",
     ):
-        cause = "checkout_fence" if marker.startswith("owner-action:attest:") and parked_ticket_id else "human"
+        attestation = marker.startswith(f"{MARKER_PREFIX}{OwnerActionKind.ATTEST}:") and parked_ticket_id
+        cause = "checkout_fence" if attestation else "human"
         questions[parked_ticket_id or session_ticket_id].append((created, answered or dismissed, cause))
     spans = spans_for_tickets(ticket_ids)
     engagements = engagements_for_tickets(ticket_ids)
@@ -191,7 +190,7 @@ def _breakdown(
     )
     waits = dict.fromkeys(WAIT_CAUSES, 0.0)
     inferred = _inferred_hand_tasks(inputs.tasks, inputs.first_session_id)
-    if start is None or start >= merged_at or _readmission_obscures_work(inputs, merged_at):
+    if start is None or start >= merged_at or _readmission_obscures_work(inputs, merged_at, start):
         return MergeWaitBreakdown(
             ticket_id=ticket.pk,
             number=ticket.ticket_number,
@@ -285,12 +284,16 @@ def _split_work_and_waits(
 def _task_wait_tags(
     task: Task, inputs: _MergeInputs, merged_at: datetime
 ) -> tuple[list[tuple[datetime, datetime, str]], list[tuple[datetime, datetime]]]:
-    tags = [(task.created_at, task.admitted_at or merged_at, "not_admitted")] if task.created_at else []
+    tags = (
+        [(task.created_at, task.admitted_at or merged_at, "not_admitted")]
+        if task.created_at and (task.admitted_at is not None or task.status != Task.Status.FAILED)
+        else []
+    )
     parks = sorted(
         (
             (created, ended, error, result)
             for created, ended, error, result in inputs.attempts.get(task.pk, ())
-            if error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX))
+            if error.startswith(PARK_ERROR_PREFIXES)
         ),
         key=itemgetter(0),
     )
@@ -308,15 +311,19 @@ def _task_wait_tags(
     return tags, windows
 
 
-def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime) -> bool:
+def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime, start: datetime) -> bool:
     for task in inputs.tasks:
         attempts = inputs.attempts.get(task.pk, ())
+        if task.admitted_at == start and any(
+            parked < start and error.startswith(PARK_ERROR_PREFIXES) for parked, _ended, error, _result in attempts
+        ):
+            return True
         real_ends = [
             ended
             for _created, ended, error, result in attempts
             if ended is not None
             and ended <= merged_at
-            and (not error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX)) or result.get("billed"))
+            and (not error.startswith(PARK_ERROR_PREFIXES) or result.get("billed"))
             and "cancel_source" not in result
         ]
         if not real_ends:
@@ -327,7 +334,7 @@ def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime) -> boo
         if any(
             parked < ended and admitted <= parked
             for parked, _ended, error, result in attempts
-            if error.startswith((CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX)) and not result.get("billed")
+            if error.startswith(PARK_ERROR_PREFIXES) and not result.get("billed")
             for ended in real_ends
         ):
             return True
@@ -351,5 +358,5 @@ def _wait_attempt_result(raw: object, billing: Sequence[object]) -> _WaitAttempt
 
 def _inferred_hand_tasks(tasks: Sequence[Task], first_session_id: int | None) -> int:
     roots = [task for task in tasks if task.session_id == first_session_id and task.parent_task_id is None]
-    first_planning_id = min((task.pk for task in roots if task.phase == "planning"), default=None)
+    first_planning_id = min((task.pk for task in roots if normalize_phase(task.phase) == "planning"), default=None)
     return sum(task.pk != first_planning_id for task in roots)

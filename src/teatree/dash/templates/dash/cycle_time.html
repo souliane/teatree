@@ -34,7 +34,7 @@
           {% endfor %}
         </tbody>
       </table>
-      <p>Manual interventions per merged pull request: at least {{ view.merge_summary.interventions_per_merge }} (hand cancels and inferred hand-created tasks).</p>
+      <p>Manual interventions per merged pull request: at least {{ view.merge_summary.interventions_per_merge }} recorded hand cancels per merge; {{ view.merge_summary.inferred_hand_tasks_per_merge }} inferred hand tasks per merge.</p>
     {% else %}
       <p class="muted">No merged pull requests to measure yet.</p>
     {% endif %}

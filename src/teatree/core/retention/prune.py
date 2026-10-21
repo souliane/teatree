@@ -57,8 +57,6 @@ SCHEDULED_MAX_BATCHES = 10
 
 #: Post-mortem material only: settled inbound events and sent notification payloads.
 POST_MORTEM_RETENTION_DAYS = LONG_PAYLOAD_RETENTION_DAYS
-#: Whether the fleet is parked NOW is what a park tells; a week covers after-the-fact forensics.
-
 PARK_TABLE = "TaskAttempt (park)"
 FAILED_TASK_TABLE = "Task (failed)"
 COMPLETED_TASK_TABLE = "Task (completed)"
