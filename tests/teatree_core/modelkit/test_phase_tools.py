@@ -5,11 +5,26 @@ from teatree.core.modelkit.phase_tools import (
     MCP_WRITE,
     VERDICT_REVIEW_PHASES,
     disallowed_tools_for_phase,
+    mcp_write_tools_for_phase,
     tools_for_phase,
 )
 from teatree.core.modelkit.phases import KNOWN_PHASES
 
 MCP_WRITE_PHASES = frozenset({"coding", "testing", "e2e", "debugging", "shipping", "architectural_review"})
+PEER_MAILBOX_TOOLS = frozenset({"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"})
+
+
+class TestPeerMailboxGrant:
+    def test_exactly_planning_reviewing_and_critic_reviewing_hold_the_mailbox_grant(self) -> None:
+        phases = {"planning", "reviewing", "critic_reviewing"}
+        assert {phase for phase in KNOWN_PHASES if "agent_mailbox_send" in mcp_write_tools_for_phase(phase)} == phases
+        for phase in phases:
+            assert mcp_write_tools_for_phase(phase) == PEER_MAILBOX_TOOLS
+            assert MCP_WRITE not in tools_for_phase(phase)
+        assert mcp_write_tools_for_phase("plan") == PEER_MAILBOX_TOOLS
+        assert mcp_write_tools_for_phase("review") == PEER_MAILBOX_TOOLS
+        assert mcp_write_tools_for_phase("requesting_review") == frozenset({"review_request_post"})
+        assert all(not mcp_write_tools_for_phase(phase) for phase in KNOWN_PHASES - phases - {"requesting_review"})
 
 
 class TestMcpWriteGrant:
