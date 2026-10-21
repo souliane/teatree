@@ -5,7 +5,7 @@ and editable with NO hand-kept list — a newly-added setting appears here for f
 edit path writes through ``ConfigSetting.set_value`` (the same seam ``config_setting set``
 uses), so the #258 strict coercion and the #3688 cross-key checks fire identically.
 
-**One row per setting, every scope on it.** A row carries one :class:`ScopeCell` per scope —
+**One row per setting, every scope on it.** A row carries one :class:`SettingCell` per scope —
 global first, then each overlay — so "what is this set to everywhere" is one line rather
 than a per-scope hunt. Each cell says whether it still equals the shipped default; a cell
 that does not is the drift the page exists to make visible. A setting drifts at most ONCE
