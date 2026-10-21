@@ -741,6 +741,8 @@ class WorktreeSiblingFields(TypedDict, total=False):
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
+    direct_attested_state: str
+    direct_attested_at: str
     checkout_custody: CheckoutCustody
     auto_attestation: AutoAttestation | DeferredExitAttestation
     deferred_exit: DeferredCheckoutExit

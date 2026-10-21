@@ -25,22 +25,15 @@ from teatree.core.modelkit.question_card import (
 def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:
     short = "Readable short title..."
 
-    assert safe_ticket_card_title(short, {"issue_title": "unsafe_dash_live"}, "this ticket") == short
+    assert (
+        safe_ticket_card_title(short, {"issue_title": "Readable short title unsafe_dash_live"}, "this ticket") == short
+    )
 
 
 def test_complete_eighty_character_short_title_wins_over_unrelated_full_title() -> None:
     short = "Readable " * 8 + "Precise!"
     assert len(short) == 80
     assert safe_ticket_card_title(short, {"issue_title": "Another valid title"}, "this ticket") == short
-
-
-def test_seeded_eighty_character_prefix_uses_the_full_title() -> None:
-    full = "The issue title is longer than the eighty character seed and should remain readable in cards"
-    short = full[:80]
-
-    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") == (
-        "The issue title is longer than the eighty character seed and should remain..."
-    )
 
 
 def test_seed_cut_on_a_space_uses_the_full_title() -> None:

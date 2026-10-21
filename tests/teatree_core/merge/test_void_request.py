@@ -85,7 +85,7 @@ class TestVoidRequest(TestCase):
 
     def test_unsafe_full_title_retries_the_short_title_on_the_void_card(self) -> None:
         self.ticket.short_description = "The recorded merge should be corrected..."
-        self.ticket.extra = {"issue_title": "unsafe_dash_live"}
+        self.ticket.extra = {"issue_title": "The recorded merge should be corrected unsafe_dash_live"}
         self.ticket.save(update_fields=["short_description", "extra"])
 
         with stub_forge():

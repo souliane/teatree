@@ -1,14 +1,19 @@
 """Recheck and attest a checkout after a direct owner command or Slack approval."""
 
 import logging
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from django.db import DatabaseError, transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from teatree.core.cleanup.process_table import read_process_table
+from teatree.core.gates.pr_budget_gate import open_pr_urls_for_repo
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
@@ -22,6 +27,7 @@ from teatree.core.owner_question_message import NO_LONGER_NEEDED, closed_message
 from teatree.core.worktree.branch_owner import worktree_repo_slug
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
+from teatree.utils.run import TimeoutExpired
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -44,6 +50,9 @@ _STEPS: dict[str, _Step] = {
 }
 _NEXT_STEP = _Step("next", "continue the work", may_block_pull_request=False)
 _DECLINE_PREFIX = "The step stays stuck until the folder changes or the factory can check it safely"
+_FALLBACK_TITLE = "this ticket"
+_SAFE_PR_SLUG = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\Z")
+_SAFE_PR_HOST = re.compile(r"[a-z0-9.-]+\Z")
 
 
 class AttestRefusedError(RuntimeError):
@@ -121,11 +130,25 @@ def read_attestation(
 
 def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
     attestation = read_attestation(worktree)
-    attestation.record()
+    worktree.merge_extra(
+        set_keys={
+            "attested_state": attestation.recorded,
+            "direct_attested_state": attestation.state.digest,
+            "direct_attested_at": timezone.now().isoformat(),
+        }
+    )
     return attestation
 
 
 def declined_attest_tasks(worktree: Worktree, digest: str) -> set[int]:
+    extra = worktree.get_extra()
+    direct_at = None
+    if extra.get("direct_attested_state") == digest and isinstance(extra.get("direct_attested_at"), str):
+        try:
+            parsed = datetime.fromisoformat(extra["direct_attested_at"])
+            direct_at = parsed if parsed.tzinfo is not None else None
+        except ValueError:
+            pass
     answered = DeferredQuestion.objects.filter(
         parked_task__ticket=worktree.ticket,
         answered_at__isnull=False,
@@ -134,7 +157,14 @@ def declined_attest_tasks(worktree: Worktree, digest: str) -> set[int]:
         evidence__action__binding=digest,
     ).order_by("answered_at", "pk")
     latest = {card.parked_task_id: card for card in answered}
-    return {task_id for task_id, card in latest.items() if task_id is not None and owner_declined(card)}
+    return {
+        task_id
+        for task_id, card in latest.items()
+        if task_id is not None
+        and card.answered_at is not None
+        and owner_declined(card)
+        and (direct_at is None or card.answered_at > direct_at)
+    }
 
 
 def retire_card(row: DeferredQuestion, reason: str, *, resolver_id: str) -> None:
@@ -162,13 +192,38 @@ def _options(attestation: CheckoutAttestation, decline: str) -> tuple[CardOption
     return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
 
+def _safe_pr_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        ref = pr_ref_from_url(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return ""
+    if ref is None or parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
+        return ""
+    if not _SAFE_PR_HOST.fullmatch(host) or not _SAFE_PR_SLUG.fullmatch(ref.slug) or parsed.netloc.casefold() != host:
+        return ""
+    if "/-/merge_requests/" in parsed.path:
+        path = "-/merge_requests"
+    elif "/merge_requests/" in parsed.path:
+        path = "merge_requests"
+    else:
+        path = "pull"
+    return f"https://{host}/{ref.slug}/{path}/{ref.pr_id}"
+
+
 def _pull_request_url(task: Task, worktree: Worktree) -> str:
     rows = PullRequest.objects.live().filter(ticket=task.ticket)
     extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
     by_branch = extra.get("pr_url_by_branch")
     preferred = by_branch.get(worktree.branch) if isinstance(by_branch, dict) else None
-    preferred_ref = pr_ref_from_url(preferred) if isinstance(preferred, str) else None
-    slug = worktree_repo_slug(worktree)
+    preferred_url = _safe_pr_url(preferred) if isinstance(preferred, str) else ""
+    preferred_ref = pr_ref_from_url(preferred_url) if preferred_url else None
+    try:
+        slug = worktree_repo_slug(worktree, timeout=5)
+    except (OSError, TimeoutExpired):
+        logger.exception("Could not read the worktree repository for checkout card %s", worktree.pk)
+        slug = ""
     if not slug and worktree.repo_path:
         candidates = rows.filter(repo__iendswith=f"/{worktree.repo_path}").values_list("repo", flat=True).distinct()
         names = {name.casefold(): name for name in candidates}
@@ -178,10 +233,16 @@ def _pull_request_url(task: Task, worktree: Worktree) -> str:
     if not slug:
         return ""
     rows = rows.filter(repo__iexact=slug)
-    if isinstance(preferred, str) and preferred_ref is not None and preferred_ref.slug.casefold() == slug.casefold():
-        known = PullRequest.objects.filter(ticket=task.ticket, url=preferred)
-        return preferred if rows.filter(url=preferred).exists() or not known.exists() else ""
-    return rows.order_by("pk").values_list("url", flat=True).first() or ""
+    if preferred_url and preferred_ref is not None and preferred_ref.slug.casefold() == slug.casefold():
+        known = PullRequest.objects.filter(ticket=task.ticket)
+        known_same = [row for row in known if _safe_pr_url(row.url) == preferred_url]
+        available = open_pr_urls_for_repo(task.ticket, slug) | set(rows.values_list("url", flat=True))
+        live_known = any(row.state not in {PullRequest.State.CLOSED, PullRequest.State.MERGED} for row in known_same)
+        if preferred in available and (not known_same or live_known):
+            return preferred_url
+        if known_same:
+            return ""
+    return _safe_pr_url(rows.order_by("pk").values_list("url", flat=True).first() or "")
 
 
 def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
@@ -203,7 +264,7 @@ def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
 
 def _question(step: _Step, ticket: Ticket, title: str) -> str:
     # Outside a link, a trailing "..." or a sentence mark followed by more words reads as a sentence end.
-    unlinked = f"{title.removesuffix('...')}\u2026" if title.endswith("...") else title.rstrip(".?!") or "this ticket"
+    unlinked = f"{title.removesuffix('...')}\u2026" if title.endswith("...") else title.rstrip(".?!") or _FALLBACK_TITLE
     subject = f"<{ticket.issue_url}|{title}>" if ticket.issue_url else unlinked
     return f"Should the {step.label} step of {subject} run on its working folder as it is?"
 
@@ -238,8 +299,8 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
         options=_options(attestation, decline),
         action=attestation.action_for(task),
     )
-    question = _question(step, ticket, safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket"))
-    return (_question(step, ticket, "this ticket") if card.problems(question) else question), card
+    question = _question(step, ticket, safe_ticket_card_title(ticket.short_description, ticket.extra, _FALLBACK_TITLE))
+    return (_question(step, ticket, _FALLBACK_TITLE) if card.problems(question) else question), card
 
 
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
@@ -253,14 +314,13 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
         if latest is not None and owner_declined(latest):
             return None
         unresolved = (
-            DeferredQuestion.objects.filter(
+            DeferredQuestion.objects.awaiting_action_outcome()
+            .filter(
                 evidence__action__kind=OwnerActionKind.ATTEST,
                 evidence__action__target=str(attestation.worktree.pk),
                 evidence__action__binding=attestation.state.digest,
                 evidence__action__host_evidence=attestation.host_evidence,
-                answered_at__isnull=False,
             )
-            .exclude(audits__action__in=("carried_out", "declined", "refused"))
             .order_by("-answered_at", "-pk")
         )
         if waiting := next((row for row in unresolved if not owner_declined(row)), None):

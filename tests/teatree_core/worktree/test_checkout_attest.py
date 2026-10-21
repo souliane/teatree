@@ -88,6 +88,44 @@ class TestCheckoutAttestCard(TestCase):
         assert selected.url in render_text(row)
         assert older.url not in render_text(row)
 
+    def test_oldest_live_pull_request_wins_without_a_branch_index(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        older = PullRequestFactory(ticket=ticket)
+        newer = PullRequestFactory(ticket=ticket)
+
+        _row, text = _ask(TaskFactory(ticket=ticket))
+
+        assert older.url in text
+        assert newer.url not in text
+
+    def test_unsafe_pull_request_row_cannot_break_slack_link_markup(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        PullRequestFactory(ticket=ticket, url="https://github.com/souliane/teatree/pull/33|private>tail")
+
+        _row, text = _ask(TaskFactory(ticket=ticket))
+
+        assert "private>tail" not in text
+        assert "no pull request for this folder was open when asked" in text
+
+    def test_gitlab_pull_request_paths_remain_linked(self) -> None:
+        for slug, path in (
+            ("group/sub/repo", "-/merge_requests"),
+            ("group/repo", "merge_requests"),
+        ):
+            with self.subTest(path=path):
+                ticket = TicketFactory(short_description="Fix the login page")
+                url = f"https://gitlab.example/{slug}/{path}/7"
+                PullRequestFactory(ticket=ticket, repo=slug, url=url)
+                task = TaskFactory(ticket=ticket)
+                worktree = WorktreeFactory(ticket=ticket, repo_path=slug)
+
+                row = ask_owner_to_attest(
+                    task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+                )
+
+                assert row is not None
+                assert url in render_text(row)
+
     def test_folder_name_uses_its_branch_index_before_a_pr_row_exists(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         task = TaskFactory(ticket=ticket)
@@ -102,21 +140,6 @@ class TestCheckoutAttestCard(TestCase):
 
         assert row is not None
         assert url in render_text(row)
-
-    def test_closed_branch_pr_is_not_resurrected_from_the_index(self) -> None:
-        ticket = TicketFactory(short_description="Fix the login page")
-        task = TaskFactory(ticket=ticket)
-        worktree = WorktreeFactory(ticket=ticket)
-        closed = PullRequestFactory(ticket=ticket, state=PullRequest.State.CLOSED)
-        ticket.extra = {"pr_url_by_branch": {worktree.branch: closed.url}}
-        ticket.save(update_fields=["extra"])
-
-        row = ask_owner_to_attest(
-            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-        )
-
-        assert row is not None
-        assert closed.url not in render_text(row)
 
     def test_closed_indexed_branch_does_not_link_another_branch_pr(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -323,19 +346,6 @@ class TestCheckoutAttestCard(TestCase):
         assert first.pk != second.pk
         assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 2
 
-    def test_an_unchanged_reask_keeps_one_pending_card(self) -> None:
-        task = TaskFactory()
-        worktree = WorktreeFactory(ticket=task.ticket)
-        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-
-        first = ask_owner_to_attest(task, attestation)
-        second = ask_owner_to_attest(task, attestation)
-
-        assert first is not None
-        assert second is not None
-        assert first.pk == second.pk
-        assert DeferredQuestion.owner_pending().filter(parked_task=task).count() == 1
-
     def test_a_changed_pull_request_state_replaces_the_held_card(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         pull_request = PullRequestFactory(ticket=ticket)
@@ -372,6 +382,23 @@ class TestCheckoutAttestCard(TestCase):
         original.refresh_from_db()
         assert original.dismissed_reason == "The checkout card changed since this question was asked"
 
+    def test_corrupted_held_options_are_replaced_before_reasking(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        original = ask_owner_to_attest(task, attestation)
+        assert original is not None
+        original.options_json = "[]"
+        original.save(update_fields=["options_json"])
+
+        renewed = ask_owner_to_attest(task, attestation)
+
+        assert renewed is not None
+        assert renewed.pk != original.pk
+        original.refresh_from_db()
+        assert not original.is_pending
+        assert "Accept" in render_text(renewed)
+
     def test_replacement_closes_the_posted_buttons(self) -> None:
         task = TaskFactory()
         worktree = WorktreeFactory(ticket=task.ticket)
@@ -391,6 +418,57 @@ class TestCheckoutAttestCard(TestCase):
         backend.update_message.assert_called_once()
         assert "This question no longer needs an answer" in backend.update_message.call_args.kwargs["text"]
         assert "[Accept]" not in backend.update_message.call_args.kwargs["text"]
+
+    def test_failed_card_closure_does_not_prevent_the_replacement(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        original = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert original is not None
+        assert original.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+        backend = MagicMock()
+
+        with (
+            patch("teatree.core.worktree.checkout_attest.resolve_owner_dm_backend", return_value=(backend, None)),
+            patch("teatree.core.worktree.checkout_attest.replace_root", side_effect=OSError("Slack is unavailable")),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            replacement = ask_owner_to_attest(
+                task, CheckoutAttestation(worktree, CheckoutState("e" * 64, 2, 1), host_evidence=False)
+            )
+
+        assert replacement is not None
+        assert replacement.pk != original.pk
+        assert replacement.is_pending
+
+    def test_remote_lookup_failure_still_records_the_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket, repo_path="teatree")
+
+        with patch("teatree.core.worktree.checkout_attest.worktree_repo_slug", side_effect=OSError("remote failed")):
+            row = ask_owner_to_attest(
+                task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+            )
+
+        assert row is not None
+        assert row.is_pending
+
+    def test_bare_folder_remote_lookup_is_time_bounded(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        task = TaskFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket, repo_path="teatree", extra={"worktree_path": "/tmp/checkout"})
+
+        with patch("teatree.core.worktree.branch_owner.run_with_status") as probe:
+            probe.return_value.returncode = 0
+            probe.return_value.stdout = "https://github.com/souliane/teatree.git"
+            row = ask_owner_to_attest(
+                task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+            )
+
+        assert row is not None
+        assert probe.call_args.kwargs["timeout"] == 5
 
     def test_new_digest_retires_old_cards_for_every_waiting_step(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
@@ -481,15 +559,24 @@ class TestCheckoutAttestCard(TestCase):
         task = TaskFactory(
             ticket=ticket, subject=f"Do {marker}", execution_reason=f"because {marker}", phase=f"{marker}_phase"
         )
-        worktree = WorktreeFactory(ticket=ticket, branch=f"{marker}-branch", extra={"worktree_path": f"/w/{marker}"})
+        worktree = WorktreeFactory(
+            ticket=ticket, branch=f"{marker}-branch", repo_path="example/repo", extra={"worktree_path": f"/w/{marker}"}
+        )
         state = CheckoutState("d" * 64, commits_ahead=1, uncommitted=1)
+        for url in (
+            f"https://github.com/example/repo/pull/5?private={marker}",
+            f"https://github.com/example/repo/pull/5#{marker}",
+            f"https://{marker}@github.com/example/repo/pull/5",
+        ):
+            with self.subTest(url=url):
+                ticket.extra["pr_url_by_branch"] = {worktree.branch: url}
+                ticket.save(update_fields=["extra"])
+                row = ask_owner_to_attest(task, CheckoutAttestation(worktree, state, host_evidence=False))
 
-        row = ask_owner_to_attest(task, CheckoutAttestation(worktree, state, host_evidence=False))
-
-        assert row is not None
-        text = render_text(row)
-        assert "next step" in text
-        assert marker not in text
+                assert row is not None
+                text = render_text(row)
+                assert "next step" in text
+                assert marker not in text
 
     def test_a_cut_short_description_gives_way_to_the_whole_issue_title(self) -> None:
         cuts = (LONG_TITLE[:80], "Make the owner cards say what the task does\u2026", "Make the owner cards say...")

@@ -24,3 +24,4 @@ def test_action_reader_refuses_malformed_payloads() -> None:
     assert read_action({"action": {"kind": "unknown", "target": "17", "binding": "digest"}}) is None
     assert read_action({"action": "attest"}) is None
     assert read_action({"action": {"kind": "attest", "target": "17", "binding": "digest", "task_id": True}}) is None
+    assert read_action({"action": {"kind": "attest", "target": "17", "binding": "digest", "task_id": 0}}) is None

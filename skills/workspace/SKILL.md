@@ -133,7 +133,8 @@ posted buttons are closed. Different parked tasks keep their own cards; acceptin
 one retires the others for that checkout.
 Accepting rechecks the checkout and releases its parked tasks; declining leaves
 that step parked, and another step's Accept for the same state does not release
-it. The terminal command remains available for an owner with host access.
+it. A later direct owner attestation of that state releases the decline at the
+writer fence. The terminal command remains available for an owner with host access.
 Only the owner's Slack button tap can approve or decline the action card.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
