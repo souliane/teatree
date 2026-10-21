@@ -92,3 +92,13 @@ def test_send_inbox_and_peers_round_trip_over_the_broker_socket(tmp_path: Path) 
     assert [peer["address"] for peer in peers if peer["address"] == recipient.address] == [recipient.address]
     assert [message["text"] for message in page["messages"]] == ["hello peer"]
     assert receipt["outcome"] == "accepted_inbox_read"
+
+
+def test_the_identity_never_reaches_the_tool_schemas_or_the_mcp_launch() -> None:
+    client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    with patch("teatree.agents.lane_b.toolsets.build_mcp_toolsets", return_value=[]) as mcp:
+        toolsets = build_lane_b_toolsets(LaneBToolConfig(phase="coding", mailbox=client))
+    mailbox_tools = toolsets.toolsets[-1].tools
+    described = [(tool.description, tool.function_schema.json_schema) for tool in mailbox_tools.values()]
+
+    assert "private-token" not in repr((described, mcp.call_args, client))

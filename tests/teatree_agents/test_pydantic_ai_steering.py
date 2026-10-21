@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -17,8 +18,11 @@ from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
 from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
 from teatree.agents.runner_stream import StreamCapture
+from teatree.core.models import Session, Task
+from tests.factories import planned_ticket
 
 _FENCE_TYPE = getattr(live_control, "LiveFence", None)
 _NEEDS_FENCE = pytest.mark.skipif(
@@ -113,7 +117,6 @@ def test_reopen_clears_only_a_finished_turn_and_close_is_final() -> None:
         await asyncio.sleep(0)
         assert queue.take() == "second turn"
         await pending
-        queue.end(RejectCode.TURN_ENDED)
         queue.end(RejectCode.SESSION_CLOSED)
         queue.reopen()
         with pytest.raises(SteerRejectedError) as error:
@@ -271,23 +274,32 @@ def test_the_processor_runs_on_the_session_loop() -> None:
     assert queue.threads == [threading.get_ident()]
 
 
-def test_the_admitted_text_survives_a_thread_persist_round_trip() -> None:
-    async def run() -> list[object]:
-        queue = LiveInputQueue()
-        agent: Agent[None, str] = Agent(
-            TestModel(custom_output_text="done"), capabilities=[ProcessHistory(PeerInputAdmission(queue))]
-        )
-        pending = asyncio.create_task(queue.submit("resumable nonce", wait=1))
-        await asyncio.sleep(0)
-        result = await agent.run("go")
-        await pending
-        return list(
-            ModelMessagesTypeAdapter.validate_python(
-                ModelMessagesTypeAdapter.dump_python(result.all_messages(), mode="json")
+class AdmittedTextResumeTests(TestCase):
+    def test_a_resume_rehydrates_the_peer_text_admitted_in_the_parked_run(self) -> None:
+        async def run() -> list[ModelMessage]:
+            queue = LiveInputQueue()
+            agent: Agent[None, str] = Agent(
+                TestModel(custom_output_text="done"), capabilities=[ProcessHistory(PeerInputAdmission(queue))]
             )
+            pending = asyncio.create_task(queue.submit("resumable nonce", wait=1))
+            await asyncio.sleep(0)
+            result = await agent.run("go")
+            await pending
+            return result.all_messages()
+
+        ticket = planned_ticket()
+        session = Session.objects.create(ticket=ticket)
+        parked = Task.objects.create(ticket=ticket, session=session)
+        persist_parked_thread(parked, asyncio.run(run()))
+
+        child = Task.objects.create(
+            ticket=ticket, session=session, parent_task=parked, session_continuation=Task.SessionContinuation.PARENT
         )
 
-    assert "resumable nonce" in repr(asyncio.run(run()))
+        resumed = rehydrate_thread_for_resume(child)
+
+        assert resumed is not None
+        assert "resumable nonce" in repr(resumed.history)
 
 
 @_NEEDS_FENCE
