@@ -46,6 +46,7 @@ health + tokens with no network or ``pass``.
 import datetime as dt
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from django.utils import timezone
 
@@ -81,7 +82,7 @@ from teatree.token_rows import (
     oauth_row,
     render_table,
 )
-from teatree.utils.secrets import SecretReader, read_pass
+from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
 
 __all__ = [
     "RowIdentity",
@@ -105,6 +106,13 @@ _API_KEY_PREFIX = "sk-ant-api03"
 #: One account's probe result. A :class:`TokenStatus` means there is no reading at all
 #: (no stored token, or the probe failed) — the union keeps the network phase ORM-free.
 type ProbeOutcome = RateLimitSnapshot | MeteredKeySnapshot | TokenStatus
+
+
+@dataclass(frozen=True, slots=True)
+class EvalReserveDecision:
+    met: bool
+    reason: str = ""
+    stale: bool = False
 
 
 class TokenReport:
@@ -163,6 +171,19 @@ class TokenReport:
             )
             for row in (self.rows() if rows is None else rows)
         )
+
+    def reserve_row(self, account: str) -> tuple[TokenAccountRow, bool]:
+        identity = RowIdentity(account, TokenKind.OAUTH, TokenSource.STORE, ())
+        cached = _cached_row(identity)
+        now = timezone.now()
+        if cached.checked_at is not None and dt.timedelta() <= now - cached.checked_at <= HEALTH_TTL:
+            return cached, False
+        was_stale = cached.checked_at is not None
+        try:
+            outcome, fingerprint = self._probe(TokenKind.OAUTH, account)
+        except SecretStoreError:
+            return blank_row(identity, TokenStatus.UNREACHABLE), was_stale
+        return _row_from(identity, outcome, now, fingerprint=fingerprint), was_stale
 
     def render(self) -> str:
         return render_table(self.rows(), from_cache=self._from_cache)
@@ -319,24 +340,85 @@ def _band(reported: float | None, shipped: float) -> float:
     return shipped if reported is None else reported
 
 
-def cached_local_eval_reserve_met() -> bool:
-    report = TokenReport(from_cache=True)
-    rows = report.rows()
+def _account_reserve_decision(report: TokenReport, reserve: WindowReserve, account: str) -> EvalReserveDecision:
+    row, was_stale = report.reserve_row(account)
+    if not row.status.is_measured or row.utilization_5h is None or row.utilization_7d is None:
+        if was_stale:
+            return EvalReserveDecision(met=False, reason="stale OAuth headroom could not be refreshed", stale=True)
+        return EvalReserveDecision(met=False, reason="OAuth headroom is unmeasured")
+    if report.eval_reserve_met(reserve, accounts=(account,), rows=[row]):
+        return EvalReserveDecision(met=True)
+    return EvalReserveDecision(met=False, reason="OAuth headroom is below the eval reserve")
+
+
+def _environment_eval_reserve_decision(reserve: WindowReserve) -> EvalReserveDecision:
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if not token:
+        return EvalReserveDecision(met=False, reason="no OAuth account is configured")
     try:
-        selected = PassPathSelector().select(TokenKind.OAUTH)
-    except AllTokensExhaustedError:
-        return False
-    return report.eval_reserve_met(
-        WindowReserve.from_environment(os.environ), accounts=(selected,) if selected else (), rows=rows
+        snapshot = read_rate_limits(token, is_oauth=True)
+    except RateLimitProbeError:
+        return EvalReserveDecision(met=False, reason="environment OAuth headroom could not be read")
+    allowed = reserve.allows(
+        snapshot.unified_5h_utilization,
+        snapshot.unified_5h_reset,
+        snapshot.unified_7d_utilization,
+        snapshot.unified_7d_reset,
+        timezone.now(),
     )
+    return EvalReserveDecision(met=allowed, reason="" if allowed else "environment OAuth headroom is below the reserve")
+
+
+def local_eval_reserve_decision() -> EvalReserveDecision:
+    reserve = WindowReserve.from_environment(os.environ)
+    selector = PassPathSelector()
+    report = TokenReport()
+    try:
+        selected = selector.select(TokenKind.OAUTH, persist_pick=False)
+    except AllTokensExhaustedError:
+        return EvalReserveDecision(met=False, reason="all configured OAuth accounts are exhausted")
+    if selected is None:
+        return _environment_eval_reserve_decision(reserve)
+    for _ in range(len(_configured()) + 1):
+        if selected is None:
+            return _environment_eval_reserve_decision(reserve)
+        decision = _account_reserve_decision(report, reserve, selected)
+        try:
+            next_selected = selector.select(TokenKind.OAUTH, persist_pick=False)
+        except AllTokensExhaustedError:
+            return EvalReserveDecision(met=False, reason="all configured OAuth accounts are exhausted")
+        if next_selected == selected:
+            return decision
+        selected = next_selected
+    return EvalReserveDecision(met=False, reason="OAuth account selection did not settle")
+
+
+def cached_local_eval_reserve_met() -> bool:
+    return local_eval_reserve_decision().met
+
+
+def ci_eval_reserve_decision() -> EvalReserveDecision:
+    accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
+    if not accounts:
+        return EvalReserveDecision(met=False, reason="CI eval account allowlist is empty")
+    configured = {row.account for row in _configured() if row.kind is TokenKind.OAUTH}
+    report = TokenReport()
+    reserve = WindowReserve.from_environment(os.environ)
+    rejected: list[EvalReserveDecision] = []
+    for account in accounts:
+        if account not in configured:
+            continue
+        decision = _account_reserve_decision(report, reserve, account)
+        if decision.met:
+            return decision
+        rejected.append(decision)
+    if any(decision.stale for decision in rejected):
+        return EvalReserveDecision(met=False, reason="stale CI OAuth headroom could not be refreshed", stale=True)
+    return EvalReserveDecision(met=False, reason="no configured CI OAuth account meets the eval reserve")
 
 
 def cached_ci_eval_reserve_met() -> bool:
-    accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
-    if not accounts:
-        return False
-    report = TokenReport(from_cache=True)
-    return report.eval_reserve_met(WindowReserve.from_environment(os.environ), accounts=accounts, rows=report.rows())
+    return ci_eval_reserve_decision().met
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

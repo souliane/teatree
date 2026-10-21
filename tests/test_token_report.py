@@ -21,6 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree import token_report
 from teatree.account_headroom import WindowReserve
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
@@ -328,13 +329,46 @@ class CachedEvalReserveGateTest(TestCase):
         assert cached_local_eval_reserve_met() is False
         assert cached_ci_eval_reserve_met() is False
 
-    def test_stale_local_row_never_probes_and_fails_the_reserve_decision(self) -> None:
+    def test_stale_local_row_refreshes_once_without_changing_the_sticky_pick(self) -> None:
         _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
         reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
         secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
         with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
-            assert cached_local_eval_reserve_met() is False
-        assert reader.calls == []
+            assert cached_local_eval_reserve_met() is True
+            assert cached_local_eval_reserve_met() is True
+        assert reader.calls == [("TOK-live", True)]
+        assert AnthropicTokenUsage.objects.get(pass_path="anthropic/oauth/healthy").organization_id == "org-live"
+        assert AnthropicActivePick.objects.pick_for(TokenKind.OAUTH.value, "") is None
+
+    def test_stale_ci_row_refreshes_the_allowlisted_account(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            assert cached_ci_eval_reserve_met() is True
+        assert reader.calls == [("TOK-live", True)]
+
+    def test_unreachable_stale_reading_reports_the_hold(self) -> None:
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({}, unreachable={"TOK-down"})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-down"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            decision = token_report.local_eval_reserve_decision()
+        assert decision.met is False
+        assert decision.stale is True
+        assert decision.reason == "stale OAuth headroom could not be refreshed"
+        assert reader.calls == [("TOK-down", True)]
+
+    def test_env_only_oauth_credential_can_open_the_local_gate(self) -> None:
+        ConfigSetting.objects.filter(key=LIST_SETTING[TokenKind.OAUTH]).delete()
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "TOK-live"}),
+            patch("teatree.token_report.read_rate_limits", reader),
+        ):
+            assert cached_local_eval_reserve_met() is True
+        assert reader.calls == [("TOK-live", True)]
 
     def test_unmeasured_local_row_never_probes_and_fails_the_reserve_decision(self) -> None:
         AnthropicTokenUsage.objects.record(

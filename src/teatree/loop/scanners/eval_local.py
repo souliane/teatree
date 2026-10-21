@@ -36,7 +36,7 @@ from django.utils import timezone
 from teatree.core.modelkit.phases import EVAL_LOCAL_PHASE
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
-from teatree.token_report import cached_local_eval_reserve_met
+from teatree.token_report import EvalReserveDecision, local_eval_reserve_decision
 
 
 @dataclass(slots=True)
@@ -55,7 +55,7 @@ class EvalLocalScanner:
     overlay_name: str
     skill: str
     name: str = "eval_local"
-    reserve_met: Callable[[], bool] = cached_local_eval_reserve_met
+    reserve_met: Callable[[], bool | EvalReserveDecision] = local_eval_reserve_decision
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE)
@@ -63,7 +63,22 @@ class EvalLocalScanner:
             return []
 
         trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
-        if trigger is None or not self.reserve_met():
+        if trigger is None:
+            return []
+        reserve = self.reserve_met()
+        if isinstance(reserve, EvalReserveDecision):
+            if reserve.stale and not reserve.met:
+                return [
+                    ScanSignal(
+                        kind="eval_local.parked",
+                        summary=f"local eval parked for {self.overlay_name}: {reserve.reason}",
+                        payload={"overlay": self.overlay_name, "reason": reserve.reason},
+                    )
+                ]
+            allowed = reserve.met
+        else:
+            allowed = reserve
+        if not allowed:
             return []
 
         task = cadence.queue_task(

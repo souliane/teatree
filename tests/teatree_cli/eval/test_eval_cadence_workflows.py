@@ -371,6 +371,57 @@ def test_benchmark_publish_sets_true_after_successful_verification(tmp_path: Pat
     assert calls.read_text(encoding="utf-8").startswith("run t3 eval verify-benchmark-publish ")
 
 
+@pytest.mark.parametrize(("receipt", "publishes"), [(None, False), ("parked", False), ("complete", True)])
+def test_weekly_dashboard_requires_every_leg_to_complete(
+    tmp_path: Path, receipt: str | None, *, publishes: bool
+) -> None:
+    jobs = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))["jobs"]
+    eval_steps = jobs["eval"]["steps"]
+    upload = next(step for step in eval_steps if step.get("name") == "Upload the leg result")
+    assert upload["with"]["path"].endswith("/eval-leg-result-${{ steps.artifact.outputs.suffix }}.txt")
+    publish_steps = jobs["publish"]["steps"]
+    download = next(step for step in publish_steps if step.get("name") == "Download every leg result")
+    assert download["with"]["pattern"] == "eval-leg-result-*"
+    assert download["with"]["merge-multiple"] is True
+    merge = next(
+        step for step in publish_steps if step.get("name") == "Merge the shard summaries into the public dashboard"
+    )
+    (tmp_path / "summaries").mkdir()
+    (tmp_path / "summaries" / "eval-summary-one.md").write_text("measured row\n", encoding="utf-8")
+    (tmp_path / "receipts").mkdir()
+    if receipt is not None:
+        (tmp_path / "receipts" / "eval-leg-result-one.txt").write_text(receipt + "\n", encoding="utf-8")
+    dashboard = tmp_path / "docs" / "evals" / "index.md"
+    dashboard.parent.mkdir(parents=True)
+    dashboard.write_text("old dashboard\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$UV_CALLS"\ncat > /dev/null\n', encoding="utf-8")
+    stub.chmod(0o755)
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        [_BASH, "-e", "-c", merge["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary"),
+            "EVAL_MATRIX": "[{}]",
+            "RUN_URL": "https://example.test/run",
+            "SHA": "a" * 40,
+            "UV_CALLS": str(calls),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls.exists() is publishes
+
+
 def test_scheduled_sweep_window_is_24_hours_in_both_selectors() -> None:
     workflow = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))
     prepare = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "sweep")

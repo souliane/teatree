@@ -18,7 +18,7 @@ from teatree.backends.github.ci_eval_client import (
 )
 from teatree.eval.api_errors import is_usage_limit_skip_reason
 from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, default_fixer, fix_turn_admitted
-from teatree.token_report import cached_ci_eval_reserve_met
+from teatree.token_report import EvalReserveDecision, ci_eval_reserve_decision
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -208,7 +208,11 @@ def _halt_dispatch(session: "CiEvalHealSession", *, escalate: EscalateFn) -> str
 
 
 def _dispatch_ci(
-    session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, reserve_met: Callable[[], bool]
+    session: "CiEvalHealSession",
+    *,
+    client: GhCiEvalClient,
+    escalate: EscalateFn,
+    reserve_met: Callable[[], bool | EvalReserveDecision],
 ) -> AdvanceOutcome:
     """PENDING → AWAITING_CI: claim the step, THEN dispatch the eval run it now owns.
 
@@ -216,7 +220,11 @@ def _dispatch_ci(
     ``halt`` accepts ``AWAITING_CI`` as a source — unlike ``record_fix``'s ``PUSHED``
     target, which is why that one still records only after its push.
     """
-    if not reserve_met():
+    reserve = reserve_met()
+    if isinstance(reserve, EvalReserveDecision):
+        if not reserve.met:
+            return AdvanceOutcome(session.pr_ref, "pending", session.state, note=f"held: {reserve.reason}")
+    elif not reserve:
         return AdvanceOutcome(session.pr_ref, "pending", session.state, note="held: no eval account meets the reserve")
     head_sha = client.resolve_head_sha(session.pr_ref)
     claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))
@@ -425,7 +433,7 @@ def advance_session(
     client: GhCiEvalClient,
     escalate: EscalateFn,
     fixer: CiEvalHealFixer | None = None,
-    reserve_met: Callable[[], bool] = cached_ci_eval_reserve_met,
+    reserve_met: Callable[[], bool | EvalReserveDecision] = ci_eval_reserve_decision,
 ) -> AdvanceOutcome:
     """Advance one open session ONE FSM step. ``FIXING`` and terminal states are no-ops.
 
@@ -480,7 +488,7 @@ def advance_open_sessions(
     client: GhCiEvalClient | None = None,
     escalate: EscalateFn | None = None,
     fixer: CiEvalHealFixer | None = None,
-    reserve_met: Callable[[], bool] = cached_ci_eval_reserve_met,
+    reserve_met: Callable[[], bool | EvalReserveDecision] = ci_eval_reserve_decision,
 ) -> OpenSessionsRun:
     """Advance every non-terminal session one step, best-effort (a bad session never aborts the pass).
 

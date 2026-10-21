@@ -41,7 +41,7 @@ from teatree.core.management.commands._dream_gap_commands import DreamGapCommand
 from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.loops.dream.pass_config import PassBudget
-from teatree.token_report import cached_local_eval_reserve_met
+from teatree.token_report import local_eval_reserve_decision
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -412,11 +412,9 @@ class Command(DreamGapCommands, TyperCommand):
             from teatree.loops.dream import promote  # noqa: PLC0415 — deferred: keeps command import light
             from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
-            if not cached_local_eval_reserve_met():
-                return (
-                    "; eval promotion parked: no measured OAuth account meets reserve"
-                    f"{self._derive_evals(dry_run=dry_run)}"
-                )
+            reserve = local_eval_reserve_decision()
+            if not reserve.met:
+                return f"; eval promotion parked: {reserve.reason}{self._derive_evals(dry_run=dry_run)}"
             validator = promote.build_live_validator()
             outcomes = promote.promote_proposals_file(
                 _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)

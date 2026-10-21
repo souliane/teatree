@@ -26,6 +26,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.loop.scanners.eval_local import EVAL_LOCAL_PHASE, EvalLocalScanner
+from teatree.token_report import EvalReserveDecision
 
 TEST_OVERLAY_NAME = "t3-teatree"
 
@@ -48,6 +49,21 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class EvalLocalScannerTests(TestCase):
+    def test_stale_headroom_emits_a_visible_park_signal(self) -> None:
+        scanner = EvalLocalScanner(
+            overlay_name=TEST_OVERLAY_NAME,
+            skill="running-evals",
+            reserve_met=lambda: EvalReserveDecision(
+                met=False, reason="stale OAuth headroom could not be refreshed", stale=True
+            ),
+        )
+
+        signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["eval_local.parked"]
+        assert "stale" in signals[0].summary
+        assert _last_eval_task() is None
+
     def test_below_reserve_queues_no_eval_task(self) -> None:
         assert _scanner(reserve_met=False).scan() == []
         assert _last_eval_task() is None

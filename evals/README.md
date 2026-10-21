@@ -659,15 +659,15 @@ lane may fall back to the metered key (`EVAL_API_KEY_FALLBACK`). A subscription
 5h/7d limit hit mid-run is never retried or waited out: the rest of the suite is
 skipped without calling the model, no escalation trial runs, and `t3 eval run`
 exits 75 unless something it measured failed — a confirmed red still reds. On the
-box, the `eval_local` loop and the dream pass's eval promotion check cached
-token rows for the account the sticky selector will use. The heal loop checks
-cached rows and dispatches only while an allowlisted CI-pool account
-meets the reserve, holding a pending session until the reserve returns. A failed CI run
-with parked legs requeues twice, then halts and escalates on its third failed park. The
-operator must arrange periodic health-row refreshes; without them, the five-minute
-cache TTL keeps local, dream and heal eval dispatch parked. A retry after a
+box, the `eval_local` loop and dream promotion read the selected account's cached
+health and probe only that account when its row exceeds the five-minute TTL.
+Their check never changes the sticky routing pick. Heal dispatch reads its
+allowlisted CI accounts and probes stale rows until one meets the reserve.
+Unmeasured or unreachable accounts still park; a stale probe failure is visible
+in the scanner signal, dream summary, or heal note. A failed CI run with parked
+legs requeues twice, then halts and escalates on its third failed park. A retry after a
 measured red invokes nothing and stays red. The weekly publisher refuses an
-incomplete planned matrix. A limit reached while judging also parks ungraded
+incomplete planned matrix or any leg without a complete receipt. A limit reached while judging also parks ungraded
 scenarios and stops later judge calls. A scenario the limit skipped
 is never handed to the heal fixer, and `t3 eval green-proof` parks it (exit 75)
 rather than counting it red.
