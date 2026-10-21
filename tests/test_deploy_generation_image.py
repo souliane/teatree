@@ -163,11 +163,13 @@ class TestTheRenderedGenerationStack:
             BASE,
             GENERATION,
             TEATREE_ADMIN_PORT="8100",
+            TEATREE_WEBHOOK_PORT="8101",
             TEATREE_COMPOSE_PROJECT="zddproof",
             TEATREE_WATCHDOG_DEPLOY_LOCK="/host-tmp/zddproof.lock",
         )
 
         assert services["teatree-admin"]["environment"]["TEATREE_ADMIN_PORT"] == "8100"
+        assert services["teatree-webhooks"]["environment"]["TEATREE_WEBHOOK_PORT"] == "8101"
         watchdog = services["teatree-watchdog"]["environment"]
         assert watchdog["TEATREE_WATCHDOG_PROJECT"] == "zddproof"
         assert watchdog["TEATREE_WATCHDOG_DEPLOY_LOCK"] == "/host-tmp/zddproof.lock"

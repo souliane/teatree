@@ -7,6 +7,7 @@ globals().update({name: value for name, value in vars(base_settings).items() if 
 
 DEBUG = False
 ROOT_URLCONF = "teatree.webhook_urls"
+# Public Host headers reach only the authenticated forge receiver routes.
 ALLOWED_HOSTS = ["*"]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

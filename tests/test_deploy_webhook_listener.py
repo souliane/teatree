@@ -13,7 +13,7 @@ HOST_HOME = f"${{TEATREE_HOST_HOME:-{CONTAINER_HOME}}}"
 CHECKOUT_ENTRYPOINT = f"${{TEATREE_DEPLOY_CHECKOUT:-{CONTAINER_HOME / 'teatree-deploy'}}}/deploy/entrypoint.sh"
 
 
-def _entrypoint(tmp_path: Path, role: str) -> subprocess.CompletedProcess[str]:
+def _entrypoint(tmp_path: Path, role: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     for name, body in (
@@ -35,6 +35,7 @@ def _entrypoint(tmp_path: Path, role: str) -> subprocess.CompletedProcess[str]:
         "TEATREE_GNUPG_RUNTIME_DIR": str(tmp_path / "runtime-gnupg"),
         "TEATREE_DISK_TMPDIR": str(tmp_path),
         "SECRET_CAPTURE": str(tmp_path / "secret-capture"),
+        **extra_env,
     }
     return subprocess.run(
         [BASH, str(DEPLOY / "entrypoint.sh")], env=env, capture_output=True, text=True, timeout=20, check=False
@@ -46,9 +47,17 @@ def test_entrypoint_knows_webhook_listener_role(tmp_path: Path) -> None:
 
     assert run.returncode == 0, run.stderr
     assert run.stdout.startswith(f"{tmp_path}/bin/python -m gunicorn ")
+    assert "--workers 2 --threads 4" in run.stdout
     assert "--bind 127.0.0.1:8001" in run.stdout
     assert run.stdout.rstrip().endswith("teatree.webhook_wsgi:application")
     assert _entrypoint(tmp_path, "unrecognized").returncode == 64
+
+
+def test_entrypoint_uses_webhook_port_override(tmp_path: Path) -> None:
+    run = _entrypoint(tmp_path, "webhook-listener", TEATREE_WEBHOOK_PORT="8101")
+
+    assert run.returncode == 0, run.stderr
+    assert "--bind 127.0.0.1:8101" in run.stdout
 
 
 def test_listener_execs_before_admin_password_is_sourced(tmp_path: Path) -> None:
@@ -87,3 +96,4 @@ def test_listener_mounts_only_its_ledger_secrets_and_read_only_code() -> None:
     }
     assert listener["entrypoint"] == ["bash", CHECKOUT_ENTRYPOINT]
     assert listener["init"] is True
+    assert listener["depends_on"]["teatree-init"]["condition"] == "service_completed_successfully"
