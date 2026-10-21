@@ -12,7 +12,7 @@
 # Cadence:
 #   * schedule  — checked DAILY (06:00 UTC), eligible near the weekly reset,
 #     as the BASELINE: only when an OAuth account keeps the eval reserve free AND its
-#     7-day window resets within 24h (the selector's EVAL_SWEEP_WITHIN_HOURS), so the
+#     7-day window resets within 30h (the selector's EVAL_SWEEP_WITHIN_HOURS), so the
 #     sweep spends quota that would expire unused, never the quota the factory needs.
 #     One leg runs at a time; a leg that cannot keep the reserve, or hits the usage
 #     limit, parks green instead of reddening. Each
@@ -263,7 +263,7 @@ jobs:
       # `env:` vars (never inlined).
       # SWEEP WINDOW (scheduled runs only): the selector probes every OAuth account and
       # parks (exit 75, parked=true) unless one keeps the eval reserve free AND resets its
-      # 7-day window within 24h. No EVAL_API_KEY_FALLBACK: a parked sweep skips every leg
+      # 7-day window within 30h. No EVAL_API_KEY_FALLBACK: a parked sweep skips every leg
       # cleanly instead of spending the metered key. A manual run is never gated here.
       - name: Check the sweep window (scheduled runs only)
         id: sweep
@@ -272,7 +272,7 @@ jobs:
           EVAL_CREDENTIAL: subscription_oauth
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_SWEEP_WITHIN_HOURS: "24"
+          EVAL_SWEEP_WITHIN_HOURS: "30"
           EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
           EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
@@ -442,7 +442,7 @@ jobs:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_SWEEP_WITHIN_HOURS: ${{ github.event_name == 'schedule' && '24' || '' }}
+          EVAL_SWEEP_WITHIN_HOURS: ${{ github.event_name == 'schedule' && '30' || '' }}
           EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE || '0.40' }}
           EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE || '0.30' }}
         run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
