@@ -261,6 +261,7 @@ When a running factory task needs something only this session has — a page or 
 1. `t3 <overlay> live list` — the sessions running now on this host's workers, each with its task id and `steerable` flag.
 2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
 3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
+4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 
@@ -273,7 +274,7 @@ current-turn push or an acknowledged `inbox`/`wait` read. A `rejected` receipt
 gives the cause and says whether the text remains in the inbox;
 `unknown_delivery` keeps the original message on a same-key retry. Acceptance
 means the session took the message, not that the model obeyed it. These tools
-cannot wake an idle or parked task.
+can wake an idle `claude_sdk` session during its window (`accepted_new_turn`), but never a parked task. A restarted worker has no old live session or automatic replay; use the task list for parked work.
 
 ## Claude-only hook automation
 
