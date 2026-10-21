@@ -11,8 +11,9 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from teatree.eval.discovery import find_spec
-from teatree.eval.models import COST_SOURCE_UNKNOWN, EvalRun
+from teatree.eval.models import COST_SOURCE_UNKNOWN, CachedPass, EvalRun
 from teatree.eval.report import ScenarioResult, cost_cell
+from teatree.eval.summary_model import summary_model
 
 if TYPE_CHECKING:
     from teatree.eval.pass_at_k import PassAtKResult
@@ -113,17 +114,9 @@ def _unknown_cost_runs(results: Sequence[ScenarioResult] | Sequence["PassAtKResu
     return sum(1 for run in _executed_runs(results) if run.cost_source == COST_SOURCE_UNKNOWN)
 
 
-def _model_of(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
-    for item in results:
-        if isinstance(item, ScenarioResult):
-            return item.spec.model
-        spec = find_spec(item.spec_name)
-        if spec is not None:
-            return spec.model
-    return "unknown"
-
-
-def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
+def render_summary_markdown(
+    results: Sequence[ScenarioResult] | Sequence["PassAtKResult"], *, cached: Sequence[CachedPass] = ()
+) -> str:
     """Render a SANITIZED aggregate markdown dashboard for a single- or multi-trial run.
 
     A header (overall pass/fail/skip counts, total metered cost, model) plus a
@@ -140,14 +133,15 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     rows = [
         _row_from_scenario(item) if isinstance(item, ScenarioResult) else _row_from_pass_at_k(item) for item in results
     ]
+    rows.extend(_SummaryRow(item.name, item.lane, "cached pass", "cached", "—") for item in cached)
     passed, failed, skipped, incomplete = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
-    model = _model_of(results)
+    model = summary_model(results, cached)
     unknown = _unknown_cost_runs(results)
     cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (
         f"**{passed} passed**, **{failed} failed**, **{skipped} skipped**, "
-        f"**{incomplete} incomplete** (of {len(rows)}) "
+        f"**{incomplete} incomplete**, **{len(cached)} cached** (of {len(rows)}) "
         f"· model `{model}` · cost ${total_cost_usd:.4f}{cost_note}"
     )
     table = [
@@ -155,4 +149,5 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
         "| --- | --- | --- | --- | --- |",
         *(f"| {row.scenario} | {row.lane} | {_verdict_cell(row)} | {row.trials} | {row.cost} |" for row in rows),
     ]
-    return "\n".join([header, "", *table, ""])
+    sources = [f"- {item.name}: key `{item.content_key}` from [run]({item.run_url})" for item in cached]
+    return "\n".join([header, "", *table, "", *sources, ""])

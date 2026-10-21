@@ -48,7 +48,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from teatree.agents.harness import resolve_effort
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.model_tiering import model_supports_thinking, resolve_pydantic_ai_model, resolve_tier
+from teatree.agents.model_tiering import model_supports_thinking
 from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     OpenAICompatibleLaneConfig,
@@ -61,8 +61,8 @@ from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.agents.runner_failure_taxonomy import TURN_CEILING_SUBTYPE
 from teatree.config import get_effective_settings
 from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
+from teatree.eval.agent_prompt import scenario_system_prompt
 from teatree.eval.api_errors import classify_transient_throttle
-from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.eval_sandbox import (
     BASH_TOOL,
     EDIT_TOOL,
@@ -73,15 +73,14 @@ from teatree.eval.eval_sandbox import (
 )
 from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON
 from teatree.eval.message_mapping import eval_run_from_messages
-from teatree.eval.model_resolution import resolve_spec_model
+from teatree.eval.model_resolution import resolve_pydantic_ai_spec_model, resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec, canonicalize_tool
 from teatree.eval.production_hook_bridge import ProductionHookBridge, ProductionHookToolset
 from teatree.eval.production_hooks import has_hook_events
-from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.throttle_retry import ThrottleRetryDriver, ThrottleRetryHandlers, resolve_throttle_retries
-from teatree.eval.under_load import build_system_prompt, build_user_prompt
+from teatree.eval.under_load import build_user_prompt
 from teatree.llm.builtin_tool_schemas import BUILTIN_TOOL_PARAMETERS
 
 #: ``pydantic_ai``'s own provider discriminator for the Anthropic transport
@@ -140,18 +139,6 @@ def _tool_body(name: str, sandbox: EvalSandbox | None) -> Callable[..., str]:
     if sandbox is not None and sandbox.can_edit and canonicalize_tool(name) == EDIT_TOOL:
         return sandbox_edit_tool(sandbox)
     return _inert_tool
-
-
-def _system_prompt(spec: EvalSpec) -> str:
-    """The clean-room system prompt: the agent definition + the live-env framing.
-
-    Identical construction to the ``api`` lane (:mod:`teatree.eval.api_runner`) so a
-    scenario grades the SAME agent definition regardless of the backend.
-    """
-    clean_room_prompt = (
-        load_agent_definition(spec.agent_path, spec.agent_sections, spec.source_path.parent) + LIVE_ENV_FRAMING
-    )
-    return build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
 
 
 def _anthropic_settings(resolved: ReasoningEffort | None, max_tokens: int) -> AnthropicModelSettings:
@@ -357,10 +344,8 @@ class PydanticAiRunner:
     def _resolve_model(self, spec: EvalSpec, session_run: SessionRun) -> Model:
         if self._model is not None:
             return self._model
-        pinned = parse_model_variant(spec.model).model
-        tier = spec.tier if spec.tier and resolve_tier(spec.tier) == pinned else None
-        resolved = resolve_pydantic_ai_model(pinned, configured_model=self._backend.model, tier=tier)
-        assert_model_allowed_on_regulated_path(pinned or resolved)
+        resolved = resolve_pydantic_ai_spec_model(spec, configured_model=self._backend.model)
+        assert_model_allowed_on_regulated_path(parse_model_variant(spec.model).model or resolved)
         return OpenAIChatModel(resolved, provider=build_openai_compatible_provider(self._backend, session_run))
 
     def _resolve_request_limit(self, spec: EvalSpec) -> int | None:
@@ -404,7 +389,7 @@ class PydanticAiRunner:
             toolset = ProductionHookToolset(toolset, bridge=bridge)
         agent: Agent[None, str] = Agent(
             model,
-            system_prompt=_system_prompt(spec),
+            system_prompt=scenario_system_prompt(spec),
             model_settings=_model_settings(model, effort, self._caps.max_tokens),
             toolsets=[toolset],
         )

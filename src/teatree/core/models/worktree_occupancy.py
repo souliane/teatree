@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 from django.db.models import Q
+from django.dispatch import Signal
 from django.utils import timezone
 
 from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, holder_confirmed_dead
@@ -74,6 +75,15 @@ class OccupancyHolder:
         session = f" (session {self.holder_session})" if self.holder_session else ""
         since = f", held since {self.since.isoformat()}" if self.since else ""
         return f"{self.holder}{session}{since}, lease expires {self.expires_at.isoformat()}"
+
+
+@dataclass(frozen=True)
+class TenureOptions:
+    renewal: bool = False
+    namespace: str = ""
+
+
+_DEFAULT_TENURE = TenureOptions()
 
 
 def task_holder_id(task: Task) -> str:
@@ -170,7 +180,7 @@ def acquire(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
-    renewal: bool = False,
+    tenure: TenureOptions = _DEFAULT_TENURE,
 ) -> OccupancyHolder:
     """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
 
@@ -209,7 +219,9 @@ def acquire(
             extra = Worktree.objects.filter(pk=worktree.pk).values_list("extra", flat=True).get() or {}
             custody = Custody.from_extra(extra)
             if custody is not None:
-                updated = custody.opened(holder, holder_session, now, renewal=renewal)
+                updated = custody.opened(
+                    holder, holder_session, now, renewal=tenure.renewal, namespace=tenure.namespace
+                )
                 if updated != custody:
                     Worktree.objects.filter(pk=worktree.pk).update(
                         extra={**extra, "checkout_custody": updated.as_dict()}
@@ -221,6 +233,7 @@ def acquire(
 
 
 _UNOCCUPIED = {"occupied_by": "", "occupied_by_session": "", "occupied_at": None, "occupancy_expires_at": None}
+checkout_capacity_opened = Signal()
 
 
 def release(worktree: Worktree, *, holder: str, holder_session: str = "", attested_state: str | None = None) -> bool:
@@ -251,6 +264,11 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "", attest
                     }
                 }
             freed = held.update(**_UNOCCUPIED, **fields)
+            if freed == 1:
+                Task.objects.filter(ticket_id=worktree.ticket_id).rearm_parked_behind(
+                    holder=holder, holder_session=holder_session
+                )
+                checkout_capacity_opened.send(sender=Worktree)
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1

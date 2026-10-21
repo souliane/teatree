@@ -20,7 +20,8 @@ Precedence, highest first:
 
 import dataclasses
 
-from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, DEFAULT_TIER, resolve_tier
+from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, DEFAULT_TIER, resolve_pydantic_ai_model, resolve_tier
+from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalSpec
 
 
@@ -52,3 +53,10 @@ def resolve_spec_model(spec: EvalSpec) -> EvalSpec:
     model-presence check, the ledger label, and the report.
     """
     return dataclasses.replace(spec, model=resolve_eval_model(spec))
+
+
+def resolve_pydantic_ai_spec_model(spec: EvalSpec, *, configured_model: str | None) -> str:
+    """The OpenAI-compatible id the ``pydantic_ai`` lane runs for a spec folded by :func:`resolve_spec_model`."""
+    pinned = parse_model_variant(spec.model).model
+    tier = spec.tier if spec.tier and resolve_tier(spec.tier) == pinned else None
+    return resolve_pydantic_ai_model(pinned, configured_model=configured_model, tier=tier)

@@ -98,7 +98,6 @@
 # ORM-adjacent imports that must resolve after the app registry is ready — the module is
 # imported from the pre-push hook, which runs before Django is set up.
 "src/teatree/core/management/commands/_ensure_pr.py" = 4
-"src/teatree/core/management/commands/_ship/exec.py" = 1
 "src/teatree/core/management/commands/_ship/gates.py" = 2
 # 2: this setup-only command must import the ORM model and overlay discovery after
 # Django's app registry is ready; TyperCommand construction remains import-light.

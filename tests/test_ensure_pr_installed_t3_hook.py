@@ -152,7 +152,7 @@ def test_a_ship_push_runs_nothing_because_the_ship_opens_the_pr_itself(checkout:
 
 @pytest.fixture
 def held_db_write_lock(tmp_path: Path) -> Iterator[Path]:
-    """The canonical control DB while ``pr create --sync`` holds ``BEGIN IMMEDIATE`` across its own push."""
+    """Another control-DB writer holds ``BEGIN IMMEDIATE`` while the push hook runs."""
     db = tmp_path / "control.sqlite3"
     holder = sqlite3.connect(db, isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")
@@ -186,9 +186,10 @@ def clone_pushing_through_the_hook(tmp_path: Path, held_db_write_lock: Path, mon
     return clone
 
 
-def test_a_ship_push_goes_through_while_it_holds_the_control_db_write_lock(
+def test_a_ship_push_goes_through_while_another_writer_holds_the_control_db_write_lock(
     clone_pushing_through_the_hook: Path,
 ) -> None:
+    # The ship marker skips the hook's competing control-DB write.
     outcome = push_branch(repo=clone_pushing_through_the_hook, ship_opens_pr=True)
 
     assert outcome.ok, outcome.detail

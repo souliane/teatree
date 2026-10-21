@@ -1226,6 +1226,24 @@ class TestExecuteShip(TestCase):
             "detail": "https://example.com/mr/1",
         }
 
+    def test_open_pr_advances_despite_dirty_worktree_without_requeue(self) -> None:
+        ticket = self._ticket_in_shipped()
+        ticket.merge_extra(append_to_lists={"pr_urls": ["https://example.com/mr/1"]})
+
+        with (
+            patch("teatree.core.tasks.ShipExecutor") as ship_exec,
+            patch("teatree.core.models.ticket_scheduling.collect_dirty_worktree_paths", return_value=["/tmp/repo"]),
+            patch("teatree.core.tasks.execute_ship") as requeue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ship_exec.return_value.run.return_value = RunnerResult(ok=True, detail="https://example.com/mr/1")
+            result = execute_ship.call(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert result == {"ticket_id": ticket.pk, "ok": True, "detail": "https://example.com/mr/1"}
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        requeue.enqueue.assert_not_called()
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
@@ -1856,7 +1874,7 @@ class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
 
         with (
             patch.object(runner_mod, "_run_agent", side_effect=change_and_park),
-            patch("teatree.core.worktree.occupancy.wait_for_owned_checkout_processes", side_effect=ContainerRecreated),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=ContainerRecreated),
             patch("teatree.core.worktree.occupancy.read_process_table", return_value=self.clear),
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
             pytest.raises(ContainerRecreated),

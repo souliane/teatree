@@ -29,7 +29,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import RESUME_ANSWER_PREFIX
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
@@ -131,6 +131,10 @@ class TestThreadedReplyBindsItsOwnQuestion:
         newer.refresh_from_db()
         assert older.answer_text == "use postgres-1"
         assert older.resolved_via == "slack"
+        assert (
+            DeferredQuestionAudit.objects.get(question=older, action="answered").resolver_id
+            == f"slack:{OWNER_SLACK_ID}"
+        )
         assert newer.is_pending, "the newest question was resolved by a reply threaded under another"
 
     def test_threaded_reply_acks_and_claims_the_reply_row(self) -> None:

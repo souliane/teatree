@@ -58,9 +58,9 @@ def test_an_unreadable_route_leaves_the_environment_alone(monkeypatch: pytest.Mo
 
 def test_spawn_marker_reaches_claude_without_a_routed_token() -> None:
     with (
-        patch("teatree.agents.runner._active_agent_count", return_value=1),
-        patch("teatree.agents.runner.with_test_worker_cap", return_value={}),
-        patch("teatree.agents.runner._overlay_scope", return_value="test"),
-        patch("teatree.agents.runner.with_routed_github_token", return_value=None),
+        patch("teatree.agents.runner_preparation._active_agent_count", return_value=1),
+        patch("teatree.agents.runner_preparation.with_test_worker_cap", return_value={}),
+        patch("teatree.agents.runner_preparation._overlay_scope", return_value="test"),
+        patch("teatree.agents.runner_preparation.with_routed_github_token", return_value=None),
     ):
         assert _capped_forge_env(Mock(), None)["T3_DISPATCHED_AGENT"] == "1"

@@ -107,7 +107,7 @@ The walkthrough never writes a bot token to disk in plaintext; tokens always go 
 
 For an **existing** app, the command updates its manifest in place. When `[overlays.<name>].slack_app_id` is recorded (the create flow prompts and persists it) — or `--update` is passed (prompting for the app id when none is recorded) — it calls Slack's `apps.manifest.export` / `apps.manifest.update` using org-wide config tokens in `pass` (`teatree/slack-app-config-token`, `teatree/slack-app-config-refresh`). Slack expires the access half **12 hours** after issue and mints both halves together, so a pair refreshed only on failure is unrecoverable by the time the failure arrives — its refresh half is exactly as dead. `teatree.cli.slack.config_token` therefore rotates on **age**: `ensure_fresh_config_token` rotates once the recorded issue time (`teatree/slack-app-config-issued-at`) is older than `ROTATE_AFTER` (4h), persisting the refresh half first and verifying every write, and raising `SlackConfigTokenPersistError` rather than letting a failed write discard a pair Slack has already spent. It runs from `t3 doctor` — SessionStart plus the deployed watchdog's five-minute re-run — so a box whose worker was down still self-heals on the next session. `_export_with_rotation` remains the reactive backstop for a pair invalidated early rather than by the clock. A matching manifest is an idempotent no-op; otherwise it is applied and the **single** remaining manual step is the browser OAuth-consent reinstall click at the deep link (`https://api.slack.com/apps/<app_id>/install-on-team`). With no config token stored it degrades: prints the manifest plus the manifest-editor deep link for a manual paste, then smoke-tests with the stored bot token. Adding/changing a manifest scope (e.g. granting the xoxp user token `reactions:write`) requires a full reinstall via this path so Slack re-prompts OAuth consent for the new scope set.
 
-**One-command full setup** (`t3 setup slack-provision [--overlay <name>]`): runs the entire Slack lifecycle for one overlay — or every `messaging_backend = "slack"` overlay when `--overlay` is omitted — in one idempotent pass, replacing the `slack-bot` + `slack-user-token` + manual-channel-invite sequence ([#1686](https://github.com/souliane/teatree/issues/1686)). Per overlay it: resolves the app id (config → derive from bot token → prompt, persisted via the shared `slack_app_resolve` helper that also stops `slack-bot --update` prompting); pushes the manifest (all bot + user scopes incl. `reactions:write`) via `apps.manifest.update`; prints + opens the OAuth (re)install URL (the one manual step — `--no-open-browser` suppresses); joins the bot to its review-broadcast channels via `conversations.join` so its first post/reaction does not fail `not_in_channel` (private/Connect channels print a manual `/invite` line); provisions the bot IM channel; and verifies the shared xoxp token carries every required scope. Never deletes credentials; safe to re-run.
+**One-command full setup** (`t3 setup slack-provision [--overlay <name>]`): runs the entire Slack lifecycle for one overlay — or every `messaging_backend = "slack"` overlay when `--overlay` is omitted — in one idempotent pass, replacing the `slack-bot` + `slack-user-token` + manual-channel-invite sequence ([#1686](https://github.com/souliane/teatree/issues/1686)). Per overlay it: resolves the app id (config → derive from bot token → prompt, persisted via the shared `cli/slack/app_resolve` helper that also stops `slack-bot --update` prompting); pushes the manifest (all bot + user scopes incl. `reactions:write`) via `apps.manifest.update`; prints + opens the OAuth (re)install URL (the one manual step — `--no-open-browser` suppresses); joins the bot to its review-broadcast channels via `conversations.join` so its first post/reaction does not fail `not_in_channel` (private/Connect channels print a manual `/invite` line); provisions the bot IM channel; and verifies the shared xoxp token carries every required scope. Never deletes credentials; safe to re-run.
 
 **Scope profiles.** An overlay's `slack_scope_profile` (DB `overlays` registry row) selects how much Slack reach its bot gets — set it with `t3 setup slack-provision --overlay <name> --dm-only` (or `--full` to revert; the flag persists the profile before provisioning, and is refused without `--overlay`). The default `"full"` provisions the read/write-everywhere bot plus the shared xoxp user token — the profile customer overlays use to post across channels and Slack-Connect. `"dm_only"` provisions a bot that may talk ONLY to its one owner's DM: `slack-provision` pushes a minimal bot-scope manifest (`chat:write`, `im:*`, `reactions:*`, `users:read`, `files:write`, plus `channels:manage` — the only scope Slack accepts for a bot to leave a public channel) with **no** `user` (xoxp) scope section, joins no review channels, and skips the user-token step; the socket doctor validates it against a DM-only requirement set so it is never re-widened; and the loader builds its `SlackBotBackend` with `owner_dm_only=True`, which raises `OwnerDmOnlyError` at the token funnels on any outbound to a channel or user that is not the owner's self-DM, and at the `_post` chokepoint on a non-owner `chat.postMessage` or `conversations.open` and on every `conversations.join` / `invite` / `create` (which `channels:manage` would otherwise permit). Any other profile value — a non-string one included — is refused rather than read as `"full"`: setup fails loud, and the runtime builds no Slack backend for that overlay. This is the profile teatree's own `t3-teatree` overlay uses so its bot is a private 1:1 with its human, not a workspace-wide agent.
 
@@ -167,16 +167,7 @@ each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
 `loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
 member from the store via the Django-free `cold_reader`, so every existing reader
 (`discover_overlays`, `load_e2e_repos`, `load_peer_instances`) is untouched and teatree
-boots fully DB-configured with no config file present. Because the DB row REPLACES
-the whole file table, a lingering `[overlays.<name>]` / `[e2e_repos.<name>]` value that
-DIVERGES from the DB row would be silently masked on read — editing an overlay `path` in the
-file had NO effect and returned the stale DB value with zero signal
-([#128](https://github.com/souliane/teatree/issues/128)). `load_config` now surfaces that
-mask: it names each masked leaf and both reconcile commands as a loud WARN by default, RAISES
-`RegistryTomlMaskError` under `enforce_registry_partition=True`, and `t3 doctor`'s
-`_check_registry_toml_drift` hard-FAILs on it. The remediation actually works because
-`config_setting import` reads the RAW file (`load_raw_toml`), not the DB-injected `config.raw`
-— so an edited `path` is migrated instead of the stale DB row re-written.)
+boots fully DB-configured with no config file present.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
@@ -186,10 +177,7 @@ resolved by `config.worktree_root()` — DB `ConfigSetting` (overlay scope, then
 (`~/workspace`, where main repo clones live; `T3_WORKSPACE_DIR` env/Django-setting
 override → `~/workspace`), which `find_clone_path` and every clone-discovery caller
 use — conflating the two would make provisioning scan the worktree root for clones
-and fail. A `[teatree] workspace_dir` (or `[overlays.<name>] workspace_dir`) value
-left in TOML is **ignored on read** and warned about on load (it silently relocated
-worktrees pre-warning); migrate it into the store with `t3 <overlay> config_setting
-import` or set it explicitly. `t3 <overlay> workspace relocate` moves an overlay's
+and fail. `t3 <overlay> workspace relocate` moves an overlay's
 EXISTING teatree-managed worktrees to that per-overlay dir with `git worktree move`
 (skipping any locked / dirty / live mid-task one, idempotent, `--dry-run`-able). The
 resolution-tier wiring below details each home's chain.
@@ -392,6 +380,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `plan_edit_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 gate 16 early DX signal (`handle_block_edit_before_planned`) that denies `Edit`/`Write` while the worktree's ticket is in `WORK_STARTED` state. Read directly by the hook layer; set `false` under `[teatree]` or disable via `t3 <overlay> gate plan disable`. Per-call escape: `[skip-plan-gate: <reason>]` in `new_string`/`content`/`file_path` (first 512 chars). |
 | `visible_plan_gate_enabled` | Kill-switch (default `true`) for the visible per-target plan-first gate (`handle_enforce_visible_plan_before_tools`), which arms only when the owner's own prompt names two or more tickets and one of its sentences orders a plan before a change (a question, or a report about an earlier plan, never arms), then denies a write, question or dispatch until the turn shows one implementation-plus-verification plan per ticket. Read, Grep, Glob, read-only Bash and the task-list tools stay open. Read directly by the hook layer; disable via `t3 <overlay> gate visible-plan disable`. Per-call escape: `[visible-plan-ok: <reason>]` in any string argument (first 512 chars). Third escape: its `TEATREE PLAN-FIRST GATE` deny prefix sits on the deny circuit breaker's UX allow-list, so the third identical denial fails that one call open rather than escalating a refusal the agent cannot answer. |
 | `gate_relaxation_gate_enabled` | Kill-switch (default `true`, [#850](https://github.com/souliane/teatree/issues/850)) for the §17.6.1/§17.6.2 anti-relaxation + tach-soundness prek gate (`scripts/hooks/check_gate_relaxation.py`) that refuses a commit whose staged diff relaxes a lint/coverage constraint or a tach boundary. DB-home (per-overlay overridable): the hook resolves it DB-first through `get_effective_settings`, so `config_setting set gate_relaxation_gate_enabled false` actuates it exactly like the sibling gates, and `t3 <overlay> gate gate-relaxation disable` is the self-rescue. Per-commit escape: the `ALLOW_GATE_RELAX='<reason>'` env marker (non-empty reason) records a sanctioned relaxation and lets the commit through. |
+| `forced_repro_gate_enabled` | Default `true`; an owner-only DB setting that requires a pre-fix RED for FIX coding and a RED→GREEN pair for testing and ship. Set `false` globally or per overlay with `t3 <overlay> config_setting set forced_repro_gate_enabled false --overlay <name>` to disable the recorder refusal and replay, both gates, and the prompt's record-red instruction together. When the switch exempts a ticket lacking evidence, it emits a WARNING and adds the disabling setting scope to a durable marker once per scope. Rendering a prompt does not mark the ticket. Turning the setting back on blocks until a valid RED→GREEN pair or a human `repro waive` exists. MCP and the loop principal are refused; no env, envelope or overlay path exists. |
 | `orchestrator_boundary_agent_gate_enabled` | Kill-switch (default `true`, #1733) for the `Agent` arm of the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary` → `_deny_foreground_agent_dispatch`, #1442), denying a main-agent FOREGROUND `Agent` dispatch. Now LIVE: an `Agent` `PreToolUse` matcher is wired in `hooks.json` ([#1646](https://github.com/souliane/teatree/issues/1646)) and the gate is default-ON after its attended pre-INSTALL dry-run. Fails OPEN to enabled on a missing/broken config; only an explicit bare `false` disables it. Off-ramps (never-lockout): sub-agent context, `run_in_background: true`, per-call `[fg-ok: <reason>]`, the deny-circuit-breaker, and — via `_fail_open_or_deny` ([#1692](https://github.com/souliane/teatree/issues/1692)) — the self-rescue allowlist + the master `danger_gate_fail_open` switch. The `Bash` arm (`orchestrator_bash_gate_enabled`) is unaffected. |
 | `orchestrator_delegation_gate_enabled` | Kill-switch (default `true`) for the delegation gate (`handle_block_undelegated_investigation`), which refuses an ORCHESTRATOR `Bash` call whose shape has no ceiling on what it returns — a SWEEP (`rg`, `grep -r`, `git grep`, `find <path>`) carrying neither a count bound (`-m`/`--max-count`), a piped `head`/`tail`, nor a named single file (a glob is not a name), or a PARSE (output piped into `python`/`node`/`ruby`/`perl`). Routing reads, sub-agent calls and every non-Bash tool are untouched. `run_in_background: true` is NOT an escape (it guards context, not responsiveness); the per-call escape is `[delegate-ok: <reason>]`, and `t3 <overlay> gate delegation disable` flips this switch. |
 | `schema_readiness_gate_enabled` | Default-on claim gate escape. A false `BEHIND` or `UNKNOWN` reading can otherwise refuse every new task; `t3 <overlay> config_setting set schema_readiness_gate_enabled false` bypasses both DB-behind-code and process-behind-DB checks on the next claim without waiting for their memo TTL. |
@@ -503,8 +492,8 @@ Any DB-home key can be scoped to a client overlay with `--overlay`.
 
 The `agent_*` DB settings hold the model/effort settings for spawned sub-agents
 and the interactive main agent. `config.agent_spawn.resolve_agent_config` reads
-them through the Django-free cold DB reader, so they are available before normal
-settings bootstrap and can be global or overlay-scoped. The table syntax below
+them through the Django-free cold DB reader at global scope, so they are available before normal
+settings bootstrap. Overlay-scoped `agent_*` rows do not affect this resolution. The table syntax below
 is an illustrative shape; write the real values with `config_setting set`.
 
 ```toml
@@ -524,7 +513,7 @@ architecture-design = "opus"
 
 **`session_model` / `session_effort` (interactive main agent only).** Injected
 as `--model` / `--effort` into the interactive `claude` spawn argv by
-`t3 loop start` (`cli/loop.py`'s `os.execv`), so the main agent runs at the
+`t3 loop start` (`cli/loop/app.py`'s `os.execv`), so the main agent runs at the
 pinned model/effort without a manual `/model`. This is the interactive
 main-agent axis; the per-sub-agent reasoning effort is separate — a headless SDK
 spawn gets its effort from its phase's abstract tier (`[agent.tier_effort]`, see
@@ -649,8 +638,6 @@ default, so nothing routes to one without an operator writing the id into
 | Setting | Type | Purpose |
 |---------|------|---------|
 | `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `src/teatree/agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
-| `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
-| `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |
 
 ### 10.2.1 OverlayBase Config Methods (`OverlayConfig`)
 
