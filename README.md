@@ -479,7 +479,10 @@ exited is removed before the 32-worker limit is applied. Peer listing skips an
 unresponsive socket and logs a warning; a send whose destination cannot be found
 fails if discovery was incomplete. Discovery verifies the socket's owner, private
 mode and live worker process before trusting its peer list. The MCP tools are absent
-outside TeaTree-managed tasks.
+outside TeaTree-managed tasks. Peer messaging is not a repository write: planning,
+reviewing and critic_reviewing on the Claude SDK read-only server can send, read and
+wait through the three named non-read-only mailbox tools. Other read-only phases
+receive only `agent_mailbox_self` and `agent_mailbox_peers`.
 
 #### Live control
 
