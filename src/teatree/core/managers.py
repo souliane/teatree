@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
 from django.db.models import Exists, OuterRef, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
@@ -534,7 +535,14 @@ class TaskQuerySet(models.QuerySet):
         seat = self.filter(_unseated_q(now), new_pr_start_allowed_q(), pk=task_pk)
         if lane_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
-        return bool(seat.update(admitted_at=now))
+        return bool(
+            seat.update(
+                admitted_at=now,
+                first_admitted_at=Coalesce(
+                    "first_admitted_at", "admitted_at", models.Value(now), output_field=models.DateTimeField()
+                ),
+            )
+        )
 
     def waiting_for_admission(self) -> models.QuerySet:
         """PENDING rows due now, holding no seat, behind no held checkout — what both headless chokepoints may admit.

@@ -27,9 +27,17 @@ def _pull_request_start_expression() -> models.Expression:
     task = apps.get_model("core", "Task")
     transition_row = apps.get_model("core", "TicketTransition")
     first_admission = (
-        task.objects.filter(ticket_id=models.OuterRef("ticket_id"), admitted_at__isnull=False)
-        .order_by("admitted_at", "pk")
-        .values("admitted_at")[:1]
+        task.objects.filter(ticket_id=models.OuterRef("ticket_id"))
+        .filter(models.Q(first_admitted_at__isnull=False) | models.Q(admitted_at__isnull=False))
+        .annotate(
+            _earliest_admission=Least(
+                Coalesce("first_admitted_at", "admitted_at"),
+                Coalesce("admitted_at", "first_admitted_at"),
+                output_field=models.DateTimeField(),
+            )
+        )
+        .order_by("_earliest_admission", "pk")
+        .values("_earliest_admission")[:1]
     )
     first_transition = (
         transition_row.objects.filter(ticket_id=models.OuterRef("ticket_id"))
@@ -48,7 +56,7 @@ def _pull_request_start_expression() -> models.Expression:
         created,
         output_field=models.DateTimeField(),
     )
-    # A re-stamped or cleared admitted_at only moves later; the PR's creation bounds the start.
+    # The creation stamp bounds old rows whose first admission was already lost.
     return Least(start, Coalesce(created, start), output_field=models.DateTimeField())
 
 

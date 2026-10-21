@@ -153,6 +153,7 @@ class Task(models.Model):
     # outran the lane ceiling. Stamped by ``TaskQuerySet.record_admission`` at every
     # admission chokepoint; null = never admitted.
     admitted_at = models.DateTimeField(null=True, blank=True)
+    first_admitted_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
     # How many times this row's lapsed lease has been reclaimed and re-offered. The
     # re-offer budget is counted HERE rather than over ``TaskAttempt`` because a

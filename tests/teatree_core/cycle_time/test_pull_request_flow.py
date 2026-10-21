@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.db.models.signals import post_save
@@ -74,6 +75,30 @@ class PullRequestFlowTests(TestCase):
 
         assert row.url == pr.url
         assert row.age_seconds == pytest.approx(8 * 3600, abs=1)
+
+    def test_first_admission_survives_a_renewed_and_cleared_seat(self) -> None:
+        ticket = TicketFactory()
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
+        with patch("teatree.core.managers.timezone.now", return_value=self.now - timedelta(hours=8)):
+            assert Task.objects.record_admission(task.pk, cheap=False)
+        pr = PullRequestFactory(ticket=ticket)
+        PullRequest.objects.filter(pk=pr.pk).update(create_verified_at=self.now - timedelta(hours=4))
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+
+        with patch("teatree.core.managers.timezone.now", return_value=self.now - timedelta(hours=1)):
+            assert Task.objects.record_admission(task.pk, cheap=False)
+
+        assert open_pull_requests(now=self.now)[0].age_seconds == pytest.approx(8 * 3600, abs=1)
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+        assert open_pull_requests(now=self.now)[0].age_seconds == pytest.approx(8 * 3600, abs=1)
+
+    def test_clock_uses_earlier_renewable_stamp_when_durable_stamp_is_later(self) -> None:
+        pr = self._pr(hours=8)
+        task = Task.objects.get(ticket=pr.ticket)
+        Task.objects.filter(pk=task.pk).update(first_admitted_at=self.now - timedelta(hours=2))
+        PullRequest.objects.filter(pk=pr.pk).update(create_verified_at=self.now - timedelta(hours=4))
+
+        assert open_pull_requests(now=self.now)[0].age_seconds == pytest.approx(8 * 3600, abs=1)
 
     def test_merged_duration_excludes_other_overlays(self) -> None:
         included = self._pr(hours=6, state=PullRequest.State.MERGED)
