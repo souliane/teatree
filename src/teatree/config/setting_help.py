@@ -105,6 +105,7 @@ SETTING_HELP: dict[str, str] = {
         "(workflow names on a plan-restricted GitHub Free fallback — #4844)"
     ),
     "foreign_branch_push_gate_enabled": "refuse a push onto a branch another author owns",
+    "forced_repro_gate_enabled": "require an executed pre-fix failing run for fix tickets at coding, testing and ship",
     "gate_relaxation_gate_enabled": "refuse a change that weakens a safety gate without approval",
     "general_purpose_agent_gate_enabled": "refuse a blank general-purpose sub-agent for managed-repo work",
     "git_add_all_gate_enabled": "refuse a whole-tree `git add -A` / `git add .` stage",
@@ -153,6 +154,7 @@ SETTING_HELP: dict[str, str] = {
     "orchestrator_turn_wall_clock_seconds": "seconds one orchestrator turn may take",
     "orphan_group_min_age_hours": "hours a leaderless process group must have run before it is reported",
     "out_of_band_merge_gate_enabled": "refuse a merge that skipped the recorded review path",
+    "owner_question_gate_enabled": "refuse batched or shorthand owner questions and decisions left in reply prose",
     "raw_pr_create_gate_enabled": "refuse a raw MR/PR create that would open it under the wrong identity",
     "overlays": "per-overlay settings, keyed by overlay name",
     "peer_instances": "the boxes to compare against — each one's loopback-tunnel url and how to open it",

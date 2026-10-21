@@ -787,6 +787,10 @@
           "name": "discharge-pending"
         },
         {
+          "help": "Ask the owner on Slack to approve a merge correction",
+          "name": "request-void"
+        },
+        {
           "help": "Void a merge the forge records but whose content never reached the default branch",
           "name": "void-merge"
         },

@@ -402,7 +402,7 @@ depends_on = []
 [[modules]]
 path = "teatree.core.managers_admission"
 layer = "domain"
-depends_on = ["teatree.core.modelkit"]
+depends_on = ["teatree.core.managers_task_claim", "teatree.core.modelkit"]
 
 [[modules]]
 path = "teatree.core.managers_task_claim"

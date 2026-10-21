@@ -23,8 +23,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
-from teatree.core.modelkit.task_failure_taxonomy import classify_failure
-from teatree.core.models.checkout_exit import prepared_checkout_exit
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.generation import current_generation
 
@@ -53,10 +53,10 @@ def window_parked(task: "Task", now: datetime | None = None) -> bool:
     auto-enqueue, the lost-claim diagnosis below). Kept as one expression both spellings
     share so "is there work" and "may this be re-dispatched" can never disagree.
     """
-    return parked_until(task, now) is not None
+    return _parked_until(task, now) is not None
 
 
-def parked_until(task: "Task", now: datetime | None = None) -> datetime | None:
+def _parked_until(task: "Task", now: datetime | None = None) -> datetime | None:
     """The UNELAPSED park deadline, or ``None`` when *task* is not parked.
 
     The value-returning form of :func:`window_parked`, which delegates to it — so
@@ -168,7 +168,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         if task.status in status.terminal():
             msg = "Task already finished"
             raise InvalidTransitionError(msg)
-        deadline = parked_until(task, now)
+        deadline = _parked_until(task, now)
         if task.status == status.PENDING and deadline is not None:
             msg = f"Task parked until {deadline.isoformat()}"
             raise InvalidTransitionError(msg)
@@ -270,6 +270,24 @@ def _generation_holds(task: "Task") -> bool:
     return live.exists()
 
 
+def _refuse_lost_lease(task: "Task") -> None:
+    if not _generation_holds(task):
+        raise LeaseLostError(describe_lease_loss(task))
+
+
+@contextmanager
+def atomic_after_checkout_exit(task: "Task", *, attest: bool = True, wait: bool = True) -> Generator[None]:
+    """Settle outside the write lock only while this claim still holds."""
+    _refuse_lost_lease(task)
+    prepared_checkout_exit(task, attest=attest, wait=wait)
+    try:
+        with transaction.atomic():
+            yield
+    except LeaseLostError:
+        forget_checkout_exit()
+        raise
+
+
 def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     """Terminalize *task* COMPLETED — refused once its claim generation moved on.
 
@@ -279,8 +297,7 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     ticket — for work it no longer owns. That is the "racing ``complete()``"
     :func:`renew_lease` already names as the harm.
     """
-    if not _generation_holds(task):
-        raise LeaseLostError(describe_lease_loss(task))
+    _refuse_lost_lease(task)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,
@@ -301,6 +318,14 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
                 setattr(task, field, released_value)
             fields.extend(RELEASED_CLAIM)
         task.save(update_fields=fields)
+
+
+def _failure_details(reason: str) -> tuple[str, str]:
+    failure_reason = reason.strip()
+    if not failure_reason:
+        msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
+        raise ValueError(msg)
+    return failure_reason, classify_failure(failure_reason)
 
 
 def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
@@ -329,15 +354,17 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
     release can still session-match. Without this a live third-party holder's checkout is
     silently handed to a rival the instant the operator cancels.
     """
-    if not reason.strip():
-        msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
-        raise ValueError(msg)
+    failure_reason, failure_kind = _failure_details(reason)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,
     )
 
-    exit_state = prepared_checkout_exit(task) if by_holder else None
+    exit_state = (
+        prepared_checkout_exit(task, attest=_exit_attests(failure_kind), wait=failure_kind != FailureKind.CANCELLED)
+        if by_holder
+        else None
+    )
     release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
     update_fields = ["status", "failure_reason", "failure_kind"]
     with transaction.atomic():
@@ -352,10 +379,14 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
                 setattr(task, field, released_value)
             update_fields.extend(RELEASED_CLAIM)
         task.status = task.Status.FAILED
-        task.failure_reason = reason.strip()
-        task.failure_kind = classify_failure(task.failure_reason)
+        task.failure_reason = failure_reason
+        task.failure_kind = failure_kind
         task.save(update_fields=update_fields)
     task.observe_transition("task.failed", cause=task.failure_kind)
+
+
+def _exit_attests(kind: str) -> bool:
+    return kind not in {FailureKind.CANCELLED, FailureKind.LEASE_EXPIRED}
 
 
 def fail_claimed(task: "Task", *, reason: str) -> None:
@@ -374,9 +405,12 @@ def fail_claimed(task: "Task", *, reason: str) -> None:
     ``Task`` row, relying on this same liveness-aware self-heal to release the row's
     occupancy claim later, if any.
     """
-    if not _generation_holds(task):
-        raise LeaseLostError(describe_lease_loss(task))
-    task.fail(reason=reason, by_holder=True)
+    _, failure_kind = _failure_details(reason)
+    with atomic_after_checkout_exit(
+        task, attest=_exit_attests(failure_kind), wait=failure_kind != FailureKind.CANCELLED
+    ):
+        _refuse_lost_lease(task)
+        task.fail(reason=reason, by_holder=True)
 
 
 def describe_lease_loss(task: "Task") -> str:

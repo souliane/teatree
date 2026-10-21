@@ -51,7 +51,7 @@ def current_turn_assistant_blocks(transcript_path: str) -> list[dict]:
             break
         if role != "assistant":
             continue
-        blocks.extend(block for block in _entry_message_blocks(entry) if isinstance(block, dict))
+        blocks.extend(block for block in reversed(_entry_message_blocks(entry)) if isinstance(block, dict))
     blocks.reverse()
     return blocks
 
@@ -125,3 +125,13 @@ def current_turn_assistant_text(transcript_path: str) -> str:
         if block.get("type") == "text" and isinstance(text, str):
             chunks.append(text)
     return "\n".join(chunks)
+
+
+def current_turn_final_text(transcript_path: str) -> str:
+    blocks = current_turn_assistant_blocks(transcript_path)
+    last_tool = max((index for index, block in enumerate(blocks) if block.get("type") == "tool_use"), default=-1)
+    return "\n".join(
+        text
+        for block in blocks[last_tool + 1 :]
+        if block.get("type") == "text" and isinstance((text := block.get("text")), str)
+    )

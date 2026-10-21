@@ -344,6 +344,28 @@ def test_live_hook_allows_customer_term_only_inside_own_repo_url_to_public_repo(
     assert "own configured repo" in captured.err
 
 
+@pytest.mark.parametrize(
+    "private_text",
+    ["person@firm.tld", "/home/employee/report"],  # privacy-scan:allow synthetic fixture
+)
+def test_own_repo_url_warning_still_blocks_generic_finding(
+    private_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _OWN_URL_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": f'gh issue comment 5 --repo souliane/teatree --body "See {_OWN_REPO_URL} and {private_text}"'
+        },
+        "cwd": str(_public_clone(tmp_path)),
+    }
+
+    assert handle_banned_terms_pretool(data)
+    assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
 def test_live_hook_blocks_bare_customer_term_alongside_own_repo_url_to_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

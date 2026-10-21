@@ -27,10 +27,13 @@ from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.hooks import term_match
 from teatree.hooks.banned_term_registry import allowlist_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.privacy_generic_detectors import GENERIC_CATEGORIES, generic_findings
+from teatree.utils import git_remote
 from teatree.utils.exact_carve_out import mask_exempt
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
+_REDACTED_GENERIC_NAMES = frozenset(f"generic:{category}" for category in GENERIC_CATEGORIES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,14 +152,23 @@ def _publication_matches(
 
 def format_refusal(result: PrivacyGateResult) -> str:
     """Render the structured error message the gate returns to the caller."""
-    lines = [
-        f"privacy gate refused: {result.target_repo} is in `public_repos`, found {len(result.matches)} matches:",
-    ]
+    target_label = _safe_target_label(result.target_repo)
+    lines = [f"privacy gate refused: {target_label} is public/unknown; {len(result.matches)} matches:"]
     lines.extend(
-        f"  - {match.pattern_name} at position {match.position}: {match.matched_text!r}" for match in result.matches
+        f"  - {match.pattern_name} at position {match.position}: "
+        f"{('[redacted]' if match.pattern_name in _REDACTED_GENERIC_NAMES else match.matched_text)!r}"
+        for match in result.matches
     )
     lines.append("Redact the flagged text before publishing — there is no self-asserted bypass.")
     return "\n".join(lines)
+
+
+def _safe_target_label(target_repo: str) -> str:
+    host = git_remote.host_from_remote(target_repo)
+    slug = git_remote.slug_from_remote(target_repo) if host else target_repo
+    if re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", slug):
+        return f"{host}/{slug}" if host else slug
+    return "[unknown repository]"
 
 
 def _target_is_public(target_repo: str, forge: str) -> bool:
@@ -174,7 +186,11 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
     try:
         return is_public_destination(Destination(slug=target_repo, via="api", forge=forge))
     except Exception as exc:  # noqa: BLE001 — a classification failure must fail CLOSED (scan), never skip.
-        logger.debug("publication privacy gate: visibility classification failed for %s (%s)", target_repo, exc)
+        logger.debug(
+            "publication privacy gate: visibility classification failed for %s (%s)",
+            _safe_target_label(target_repo),
+            type(exc).__name__,
+        )
         return True
 
 
@@ -338,12 +354,13 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
     rules = overlay_privacy_rules(owning_overlay_for_repo(target_repo, forge=forge))
     if rules is None:
+        target_label = _safe_target_label(target_repo)
         warn_throttled(
             logger,
-            f"privacy_gate:refuse-unresolvable:{target_repo}",
+            f"privacy_gate:refuse-unresolvable:{target_label}",
             "publication privacy gate: REFUSING public publish to %s — overlay privacy rules unresolvable "
             "(failing CLOSED so the overlay's redact/block rules cannot silently vanish from the scan)",
-            target_repo,
+            target_label,
         )
         return PrivacyGateResult(
             target_repo=target_repo,
@@ -352,12 +369,13 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         )
     banned = _db_banned_terms()
     if banned is None:
+        target_label = _safe_target_label(target_repo)
         warn_throttled(
             logger,
-            f"privacy_gate:refuse-banned-unresolvable:{target_repo}",
+            f"privacy_gate:refuse-banned-unresolvable:{target_label}",
             "publication privacy gate: REFUSING public publish to %s — banned-terms list unresolvable "
             "(failing CLOSED so a configured banned term cannot silently leak)",
-            target_repo,
+            target_label,
         )
         return PrivacyGateResult(
             target_repo=target_repo,
@@ -373,16 +391,33 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         )
     redact_terms, block_patterns = rules
     union_redact, union_block = union
-    return PrivacyGateResult(
-        target_repo=target_repo,
-        is_public=True,
-        matches=_publication_matches(
-            text,
-            mask_exempt(text, _db_allowlist()),
-            list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
-            list(dict.fromkeys([*block_patterns, *union_block])),
-        ),
+    allowlist = _db_allowlist()
+    scannable = mask_exempt(text, allowlist)
+    matches = _publication_matches(
+        text,
+        scannable,
+        list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
+        list(dict.fromkeys([*block_patterns, *union_block])),
     )
+    matches += _generic_matches(text, allowlist, masked_text=scannable)
+    return PrivacyGateResult(target_repo=target_repo, is_public=True, matches=matches)
+
+
+def _generic_matches(
+    text: str, allowlist: tuple[str, ...], *, masked_text: str | None = None
+) -> tuple[PrivacyMatch, ...]:
+    return tuple(
+        PrivacyMatch(pattern_name=f"generic:{hit.category}", matched_text=hit.match, position=hit.position)
+        for hit in generic_findings(text, allowlist=allowlist, forge_write=True, masked_text=masked_text)
+    )
+
+
+def refusal_for_pr_generic_findings(*, title: str, description: str, target_repo: str, forge: str) -> str | None:
+    if not _target_is_public(target_repo, forge):
+        return None
+    matches = _generic_matches(f"{title}\n{description}", _db_allowlist())
+    result = PrivacyGateResult(target_repo=target_repo, is_public=True, matches=matches)
+    return format_refusal(result) if matches else None
 
 
 def _db_allowlist() -> tuple[str, ...]:

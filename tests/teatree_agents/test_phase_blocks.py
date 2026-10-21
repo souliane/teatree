@@ -1,7 +1,9 @@
 """Tests for teatree.agents.phase_blocks — the per-phase trailing context blocks."""
 
+import json
 import os
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -12,13 +14,15 @@ from teatree.agents.phase_blocks import (
     intake_survey_json,
     phase_specific_lines,
 )
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, JSONSchema
+from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_envelope_recorder import _RUBRIC_GRADED_PHASES
 from teatree.config.checkout_roots import checkout_roots
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, LandscapeArtifact, PullRequest, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, ConfigSetting, LandscapeArtifact, PullRequest, Session, Task, Ticket
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -103,11 +107,42 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
 
 class TestTheReviewerBriefAgreesWithTheAntiVacuityRecorder(TestCase):
+    def _brief_and_block(self) -> tuple[str, dict[str, object]]:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+        line = next(line for line in brief.splitlines() if line.startswith("Return `anti_vacuity`: "))
+        return brief, json.loads(line.removeprefix("Return `anti_vacuity`: "))
+
+    def test_the_shown_block_has_exactly_the_schema_keys(self) -> None:
+        brief, block = self._brief_and_block()
+        schema_properties = cast("JSONSchema", RESULT_JSON_SCHEMA["properties"])
+        block_schema = cast("JSONSchema", schema_properties["anti_vacuity"])
+        properties = cast("JSONSchema", block_schema["properties"])
+
+        assert set(block) == set(properties)
+        assert block["ac_coverage"] == "<AC coverage>"
+        assert block["proven_tests"] == ["<test ID observed RED before the fix>"]
+        assert "proven_tests" in brief
+        assert "no_new_tests" in brief
+        assert "other keys are dropped" in brief
+        assert "revert-fix -> RED" not in brief
+        assert "a `hold` owes none" in brief
+
+    def test_the_shown_block_passes_the_recorder(self) -> None:
+        _brief, block = self._brief_and_block()
+
+        assert anti_vacuity_refusal(block) == ""
+        assert anti_vacuity_refusal({**block, "proven_tests": [{"test": "x"}]})
+
     def test_a_hold_is_told_it_owes_no_anti_vacuity(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
 
-        assert "a merge_safe maker review of shippable work cannot complete without it" in brief
+        assert "Shippable maker `merge_safe` requires this" in brief
         assert "a `hold` owes none" in brief
+
+    def test_maker_review_includes_every_branch_change(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+
+        assert "Do a thorough code review of all changes on this ticket's branch" in brief
 
 
 class TestThePlannerIsToldEveryCriterionGatesTheMerge(TestCase):
@@ -134,6 +169,20 @@ class TestFixRecordDirective(TestCase):
 
     def test_a_fix_ticket_debugging_brief_carries_it_too(self) -> None:
         assert "THIS IS A FIX TICKET" in self._brief("debugging", Ticket.Kind.FIX)
+
+    def test_a_fix_coding_brief_asks_for_record_red_by_default(self) -> None:
+        assert "repro record-red" in self._brief("coding", Ticket.Kind.FIX)
+
+    def test_a_switched_off_fix_brief_keeps_the_fields_and_drops_record_red(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        for phase in ("coding", "debugging"):
+            task = _task(phase, kind=Ticket.Kind.FIX)
+            brief = "\n".join(phase_specific_lines(task, []))
+            assert "THIS IS A FIX TICKET" in brief
+            assert all(field in brief for field in FIX_RECORD_FIELDS)
+            assert "repro record-red" not in brief
+            task.ticket.refresh_from_db()
+            assert "forced_repro_disabled_scopes" not in task.ticket.extra
 
     def test_a_feature_ticket_coding_brief_is_unchanged(self) -> None:
         feature = phase_specific_lines(_task("coding", kind=Ticket.Kind.FEATURE), [])

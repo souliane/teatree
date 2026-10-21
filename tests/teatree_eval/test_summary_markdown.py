@@ -21,7 +21,9 @@ from teatree.eval.models import (
 )
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
-from teatree.eval.summary_markdown import _lane_of, _model_of, render_summary_markdown
+from teatree.eval.summary_markdown import _lane_of, render_summary_markdown
+from teatree.eval.summary_model import summary_model
+from teatree.eval.verdict_cache import CachedPass
 
 SENTINEL = "SECRET_BUNDLE_SENTINEL_dQw4w9"
 _SENTINEL_MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value=SENTINEL)
@@ -118,6 +120,17 @@ class TestSingleTrialSummary:
         assert "claude-sonnet-4-6" in md
 
 
+def test_cached_row_uses_trials_and_cost_columns_for_their_meanings() -> None:
+    cached = CachedPass(
+        "one", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head", "claude-sonnet-4-6"
+    )
+    markdown = render_summary_markdown([], cached=[cached])
+    assert "| one | clean_room | cached pass | cached | — |" in markdown
+    assert "key `" + "a" * 64 + "`" in markdown
+    assert "https://example.test/run" in markdown
+    assert "model `claude-sonnet-4-6`" in markdown
+
+
 class TestMultiTrialSummary:
     TRIAL_COST = 0.5
 
@@ -190,7 +203,7 @@ class TestModelHeaderFallback:
         assert "0 passed" in md
 
     def test_pass_at_k_with_no_spec_renders_unknown_model(self, monkeypatch) -> None:
-        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", lambda _name: None)
+        monkeypatch.setattr("teatree.eval.summary_model.find_spec", lambda _name: None)
         result = PassAtKResult(
             spec_name="orphan",
             trials=1,
@@ -200,7 +213,7 @@ class TestModelHeaderFallback:
             cost_usd=0.0,
             trial_results=(),
         )
-        assert _model_of([result]) == "unknown"
+        assert summary_model([result]) == "unknown"
         md = render_summary_markdown([result])
         assert "`unknown`" in md
 

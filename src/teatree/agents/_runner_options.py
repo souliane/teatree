@@ -155,7 +155,7 @@ def _build_options(
     """
     overrides = overrides or SpawnOverrides()
     cwd = _resolve_task_cwd(task)
-    add_dirs = [cwd] if cwd else []
+    add_dirs: list[str | Path] = [cwd] if cwd else []
     if overrides.handoff is not None:
         add_dirs.append(str(overrides.handoff.parent))
     if overrides.harness_name == "pydantic_ai":

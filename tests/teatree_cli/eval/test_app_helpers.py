@@ -5,6 +5,7 @@ The fresh-run-only validator gates ``--trials`` / ``--models`` on the metered
 the metered/api lane explicitly rather than silently grading a stored transcript.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,9 +13,12 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.eval.app_helpers import (
+    BenchmarkSelection,
+    RunReportPaths,
     reject_multi_trial_with_model_override,
     require_api_backend_for_fresh_run,
     require_metering_backend_for_cost_bounds,
+    resolve_benchmark_selection,
     resolve_escalation,
 )
 from teatree.cli.eval.single_trial import EscalationConfig
@@ -25,6 +29,17 @@ from teatree.eval.backends import (
     TRANSCRIPT_BACKEND,
     UNMETERED_FRESH_BACKENDS,
 )
+from teatree.eval.models import CachedPass
+
+
+def test_transcript_report_includes_cached_passes(tmp_path: Path) -> None:
+    report = tmp_path / "transcript.html"
+    cached = CachedPass("alpha", "clean_room", "a" * 64, "https://example.test/run", "2026-10-16", "head")
+    RunReportPaths(transcript_html=report).write_single_trial([], cached=[cached])
+    html = report.read_text(encoding="utf-8")
+    assert "Cached passes" in html
+    assert "alpha" in html
+    assert "https://example.test/run" in html
 
 
 class TestRequireApiBackendForFreshRun:
@@ -160,3 +175,22 @@ class TestModelOverrideCannotSilentlyDropTrials:
 
     def test_trials_without_a_model_override_is_allowed(self) -> None:
         reject_multi_trial_with_model_override(model=None, trials=5)
+
+
+def test_resolve_backend_and_metering_preserves_run_selection() -> None:
+    cases = [
+        (TRANSCRIPT_BACKEND, False, None, None, 1, (TRANSCRIPT_BACKEND, False)),
+        (TRANSCRIPT_BACKEND, True, None, "a,b", 1, (API_BACKEND, True)),
+        (ANTHROPIC_API_BACKEND, False, "one", None, 1, (ANTHROPIC_API_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, "one", None, 1, (API_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, None, None, 3, (TRANSCRIPT_BACKEND, True)),
+        (TRANSCRIPT_BACKEND, False, None, "a,b", 1, (TRANSCRIPT_BACKEND, True)),
+        (PYDANTIC_AI_BACKEND, False, None, None, 1, (PYDANTIC_AI_BACKEND, False)),
+        (PYDANTIC_AI_BACKEND, False, "one", None, 1, (PYDANTIC_AI_BACKEND, True)),
+    ]
+    for backend, benchmark, model_override, models, trials, expected in cases:
+        selection = BenchmarkSelection(models=models, model_override=model_override, benchmark_html=None)
+        assert selection.resolve_backend_and_metering(backend, benchmark=benchmark, trials=trials) == expected
+
+    preset = resolve_benchmark_selection(benchmark=False, model=None, models=None, preset="baseline", html_out=None)
+    assert preset.resolve_backend_and_metering(TRANSCRIPT_BACKEND, benchmark=False, trials=1) == (API_BACKEND, True)

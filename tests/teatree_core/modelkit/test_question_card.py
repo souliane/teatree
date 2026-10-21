@@ -11,9 +11,12 @@ from teatree.core.modelkit.question_card import (
     MAX_QUESTION_CHARS,
     MAX_WORDS,
     CardOption,
+    CardView,
     QuestionCard,
+    counted,
     internal_shorthand,
     plain_text,
+    shown_problems,
     word_count,
 )
 
@@ -358,3 +361,46 @@ class TestFromEnvelope:
 
         assert card is not None
         assert any("required" in problem or "checked facts" in problem for problem in card.problems("Is it fine?"))
+
+
+@pytest.mark.parametrize(("count", "expected"), [(0, "0 commits"), (1, "1 commit"), (2, "2 commits")])
+def test_a_count_agrees_with_its_noun(count: int, expected: str) -> None:
+    assert counted(count, "commit") == expected
+
+
+class TestInClientQuestionCard:
+    def test_file_name_stays_shorthand_for_slack_card(self) -> None:
+        question = "Can you open settings.toml today?"
+
+        assert CardView.ask_problems({"header": "Open", "question": question, "options": []}) == []
+        assert any("settings.toml" in problem for problem in shown_problems(SAMPLE_CARD.view(question)))
+
+    @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?"])
+    def test_plain_words_check_names_shorthand(self, question: str) -> None:
+        problems = CardView.ask_problems({"header": "Merge", "question": question, "options": []})
+
+        assert any("internal shorthand" in problem for problem in problems)
+
+
+def test_in_client_question_checks_header_and_total_card_words() -> None:
+    card = {
+        "header": "PR #42",
+        "question": "Merge this now?",
+        "options": [{"label": f"Choice {index}", "description": "word " * 30} for index in range(4)],
+    }
+
+    problems = CardView.ask_problems(card)
+
+    assert any("the header carries internal shorthand" in problem for problem in problems)
+    assert any('must end in "?"' in problem for problem in CardView.ask_problems(card | {"question": "Merge this now"}))
+    assert any("1 option" in problem for problem in CardView.ask_problems(card | {"options": card["options"][:1]}))
+
+
+def test_in_client_word_count_skips_the_slack_reply_and_ref_lines() -> None:
+    card = {
+        "header": "Merge",
+        "question": "Merge this now?",
+        "options": [{"label": label, "description": "word " * 28} for label in ("Merge", "Wait", "Close", "Hold")],
+    }
+
+    assert CardView.ask_problems(card) == []

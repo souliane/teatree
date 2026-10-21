@@ -11,18 +11,22 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
+from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.core.models.worktree_occupancy import (
+    OccupancyHolder,
     WorktreeOccupiedError,
     _worktree_at,
     acquire,
+    checkout_capacity_opened,
     drop_refused_tenure,
     occupancy_holder,
     release,
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
@@ -32,7 +36,9 @@ _PARK_RETRY = timedelta(minutes=30)
 
 
 class CheckoutFenceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, attestable: CheckoutAttestation | None = None) -> None:
+        super().__init__(message)
+        self.attestable = attestable
 
 
 def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> None:
@@ -50,30 +56,22 @@ def writes_checkout(task: Task) -> bool:
     return bool(tools_for_phase(task.phase) & {"write_file", "edit_file", MCP_WRITE})
 
 
-def verify_task_checkout(task: Task, path: str) -> None:
+def verify_task_checkout(task: Task, path: str, *, namespace: str = "") -> None:
     if not path or not writes_checkout(task):
         return
     others = (row.worktree_path for row in Worktree.objects.filter(ticket=task.ticket).only("extra"))
     try:
         for candidate in [path, *(other for other in others if other and not paths_match(other, path))]:
-            _verify_one_checkout(task, candidate)
+            _verify_one_checkout(task, candidate, namespace=namespace)
     except CheckoutFenceError:
         held = _worktree_at(task.ticket, path)
         if held is not None:
             drop_refused_tenure(held, holder=task_holder_id(task), holder_session=task.claimed_by_session)
         raise
+    mark_verified_checkout_run()
 
 
-def checkout_rows(path: str) -> list[Worktree]:
-    """Every ``Worktree`` row of ANY ticket recording *path*."""
-    return [
-        row
-        for row in Worktree.objects.exclude(extra__worktree_path__isnull=True).only("extra")
-        if row.worktree_path and paths_match(row.worktree_path, path)
-    ]
-
-
-def _verify_one_checkout(task: Task, path: str) -> None:
+def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
     rows = checkout_rows(path)
     if len(rows) != 1 or not Worktree.objects.filter(pk=rows[0].pk, ticket=task.ticket).exists():
         message = f"checkout {path} needs exactly one Worktree row; found {len(rows)}"
@@ -92,7 +90,7 @@ def _verify_one_checkout(task: Task, path: str) -> None:
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:
         message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
-        raise CheckoutFenceError(message)
+        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=False))
     if attested == owner_attested:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
@@ -101,7 +99,7 @@ def _verify_one_checkout(task: Task, path: str) -> None:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
     _accept_changed_checkout(task, worktree, state, table, attested=attested)
-    _anchor_verified_checkout(task, worktree, state)
+    _anchor_verified_checkout(task, worktree, state, namespace=namespace)
 
 
 def _accept_changed_checkout(
@@ -110,17 +108,25 @@ def _accept_changed_checkout(
     if attested != state.digest and not (
         attest_deferred_exit(task, worktree, state, table) or reattest_on_proof(task, worktree, state, table)
     ):
-        message = f"checkout {worktree.worktree_path} differs from its attested state"
-        raise CheckoutFenceError(message)
+        if attested is None:
+            message = (
+                f"checkout {worktree.worktree_path} has no attested state; inspect it and run "
+                f"`t3 <overlay> worktree attest {worktree.worktree_path}`"
+            )
+        else:
+            message = f"checkout {worktree.worktree_path} differs from its attested state"
+        raise CheckoutFenceError(
+            message, attestable=CheckoutAttestation(worktree, state, host_evidence=not table.eviction_gaps)
+        )
 
 
-def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> None:
+def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState, *, namespace: str = "") -> None:
     current = Custody.from_extra(worktree.get_extra())
     holder = task_holder_id(task)
     if (worktree.occupied_by, worktree.occupied_by_session) == (holder, task.claimed_by_session):
         if current is None or not current.tenures or current.tenures[-1].ended:
             since = worktree.occupied_at.isoformat() if worktree.occupied_at else timezone.now().isoformat()
-            anchored = Custody(state.digest, (Tenure(holder, task.claimed_by_session, since),))
+            anchored = Custody(state.digest, (Tenure(holder, task.claimed_by_session, since, namespace=namespace),))
         else:
             anchored = Custody.reanchored(state.digest, current, holder, task.claimed_by_session)
     else:
@@ -128,7 +134,14 @@ def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutSta
     worktree.merge_extra(set_keys={"checkout_custody": anchored.as_dict()})
 
 
-def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
+def park_task_checkout(
+    task: Task,
+    *,
+    reason: str,
+    behind: OccupancyHolder | None = None,
+    attestable: CheckoutAttestation | None = None,
+    unknown_holder: bool = False,
+) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
     previous = prior.result if prior is not None and isinstance(prior.result, dict) else {}
     episode = (
@@ -136,20 +149,42 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
         if str(previous.get("summary", "")).startswith(CHECKOUT_PARKED_PREFIX)
         else None
     )
+    blocker = {"occupied_by": {"holder": behind.holder, "session": behind.holder_session}} if behind is not None else {}
     attempt = TaskAttempt.objects.create(  # no-usage: checkout refused before a harness turn was billed
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
         error=f"{CHECKOUT_PARKED_PREFIX}{reason}",
-        result={"summary": f"{CHECKOUT_PARKED_PREFIX}{reason}", "checkout_episode": episode or f"attempt:{task.pk}"},
+        result={
+            "summary": f"{CHECKOUT_PARKED_PREFIX}{reason}",
+            "checkout_episode": episode or f"attempt:{task.pk}",
+            **blocker,
+            **({"checkout_worktree_id": attestable.worktree.pk} if attestable is not None else {}),
+        },
     )
+    result = {**attempt.result, **blocker}
+    if behind is None:
+        result.pop("occupied_by", None)
     if episode is None:
-        result = dict(attempt.result)
         result["checkout_episode"] = f"attempt:{attempt.pk}"
+    if result != attempt.result:
         TaskAttempt.objects.filter(pk=attempt.pk).update(result=result)
         attempt.result = result
+    own_row = Task.objects.filter(pk=task.pk)
+    seat_freed = bool(own_row.cheap_lane_occupancy() or own_row.expensive_lane_occupancy())
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
+    own_row.update(admitted_at=None)
+    task.admitted_at = None
     task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
+    rearmed = _rearm_if_occupancy_cleared(task, behind=behind, unknown_holder=unknown_holder)
+    if seat_freed or rearmed:
+        checkout_capacity_opened.send(sender=Task)
+    if rearmed:
+        return attempt
+    if attestable is not None:
+        question = ask_owner_to_attest(task, attestable)
+        if question is not None:
+            return attempt
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
@@ -160,6 +195,41 @@ def park_task_checkout(task: Task, *, reason: str) -> TaskAttempt:
     except Exception:
         logger.exception("Could not page owner for checkout hold on task %s", task.pk)
     return attempt
+
+
+def _still_held_by(task: Task, behind: OccupancyHolder) -> bool:
+    return Worktree.objects.filter(
+        ticket=task.ticket,
+        occupied_by=behind.holder,
+        occupied_by_session=behind.holder_session,
+        occupancy_expires_at__gt=timezone.now(),
+    ).exists()
+
+
+def _rearm_if_occupancy_cleared(task: Task, *, behind: OccupancyHolder | None, unknown_holder: bool) -> int:
+    if behind is not None:
+        if _still_held_by(task, behind):
+            return 0
+        return Task.objects.filter(pk=task.pk).rearm_parked_behind(
+            holder=behind.holder, holder_session=behind.holder_session
+        )
+    if not unknown_holder or any(
+        occupancy_holder(row) is not None for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by="")
+    ):
+        return 0
+    now = timezone.now()
+    return Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__gt=now).update(
+        not_before=now, admitted_at=None
+    )
+
+
+def park_refused_checkout(task: Task, refusal: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
+    behind = refusal.holder if isinstance(refusal, WorktreeOccupiedError) else None
+    attestable = refusal.attestable if isinstance(refusal, CheckoutFenceError) else None
+    unknown_holder = isinstance(refusal, WorktreeOccupiedError) and behind is None
+    return park_task_checkout(
+        task, reason=str(refusal), behind=behind, attestable=attestable, unknown_holder=unknown_holder
+    )
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:
@@ -175,10 +245,10 @@ def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None)
     try:
         acquire(worktree, holder=holder, holder_session=session, lease_seconds=lease_seconds)
     except WorktreeOccupiedError as exc:
-        return park_task_checkout(task, reason=str(exc))
+        return park_refused_checkout(task, exc)
     try:
         verify_task_checkout(task, path)
     except CheckoutFenceError as exc:
         release(worktree, holder=holder, holder_session=session)
-        return park_task_checkout(task, reason=str(exc))
+        return park_refused_checkout(task, exc)
     return None

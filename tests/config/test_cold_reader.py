@@ -451,23 +451,6 @@ class TestUriRobustness:
         assert cold_reader.read_setting("mode", env=env) == "auto"
 
 
-class TestOverlayThenGlobal:
-    def test_overlay_shadows_global(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_db(db, [("", "mode", "interactive"), ("myoverlay", "mode", "auto")])
-        assert cold_reader.overlay_then_global("mode", "myoverlay", db_path=db) == "auto"
-
-    def test_falls_back_to_global_when_overlay_absent(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_db(db, [("", "mode", "interactive")])
-        assert cold_reader.overlay_then_global("mode", "myoverlay", db_path=db) == "interactive"
-
-    def test_default_when_neither_present(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_db(db, [("", "other", "x")])
-        assert cold_reader.overlay_then_global("mode", "myoverlay", default="fallback", db_path=db) == "fallback"
-
-
 class TestMainEntry:
     @pytest.fixture(autouse=True)
     def _canonical_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
