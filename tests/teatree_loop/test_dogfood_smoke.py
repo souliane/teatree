@@ -19,6 +19,7 @@ from teatree.loop.dogfood_smoke import (
     SmokeReport,
     SmokeStep,
     StepResult,
+    WorktreePathRefusalError,
     default_steps,
     pick_alias_variant,
     report_summary,
@@ -87,6 +88,10 @@ class TestDefaultSteps:
             "worktree_teardown": 60,
         }
 
+    def test_final_step_tears_down_only_the_fixture_checkout(self) -> None:
+        step = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")[-1]
+        assert step.command == ("t3", "testoverlay", "worktree", "teardown", "--path", WORKTREE_PATH_PLACEHOLDER)
+
     def test_workspace_ticket_carries_fixture_url_and_variant(self) -> None:
         step = default_steps(
             overlay="testoverlay",
@@ -112,6 +117,30 @@ class TestDefaultSteps:
 
 
 class TestRunSmoke:
+    def test_refused_worktree_path_is_reported_without_exception_name(self) -> None:
+        runner = _RecordingRunner()
+
+        def refuse() -> str:
+            reason = "fixture checkout pre-existed"
+            raise WorktreePathRefusalError(reason)
+
+        report = run_smoke(
+            default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1"),
+            runner=runner,
+            resolve_worktree_path=refuse,
+        )
+
+        assert report.outcome is SmokeOutcomeKind.PROVISION_FAILED
+        assert report.failing_step_stderr == "worktree path unresolved: fixture checkout pre-existed"
+        assert len(runner.commands) == 1
+
+    def test_workspace_clean_all_failure_has_its_own_outcome(self) -> None:
+        step = SmokeStep(name="workspace_clean_all", command=("t3", "testoverlay", "workspace", "clean-all"))
+        report = run_smoke([step], runner=_ScriptedRunner({"workspace_clean_all": (1, "clean failed", False)}))
+
+        assert report.outcome is SmokeOutcomeKind.CLEAN_FAILED
+        assert report.failing_step == "workspace_clean_all"
+
     def test_all_steps_pass_marks_report_pass(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         runner = _ScriptedRunner(_all_green(steps))
