@@ -61,6 +61,7 @@ from teatree.agents.pydantic_ai_config import (
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
+from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
 from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
@@ -346,11 +347,13 @@ class PydanticAiHarness:
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
         # A lambda, because pydantic_ai resolves a processor's annotations at runtime to pick its calling convention.
+        inputs = LiveInputQueue()
         capabilities = (
             [ProcessHistory(lambda messages: elide_stale_tool_results(messages, keep_tool_results))]
             if self._phase
             else []
         )
+        capabilities.append(ProcessHistory(PeerInputAdmission(inputs)))
         # ``config.shell_tool_retries`` is None outside the shell-exploration phase
         # family — passing ``retries=None`` there is byte-identical to omitting it,
         # so only those phases' Agent gets a widened tool-retry budget.
@@ -368,13 +371,17 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
-            yield PydanticAiHarnessSession(
-                agent,
-                model_name=model.model_name,
-                history=self._history,
-                phase=self._phase,
-                run=run,
-            )
+            try:
+                yield SteerablePydanticAiSession(
+                    agent,
+                    inputs=inputs,
+                    model_name=model.model_name,
+                    history=self._history,
+                    phase=self._phase,
+                    run=run,
+                )
+            finally:
+                inputs.end(RejectCode.SESSION_CLOSED)
 
 
 def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa: ARG001 — factory signature

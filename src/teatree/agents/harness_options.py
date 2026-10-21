@@ -16,9 +16,12 @@ vendor type never leaks past the boundary into provider-agnostic code. The facto
 its provider-agnostic dispatch against this type, not against ``ClaudeAgentOptions``.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from claude_agent_sdk import ClaudeAgentOptions
+
+from teatree.agents.live_mailbox_client import MailboxClient
 
 
 def extract_system_prompt(options: ClaudeAgentOptions) -> str:
@@ -64,10 +67,14 @@ class HarnessOptions:
     add_dirs: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     max_turns: int = 0
+    mailbox: MailboxClient | None = None
 
     @classmethod
     def from_sdk_options(cls, options: ClaudeAgentOptions) -> "HarnessOptions":
         """Adapt the vendor ``ClaudeAgentOptions`` into the neutral options at the ``open`` boundary."""
+        servers = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
+        teatree = servers.get("teatree")
+        identity = teatree.get("env") if isinstance(teatree, dict) else None
         return cls(
             model=options.model,
             effort=options.effort,
@@ -80,4 +87,5 @@ class HarnessOptions:
             # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
             # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.
             max_turns=options.max_turns or 0,
+            mailbox=MailboxClient.from_env(identity if isinstance(identity, Mapping) else {}),
         )

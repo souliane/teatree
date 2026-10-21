@@ -14,7 +14,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, NoReturn, Self, cast
+from typing import TYPE_CHECKING, NoReturn, Self, TypedDict, Unpack, cast
 
 from claude_agent_sdk import ClaudeAgentOptions
 
@@ -44,7 +44,6 @@ from teatree.agents.live_federation import (
 )
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
-from teatree.config import AgentHarness
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 if TYPE_CHECKING:
@@ -57,6 +56,11 @@ _MAX_REQUEST_BYTES = 128_000  # JSON escaping can expand a valid 16-KiB body six
 _MAX_PAGE_SIZE = 100
 _MAX_PAGE_BYTES = 1_800_000
 MAX_WAITING_SENDS = 4
+
+
+class _RegistrationDetails(TypedDict, total=False):
+    task: int | None
+    phase: str
 
 
 def _reject(message: str) -> NoReturn:
@@ -153,7 +157,7 @@ class LiveMailboxBroker:
         self._stop = None
 
     def register(
-        self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+        self, *, room: str, harness: str, label: str, can_receive: bool = True, **details: Unpack[_RegistrationDetails]
     ) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
@@ -165,9 +169,9 @@ class LiveMailboxBroker:
             room=room,
             harness=harness,
             label=label,
-            phase=phase,
-            can_receive=harness != AgentHarness.PYDANTIC_AI,
-            task=task,
+            phase=details.get("phase", ""),
+            can_receive=can_receive,
+            task=details.get("task"),
         )
         with self._lock:
             self._by_token[participant.token] = participant
