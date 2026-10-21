@@ -42,6 +42,7 @@ DECLARED_GATES = frozenset(
         "orchestrator_bash",
         "orchestrator_delegation_gate",
         "orchestrator_foreground_dispatch",
+        "owner-question-fit",
         "out_of_band_merge",
         "plan_gate",
         "protect_default_branch",
