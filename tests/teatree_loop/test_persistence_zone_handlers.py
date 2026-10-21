@@ -702,9 +702,9 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         reason = self._reason(permitted=True, pr_id=201)
         assert "https://gitlab.com/group/repo/-/merge_requests/201" in reason
         assert "Never answer a finding on our own MR with another comment" not in reason
-        assert "questions and push-backs" in reason
         assert "push once" in reason
         assert "Fixed in <short sha>." in reason
+        assert " and resolve it" in reason
         assert "t3 review reply-to-discussion" in reason
         assert "t3 review resolve-discussion" in reason
         assert "answer questions and push-backs in their own thread" in reason
@@ -725,6 +725,7 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         assert "IMPLEMENT" in reason
         assert "push once" in reason
         assert "Never reply to or resolve a thread" in reason
+        assert "answer questions" not in reason
         assert "reply-to-discussion" not in reason
         assert "resolve-discussion" not in reason
         assert "Fixed in" not in reason
@@ -749,3 +750,45 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
             reason = self._reason(permitted=True, pr_id=pr_id, signal_kind=signal_kind, fix_kind=fix_kind)
             pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
             assert reason == _FIX_REASON_BY_KIND[fix_kind].format(pr_url=pr_url)
+
+    def test_posture_is_not_read_when_role_or_open_work_blocks_debugging(self) -> None:
+        for pr_id, role, open_work in (
+            (206, Ticket.Role.REVIEWER, False),
+            (207, Ticket.Role.AUTHOR, True),
+        ):
+            pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+            ticket = planned_ticket(issue_url=pr_url, overlay="acme", role=role, state=Ticket.State.PLAN_RECORDED)
+            if open_work:
+                ticket.schedule_implementing("debugging", reason="existing work")
+            signal = ScanSignal(
+                kind="my_pr.findings_to_fix",
+                summary="Review findings need a fix",
+                payload={
+                    "pr_url": pr_url,
+                    "head_sha": f"{pr_id:040d}",
+                    "fix_kind": "review_findings",
+                    "overlay": "acme",
+                },
+            )
+            with patch("teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted") as read_posture:
+                created = persist_agent_actions(_agent_actions(signal))
+            assert created == []
+            read_posture.assert_not_called()
+
+    def test_posture_read_failure_rolls_back_the_fix_claim(self) -> None:
+        pr_url = "https://gitlab.com/group/repo/-/merge_requests/208"
+        planned_ticket(issue_url=pr_url, overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        signal = ScanSignal(
+            kind="my_pr.findings_to_fix",
+            summary="Review findings need a fix",
+            payload={"pr_url": pr_url, "head_sha": f"{208:040d}", "fix_kind": "review_findings", "overlay": "acme"},
+        )
+        errors: dict[str, str] = {}
+        with patch(
+            "teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted",
+            side_effect=RuntimeError("posture unreadable"),
+        ):
+            created = persist_agent_actions(_agent_actions(signal), errors=errors)
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url=pr_url).exists()
+        assert "posture unreadable" in errors["persist:t3:debug"]
