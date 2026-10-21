@@ -132,13 +132,18 @@ def _unresolved_charter_refs() -> set[tuple[str, str]]:
         (str(doc.relative_to(_REPO_ROOT)), finding.ref)
         for doc in _CHARTER_DOCS
         if doc.is_file()
-        for finding in _unresolved(scan_file(doc, _REPO_ROOT))
+        for finding in _unresolved(scan_file(doc, _REPO_ROOT, charter=True))
     }
 
 
 class TestCharterDocs:
     def test_no_new_charter_document_reference_is_unresolved(self) -> None:
-        new = _unresolved_charter_refs() - _known_charter_refs()
+        spec_docs = {str(doc.relative_to(_REPO_ROOT)) for doc in ref_baseline.architecture_spec_docs(_REPO_ROOT)}
+        new = {
+            pair
+            for pair in _unresolved_charter_refs() - _known_charter_refs()
+            if pair[0] not in spec_docs or "/" not in pair[1]
+        }
         assert new == set(), (
             "charter document(s) naming a symbol the tree does not have — an agent reads "
             f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
@@ -160,7 +165,7 @@ class TestCharterDocs:
     def test_the_charter_documents_are_actually_walked(self) -> None:
         # The ratchet above is satisfied by scanning nothing, so pin that the walk
         # reaches real content: BLUEPRINT.md alone cites dozens of live symbols.
-        resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT) if f.reason is None]
+        resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT, charter=True) if f.reason is None]
         assert len(resolved) > 10, "BLUEPRINT.md yielded almost no teatree-shaped references — the walk is broken"
 
 
@@ -269,8 +274,42 @@ class TestResolver:
     def test_live_path_resolves(self) -> None:
         assert resolve_repo_path("src/teatree/quality/skill_symbol_refs.py", _REPO_ROOT) is None
 
+    def test_suffixless_python_path_resolves_only_in_charter_mode(self) -> None:
+        ref = "src/teatree/hooks/privacy_diff_comment_density"
+        assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
+        assert resolve_repo_path(ref, _REPO_ROOT) is not None
+
+    def test_absent_suffixless_python_path_stays_unresolved_in_charter_mode(self) -> None:
+        assert resolve_repo_path("src/teatree/core/vanished_module", _REPO_ROOT, charter=True) is not None
+
+    def test_template_root_path_resolves_only_when_src_qualified_in_charter_mode(self) -> None:
+        ref = "src/teatree/dash/base.html"
+        assert resolve_repo_path(ref, _REPO_ROOT, charter=True) is None
+        assert resolve_repo_path(ref, _REPO_ROOT) is not None
+        assert resolve_repo_path("dash/base.html", _REPO_ROOT, charter=True) is not None
+
     def test_absent_path_is_unresolved(self) -> None:
         assert resolve_repo_path("src/teatree/core/session.py", _REPO_ROOT) is not None
+
+    def test_a_claimed_package_citation_does_not_hide_a_separate_stale_path(self) -> None:
+        package_ref = "`hooks/privacy_diff_comment_density.py`"
+        stale_ref = "`src/teatree/core/vanished_module.py`"
+        for source in (f"{package_ref} and {stale_ref}", f"{stale_ref} and {package_ref}"):
+            findings = scan_source(source, Path("BLUEPRINT.md"), _REPO_ROOT, charter=True)
+            assert [(finding.ref, finding.reason is not None) for finding in findings] == [
+                ("src/teatree/hooks/privacy_diff_comment_density.py", False),
+                ("src/teatree/core/vanished_module.py", True),
+            ]
+
+    def test_a_directory_without_init_is_not_a_package_root(self, tmp_path: Path) -> None:
+        directory = tmp_path / "src" / "teatree" / "loose"
+        directory.mkdir(parents=True)
+        (directory / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        assert scan_source("`loose/helper.py`", Path("BLUEPRINT.md"), tmp_path, charter=True) == []
+
+    def test_ambiguous_package_citation_stays_unresolved(self) -> None:
+        findings = scan_source("`eval/__init__.py`", Path("BLUEPRINT.md"), _REPO_ROOT, charter=True)
+        assert [(finding.ref, finding.reason is not None) for finding in findings] == [("eval/__init__.py", True)]
 
     def test_live_module_resolves(self) -> None:
         assert resolve_dotted("teatree.quality.skill_symbol_refs") is None

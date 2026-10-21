@@ -67,6 +67,14 @@ class TestConfigSettingSetGateRefusal(TestCase):
         assert write_tools.refuse_reason("loop_cadence_seconds") == ""
         assert write_tools.refuse_reason("clean_ignore") == ""
 
+    def test_declared_forge_bots_cannot_be_widened_by_an_unattended_writer(self) -> None:
+        with pytest.raises(Exception, match="refused"):
+            _call(
+                "config_setting_set",
+                {"key": "self_forge_identities", "value": '{"gitlab.example": ["factory-bot"]}'},
+            )
+        assert not ConfigSetting.objects.filter(key="self_forge_identities").exists()
+
 
 class TestCliErrorPrimitiveSurfacesStructured(TestCase):
     # The wrapped commands signal input errors with SystemExit/typer.Exit — a

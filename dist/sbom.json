@@ -92,7 +92,7 @@
     },
     {
       "bom-ref": "requirements-L29",
-      "description": "requirements line 29: certifi==2026.7.22",
+      "description": "requirements line 29: certifi==2026.10.19",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -101,9 +101,9 @@
         }
       ],
       "name": "certifi",
-      "purl": "pkg:pypi/certifi@2026.7.22",
+      "purl": "pkg:pypi/certifi@2026.10.19",
       "type": "library",
-      "version": "2026.7.22"
+      "version": "2026.10.19"
     },
     {
       "bom-ref": "requirements-L34",
@@ -797,7 +797,7 @@
     },
     {
       "bom-ref": "requirements-L169",
-      "description": "requirements line 169: pillow==12.3.0",
+      "description": "requirements line 169: pillow==13.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -806,9 +806,9 @@
         }
       ],
       "name": "pillow",
-      "purl": "pkg:pypi/pillow@12.3.0",
+      "purl": "pkg:pypi/pillow@13.0.0",
       "type": "library",
-      "version": "12.3.0"
+      "version": "13.0.0"
     },
     {
       "bom-ref": "requirements-L171",
