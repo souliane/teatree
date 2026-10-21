@@ -505,9 +505,9 @@ services:
     cpus: "0.5"
 
   # The forge receiver mounts its ledger, its signing-secret store and, read-only, its entrypoint
-  # and the code and tool venv the other roles run. A 20 MiB many-object delivery
-  # raised RSS by ~226 MiB; a few concurrent near-cap deliveries can exhaust 1g
-  # and kill the cgroup, dropping deliveries still in flight.
+  # and the code and tool venv the other roles run. The 1g cap accommodates the
+  # measured ~226 MiB RSS growth of one 20 MiB many-object delivery above the
+  # receiver baseline while bounding the service's share of host RAM.
   teatree-webhooks:
     init: true
     image: ${TEATREE_IMAGE:-teatree-headless:latest}

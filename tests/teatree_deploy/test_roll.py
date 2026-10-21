@@ -267,6 +267,12 @@ class TestOnlyAServiceThatStaysUpVerifies(TestCase):
 
 
 class TestARollbackIsVerifiedLikeARoll(TestCase):
+    def test_explicitly_empty_required_services_do_not_fall_back_to_runtime_services(self) -> None:
+        engine = _engine(serving="")
+        engine.running = {"teatree-admin": ""}
+
+        _roller(engine)._verify("", required=())
+
     def test_a_restored_generation_that_does_not_verify_fails_loud(self) -> None:
         WorkerGeneration.objects.boot(N)
         engine = _engine(serving=N)

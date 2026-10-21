@@ -1,8 +1,3 @@
-from django.urls import path
+from teatree.core.urls import webhook_urlpatterns
 
-from teatree.core.views import GitHubWebhookView, GitLabWebhookView
-
-urlpatterns = [
-    path("hooks/github/", GitHubWebhookView.as_view(), name="github_webhook"),
-    path("hooks/gitlab/", GitLabWebhookView.as_view(), name="gitlab_webhook"),
-]
+urlpatterns = list(webhook_urlpatterns)

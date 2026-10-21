@@ -2,7 +2,7 @@
 # teatree headless deployment entrypoint. One image, six roles selected by
 # $TEATREE_ROLE:
 #   init           — one-shot prep (clone + editable install + t3 setup + DB config),
-#                    exits 0. worker/admin/slack-listener depend on its successful
+#                    exits 0. worker/admin/webhook-listener/slack-listener depend on its successful
 #                    completion, so the editable-install-on-the-shared-clone happens once.
 #   worker         — runs `t3 worker` (the loop cadence owner), DEBUG off.
 #   admin          — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.

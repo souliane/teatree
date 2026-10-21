@@ -555,13 +555,6 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         """
         assert int(RAM_RESUME_FLOOR_GB * 1024) == ram_probe._RESUME_FLOOR_MIB
 
-    def test_the_measured_incident_total_now_refuses_without_sibling_room(self) -> None:
-        sizing = self._sizing(self.MEASURED_INCIDENT_DAEMON_MIB)
-
-        assert sizing.mem_limit_mib == 0
-        assert sizing.refusal
-        assert str(self.MIN_WORKABLE_DAEMON_MIB) in sizing.refusal
-
     def test_the_emitted_cap_clears_the_conflict_predicate_that_names_the_fault(self) -> None:
         assert resume_ceiling_conflict(self._sizing(self.MIN_WORKABLE_DAEMON_MIB).mem_limit_mib / 1024) is None
 
@@ -614,7 +607,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         doctor's own hard floor, i.e. the head was already emitting a broken cap outside
         the band it was fixing.
         """
-        for daemon in (8192, self.MIN_WORKABLE_DAEMON_MIB - 1):
+        for daemon in (self.MEASURED_INCIDENT_DAEMON_MIB, 8192, self.MIN_WORKABLE_DAEMON_MIB - 1):
             sizing = self._sizing(daemon)
 
             assert sizing.mem_limit_mib == 0, daemon

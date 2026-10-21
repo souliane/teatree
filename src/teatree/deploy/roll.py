@@ -315,7 +315,9 @@ class Roller:
         pacing = self._timing.pacing
         deadline = pacing.monotonic() + self._timing.verify_timeout
         stability = _Stability(window=self._timing.stable_seconds, clock=pacing.monotonic)
-        while problems := self._verification_problems(generation, stability, required or self._required):
+        while problems := self._verification_problems(
+            generation, stability, self._required if required is None else required
+        ):
             if pacing.monotonic() >= deadline:
                 msg = f"{_describe(generation)} did not verify within {self._timing.verify_timeout:.0f}s: "
                 raise RollError(msg + "; ".join(problems))

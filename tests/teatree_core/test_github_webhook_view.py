@@ -129,7 +129,7 @@ class TestLockedDatabase(GitHubWebhookTestCase):
             accepted = self.deliver_on_a_listener_thread()
 
         assert locked.status_code == 503
-        assert elapsed < 15
+        assert elapsed < 7
         assert accepted.status_code == 200
 
     def test_other_database_errors_still_raise(self) -> None:

@@ -2,13 +2,20 @@
 
 import hashlib
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from unittest.mock import patch
 
-from django.db import OperationalError
-from django.test import Client, TestCase, override_settings
+from django.db import connection
+from django.http import HttpResponse
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
+from teatree import webhook_settings
 from teatree.core.models import IncomingEvent
+from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
 
 SHARED_SECRET = "test-gitlab-secret"
 
@@ -26,21 +33,33 @@ def _post(client: Client, body: bytes, *, token: str | None = SHARED_SECRET, eve
 
 
 @override_settings(TEATREE_GITLAB_WEBHOOK_TOKEN=SHARED_SECRET)
-class TestGitLabWebhookView(TestCase):
+class TestLockedGitLabWebhookView(TransactionTestCase):
     def test_locked_database_answers_503_and_names_the_dropped_delivery(self) -> None:
         body = json.dumps({"object_kind": "merge_request"}).encode()
-        with (
-            patch(
-                "teatree.core.views._webhook_persistence.persist_incoming_event",
-                side_effect=OperationalError("database is locked"),
-            ),
-            self.assertLogs("teatree.core.views._webhook_persistence", level="WARNING") as logs,
-        ):
-            response = _post(self.client, body)
+
+        def deliver() -> HttpResponse:
+            try:
+                return _post(Client(), body)
+            finally:
+                close_thread_db_connections()
+
+        with file_backed_default_database() as database:
+            connection.settings_dict["OPTIONS"] = webhook_settings.DATABASES["default"]["OPTIONS"]
+            with closing(sqlite3.connect(database, isolation_level=None)) as holder:
+                holder.execute("BEGIN IMMEDIATE")
+                with (
+                    self.assertLogs("teatree.core.views._webhook_persistence", level="WARNING") as logs,
+                    ThreadPoolExecutor(max_workers=1) as pool,
+                ):
+                    response = pool.submit(deliver).result()
+                holder.execute("ROLLBACK")
 
         assert response.status_code == 503
         assert any(f"gitlab:{hashlib.sha256(body).hexdigest()[:16]}" in line for line in logs.output)
 
+
+@override_settings(TEATREE_GITLAB_WEBHOOK_TOKEN=SHARED_SECRET)
+class TestGitLabWebhookView(TestCase):
     def test_merge_request_approved_event_is_persisted(self) -> None:
         payload = {
             "object_kind": "merge_request",

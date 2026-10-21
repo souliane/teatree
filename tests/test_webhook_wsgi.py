@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 _PROBE = """
 import io, json
 from wsgiref.util import setup_testing_defaults
@@ -32,13 +34,19 @@ print(public_host_status())
 """
 
 
-def test_listener_serves_no_admin() -> None:
+@pytest.fixture(scope="module")
+def listener_responses() -> tuple[dict[str, int], int]:
     env = os.environ | {"DJANGO_SETTINGS_MODULE": "teatree.settings"}
     result = subprocess.run(
         [sys.executable, "-c", _PROBE], check=False, capture_output=True, text=True, env=env, timeout=60
     )
     assert result.returncode == 0, result.stderr
     statuses = json.loads(result.stdout.splitlines()[0])
+    return statuses, int(result.stdout.splitlines()[1])
+
+
+def test_listener_serves_no_admin(listener_responses: tuple[dict[str, int], int]) -> None:
+    statuses, _ = listener_responses
 
     assert statuses["/admin/"] == 404
     assert statuses["/dash/"] == 404
@@ -46,11 +54,6 @@ def test_listener_serves_no_admin() -> None:
     assert statuses["/hooks/gitlab/"] != 404
 
 
-def test_listener_accepts_public_host() -> None:
-    env = os.environ | {"DJANGO_SETTINGS_MODULE": "teatree.settings"}
-    result = subprocess.run(
-        [sys.executable, "-c", _PROBE], check=False, capture_output=True, text=True, env=env, timeout=60
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert int(result.stdout.splitlines()[1]) == 405
+def test_listener_accepts_public_host(listener_responses: tuple[dict[str, int], int]) -> None:
+    _, public_host_status = listener_responses
+    assert public_host_status == 405
