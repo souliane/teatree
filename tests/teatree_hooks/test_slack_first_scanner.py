@@ -29,6 +29,7 @@ _STANDING_RULES: Final = (
     "<system-reminder>Standing rules for this session (3) — they apply to your next reply:\n"
     "  - [standing-golden-rule] Plan, implement, review.</system-reminder>"
 )
+_NOTICE: Final = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"
 
 
 def _user(text: str) -> dict:
@@ -210,6 +211,35 @@ class TestASkillLoadedMidTurnDoesNotHideTheOwnersPrompt:
             *skill_load_entries(),
             _assistant("Relayed."),
         )
+
+        assert handle_slack_first_gate(_stop(transcript)) is None
+
+
+class TestABackgroundTaskNotice:
+    """Claude Code writes a notice that lands mid-turn as an attachment, and one that finds it idle as a user turn."""
+
+    @pytest.fixture(autouse=True)
+    def live(self) -> None:
+        _publish(live=True)
+
+    def test_a_notice_queued_mid_turn_does_not_hide_the_owners_prompt(self, tmp_path: Path) -> None:
+        queued = {
+            "type": "attachment",
+            "attachment": {"type": "queued_command", "commandMode": "task-notification", "prompt": _NOTICE},
+        }
+        transcript = _transcript(
+            tmp_path, _user(_PROMPT), _tool_call(), queued, _tool_result("ok"), _assistant(_ANSWER)
+        )
+
+        assert handle_slack_first_gate(_stop(transcript)) is True
+
+    def test_a_turn_a_notice_started_is_not_the_owners(self, tmp_path: Path) -> None:
+        notice_turn = {
+            "type": "user",
+            "origin": {"kind": "task-notification"},
+            "message": {"role": "user", "content": _NOTICE},
+        }
+        transcript = _transcript(tmp_path, _user(_PROMPT), _assistant("Relayed."), notice_turn, _assistant(_ANSWER))
 
         assert handle_slack_first_gate(_stop(transcript)) is None
 
