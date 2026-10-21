@@ -23,7 +23,7 @@ from mcp.types import ToolAnnotations
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.mcp.service_resolver import SLACK
-from teatree.types import ChannelReadRefusedError
+from teatree.types import ChannelReadRefusedError, ScannerError
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -33,11 +33,12 @@ INSTRUCTIONS = (
     "this process holds no Socket-Mode queue — the receiver writes mentions to a JSONL the "
     "loop's scanner drains, so `[]` here would mean 'I cannot see mentions', not 'none'.\n"
     "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
-    "(never returns an empty list) when the bot cannot read the channel — a bot token "
-    "reads only channels it was invited to, so `[]` always means genuinely empty.\n"
+    "when the selected read is refused. When both tokens are configured, non-DMs use "
+    "the user token and DMs retry a bot membership refusal as the user; bot-only "
+    "reads use the bot, and user-only reads use the user. `[]` means genuinely empty.\n"
     "- slack_thread_replies(channel, thread_ts): replies under one thread. Errors with Slack's "
     "error code (never returns an empty list) when the read is refused; a thread in a channel "
-    "the bot is not in is read through the user token, so `[]` always means genuinely empty.\n"
+    "the bot is not in retries through the user token when configured, so `[]` means genuinely empty.\n"
     "- slack_permalink(channel, ts): the permalink for one message.\n"
     "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
     "ungated; a colleague/channel reaction goes through the on-behalf gate and "
@@ -87,20 +88,23 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
     """Recent messages in *channel* — refuses loudly rather than returning a misleading ``[]``.
 
     An agent asking about ONE channel cannot act on a bare empty list: "the channel
-    is quiet" and "the bot was never invited, so it sees nothing" are opposite facts
-    demanding opposite responses, and the silent-empty form reported the first while
-    meaning the second. A bot token reads only channels the bot is a MEMBER of, so
-    that refusal is the common case, not an edge case. The backend raises
-    :class:`~teatree.types.ChannelReadRefusedError`, which lives in the dependency-free
-    :mod:`teatree.types` and so cannot itself be a ``ToolError``; it is re-raised as one
-    here — the same boundary conversion ``services_forge`` does for the send-proxy
-    refusals — because only a ``ToolError``'s text survives ``call_tool``.
+    is quiet" and "the selected token cannot read it" are opposite facts.
+    With both tokens configured, non-DMs use the user and DMs start with the bot,
+    retrying membership refusals as the user. A single-token backend uses its
+    configured token. Backend refusals become ``ToolError`` here because only
+    its text survives ``call_tool``.
     """
     try:
         return await sync_to_async(
             lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
         )()
     except ChannelReadRefusedError as refused:
+        prior = refused.__context__
+        reason = str(refused)
+        if isinstance(prior, ChannelReadRefusedError) and prior.channel == refused.channel:
+            reason = f"{reason} Bot read: {prior.error_code}; user retry: {refused.error_code}."
+        raise ToolError(reason) from refused
+    except ScannerError as refused:
         raise ToolError(str(refused)) from refused
 
 

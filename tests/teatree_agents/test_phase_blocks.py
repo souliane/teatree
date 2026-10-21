@@ -22,7 +22,7 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, LandscapeArtifact, PullRequest, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, ConfigSetting, LandscapeArtifact, PullRequest, Session, Task, Ticket
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -169,6 +169,20 @@ class TestFixRecordDirective(TestCase):
 
     def test_a_fix_ticket_debugging_brief_carries_it_too(self) -> None:
         assert "THIS IS A FIX TICKET" in self._brief("debugging", Ticket.Kind.FIX)
+
+    def test_a_fix_coding_brief_asks_for_record_red_by_default(self) -> None:
+        assert "repro record-red" in self._brief("coding", Ticket.Kind.FIX)
+
+    def test_a_switched_off_fix_brief_keeps_the_fields_and_drops_record_red(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        for phase in ("coding", "debugging"):
+            task = _task(phase, kind=Ticket.Kind.FIX)
+            brief = "\n".join(phase_specific_lines(task, []))
+            assert "THIS IS A FIX TICKET" in brief
+            assert all(field in brief for field in FIX_RECORD_FIELDS)
+            assert "repro record-red" not in brief
+            task.ticket.refresh_from_db()
+            assert "forced_repro_disabled_scopes" not in task.ticket.extra
 
     def test_a_feature_ticket_coding_brief_is_unchanged(self) -> None:
         feature = phase_specific_lines(_task("coding", kind=Ticket.Kind.FEATURE), [])

@@ -350,10 +350,10 @@ def worktree_root(*, overlay: str | None = None) -> Path:
     from teatree.config.resolution import (  # noqa: PLC0415 — deferred: breaks loader ↔ resolution cycle
         _db_global_overrides,
         _db_overlay_overrides,
-        _resolved_overlay_name,
+        resolved_overlay_name,
     )
 
-    overlay_name = _resolved_overlay_name(overlay)
+    overlay_name = resolved_overlay_name(overlay)
     stored = _db_overlay_overrides(overlay_name).get("workspace_dir")
     if stored is None:
         stored = _db_global_overrides().get("workspace_dir")

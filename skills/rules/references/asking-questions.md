@@ -93,7 +93,7 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 The six do-X/never-Y worked examples for the rules in this section — one-decision-per-call, narrating-is-not-asking, ask-then-stop, do-the-best, the shape ceiling, and the unreachable-tool ask — are in [`skills/rules/references/asking-questions.md`](asking-questions.md).
 
-A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
+A live session has a hook backstop: PreToolUse refuses several questions in one call, internal shorthand or an overlong card; Stop bounces a final reply that lists owner decisions. Raise each decision through the question tool, one per call, in plain words.
 
 **Narrating the ask is not asking (do X, never Y).** When the next action is a user decision, the `AskUserQuestion` tool call IS the action — issue it as a real tool invocation. Never end the turn with a plan-line that merely _announces_ the ask ("**Action:** Ask about the first PR's merge decision", "I'll ask the user which branch", "I'll go ahead and ask about the first PR"), never _print_ `AskUserQuestion(...)` call syntax as text (fenced or inline), and never _draw_ the chat-UI rendering of the call — a standalone `**AskUserQuestion**` line with a "_View tool call_" footnote — in place of invoking the tool: on a loop turn that narration reads as a log line, no question ever reaches the user, and the decision is silently lost.
 

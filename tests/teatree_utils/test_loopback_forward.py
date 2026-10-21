@@ -18,7 +18,8 @@ marker are real.
 
 import os
 import socket
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -273,17 +274,17 @@ class TestForwardResultClose:
 
 @pytest.fixture
 def containerized_stack_up() -> Iterator[list[list[str]]]:
-    """The containerized CLI venue with the stack up; every ``docker`` call is recorded.
+    with _containerized_stack(lambda _cmd: "") as calls:
+        yield calls
 
-    Docker is the one unstoppable external here — the forwarder is a real container on a
-    real daemon — so the argv is what these assert against.
-    """
+
+@contextmanager
+def _containerized_stack(ps_answer: Callable[[list[str]], str]) -> Generator[list[list[str]]]:
     calls: list[list[str]] = []
 
     def record(cmd: list[str], **_kwargs: object) -> object:
         calls.append(list(cmd))
-        # An empty `docker ps` (no forwarder yet) then a container id for `run`.
-        stdout = "" if cmd[1:2] == ["ps"] else "forwarder-id\n"
+        stdout = ps_answer(cmd) if cmd[1:2] == ["ps"] else "forwarder-id\n"
         return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
 
     with (
@@ -293,6 +294,18 @@ def containerized_stack_up() -> Iterator[list[list[str]]]:
         patch("teatree.utils.loopback_forward._docker_socket_gid", return_value=0),
     ):
         yield calls
+
+
+def _a_running_forwarder(label: str | None) -> Callable[[list[str]], str]:
+    def answer(cmd: list[str]) -> str:
+        label_filters = [
+            cmd[index + 1]
+            for index, value in enumerate(cmd[:-1])
+            if value == "--filter" and cmd[index + 1].startswith("label=")
+        ]
+        return "old-forwarder" if not label_filters or label_filters == [f"label={label}"] else ""
+
+    return answer
 
 
 def _run_argv(calls: list[list[str]]) -> list[str]:
@@ -361,15 +374,25 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert argv[argv.index("--name") + 1] == "teatree-admin-forward-9111"
 
     def test_a_running_forwarder_is_reused_not_restarted(self) -> None:
-        with (
-            patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
-            patch("teatree.utils.loopback_forward._docker", return_value="already-running") as docker,
-        ):
+        with _containerized_stack(_a_running_forwarder(f"teatree.admin-container={_ADMIN_CONTAINER}")) as calls:
             result = ensure_admin_forward(port=8803)
 
         assert result.url == "http://127.0.0.1:8803"
-        assert [call.args[0] for call in docker.call_args_list] == ["ps"]
+        assert [call[1] for call in calls] == ["ps"]
+        assert f"label=teatree.admin-container={_ADMIN_CONTAINER}" in calls[0]
+
+    @pytest.mark.parametrize(
+        "label", [None, "teatree.admin-container=former-admin"], ids=["unlabelled", "former-admin"]
+    )
+    def test_a_forwarder_left_by_another_admin_is_replaced(self, label: str | None) -> None:
+        with _containerized_stack(_a_running_forwarder(label)) as calls:
+            result = ensure_admin_forward(port=8803)
+
+        assert result.url == "http://127.0.0.1:8803"
+        assert [call[1] for call in calls] == ["ps", "inspect", "rm", "run"]
+        assert calls[2] == ["docker", "rm", "--force", "teatree-admin-forward-8803"]
+        run = _run_argv(calls)
+        assert run[run.index("--label") + 1] == f"teatree.admin-container={_ADMIN_CONTAINER}"
 
     def test_a_forwarder_that_will_not_start_is_reported_not_raised(self) -> None:
         with (
