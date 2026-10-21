@@ -199,7 +199,9 @@ def _retry_route_exception(
         and not route_has_later_candidate(preflight.dispatch)
     ):
         hold = route_hold(preflight.dispatch.name, str(exc))
-        return park_on_timed_rejections(task, (hold,)) or _record_failure(task, error=str(hold))
+        return park_on_timed_rejections(task, (hold,)) or _record_failure(  # no-usage: no billed turn ran
+            task, error=str(hold)
+        )
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
