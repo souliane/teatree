@@ -134,13 +134,6 @@ class TestRunSmoke:
         assert report.failing_step_stderr == "worktree path unresolved: fixture checkout pre-existed"
         assert len(runner.commands) == 1
 
-    def test_workspace_clean_all_failure_has_its_own_outcome(self) -> None:
-        step = SmokeStep(name="workspace_clean_all", command=("t3", "testoverlay", "workspace", "clean-all"))
-        report = run_smoke([step], runner=_ScriptedRunner({"workspace_clean_all": (1, "clean failed", False)}))
-
-        assert report.outcome is SmokeOutcomeKind.CLEAN_FAILED
-        assert report.failing_step == "workspace_clean_all"
-
     def test_all_steps_pass_marks_report_pass(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         runner = _ScriptedRunner(_all_green(steps))
@@ -304,7 +297,7 @@ class TestStepOutcomeKindCoverage:
 
     def test_no_default_step_is_missing_from_the_outcome_table(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
-        assert [s.name for s in steps if s.name not in STEP_OUTCOME_KIND] == []
+        assert set(STEP_OUTCOME_KIND) == {step.name for step in steps}
 
     def test_empty_smoke_passes_trivially(self) -> None:
         report = run_smoke([], runner=_step_result)

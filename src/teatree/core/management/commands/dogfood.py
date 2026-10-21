@@ -236,7 +236,7 @@ class Command(TyperCommand):
                 summary_text=summary,
                 failing_step=failing,
                 command_str=command_str,
-                stderr="\n".join([report.failing_step_stderr, *cleanup_errors]),
+                stderr="\n".join(dict.fromkeys(item for item in [report.failing_step_stderr, *cleanup_errors] if item)),
             )
 
         code = _exit_code_for(report.outcome)
@@ -363,14 +363,23 @@ class _FixtureCheckout:
             raise FixtureCheckoutRefusalError(msg)
         return dispatch_worktree_path(ticket)
 
-    def cleanup(self) -> list[str]:
+    def cleanup(self) -> list[StepResult]:
         if not self.captured:
             return []
-        errors: list[str] = []
+        failures: list[StepResult] = []
         try:
             created_paths = self._paths(self._ticket()) - self.preexisting_paths
         except (DatabaseError, OSError) as exc:
-            return [f"could not read fixture checkouts: {type(exc).__name__}: {exc}"]
+            step = SmokeStep(name="fixture_cleanup", command=("t3", self.cli_overlay, "worktree", "teardown"))
+            return [
+                StepResult(
+                    step=step,
+                    returncode=-2,
+                    stderr=f"could not read fixture checkouts: {type(exc).__name__}: {exc}",
+                    stdout="",
+                    elapsed_seconds=0.0,
+                )
+            ]
         for path in sorted(created_paths):
             step = SmokeStep(
                 name="fixture_cleanup",
@@ -379,11 +388,28 @@ class _FixtureCheckout:
             try:
                 result = run_t3_command(step)
             except OSError as exc:
-                errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                failures.append(
+                    StepResult(
+                        step=step,
+                        returncode=-2,
+                        stderr=f"{path}: {type(exc).__name__}: {exc}",
+                        stdout="",
+                        elapsed_seconds=0.0,
+                    )
+                )
                 continue
             if result.returncode != 0 or path.is_dir():
-                errors.append(f"{path}: {result.stderr or 'checkout still present after teardown'}")
-        return errors
+                failures.append(
+                    StepResult(
+                        step=step,
+                        returncode=result.returncode or 1,
+                        stderr=f"{path}: {result.stderr or 'checkout still present after teardown'}",
+                        stdout=result.stdout,
+                        elapsed_seconds=result.elapsed_seconds,
+                        timed_out=result.timed_out,
+                    )
+                )
+        return failures
 
 
 def _run_fixture_smoke(
@@ -397,7 +423,12 @@ def _run_fixture_smoke(
         return run_t3_command(step)
 
     report = run_smoke(steps, runner=run_step, uncovered=uncovered, resolve_worktree_path=fixture.resolve)
-    return report, fixture.cleanup() if not report.passed else []
+    cleanup_failures = fixture.cleanup()
+    if cleanup_failures and report.passed:
+        report.outcome = SmokeOutcomeKind.TEARDOWN_FAILED
+        report.failing_step = "fixture_cleanup"
+        report.steps.extend(cleanup_failures)
+    return report, [failure.stderr for failure in cleanup_failures]
 
 
 def _resolve_active_overlay() -> str:

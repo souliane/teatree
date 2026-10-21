@@ -77,7 +77,6 @@ STEP_OUTCOME_KIND: dict[str, SmokeOutcomeKind] = {
     "worktree_start": SmokeOutcomeKind.START_FAILED,
     "worktree_ready": SmokeOutcomeKind.READY_FAILED,
     "worktree_teardown": SmokeOutcomeKind.TEARDOWN_FAILED,
-    "workspace_clean_all": SmokeOutcomeKind.CLEAN_FAILED,
 }
 
 
