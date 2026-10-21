@@ -115,17 +115,19 @@ class TestPrProbeMappers:
 
 class TestGithubHeadProof:
     def test_open_pr_head_uses_one_authenticated_list(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        head = "a" * 40
+        head = "9c1d47a3070c15313130866a042b532960690982"
+        branch = "5368-a-writing-run-that-moves-its-branch-merg"
+        url = "https://github.com/souliane/teatree/pull/5407"
         payload = [
             {
-                "url": _GH_URL,
-                "headRepository": {"nameWithOwner": "acme/widgets"},
-                "headRefName": "feature",
+                "url": url,
+                "headRepository": {"id": "R_kgDORe_NCA", "name": "teatree", "nameWithOwner": "souliane/teatree"},
+                "headRefName": branch,
                 "headRefOid": head,
             }
         ]
         seen = _fake_cli(monkeypatch, _completed(json.dumps(payload)))
-        assert github_open_pr_head(tmp_path, "feature") == (_GH_URL, "acme/widgets", "feature", head)
+        assert github_open_pr_head(tmp_path, branch) == (url, "souliane/teatree", branch, head)
         assert seen == [
             [
                 "gh",
@@ -138,7 +140,7 @@ class TestGithubHeadProof:
                 "--limit",
                 "2",
                 "--head",
-                "feature",
+                branch,
             ]
         ]
 
@@ -168,6 +170,16 @@ class TestGithubHeadProof:
                     }
                 ]
             ),
+            json.dumps(
+                [
+                    {
+                        "url": _GH_URL,
+                        "headRepository": {"nameWithOwner": "acme/widgets"},
+                        "headRefName": 7,
+                        "headRefOid": "a" * 40,
+                    }
+                ]
+            ),
         ],
     )
     def test_open_pr_head_refuses_malformed_output(
@@ -179,9 +191,14 @@ class TestGithubHeadProof:
     def test_missing_repository_owner_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        row = {"url": _GH_URL, "headRepository": {}, "headRefName": "feature", "headRefOid": "a" * 40}
+        row = {
+            "url": "https://github.com/souliane/teatree/pull/5407",
+            "headRepository": {"id": "R_kgDORe_NCA", "name": "teatree"},
+            "headRefName": "5368-a-writing-run-that-moves-its-branch-merg",
+            "headRefOid": "9c1d47a3070c15313130866a042b532960690982",
+        }
         _fake_cli(monkeypatch, _completed(json.dumps([row])))
-        assert github_open_pr_head(tmp_path, "feature") is None
+        assert github_open_pr_head(tmp_path, row["headRefName"]) is None
         assert "headRepository.nameWithOwner" in caplog.text
 
     def test_exact_branch_ref_uses_routed_gh_api(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

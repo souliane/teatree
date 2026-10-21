@@ -8,6 +8,7 @@ from typing import Any, Self
 from teatree.core.models.checkout_proof import CheckoutCustody, CheckoutTenure
 
 _MAX_TENURES = 16
+RELEASED_EXIT = "released"
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ class Custody:
             if (
                 not entry["holder"]
                 or not entry["since"]
-                or entry["ended"] not in {"", "released", "abandoned"}
+                or entry["ended"] not in {"", RELEASED_EXIT, "abandoned"}
                 or bool(entry["ended"]) != bool(entry["ended_at"])
             ):
                 return None
@@ -98,7 +99,7 @@ class Custody:
     def closed(self, holder: str, session: str, now: datetime) -> "Custody":
         entries = list(self.tenures)
         if entries and not entries[-1].ended and (entries[-1].holder, entries[-1].session) == (holder, session):
-            entries[-1] = replace(entries[-1], ended="released", ended_at=now.isoformat())
+            entries[-1] = replace(entries[-1], ended=RELEASED_EXIT, ended_at=now.isoformat())
         return Custody(self.anchor, tuple(entries))
 
     def without_open(self, holder: str, session: str) -> "Custody":

@@ -32,6 +32,7 @@ from tests.teatree_core.models._shared import _init_repo_with_branch
 @dataclass(frozen=True)
 class ForgeResponse:
     head_repo: str = "souliane/teatree"
+    head_repository: dict[str, str] | None = None
     head_branch: str = "feature"
     forge_head: str | None = None
     remote_head: str | None = None
@@ -116,7 +117,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 [
                     {
                         "url": found.url,
-                        "headRepository": {"nameWithOwner": response.head_repo},
+                        "headRepository": response.head_repository
+                        or {"id": "R_kgDORe_NCA", "name": "teatree", "nameWithOwner": response.head_repo},
                         "headRefName": response.head_branch,
                         "headRefOid": response.forge_head or self.head,
                     }
@@ -192,6 +194,13 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             assert self.claim() is None
         task_reads = [query for query in queries if "SELECT" in query["sql"] and Task._meta.db_table in query["sql"]]
         assert len(task_reads) == 1
+
+    def test_empty_custody_refuses_direct_recovery(self) -> None:
+        extra = self.worktree.get_extra()
+        extra["checkout_custody"]["tenures"] = []
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        self.worktree.refresh_from_db()
+        assert not self.direct_recovery()
 
     def test_second_state_read_must_match_first(self) -> None:
         def change_checkout() -> None:
@@ -320,6 +329,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert audit["pr_head"] == self.head
         assert audit["remote_head"] == self.head
         assert audit["pull_request"] == self.pr.url
+        assert audit["previous"] == self.anchor
+        assert audit["holder"] == {"id": task_holder_id(self.claimant), "session": self.claimant.claimed_by_session}
         assert audit["process_table"]["set_aside"] == ["pid 21 (claude) is unreadable by this uid"]
         assert [entry["holder"] for entry in audit["tenures"]] == [
             task_holder_id(self.shipping),
@@ -400,8 +411,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
         self.assert_parked()
 
-    def test_t7_anchor_within_bounded_reflog_attests(self) -> None:
-        for index in range(4):
+    def test_t7_anchor_inside_window_beyond_ten_entries_attests(self) -> None:
+        for index in range(11):
             run_strict(repo=str(self.path), args=["commit", "--allow-empty", "-m", f"later {index}"])
         run_strict(repo=str(self.path), args=["push", "origin", "feature"])
         self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
@@ -440,11 +451,14 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.head = new_head
         self.assert_parked()
 
-    def test_t8_fork_and_unreadable_remote_park(self) -> None:
+    def test_t8_fork_parks(self) -> None:
         self.assert_clean_claim_then_restore()
         self.assert_parked(response=ForgeResponse(head_repo="someone/fork"))
-        run_strict(repo=str(self.path), args=["remote", "set-url", "origin", str(self.path.parent / "missing.git")])
-        self.assert_parked()
+
+    def test_host_gh_row_without_repository_owner_parks(self) -> None:
+        with self.assertLogs("teatree.core.forge_pr_probe", level="WARNING") as captured:
+            self.assert_parked(response=ForgeResponse(head_repository={"id": "R_kgDORe_NCA", "name": "teatree"}))
+        assert "headRepository.nameWithOwner" in "\n".join(captured.output)
 
     def test_t8_no_owned_open_pr_parks(self) -> None:
         self.assert_clean_claim_then_restore()

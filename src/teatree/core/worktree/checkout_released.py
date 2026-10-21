@@ -12,7 +12,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
-from teatree.core.models.checkout_custody import Custody
+from teatree.core.models.checkout_custody import RELEASED_EXIT, Custody
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_recovery import (
     checkout_process_evidence,
@@ -24,7 +24,6 @@ from teatree.core.worktree.checkout_state import CheckoutState, checkout_digest
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_remote import host_from_remote
-from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -40,6 +39,12 @@ class ReleasedPrHeadProof(NamedTuple):
     pr_head: str
     remote_head: str
     pull_request: str
+
+
+class OwnedGithubPrHeads(NamedTuple):
+    url: str
+    pr_head: str
+    remote_head: str
 
 
 def _clean_anchor_commit(path: str, branch: str, digest: str) -> str | None:
@@ -58,7 +63,7 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
     if (
         (current.holder, current.session) != claimant
         or (worktree.occupied_by, worktree.occupied_by_session) != claimant
-        or any(entry.ended != "released" for entry in previous)
+        or any(entry.ended != RELEASED_EXIT for entry in previous)
     ):
         return False
     holder_ids: set[int] = set()
@@ -75,7 +80,7 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
     )
 
 
-def _owned_github_pr_heads(task: Task, path: str, state: CheckoutState, head: str) -> tuple[str, str, str] | None:
+def _owned_github_pr_heads(task: Task, path: str, state: CheckoutState, head: str) -> OwnedGithubPrHeads | None:
     origin = git.remote_slug(repo=path)
     origin_url = git.remote_url(repo=path)
     origin_host = host_from_remote(origin_url)
@@ -98,7 +103,7 @@ def _owned_github_pr_heads(task: Task, path: str, state: CheckoutState, head: st
     if not pr_owned_by_ticket(task, ref, pr_head.url):
         return None
     remote_head = forge_pr_probe.github_exact_branch_head(path, origin, state.branch, origin_host)
-    return (pr_head.url, pr_head.head, remote_head) if remote_head == head else None
+    return OwnedGithubPrHeads(pr_head.url, pr_head.head, remote_head) if remote_head == head else None
 
 
 def _released_pr_head_proof(
@@ -117,11 +122,10 @@ def _released_pr_head_proof(
         pr_heads = _owned_github_pr_heads(task, path, state, head)
         if pr_heads is None:
             return None
-    except (CommandFailedError, OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("Released PR head proof unreadable for checkout %s: %s", worktree.pk, exc)
         return None
-    pr_url, pr_head, remote_head = pr_heads
-    return ReleasedPrHeadProof(anchor, head, pr_head, remote_head, pr_url)
+    return ReleasedPrHeadProof(anchor, head, pr_heads.pr_head, pr_heads.remote_head, pr_heads.url)
 
 
 def reattest_released_pr_head(task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable) -> bool:

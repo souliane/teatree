@@ -4,6 +4,8 @@
 fail-closed postures. ``github_open_pr_head`` reads one open PR for the exact
 branch; ``github_exact_branch_head`` reads its full remote ref. Both use the
 routed GitHub credential, and unreadable or malformed answers return ``None``.
+Without the routed credential, private-repo reads look absent and a caller can
+mistake an existing PR for a branch needing its first push.
 The GitLab presence probe uses its HTTP backend without a ``glab`` binary.
 """
 
@@ -16,17 +18,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
-from teatree.generation import is_generation_sha
+from teatree.generation import is_full_git_sha
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# ``gh`` lists only OPEN PRs here, one row, so a non-empty payload IS an open PR. The
-# branch selector (``--head``) is appended by the forge-specific wrapper. The GitLab arm
-# runs no CLI at all — the image declares no ``glab``, so that side reads over the
-# token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
+# Each caller supplies its own limit and branch selector; the GitLab arm uses HTTP.
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open")
 _PROBE_TIMEOUT_SECONDS = 30
 
@@ -201,18 +200,19 @@ def github_open_pr_head(repo_dir: str | Path, branch: str) -> GithubOpenPrHead |
     head_branch = row.get("headRefName")
     url = row.get("url")
     head = row.get("headRefOid")
-    if not isinstance(head_branch, str):
-        return None
     slug = repository.get("nameWithOwner") if isinstance(repository, dict) else None
     if slug is None:
         logger.warning("GitHub PR head proof unavailable: gh did not return headRepository.nameWithOwner")
-    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug or not head_branch:
+    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug:
         return None
-    return GithubOpenPrHead(url, slug, head_branch, head) if isinstance(head, str) and is_generation_sha(head) else None
+    if not isinstance(head_branch, str) or not head_branch:
+        return None
+    return GithubOpenPrHead(url, slug, head_branch, head) if isinstance(head, str) and is_full_git_sha(head) else None
 
 
 def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host: str) -> str | None:
     """Read the exact GitHub branch ref; refuse missing or mismatched replies."""
+    # The backend's _branch_tip uses its own credentials; custody needs this routed read.
     output = _open_pr_stdout(["gh", "api", "--hostname", host, f"repos/{slug}/git/ref/heads/{branch}"], repo_dir)
     if output is None:
         return None
@@ -224,7 +224,7 @@ def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host:
         return None
     object_data = row.get("object")
     sha = object_data.get("sha") if isinstance(object_data, dict) else None
-    return sha if isinstance(sha, str) and is_generation_sha(sha) else None
+    return sha if isinstance(sha, str) and is_full_git_sha(sha) else None
 
 
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:

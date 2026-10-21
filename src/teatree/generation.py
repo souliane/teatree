@@ -23,8 +23,11 @@ def is_image_generation() -> bool:
     return bool(current_generation())
 
 
-def is_generation_sha(value: str) -> bool:
+def is_full_git_sha(value: str) -> bool:
     return _GENERATION_SHA.fullmatch(value) is not None
+
+
+is_generation_sha = is_full_git_sha
 
 
 def short_sha(sha: str) -> str:

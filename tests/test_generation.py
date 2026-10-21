@@ -8,6 +8,7 @@ from teatree.generation import (
     current_generation,
     generation_image,
     in_place_update_refusal,
+    is_full_git_sha,
     is_generation_sha,
     is_image_generation,
     short_sha,
@@ -58,3 +59,4 @@ def test_a_registry_repository_names_the_image_a_cloud_box_pulls() -> None:
 )
 def test_only_a_full_lowercase_commit_sha_names_a_generation(value: str, *, expected: bool) -> None:
     assert is_generation_sha(value) is expected
+    assert is_full_git_sha(value) is expected

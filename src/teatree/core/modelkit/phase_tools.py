@@ -66,10 +66,6 @@ _WRITE: Final[frozenset[str]] = frozenset({"write_file", "edit_file"})
 _FULL: Final[frozenset[str]] = ALL_TOOLS
 
 
-def phase_writes_checkout(phase: str) -> bool:
-    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
-
-
 #: The read-mostly-WITH-shell shape every verdict-producing review phase carries:
 #: read + search + web + shell, and NEVER write/edit (a review does not mutate
 #: source). Shared by :data:`VERDICT_REVIEW_PHASES` below.
@@ -196,6 +192,10 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # ticket-work brief.
     "short_describe": _NONE,
 }
+
+
+def phase_writes_checkout(phase: str) -> bool:
+    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
 
 
 def tools_for_phase(phase: str) -> frozenset[str]:
