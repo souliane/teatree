@@ -3,6 +3,7 @@ from threading import Event
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.loop.overlay_followup_jobs as overlay_followup_jobs_module
@@ -11,7 +12,9 @@ from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import Loop, Mode, ModeOverride
 from teatree.core.overlay import OverlayReview
+from teatree.loop.dispatch import agent_dispatching_kinds
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError
 from teatree.loop.phases.scan import scan_phase
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loops.followup.loop import MINI_LOOP
@@ -122,6 +125,8 @@ class TestOverlayFollowupScanners(TestCase):
 
         failures = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
         assert len(failures) == 1
+        with pytest.raises(OverlayHookRefusalError):
+            failures[0].scanner.scan()
         outcome = scan_phase(failures)
         assert set(outcome.errors) == {"overlay_followup_scanners[alpha]"}
         assert outcome.errors["overlay_followup_scanners[alpha]"] == "ValueError: bad hook"
@@ -236,6 +241,8 @@ class TestOverlayFollowupScanners(TestCase):
         }
 
     def test_agent_routed_signal_is_refused(self) -> None:
+        assert "self_pr_review.dispatch" in agent_dispatching_kinds()
+
         class AgentScanner:
             name = "agent_scanner"
 
