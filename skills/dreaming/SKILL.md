@@ -36,11 +36,9 @@ The promote/compliance phases no longer file a fresh `needs-triage` issue per ga
 2. **Fold into existing hosts**: the `/t3:sweeping-tickets` sweep attaches each gap to the best EXISTING host with `t3 <overlay> ticket attach-gaps` (fold appended through the issue-write facade and re-read, a disposition rubric criterion, and planning for an unplanned host). A gap no host fits is attached to the umbrella ticket itself.
 3. **Disposition, then reconcile on merge**: the host addresses each gap (`t3 dream gap-disposition <id> <gap_key> --citation …`) or rejects it with a reason (`--reject …`); `t3 dream gap-coverage` proves every gap has exactly one owner. When the host reaches MERGED, `batch_promote.reconcile_batches` retires the linked `ConsolidatedMemory` ONLY for the addressed gaps (a BINDING memory is never retired, and its source file is never deleted).
 
-Core-gap memory promotion follows `T3_DREAM_MEMORY_PROMOTE` (default on). Recurrences are measured and retained for review; dream does not file enforcement tickets automatically.
+Core-gap memory promotion follows the `dream_memory_promote` setting (`T3_DREAM_MEMORY_PROMOTE`, default on). Recurrences are measured and retained for review; dream does not file enforcement tickets automatically.
 
-The nightly pass is not the only producer of umbrella gaps: `t3 <overlay> retro finding` puts one there synchronously, as a batch of one through the same `batch_promote` path and the same dedup, so a retro lesson and a dreamt gap drain identically ([`skills/retro/SKILL.md`](../retro/SKILL.md) § Tooling). It obeys the `memory_promote` toggle above; with the toggle off it records the gap and defers the write.
-
-The nightly pass is not the only producer of umbrella gaps: `t3 <overlay> retro finding` puts one there synchronously, as a batch of one through the same `batch_promote` path and the same dedup, so a retro lesson and a dreamt gap drain identically ([`skills/retro/SKILL.md`](../retro/SKILL.md) § Tooling). It obeys the `memory_promote` toggle above; with the toggle off it records the gap and defers the write.
+The nightly pass is not the only producer of umbrella gaps: `t3 <overlay> retro finding` puts one there synchronously, as a batch of one through the same `batch_promote` path and the same dedup, so a retro lesson and a dreamt gap drain identically ([`skills/retro/SKILL.md`](../retro/SKILL.md) § Tooling). It obeys the same setting; with the toggle off it records the gap and defers the write.
 
 **`promotion_cap` is deleted** ([#4776](https://github.com/souliane/teatree/issues/4776)). There is nothing left to ration: a pass with 300 pending gaps schedules ONE ticket, not 300 and not a capped 5 — the batch boundary is the pass itself.
 

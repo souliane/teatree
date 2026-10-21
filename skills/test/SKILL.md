@@ -138,7 +138,7 @@ A regression test is only evidence once it has been SEEN to fail on the pre-fix 
 worktree — both halves need git, because the ancestry proof is what makes the pair mean
 "this test failed BEFORE the fix and passes after":
 
-For FIX tickets, record RED before editing; the coding completion check requires it, and the testing phase reruns that command and records GREEN before it can complete.
+For FIX tickets, record RED before editing unless the owner turned `forced_repro_gate_enabled` off for the overlay; when on, the coding completion check requires RED and the testing phase reruns that command and records GREEN before it can complete.
 
 ```bash
 t3 <overlay> repro record-red <ticket-id> ...      # observed failing on the pre-fix tree

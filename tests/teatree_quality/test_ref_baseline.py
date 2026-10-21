@@ -13,10 +13,34 @@ import pytest
 import yaml
 
 from teatree.quality import ref_baseline
-from teatree.quality.ref_baseline import RATCHETS, BaselineError
+from teatree.quality.ref_baseline import RATCHETS, BaselineError, architecture_spec_docs
 
 #: A pin the scanner cannot possibly report — the file is not in any indexed package.
 _BOGUS_PIN = ("src/teatree/quality/ref_baseline.py", "teatree.definitely.not.a.real.symbol")
+
+
+def test_architecture_spec_docs_excludes_other_charter_documents(tmp_path: Path) -> None:
+    spec_dir = tmp_path / "docs" / "blueprint"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "configuration.md").touch()
+
+    assert architecture_spec_docs(tmp_path) == [
+        tmp_path / "BLUEPRINT.md",
+        spec_dir / "configuration.md",
+    ]
+
+
+def test_charter_report_and_prune_use_the_charter_scan_mode(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "teatree" / "eval"
+    package.mkdir(parents=True)
+    (package / "__init__.py").touch()
+    (tmp_path / "BLUEPRINT.md").write_text("`eval/ghost_module_xyz.py`\n", encoding="utf-8")
+    pair = ("BLUEPRINT.md", "src/teatree/eval/ghost_module_xyz.py")
+    pinned = _write(tmp_path / "baseline.yaml", {"charter": {pair[0]: [pair[1]]}, "python_prose": {}})
+
+    assert pair in ref_baseline.reported_refs("charter", tmp_path)
+    assert ref_baseline.stale_entries(tmp_path, path=pinned)["charter"] == frozenset()
+    assert ref_baseline.prune(tmp_path, path=pinned, write=False)["charter"] == frozenset()
 
 
 def _write(path: Path, mapping: dict[str, dict[str, list[str]]]) -> Path:
