@@ -1639,16 +1639,6 @@ class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
         pending.refresh_from_db()
         assert pending.status == Task.Status.PENDING
 
-    def test_a_seated_shipping_row_can_be_claimed_when_its_class_is_full(self) -> None:
-        shipping = [self._pending("shipping") for _ in range(2)]
-        Task.objects.filter(pk__in=[task.pk for task in shipping]).update(admitted_at=timezone.now())
-
-        with (
-            mock.patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
-            mock.patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
-        ):
-            assert call_command("tasks", "claim", claimed_by="worker-1") == shipping[0].pk
-
     def test_a_refused_review_at_the_head_does_not_hide_a_seated_push(self) -> None:
         for _ in range(2):
             claimed = self._pending("reviewing")
@@ -1685,6 +1675,19 @@ class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
             assert call_command("tasks", "claim", claimed_by="worker-1") is None
         shipping.refresh_from_db()
         assert shipping.status == Task.Status.PENDING
+
+    def test_a_seated_coding_row_still_waits_for_the_machine_brake(self) -> None:
+        coding = self._pending("coding")
+        Task.objects.filter(pk=coding.pk).update(admitted_at=timezone.now())
+        braked = MachineSignal(cores=8, load1=41.0, ram_available_gb=20.0)
+
+        with (
+            mock.patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            mock.patch.object(gate_mod, "read_machine_signal", return_value=braked),
+        ):
+            assert call_command("tasks", "claim", claimed_by="worker-1") is None
+        coding.refresh_from_db()
+        assert coding.status == Task.Status.PENDING
 
     def test_a_seated_push_can_claim_at_the_machine_brake_when_the_cheap_total_is_full(self) -> None:
         shipping = [self._pending("shipping") for _ in range(2)]

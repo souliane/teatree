@@ -62,6 +62,17 @@ class DrainLaneStarvedDoctorCheckTests(TestCase):
         assert "oldest waiting 34m" in output
         assert "cheap_phase_admission_ceiling" in output
 
+    def test_the_warning_states_the_cheap_lane_the_machine_brake_leaves_open(self) -> None:
+        self._queued_review(waited=DRAIN_STARVED_AFTER * 2)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            _check_drain_lane_starved()
+        output = buffer.getvalue()
+
+        assert "Cheap work is exempt from the machine brake" in output
+        assert "one seat more than the review width" in output
+
     def test_a_crashed_read_degrades_to_ok(self) -> None:
         # An advisory that cannot read its own state must never redden the doctor run.
         with patch("teatree.core.factory.drain_starvation.read_drain_lane_state", side_effect=RuntimeError("db gone")):

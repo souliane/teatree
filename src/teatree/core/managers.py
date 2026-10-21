@@ -454,11 +454,7 @@ class TaskQuerySet(models.QuerySet):
 
     def cheap_lane_occupancy(self) -> int:
         """Aggregate occupancy of both cheap classes, including recent pending seats."""
-        now = timezone.now()
-        return self.filter(
-            _lane_occupancy_q(now, cheap_class=CheapClass.REVIEW)
-            | _lane_occupancy_q(now, cheap_class=CheapClass.RETIRING)
-        ).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), cheap_class=None, cheap_total=True)).count()
 
     def cheap_class_occupancy(self, cheap_class: CheapClass) -> int:
         """Occupancy of one bounded cheap class, including recent pending seats."""
@@ -503,7 +499,21 @@ class TaskQuerySet(models.QuerySet):
         lane_ceiling: int | None = None,
         class_ceiling: int | None = None,
     ) -> bool:
-        """Arbitrate both bounds inside one UPDATE so stale probes cannot oversubscribe."""
+        """Take *task_pk*'s seat — ``True`` when this call got it.
+
+        Both bounds are arbitrated INSIDE this write, not between the caller's probe and it
+        (#4125): a probe is stale the moment it returns, so two processes reaching a chokepoint
+        in one window each saw room and each admitted. Re-checking occupancy in the ``WHERE``
+        makes the loser match no row and be refused. ``lane_ceiling`` bounds the row's lane —
+        the whole cheap lane for a cheap row — and ``class_ceiling`` its cheap class; ``None``
+        lifts that bound.
+
+        A row still holding a live seat is refused too: a second booking is a duplicate dispatch.
+
+        A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save`` auto-enqueue is
+        itself a ``post_save`` receiver, so saving the instance from inside it would re-enter the
+        receiver, and the stamp must not be able to re-arm the dispatch it is recording.
+        """
         now = timezone.now()
         seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:

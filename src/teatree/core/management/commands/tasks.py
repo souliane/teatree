@@ -20,7 +20,7 @@ from teatree.core.management.commands.tasks_session_view import (
     render_session_view,
     render_tasks_table,
 )
-from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
+from teatree.core.managers_admission import seated_pending_rows
 from teatree.core.managers_task_claim import claim_when_admitted
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
@@ -496,14 +496,9 @@ class Command(TyperCommand):
         admission = agent_admission_verdict()
         admission.log_denials()
         claimable = Task.objects.claimable()
-        now = timezone.now()
+        seated = set(seated_pending_rows(claimable, timezone.now()).values_list("pk", flat=True))
         for task in claimable.iterator():
-            seated = (
-                task.status == Task.Status.PENDING
-                and task.admitted_at is not None
-                and task.admitted_at > now - ADMITTED_INFLIGHT_WINDOW
-            )
-            if admission.claim_denied_reason(task.phase, seated=seated) is not None:
+            if admission.claim_denied_reason(task.phase, seated=task.pk in seated) is not None:
                 continue
             refusal = claim_when_admitted(
                 partial(task.claim, claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)

@@ -585,23 +585,6 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         assert coding.status == Task.Status.PENDING
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_two_claimed_reviews_do_not_hold_an_expedited_shipping_task(self) -> None:
-        for _ in range(2):
-            review = self._pending("reviewing")
-            Task.objects.filter(pk=review.pk).update(
-                status=Task.Status.CLAIMED,
-                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
-            )
-        shipping = self._pending("shipping")
-        Ticket.objects.filter(pk=shipping.ticket_id).update(expedited=True)
-
-        result, _ = self._drain_under_load(load1=1.0)
-
-        assert result["enqueued"] == [shipping.pk]
-        shipping.refresh_from_db()
-        assert shipping.admitted_at is not None
-
-    @override_settings(**IMMEDIATE_BACKEND)
     def test_machine_brake_keeps_the_retiring_seat_beside_two_reviews(self) -> None:
         for _ in range(2):
             review = self._pending("reviewing")

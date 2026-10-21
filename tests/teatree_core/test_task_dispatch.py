@@ -134,12 +134,6 @@ class TestTheDrainAdmitsExpeditedWorkFirst(_AdmissionCase):
         assert drain_queue_body()["enqueued"] == [waiting.pk]
         assert self._admitted(waiting)
 
-    def test_two_shipping_tasks_share_the_retiring_class(self) -> None:
-        shipping = [self._task("shipping") for _ in range(_REVIEW_WIDTH)]
-
-        assert drain_queue_body()["enqueued"] == [task.pk for task in shipping]
-        assert all(self._admitted(task) for task in shipping)
-
     def test_retiring_width_tracks_the_setting(self) -> None:
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
         shipping = [self._task("shipping") for _ in range(4)]

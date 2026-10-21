@@ -45,10 +45,11 @@ def _lane_occupancy_q(now: datetime, *, cheap_class: CheapClass | None, cheap_to
     One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. The three lanes PARTITION the queue —
-    the expensive one is the exact complement of both cheap classes — so an unregistered
-    phase lands in the braked class,
+    bound at all. The three lanes PARTITION the queue — the expensive one is the exact
+    complement of both cheap classes — so an unregistered phase lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
+    ``cheap_total`` is the one definition of the whole cheap lane (both classes) that the
+    total-occupancy read and the conditional write's total bound share.
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -85,6 +86,12 @@ def _lane_under_ceiling(
         Coalesce(models.Subquery(occupied, output_field=models.IntegerField()), models.Value(0)),
         ceiling,
     )
+
+
+def seated_pending_rows(queryset: models.QuerySet, now: datetime) -> models.QuerySet:
+    """PENDING rows still inside their admission window — the complement of :func:`_unseated_q`."""
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+    return queryset.filter(status=task_model.Status.PENDING).exclude(_unseated_q(now))
 
 
 def waiting_for_admission_rows(queryset: models.QuerySet, now: datetime) -> models.QuerySet:
