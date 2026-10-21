@@ -368,6 +368,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=owner_identities,
+                        requester_slack_id=requester_slack_id,
                         overlay=tag,
                     ),
                     overlay=tag,

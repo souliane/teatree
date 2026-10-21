@@ -190,6 +190,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request.pause_unreadable": "action_needed",
     "review_request.authorship_unreadable": "action_needed",
     "review_request.resume_gated": "action_needed",
+    "review_request.resume_mention_held": "action_needed",
     "review_request.resume_failed": "in_flight",
     # The followup sender: a sent request went out under the owner's name and a refusal is put
     # to them; a deferral (a hold, a declined or moved head, a transient read) retries itself.

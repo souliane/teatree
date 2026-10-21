@@ -291,8 +291,11 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
             jobs = _followup_jobs_for_overlay(backend)
 
         nags = [job.scanner for job in jobs if isinstance(job.scanner, ReviewNagScanner)]
+        resumes = [job.scanner for job in jobs if isinstance(job.scanner, ReviewRequestResumeScanner)]
         assert len(nags) == 1
         assert nags[0].requester_slack_id == "UOWNER"
+        assert len(resumes) == 1
+        assert resumes[0].requester_slack_id == "UOWNER"
         resolve.assert_called_once_with("t3-test")
 
     def test_unreadable_requester_id_builds_a_safe_nag(self) -> None:
@@ -304,8 +307,11 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
             jobs = _followup_jobs_for_overlay(backend)
 
         nags = [job.scanner for job in jobs if isinstance(job.scanner, ReviewNagScanner)]
+        resumes = [job.scanner for job in jobs if isinstance(job.scanner, ReviewRequestResumeScanner)]
         assert len(nags) == 1
         assert nags[0].requester_slack_id == ""
+        assert len(resumes) == 1
+        assert resumes[0].requester_slack_id == ""
 
     def test_idle_over_two_days_re_asks_on_thread(self) -> None:
         post = _seed(days_old=3.0)
