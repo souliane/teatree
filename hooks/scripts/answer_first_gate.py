@@ -92,6 +92,7 @@ def _last_user_text(transcript_path: str) -> str:
     then yields ``""``. Those entries are walked past. Any odd entry contributes
     nothing rather than raising.
     """
+    from hooks.scripts.owner_prompts import is_skill_body  # noqa: PLC0415 deferred cold-hook import
     from hooks.scripts.question_gates import (  # noqa: PLC0415 deferred cold-hook import
         is_tool_result_only,
         read_transcript_entries,
@@ -100,7 +101,7 @@ def _last_user_text(transcript_path: str) -> str:
     for entry in reversed(read_transcript_entries(transcript_path)):
         message = entry.get("message")
         role = message.get("role") if isinstance(message, dict) else entry.get("type")
-        if role != "user":
+        if role != "user" or is_skill_body(entry):
             continue
         content = message.get("content", []) if isinstance(message, dict) else []
         if isinstance(content, str):

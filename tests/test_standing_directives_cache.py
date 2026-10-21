@@ -180,6 +180,36 @@ class TestThePublishedFactorySlackVerdict:
             target.write_text(unreadable, encoding="utf-8")
             assert standing_directives_cache.read_factory_slack(env=env, now=1.0) is None
 
+    @pytest.mark.parametrize(
+        "open_relays",
+        [
+            [],
+            {"s1": "not-a-list"},
+            {"s1": ["not-a-dict"]},
+            {"s1": [{"id": 7, "slack_ts": "1.0", "channel": "D1", "state": "unanswered"}]},
+            {"s1": [{"id": "7", "slack_ts": "1.0", "channel": "D1", "text": "ship it?", "state": "unanswered"}]},
+        ],
+        ids=["not-a-mapping", "sessions-relays-not-a-list", "entry-not-a-mapping", "entry-without-text", "id-not-int"],
+    )
+    def test_a_malformed_open_relay_reads_the_verdict_as_absent(self, env: dict[str, str], open_relays: object) -> None:
+        good = {"s1": [{"id": 7, "slack_ts": "1.0", "channel": "D1", "text": "ship it?", "state": "unanswered"}]}
+        target = standing_directives_cache.factory_slack_path(env=env)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def publish(relays: object) -> None:
+            document = {
+                "schema": standing_directives_cache.SCHEMA,
+                **_verdict(checked_at=1000.0),
+                "open_relays": relays,
+            }
+            target.write_text(json.dumps(document), encoding="utf-8")
+
+        publish(good)
+        assert standing_directives_cache.read_factory_slack(env=env, now=1060.0) is not None
+
+        publish(open_relays)
+        assert standing_directives_cache.read_factory_slack(env=env, now=1060.0) is None
+
     def test_a_verdict_older_than_the_freshness_bound_reads_as_absent(self, env: dict[str, str]) -> None:
         standing_directives_cache.write_factory_slack(_verdict(checked_at=1000.0), env=env)
         bound = standing_directives_cache.FACTORY_SLACK_FRESH_SECONDS

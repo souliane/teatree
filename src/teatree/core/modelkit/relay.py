@@ -7,6 +7,9 @@ from typing import Protocol
 #: Slack truncates a message above this many characters.
 RELAY_MAX_CHARS = 38_000
 
+#: How much of a relayed prompt a one-line listing of it keeps.
+RELAY_LISTING_CHARS = 120
+
 #: How long a relayed ask may sit without a confirmed loop reply before it is listed as open.
 RELAY_QUIET_AFTER = dt.timedelta(minutes=5)
 

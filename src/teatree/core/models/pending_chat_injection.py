@@ -29,6 +29,7 @@ from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_resolver
 from teatree.core.modelkit.relay import (
+    RELAY_LISTING_CHARS,
     RELAY_MAX_CHARS,
     RELAY_QUIET_AFTER,
     RELAY_STALLED_AFTER,
@@ -38,6 +39,7 @@ from teatree.core.modelkit.relay import (
     RelayRefusal,
 )
 from teatree.core.telemetry.admission import record_lifecycle_transition
+from teatree.standing_directives_cache import OpenRelayPayload
 from teatree.utils.url_slug import slack_conversation_anchor
 
 _QUESTION_WORDS: frozenset[str] = frozenset(
@@ -251,6 +253,15 @@ class PendingChatInjection(models.Model):
         (#1063). The empty string returns ``False``.
         """
         return _classify_is_question(self.text)
+
+    def open_relay_payload(self) -> OpenRelayPayload:
+        return {
+            "id": self.pk,
+            "slack_ts": self.slack_ts,
+            "channel": self.channel,
+            "text": " ".join(self.text.split())[:RELAY_LISTING_CHARS],
+            "state": "delegated" if self.answer_kind == self.AnswerKind.DELEGATED else "unanswered",
+        }
 
     @classmethod
     def record(

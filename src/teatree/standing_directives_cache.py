@@ -57,6 +57,21 @@ class FactorySlackPayload(TypedDict):
     open_relays: dict[str, list[OpenRelayPayload]]
 
 
+_OPEN_RELAY_FIELD_TYPES = {"id": int, "slack_ts": str, "channel": str, "text": str, "state": str}
+
+
+def _is_open_relay(entry: object) -> bool:
+    return isinstance(entry, dict) and all(
+        isinstance(entry.get(field), kind) for field, kind in _OPEN_RELAY_FIELD_TYPES.items()
+    )
+
+
+def _are_open_relays(relays: object) -> bool:
+    return isinstance(relays, dict) and all(
+        isinstance(entries, list) and all(map(_is_open_relay, entries)) for entries in relays.values()
+    )
+
+
 def cache_path(*, env: Mapping[str, str] = os.environ) -> Path:
     return ControlDb(env).primary_data_dir() / CACHE_FILENAME
 
@@ -133,7 +148,7 @@ def read_factory_slack(*, env: Mapping[str, str] = os.environ, now: float | None
         or not isinstance(document.get("overlay"), str)
         or not isinstance(document.get("reason"), str)
         or not isinstance(checked_at, int | float)
-        or not isinstance(relays, dict)
+        or not _are_open_relays(relays)
     ):
         return None
     if (time.time() if now is None else now) - checked_at > FACTORY_SLACK_FRESH_SECONDS:

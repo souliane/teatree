@@ -49,6 +49,11 @@ def is_owner_prompt(entry: dict) -> bool:
     )
 
 
+def is_skill_body(entry: dict) -> bool:
+    """Whether *entry* is the body a Skill tool call loaded: an ``isMeta`` user turn tied to that call."""
+    return bool(entry.get("isMeta") and entry.get("sourceToolUseID"))
+
+
 def entry_text(entry: dict) -> str:
     message = entry.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -221,7 +226,7 @@ def last_owner_turn(transcript_path: str) -> LastOwnerTurn:
     """The newest user turn; its prompt is ``""`` when the owner did not start it (a loop tick, a scheduled fire)."""
     results: list[str] = []
     for entry in iter_transcript_reversed(transcript_path):
-        if _entry_message_role(entry) != "user":
+        if _entry_message_role(entry) != "user" or is_skill_body(entry):
             continue
         blocks = _entry_message_blocks(entry)
         if is_tool_result_only(blocks):
@@ -249,6 +254,7 @@ __all__ = [
     "entry_text",
     "is_live_user_turn",
     "is_owner_prompt",
+    "is_skill_body",
     "last_owner_turn",
     "owner_messages",
     "owner_prompted_since",

@@ -19,6 +19,7 @@ from hooks.scripts.loop_prompt_shape import LOOP_PROMPT
 from hooks.scripts.slack_first_gate import handle_slack_first_gate
 from teatree import standing_directives_cache
 from teatree.hooks.slack_first_scanner import RELAY_RECEIPT_MARKER, RELAY_REFUSED_MARKER
+from tests._skill_load_transcript import skill_load_entries
 
 _SESSION: Final = "sess-1"
 _PROMPT: Final = "can you check why the 4001 pipeline is red?"
@@ -186,6 +187,31 @@ class TestARelayInTheFinalTurnSatisfiesTheGate:
         )
 
         assert handle_slack_first_gate(_stop(transcript)) is True
+
+
+class TestASkillLoadedMidTurnDoesNotHideTheOwnersPrompt:
+    """A skill's ``isMeta`` body, loaded before nearly every reply, must not end the walk back to the prompt."""
+
+    @pytest.fixture(autouse=True)
+    def live(self) -> None:
+        _publish(live=True)
+
+    def test_an_answer_after_a_skill_load_is_still_blocked(self, tmp_path: Path) -> None:
+        transcript = _transcript(tmp_path, _user(_PROMPT), *skill_load_entries(), _assistant(_ANSWER))
+
+        assert handle_slack_first_gate(_stop(transcript)) is True
+
+    def test_a_receipt_printed_before_a_skill_load_still_satisfies_the_gate(self, tmp_path: Path) -> None:
+        transcript = _transcript(
+            tmp_path,
+            _user(_PROMPT),
+            _tool_call(),
+            _tool_result(json.dumps({"marker": _RECEIPT})),
+            *skill_load_entries(),
+            _assistant("Relayed."),
+        )
+
+        assert handle_slack_first_gate(_stop(transcript)) is None
 
 
 class TestNeverLockout:

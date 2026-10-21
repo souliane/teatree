@@ -47,15 +47,7 @@ def publish_factory_slack() -> None:
     verdict = factory_slack_live("")
     open_relays: dict[str, list[OpenRelayPayload]] = {}
     for row in PendingChatInjection.objects.open_relays():
-        open_relays.setdefault(row.relayed_by_session, []).append(
-            {
-                "id": row.pk,
-                "slack_ts": row.slack_ts,
-                "channel": row.channel,
-                "text": " ".join(row.text.split())[:120],
-                "state": "delegated" if row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED else "unanswered",
-            }
-        )
+        open_relays.setdefault(row.relayed_by_session, []).append(row.open_relay_payload())
     standing_directives_cache.write_factory_slack(
         {
             "overlay": verdict.overlay,

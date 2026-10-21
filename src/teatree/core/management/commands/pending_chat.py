@@ -184,14 +184,7 @@ class Command(TyperCommand):
     ) -> None:
         """List the relayed owner prompts the factory has not answered, or whose delegated work went wrong."""
         rows = [
-            {
-                "id": row.pk,
-                "session": row.relayed_by_session,
-                "channel": row.channel,
-                "slack_ts": row.slack_ts,
-                "state": "delegated" if row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED else "unanswered",
-                "text": " ".join(row.text.split())[:120],
-            }
+            {**row.open_relay_payload(), "session": row.relayed_by_session}
             for row in PendingChatInjection.objects.open_relays(session)
         ]
         self.print_result = False

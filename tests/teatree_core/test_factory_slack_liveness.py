@@ -80,6 +80,20 @@ def test_absent_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> 
     assert "heartbeat_absent" in verdict.reason
 
 
+@pytest.mark.parametrize(
+    "contents",
+    ["{not json", json.dumps({"interval_seconds": 15, "overlays": {_OVERLAY: 1.0}})],
+    ids=["invalid-json", "no-updated-at"],
+)
+def test_unparsable_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None, contents: str) -> None:
+    (heartbeat_dir / "slack-listener-heartbeat.json").write_text(contents, encoding="utf-8")
+    with _transports({_OVERLAY: _Transport()}):
+        verdict = factory_slack_live(_OVERLAY)
+
+    assert not verdict.live
+    assert verdict.reason.startswith("heartbeat_absent")
+
+
 def test_stale_heartbeat_is_not_live(heartbeat_dir: Path, held_lease: None) -> None:
     _stamp(heartbeat_dir, age_seconds=3600)
     with _transports({_OVERLAY: _Transport()}):

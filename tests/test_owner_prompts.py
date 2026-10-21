@@ -20,12 +20,18 @@ from hooks.scripts.hook_router import _LOOP_PROMPT
 from hooks.scripts.owner_prompts import (
     LIVE_TURN_FRESHNESS,
     is_live_user_turn,
+    last_owner_turn,
     owner_messages,
     owner_prompted_since,
     owner_prompts_since,
 )
+from tests._skill_load_transcript import SKILL_BODY_TEXT, skill_load_entries, slash_command_entries
 
 _NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+_RECEIPT_RESULT = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "RECEIPT-LINE"}]},
+}
 
 
 def _stamp(seconds_ago: float) -> str:
@@ -484,3 +490,26 @@ class TestALongRangeIsReadFromItsNewestEnd:
         cursor.write_text("0", encoding="utf-8")
 
         assert owner_prompts_since(cursor, str(transcript)).prompts == handed_out
+
+
+class TestLastOwnerTurn:
+    """The turn a Stop gate judges: the owner's prompt and the tool results since it."""
+
+    def test_a_skill_loaded_mid_turn_does_not_replace_the_owners_prompt(self, tmp_path: Path) -> None:
+        transcript = _write(tmp_path, _prompt("why is 4001 red?", 5), *skill_load_entries())
+
+        assert last_owner_turn(transcript).prompt == "why is 4001 red?"
+
+    def test_results_from_before_and_after_a_skill_load_are_both_kept_and_the_body_is_not(self, tmp_path: Path) -> None:
+        transcript = _write(tmp_path, _prompt("why is 4001 red?", 5), _RECEIPT_RESULT, *skill_load_entries())
+
+        results = last_owner_turn(transcript).tool_results
+
+        assert "RECEIPT-LINE" in results
+        assert "Launching skill" in results
+        assert SKILL_BODY_TEXT not in results
+
+    def test_a_slash_commands_expansion_is_not_the_owners_words(self, tmp_path: Path) -> None:
+        transcript = _write(tmp_path, *slash_command_entries())
+
+        assert last_owner_turn(transcript).prompt == ""

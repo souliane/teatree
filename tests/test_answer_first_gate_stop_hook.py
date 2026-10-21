@@ -19,6 +19,7 @@ import pytest
 import hooks.scripts.answer_first_gate as gate
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_answer_first_gate
+from tests._skill_load_transcript import skill_load_entries
 
 _QUESTION = "are you going to merge 4001 or not??"
 _DISPATCH_ONLY = "Dispatched a lane to merge #4001. It is queued behind the current tick.\n"
@@ -383,3 +384,32 @@ class TestARelayReceiptIsTheAnswer:
     ) -> None:
         assert handle_answer_first_gate(_delegating_turn(tmp_path, tool_output)) is True
         assert "ANSWER-FIRST GATE" in _decision(capsys)["reason"]
+
+
+class TestASkillLoadedMidTurnIsNotTheUser:
+    """A skill body is an ``isMeta`` user entry: neither the question asked nor the end of the turn's tool results."""
+
+    def test_a_question_asked_before_a_skill_load_still_blocks_the_dispatch_report(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user(_QUESTION), *skill_load_entries(), _assistant(_DISPATCH_ONLY)])
+
+        assert handle_answer_first_gate({"transcript_path": str(transcript)}) is True
+        assert "or not" in _decision(capsys)["reason"]
+
+    def test_a_relay_receipt_printed_before_a_skill_load_still_lets_the_report_through(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user(_QUESTION),
+                _tool_call("Relaying it."),
+                _tool_result(json.dumps({"marker": _RELAY_RECEIPT})),
+                *skill_load_entries(),
+                _assistant(_DISPATCH_ONLY),
+            ],
+        )
+
+        assert handle_answer_first_gate({"transcript_path": str(transcript)}) is None
+        assert capsys.readouterr().out == ""
