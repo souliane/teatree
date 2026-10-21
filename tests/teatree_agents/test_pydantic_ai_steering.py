@@ -1,5 +1,8 @@
 import asyncio
+import operator
 import threading
+from dataclasses import replace
+from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -10,13 +13,21 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
+from teatree.agents import live_control
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
-from teatree.agents.live_control import RejectCode, SteerRejectedError
+from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
+from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
+
+_NEEDS_FENCE = pytest.mark.skipif(  # https://github.com/souliane/teatree/issues/5417
+    getattr(live_control, "LiveFence", None) is None,
+    reason="the task-attempt fence is supplied by the Codex mailbox change",
+)
 
 
 def test_a_steer_is_admitted_into_the_next_model_request_and_acknowledged_only_then() -> None:
@@ -289,3 +300,28 @@ class AdmittedTextResumeTests(TestCase):
 
         assert resumed is not None
         assert "resumable nonce" in repr(resumed.history)
+
+
+@_NEEDS_FENCE
+def test_a_stale_command_never_reaches_a_pydantic_session() -> None:
+    async def run() -> None:
+        registry: Any = LiveSessionRegistry()
+        task = LiveTask(pk=9, ticket=1, phase="coding", harness="pydantic_ai", model="function")
+        fence: Any = operator.attrgetter("fence")(task)
+        stale_fences = (
+            replace(fence, attempt="an-older-attempt"),
+            replace(fence, generation=f"{fence.generation}-older"),
+        )
+        harness = PydanticAiHarness(model=TestModel(custom_output_text="done"))
+        async with harness.open(ClaudeAgentOptions()) as session, registry.attach(task, StreamCapture()) as live:
+            live.bind(session)
+            for index, stale in enumerate(stale_fences):
+                steered = await registry.steer(9, "stale steer", command_id=f"s{index}", wait=0.1, fence=stale)
+                pushed = await registry.push(9, "stale push", command_id=f"p{index}", wait=0.1, fence=stale)
+                for receipt in (steered, pushed):
+                    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode("stale_command"))
+            facts = registry.facts(9)
+            assert facts is not None
+            assert facts["pending_inputs"] == 0
+
+    asyncio.run(run())

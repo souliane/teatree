@@ -8,6 +8,7 @@ session id — deferring at most ``CHECKPOINT_MAX_DEFER_BEATS`` beats while a to
 
 import asyncio
 import contextlib
+import operator
 import sqlite3
 import threading
 from collections.abc import AsyncIterator, Callable
@@ -21,8 +22,9 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ToolUseBlock
 from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
-from teatree.agents import runner_heartbeat
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, RejectCode
+from teatree.agents import live_control, runner_heartbeat
+from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
+from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask, RejectCode
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import (
     CHECKPOINT_MAX_DEFER_BEATS,
@@ -39,6 +41,10 @@ from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarne
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
 _TASK_PK = 7
+_NEEDS_FENCE = pytest.mark.skipif(  # https://github.com/souliane/teatree/issues/5417
+    getattr(live_control, "LiveFence", None) is None,
+    reason="the task-attempt fence is supplied by the Codex mailbox change",
+)
 
 
 _WATCHDOG = LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0)
@@ -360,3 +366,45 @@ class TestTheProductionDrainRead(TestCase):
         assert raws, "the drain read never opened the worker thread's connection"
         with pytest.raises(sqlite3.ProgrammingError):
             raws[0].execute("SELECT 1")
+
+
+@_NEEDS_FENCE
+def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
+    mailbox_tasks: list[LiveTask] = []
+    registry_tasks: list[LiveTask] = []
+    registry = shared_registry()
+    real_bound, real_attach = runner_heartbeat.bound_task_mailbox, registry.attach
+
+    @contextlib.contextmanager
+    def bound_spy(options: ClaudeAgentOptions, live_task: LiveTask) -> Any:
+        mailbox_tasks.append(live_task)
+        with real_bound(options, live_task) as identity:
+            yield identity
+
+    def attach_spy(live_task: LiveTask, capture: Any) -> Any:
+        registry_tasks.append(live_task)
+        return real_attach(live_task, capture)
+
+    runtime = HeartbeatRuntime(
+        watchdog=_WATCHDOG,
+        heartbeat_interval=0.005,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=_drain_from_beat(1, []),
+    )
+    harness = GuardedHarness(
+        harness=OneSessionHarness(InterruptibleSession([], session_id=_SESSION)),
+        guard=CompactionGuard(),
+        name="pydantic_ai",
+    )
+    with (
+        patch.object(runner_heartbeat, "bound_task_mailbox", bound_spy),
+        patch.object(registry, "attach", attach_spy),
+    ):
+        asyncio.run(
+            drive_with_heartbeat(Task(pk=_TASK_PK, phase="coding"), "p", ClaudeAgentOptions(), harness, runtime=runtime)
+        )
+
+    assert len(mailbox_tasks) == len(registry_tasks) == 1
+    assert mailbox_tasks[0].harness == registry_tasks[0].harness == "pydantic_ai"
+    assert operator.attrgetter("fence")(mailbox_tasks[0]) == operator.attrgetter("fence")(registry_tasks[0])
