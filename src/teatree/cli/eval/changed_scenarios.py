@@ -97,6 +97,7 @@ def changed_scenarios(
         changed_sections=sections,
         quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
     )
+    # The reusable workflow needs this artifact while calling an older overlay CLI contract.
     if deferred_out := os.environ.get("TEATREE_EVAL_DEFERRED_OUT"):
         write_artifact(Path(deferred_out), "".join(f"{name}\n" for name in selection.deferred_names))
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is

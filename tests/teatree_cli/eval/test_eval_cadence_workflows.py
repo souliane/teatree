@@ -371,9 +371,12 @@ def test_benchmark_publish_sets_true_after_successful_verification(tmp_path: Pat
     assert calls.read_text(encoding="utf-8").startswith("run t3 eval verify-benchmark-publish ")
 
 
-@pytest.mark.parametrize(("receipt", "publishes"), [(None, False), ("parked", False), ("complete", True)])
+@pytest.mark.parametrize(
+    ("receipt", "has_summary", "publishes"),
+    [(None, True, False), ("parked", True, False), ("complete", True, True), ("complete", False, False)],
+)
 def test_weekly_dashboard_requires_every_leg_to_complete(
-    tmp_path: Path, receipt: str | None, *, publishes: bool
+    tmp_path: Path, receipt: str | None, *, has_summary: bool, publishes: bool
 ) -> None:
     jobs = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))["jobs"]
     eval_steps = jobs["eval"]["steps"]
@@ -387,7 +390,8 @@ def test_weekly_dashboard_requires_every_leg_to_complete(
         step for step in publish_steps if step.get("name") == "Merge the shard summaries into the public dashboard"
     )
     (tmp_path / "summaries").mkdir()
-    (tmp_path / "summaries" / "eval-summary-one.md").write_text("measured row\n", encoding="utf-8")
+    if has_summary:
+        (tmp_path / "summaries" / "eval-summary-one.md").write_text("measured row\n", encoding="utf-8")
     (tmp_path / "receipts").mkdir()
     if receipt is not None:
         (tmp_path / "receipts" / "eval-leg-result-one.txt").write_text(receipt + "\n", encoding="utf-8")

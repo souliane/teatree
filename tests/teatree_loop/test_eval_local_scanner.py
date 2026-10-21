@@ -37,7 +37,9 @@ def _scanner(
     skill: str = "running-evals",
     reserve_met: bool = True,
 ) -> EvalLocalScanner:
-    return EvalLocalScanner(overlay_name=overlay_name, skill=skill, reserve_met=lambda: reserve_met)
+    return EvalLocalScanner(
+        overlay_name=overlay_name, skill=skill, reserve_met=lambda: EvalReserveDecision(met=reserve_met)
+    )
 
 
 def _last_eval_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:

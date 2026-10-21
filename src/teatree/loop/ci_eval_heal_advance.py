@@ -212,7 +212,7 @@ def _dispatch_ci(
     *,
     client: GhCiEvalClient,
     escalate: EscalateFn,
-    reserve_met: Callable[[], bool | EvalReserveDecision],
+    reserve_met: Callable[[], EvalReserveDecision],
 ) -> AdvanceOutcome:
     """PENDING → AWAITING_CI: claim the step, THEN dispatch the eval run it now owns.
 
@@ -221,11 +221,8 @@ def _dispatch_ci(
     target, which is why that one still records only after its push.
     """
     reserve = reserve_met()
-    if isinstance(reserve, EvalReserveDecision):
-        if not reserve.met:
-            return AdvanceOutcome(session.pr_ref, "pending", session.state, note=f"held: {reserve.reason}")
-    elif not reserve:
-        return AdvanceOutcome(session.pr_ref, "pending", session.state, note="held: no eval account meets the reserve")
+    if not reserve.met:
+        return AdvanceOutcome(session.pr_ref, "pending", session.state, note=f"held: {reserve.reason}")
     head_sha = client.resolve_head_sha(session.pr_ref)
     claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))
     if claimed is None:
@@ -433,7 +430,7 @@ def advance_session(
     client: GhCiEvalClient,
     escalate: EscalateFn,
     fixer: CiEvalHealFixer | None = None,
-    reserve_met: Callable[[], bool | EvalReserveDecision] = ci_eval_reserve_decision,
+    reserve_met: Callable[[], EvalReserveDecision] = ci_eval_reserve_decision,
 ) -> AdvanceOutcome:
     """Advance one open session ONE FSM step. ``FIXING`` and terminal states are no-ops.
 
@@ -488,7 +485,7 @@ def advance_open_sessions(
     client: GhCiEvalClient | None = None,
     escalate: EscalateFn | None = None,
     fixer: CiEvalHealFixer | None = None,
-    reserve_met: Callable[[], bool | EvalReserveDecision] = ci_eval_reserve_decision,
+    reserve_met: Callable[[], EvalReserveDecision] = ci_eval_reserve_decision,
 ) -> OpenSessionsRun:
     """Advance every non-terminal session one step, best-effort (a bad session never aborts the pass).
 
@@ -498,7 +495,7 @@ def advance_open_sessions(
     the outcomes + swallowed errors for the caller (loop log / operator CLI). The
     ``fixer`` is the injected autonomous-fix seam (default: the production headless
     fixer); every confirmed behavioral red within budget reaches it. ``reserve_met``
-    (default: the cached, fail-closed CI-pool reserve probe) holds every PENDING dispatch.
+    (default: the live-if-stale, fail-closed CI-pool reserve probe) holds every PENDING dispatch.
     """
     from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM needs the app registry
 

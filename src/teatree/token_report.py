@@ -144,34 +144,6 @@ class TokenReport:
         ad_hoc = [self._ad_hoc_row(index, token, now) for index, token in enumerate(self._ad_hoc_tokens, start=1)]
         return sorted(self._pass_rows(now), key=_routing_preference) + ad_hoc
 
-    def eval_reserve_met(
-        self,
-        reserve: WindowReserve,
-        *,
-        accounts: tuple[str, ...] | None = None,
-        rows: list[TokenAccountRow] | None = None,
-    ) -> bool:
-        now = timezone.now()
-        allowed = set(accounts) if accounts is not None else None
-        if allowed is not None and not allowed:
-            return False
-        return any(
-            row.kind is TokenKind.OAUTH
-            and row.source is TokenSource.STORE
-            and (allowed is None or row.account in allowed)
-            and row.status.is_measured
-            and row.checked_at is not None
-            and dt.timedelta() <= now - row.checked_at <= HEALTH_TTL
-            and reserve.allows(
-                row.utilization_5h,
-                row.next_window_reset,
-                row.utilization_7d,
-                row.weekly_reset,
-                now,
-            )
-            for row in (self.rows() if rows is None else rows)
-        )
-
     def reserve_row(self, account: str) -> tuple[TokenAccountRow, bool]:
         identity = RowIdentity(account, TokenKind.OAUTH, TokenSource.STORE, ())
         cached = _cached_row(identity)
@@ -346,7 +318,13 @@ def _account_reserve_decision(report: TokenReport, reserve: WindowReserve, accou
         if was_stale:
             return EvalReserveDecision(met=False, reason="stale OAuth headroom could not be refreshed", stale=True)
         return EvalReserveDecision(met=False, reason="OAuth headroom is unmeasured")
-    if report.eval_reserve_met(reserve, accounts=(account,), rows=[row]):
+    if reserve.allows(
+        row.utilization_5h,
+        row.next_window_reset,
+        row.utilization_7d,
+        row.weekly_reset,
+        timezone.now(),
+    ):
         return EvalReserveDecision(met=True)
     return EvalReserveDecision(met=False, reason="OAuth headroom is below the eval reserve")
 
@@ -393,10 +371,6 @@ def local_eval_reserve_decision() -> EvalReserveDecision:
     return EvalReserveDecision(met=False, reason="OAuth account selection did not settle")
 
 
-def cached_local_eval_reserve_met() -> bool:
-    return local_eval_reserve_decision().met
-
-
 def ci_eval_reserve_decision() -> EvalReserveDecision:
     accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
     if not accounts:
@@ -415,10 +389,6 @@ def ci_eval_reserve_decision() -> EvalReserveDecision:
     if any(decision.stale for decision in rejected):
         return EvalReserveDecision(met=False, reason="stale CI OAuth headroom could not be refreshed", stale=True)
     return EvalReserveDecision(met=False, reason="no configured CI OAuth account meets the eval reserve")
-
-
-def cached_ci_eval_reserve_met() -> bool:
-    return ci_eval_reserve_decision().met
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

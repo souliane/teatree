@@ -151,6 +151,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Hourly CI credential-pool reconciliation failed; a stale eval secret needs
     # operator repair rather than an invisible generic in-flight fallback.
     "ci_oauth_pool.failed": "action_needed",
+    # A stale local reserve reading needs attention before evals can spend safely.
     "eval_local.parked": "action_needed",
     # A configured pool targeting a repository this deployment does not own is
     # an actionable configuration mismatch; the scanner safely makes no write.

@@ -868,15 +868,15 @@ def _noop(_session: CiEvalHealSession) -> None:
     """A silent escalation stub for halting paths that don't assert the escalation itself."""
 
 
-def _reserve_met() -> bool:
-    return True
+def _reserve_met() -> EvalReserveDecision:
+    return EvalReserveDecision(met=True)
 
 
-def _reserve_short() -> bool:
-    return False
+def _reserve_short() -> EvalReserveDecision:
+    return EvalReserveDecision(met=False, reason="no eval account meets the reserve")
 
 
-def _reserve_unconsulted() -> bool:
+def _reserve_unconsulted() -> EvalReserveDecision:
     pytest.fail("the reserve gates only a PENDING dispatch")
 
 

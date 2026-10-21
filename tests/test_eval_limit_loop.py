@@ -335,26 +335,6 @@ def test_the_weekly_sweep_runs_one_leg_at_a_time_and_never_overlaps() -> None:
     assert workflow["concurrency"] == {"group": "eval-weekly-sweep", "cancel-in-progress": False}
 
 
-def test_a_sweep_whose_every_leg_parked_publishes_no_empty_dashboard(shell) -> None:
-    run = shell(
-        _script("eval.yml", "publish", "Merge the shard summaries into the public dashboard"),
-        EVAL_MATRIX='[{"lane":"clean_room","shard":"1/1"}]',
-    )
-    assert run.returncode == 0
-
-
-def test_a_sweep_with_one_missing_leg_publishes_no_partial_dashboard(shell) -> None:
-    summaries = shell(":").temp / "summaries"
-    summaries.mkdir()
-    (summaries / "eval-summary-one.md").write_text("| one | PASS |\n", encoding="utf-8")
-    run = shell(
-        _script("eval.yml", "publish", "Merge the shard summaries into the public dashboard"),
-        EVAL_MATRIX='[{"lane":"clean_room","shard":"1/2"},{"lane":"clean_room","shard":"2/2"}]',
-    )
-    assert run.returncode == 0
-    assert "merge_summaries.py" not in run.stderr
-
-
 def test_the_benchmark_never_overlaps() -> None:
     assert _workflow("eval-benchmark.yml")["concurrency"] == {"group": "eval-benchmark", "cancel-in-progress": False}
 
