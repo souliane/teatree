@@ -41,6 +41,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.changed_scenarios import REPO_ROOT, select_changed_scenarios, specs_under
 from teatree.eval.changed_sections import changed_sections_by_path
 from teatree.eval.discovery import discover_specs
@@ -97,7 +98,7 @@ def changed_scenarios(
         quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
     )
     if deferred_out := os.environ.get("TEATREE_EVAL_DEFERRED_OUT"):
-        Path(deferred_out).write_text("".join(f"{name}\n" for name in selection.deferred_names), encoding="utf-8")
+        write_artifact(Path(deferred_out), "".join(f"{name}\n" for name in selection.deferred_names))
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
     # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
     if note := selection.truncation_note():

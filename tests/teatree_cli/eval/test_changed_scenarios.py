@@ -86,6 +86,11 @@ class TestChangedScenarios:
         assert set(selected).isdisjoint(tail)
         assert set(selected) | set(tail) == {spec.name for spec in core_specs}
 
+        monkeypatch.setenv("EVAL_TEST_TOKEN", tail[0])
+        result = CliRunner().invoke(app, ["eval", "changed-scenarios"], input="\n".join(all_files) + "\n")
+        assert result.exit_code == 0, result.output
+        assert tail[0] not in deferred.read_text(encoding="utf-8")
+
     def test_deferred_out_is_empty_when_no_scenario_changed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
