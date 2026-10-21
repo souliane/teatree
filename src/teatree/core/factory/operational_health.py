@@ -48,6 +48,7 @@ from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
+from teatree.core.factory.stalled_checkout_pr import stalled_checkout_pr_signals
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
 from teatree.core.models.known_issue import KnownIssue
@@ -458,6 +459,7 @@ _COLLECTORS = (
     _failed_task_signals,
     _consecutive_harness_crash_signals,
     _stalled_backlog_signals,
+    stalled_checkout_pr_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,

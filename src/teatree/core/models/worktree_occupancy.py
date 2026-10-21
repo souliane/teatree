@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 from django.db.models import Q
+from django.dispatch import Signal
 from django.utils import timezone
 
 from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, holder_confirmed_dead
@@ -232,6 +233,7 @@ def acquire(
 
 
 _UNOCCUPIED = {"occupied_by": "", "occupied_by_session": "", "occupied_at": None, "occupancy_expires_at": None}
+checkout_capacity_opened = Signal()
 
 
 def release(worktree: Worktree, *, holder: str, holder_session: str = "", attested_state: str | None = None) -> bool:
@@ -262,6 +264,11 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "", attest
                     }
                 }
             freed = held.update(**_UNOCCUPIED, **fields)
+            if freed == 1:
+                Task.objects.filter(ticket_id=worktree.ticket_id).rearm_parked_behind(
+                    holder=holder, holder_session=holder_session
+                )
+                checkout_capacity_opened.send(sender=Worktree)
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1

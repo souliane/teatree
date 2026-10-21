@@ -22,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Annotated, NoReturn, cast
 
+import click
 import typer
 from django.utils import timezone
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import DTCommand, TyperCommand, command, initialize
 
 from teatree.core.handover import (
     CreatedHandover,
@@ -87,6 +88,24 @@ class _RecordedBarrier:
         return self.row.last_barrier_at.isoformat() if self.row and self.row.last_barrier_at else None
 
 
+def _capture_park(ctx: click.Context, _param: click.Parameter, value: object) -> None:
+    ctx.meta["handover_park"] = bool(value)
+
+
+class _ParkableCreateCommand(DTCommand):
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [
+            *super().get_params(ctx),
+            click.Option(
+                ["--park"],
+                is_flag=True,
+                expose_value=False,
+                callback=_capture_park,
+                help="Park for the next session instead of the live loop owner.",
+            ),
+        ]
+
+
 class Command(TyperCommand):
     help = "Hand all current work from this session to another session."
 
@@ -94,7 +113,7 @@ class Command(TyperCommand):
     def init(self) -> None:
         """``t3 <overlay> handover`` group root."""
 
-    @command()
+    @command(cls=_ParkableCreateCommand)
     def create(
         self,
         *,
@@ -130,7 +149,8 @@ class Command(TyperCommand):
         failure this command is supposed to make impossible.
 
         No ``--to`` → the live ``t3-master`` slot holder; if none, parked
-        for whichever session starts next. Per directive #8, every in-flight
+        for whichever session starts next. ``--park`` parks even with a live owner
+        and cannot be combined with ``--to``. Per directive #8, every in-flight
         sub-agent worktree is driven through leak-gated fast-push so their work is
         committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
         barrier runs on the refused path too, since a session with nothing to hand
@@ -139,6 +159,9 @@ class Command(TyperCommand):
         A resolve that finds NOTHING writes nothing: no row, no mirror, and no
         mutation of this author's existing unclaimed row.
         """
+        park = bool(click.get_current_context().meta.get("handover_park"))
+        if park and to:
+            self._refuse("--park and --to cannot be combined", json_output=json_output, code=2)
         from_session = authoring_session_id()
         if not from_session:
             self._refuse(
@@ -160,14 +183,14 @@ class Command(TyperCommand):
         # long enough for the last ticket to settle or the snapshot to rotate underneath
         # it, so a gate decided on one side of it cannot speak for a write on the other.
         barrier_ran, pushes = self._drive_subagents(enabled=drive_subagents)
-        resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored)
+        resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored, park=park)
         if resolution.resolved.source is PayloadSource.EMPTY:
             self._refuse_empty(from_session, pushes=pushes, json_output=json_output)
 
         try:
             created = create_handover(from_session=from_session, resolution=resolution)
         except SelfAddressedHandoverError as exc:
-            self._refuse(str(exc), json_output=json_output, code=1)
+            self._refuse(f"{exc} Pass --park to park it for the next session.", json_output=json_output, code=1)
 
         handover, source = created.handover, created.source
         recipient = handover.to_session or "next-session"
@@ -257,6 +280,8 @@ class Command(TyperCommand):
                 f"mirror written to {recorded.mirror}."
             )
         ]
+        if handover.is_for_next_session:
+            lines.append(f"      claimable by any session except {handover.from_session} on SessionStart.")
         if created.updated_existing:
             lines.append(self._absorb_note(created))
         lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]

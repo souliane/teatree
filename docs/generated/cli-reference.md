@@ -7642,6 +7642,9 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                       (self-rescue).                                         │
 │ delegation            Orchestrator delegation gate (an unbounded read        │
 │                       belongs in a sub-agent) kill-switch (self-rescue).     │
+│ owner-question        Attended owner-question gate (one plain question per   │
+│                       call, no decisions in reply prose) kill-switch         │
+│                       (self-rescue).                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8902,6 +8905,60 @@ Usage: t3 teatree gate delegation disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate delegation enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate owner-question`
+
+```
+Usage: t3 teatree gate owner-question [OPTIONS] COMMAND [ARGS]...
+
+ Attended owner-question gate (one plain question per call, no decisions in
+ reply prose) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question status`
+
+```
+Usage: t3 teatree gate owner-question status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question disable`
+
+```
+Usage: t3 teatree gate owner-question disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question enable`
+
+```
+Usage: t3 teatree gate owner-question enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -11803,7 +11860,8 @@ Usage: t3 teatree handover create [OPTIONS]
  failure this command is supposed to make impossible.
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
- for whichever session starts next. Per directive #8, every in-flight
+ for whichever session starts next. ``--park`` parks even with a live owner
+ and cannot be combined with ``--to``. Per directive #8, every in-flight
  sub-agent worktree is driven through leak-gated fast-push so their work is
  committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
  barrier runs on the refused path too, since a session with nothing to hand
@@ -11832,6 +11890,9 @@ Usage: t3 teatree handover create [OPTIONS]
 │ --json                                             Emit JSON.                │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+│ --park                                             Park for the next session │
+│                                                    instead of the live loop  │
+│                                                    owner.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -14652,7 +14713,7 @@ Usage: t3 teatree retro finding [OPTIONS]
  This is what retro persists a lesson WITH: the finding becomes a VERIFIED
  core-gap ledger row queued on the umbrella host's pending ledger — the same
  drain dreaming Pass 2 uses, so the prose retires itself once the host that
- absorbs it merges. With ``memory_promote`` off the row is
+ absorbs it merges. With ``dream_memory_promote`` off the row is
  still recorded and the promotion reported ``deferred``, reaching no umbrella.
  Emits the result as JSON; a refusal prints its payload and raises
  ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real
