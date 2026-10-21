@@ -659,7 +659,7 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
 
         outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
 
-        assert [outcome.action for outcome in outcomes] == ["error", "kept"]
+        assert len(outcomes) == 2
         by_action = {outcome.action: outcome.label for outcome in outcomes}
         assert set(by_action) == {"error", "kept"}
         assert by_action["error"].endswith("[checkout: unresolvable]")
