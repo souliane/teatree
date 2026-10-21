@@ -266,7 +266,7 @@ def test_the_check_sees_a_deny_however_the_route_is_reached(source: str, expecte
 
 
 def test_every_declared_gate_has_one_escape_policy() -> None:
-    stop_gates = {"answer_first", "completion_claim", "standing_goal_stop", "unbacked_claim"}
+    stop_gates = {"answer_first", "completion_claim", "owner-question-decision", "standing_goal_stop", "unbacked_claim"}
     assert DECLARED_GATES | stop_gates == KNOWN_GATES
 
 
@@ -291,6 +291,7 @@ def test_no_per_gate_escape_regexes_remain() -> None:
         "main-clone-ok",
         "merge-detect-ok",
         "orchestration-ok",
+        "owner-question-ok",
         "quote-ok",
         "reviewer-ok",
         "scope-push-ok",

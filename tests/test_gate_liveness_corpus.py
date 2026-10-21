@@ -40,6 +40,7 @@ import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -383,6 +384,49 @@ def _standing_grant_ask_allow(ctx: GateContext) -> dict:
     return _standing_grant_ask(ctx, "Authorize the expedite waiver so substrate PR #4805 can merge on pending checks?")
 
 
+def _arrange_owner_question(ctx: GateContext) -> None:
+    ctx.monkeypatch.delenv("T3_DISPATCHED_AGENT", raising=False)
+
+
+def _owner_turn(ctx: GateContext) -> dict:
+    transcript = ctx.tmp_path / "owner-question.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "message": {"role": "user", "content": [{"type": "text", "text": "Please handle this."}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {"session_id": ctx.session_id, "transcript_path": str(transcript)}
+
+
+def _owner_question_event(ctx: GateContext, question: str) -> dict:
+    return _owner_turn(ctx) | {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"header": "Merge", "question": question, "options": []}]},
+    }
+
+
+def _owner_decision_stop_deny(ctx: GateContext) -> dict:
+    return _owner_turn(ctx) | {"last_assistant_message": "Needs you:\n- Which branch?\n- Merge now?"}
+
+
+def _owner_decision_stop_allow(ctx: GateContext) -> dict:
+    return _owner_turn(ctx) | {"last_assistant_message": "The build passed and I will proceed."}
+
+
+def _owner_question_deny(ctx: GateContext) -> dict:
+    return _owner_question_event(ctx, "Merge PR #42 now?")
+
+
+def _owner_question_allow(ctx: GateContext) -> dict:
+    return _owner_question_event(ctx, "Merge this now?")
+
+
 def _block_config_overwrite_deny(ctx: GateContext) -> dict:
     cfg = _config_overwrite_cfg(ctx)
     return {
@@ -501,6 +545,8 @@ def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.monkeypatch.setenv("CLAUDECODE", "1")
     ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
     ctx.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+    ctx.monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
+    ctx.monkeypatch.delenv("CLAUDE_CODE_SESSION_ATTENDED", raising=False)
     repo = _managed_repo(ctx, "1-feat-acme")
     source = repo / "src" / "acme"
     source.mkdir(parents=True, exist_ok=True)
@@ -1266,6 +1312,24 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_standing_grant,
     ),
     GateRow(
+        gate_id="owner-decision-prose",
+        handler=router.handle_block_decision_prose,
+        event="Stop",
+        matched="",
+        deny_input=_owner_decision_stop_deny,
+        allow_input=_owner_decision_stop_allow,
+        arrange=_arrange_owner_question,
+    ),
+    GateRow(
+        gate_id="owner-question-fit",
+        handler=router.handle_block_unfit_question,
+        event="PreToolUse",
+        matched="AskUserQuestion",
+        deny_input=_owner_question_deny,
+        allow_input=_owner_question_allow,
+        arrange=_arrange_owner_question,
+    ),
+    GateRow(
         gate_id="protect-default-branch",
         handler=router.handle_protect_default_branch,
         event="PreToolUse",
@@ -1720,9 +1784,6 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # Responsiveness nudge — advisory only (prints additionalContext once a
         # turn crosses the tool-call budget), returns ``None``, never denies.
         router.handle_orchestrator_turn_budget_nudge,
-        # One-decision-per-call advisory — warn-only (stderr nudge on a batched
-        # AskUserQuestion), returns ``None``, never denies.
-        router.handle_warn_batched_questions,
         # Orchestrator-investigation boundary (#1442) — a WARN-only nudge (stderr
         # + always returns ``False``); it has no deny path, so no must-deny
         # corpus payload.

@@ -109,6 +109,7 @@ _DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = (
     "SKILL LOADING ENFORCEMENT",
     "LOOP REGISTRATION",
     "TEATREE PLAN-FIRST GATE",
+    "TEATREE OWNER QUESTION GATE",
 )
 
 # Volatile substrings stripped from a deny reason before fingerprinting so "the
@@ -168,9 +169,10 @@ def _call_signature(data: dict) -> str:
     and, on a reason-only fingerprint, falsely accumulates a streak that poisons
     the distinct later commands. Folding this signature into the fingerprint
     keeps distinct commands apart while a real retry (identical call) still
-    matches. Bash keys on the command, Edit / Write on the file path, everything
-    else on the tool name — with escape/override tokens stripped so a call
-    with-and-without a token shares one fingerprint. Never raises.
+    matches. Bash keys on the command, Edit / Write on the file path, a question
+    call on its questions, everything else on the tool name — with escape/override
+    tokens stripped so a call with-and-without a token shares one fingerprint.
+    Never raises.
     """
     tool_input = data.get("tool_input") if isinstance(data, dict) else None
     tool_input = tool_input if isinstance(tool_input, dict) else {}
@@ -179,6 +181,8 @@ def _call_signature(data: dict) -> str:
         identity = str(tool_input.get("command", ""))
     elif tool_name in {"Edit", "Write"}:
         identity = str(tool_input.get("file_path", ""))
+    elif isinstance(questions := tool_input.get("questions"), list):
+        identity = json.dumps(questions, sort_keys=True, default=str)
     else:
         identity = tool_name
     # ALL whitespace is removed (not collapsed) so a stripped token can never

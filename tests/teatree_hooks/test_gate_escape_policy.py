@@ -18,7 +18,11 @@ def test_digest_ignores_token_but_keeps_protected_action() -> None:
 
 
 def test_policy_preserves_leak_and_owner_boundaries() -> None:
-    assert DECLARED_GATES | {"answer_first", "completion_claim", "unbacked_claim", "standing_goal_stop"} == KNOWN_GATES
+    assert (
+        DECLARED_GATES
+        | {"answer_first", "completion_claim", "owner-question-decision", "unbacked_claim", "standing_goal_stop"}
+        == KNOWN_GATES
+    )
     assert policy_for("quote_scanner") is EscapePolicy.NEVER
     assert policy_for("raw_review_post") is EscapePolicy.HUMAN_ONLY
     assert policy_for("main_clone") is EscapePolicy.AUDITED

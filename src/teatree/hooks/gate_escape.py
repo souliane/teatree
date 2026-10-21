@@ -56,6 +56,8 @@ _AUDITED = frozenset(
         "orchestrator_bash",
         "orchestrator_delegation_gate",
         "orchestrator_foreground_dispatch",
+        "owner-question-decision",
+        "owner-question-fit",
         "plan_gate",
         "protect_default_branch",
         "raw_pid_kill",

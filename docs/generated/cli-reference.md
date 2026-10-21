@@ -7653,6 +7653,9 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                       (self-rescue).                                         │
 │ delegation            Orchestrator delegation gate (an unbounded read        │
 │                       belongs in a sub-agent) kill-switch (self-rescue).     │
+│ owner-question        Attended owner-question gate (one plain question per   │
+│                       call, no decisions in reply prose) kill-switch         │
+│                       (self-rescue).                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8913,6 +8916,60 @@ Usage: t3 teatree gate delegation disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate delegation enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate owner-question`
+
+```
+Usage: t3 teatree gate owner-question [OPTIONS] COMMAND [ARGS]...
+
+ Attended owner-question gate (one plain question per call, no decisions in
+ reply prose) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question status`
+
+```
+Usage: t3 teatree gate owner-question status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question disable`
+
+```
+Usage: t3 teatree gate owner-question disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question enable`
+
+```
+Usage: t3 teatree gate owner-question enable [OPTIONS]
 
  Re-enable the gate.
 

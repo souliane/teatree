@@ -132,6 +132,16 @@ class TestCallSignatureDiscrimination:
     def test_malformed_data_yields_empty_signature(self) -> None:
         assert dcb._call_signature({"tool_name": "Bash", "tool_input": None}) == ""
 
+    @pytest.mark.parametrize("tool_name", ["AskUserQuestion", "request_user_input"])
+    def test_question_call_signature_keys_on_its_questions(self, tool_name: str) -> None:
+        def signature(question: str) -> str:
+            return dcb._call_signature({"tool_name": tool_name, "tool_input": {"questions": [{"question": question}]}})
+
+        assert signature("Merge ticket 42 now?") != signature("Merge ticket 43 today?")
+        assert signature("Merge ticket 42 now? [gate-escape:owner-question-fit: asked]") == signature(
+            "Merge ticket 42 now?"
+        )
+
 
 class TestGrantStoreEdgeCases:
     """#3252 — the grant store is crash-proof and idempotent."""
