@@ -24,6 +24,7 @@ from teatree.hooks import _repo_visibility
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from teatree.token_report import EvalReserveDecision
 from tests._send_gate import allow_forge_repos
 
 #: A memory-backed rule plus a correction turn violating it again.
@@ -131,7 +132,10 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
             return []
 
         with (
-            patch("teatree.core.management.commands.dream.cached_local_eval_reserve_met", return_value=True),
+            patch(
+                "teatree.core.management.commands.dream.local_eval_reserve_decision",
+                return_value=EvalReserveDecision(met=True),
+            ),
             patch("teatree.loops.dream.promote.build_live_validator", return_value=sentinel),
             patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=_capture),
         ):
@@ -140,7 +144,10 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
 
     def test_live_validation_parks_from_tick_below_the_eval_reserve(self) -> None:
         with (
-            patch("teatree.core.management.commands.dream.cached_local_eval_reserve_met", return_value=False),
+            patch(
+                "teatree.core.management.commands.dream.local_eval_reserve_decision",
+                return_value=EvalReserveDecision(met=False, reason="OAuth headroom is below the eval reserve"),
+            ),
             patch("teatree.loops.dream.promote.build_live_validator") as build,
             patch("teatree.loops.dream.promote.promote_proposals_file") as promote,
         ):
