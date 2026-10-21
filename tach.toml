@@ -84,6 +84,21 @@ layers = [
 
 [[interfaces]]
 expose = [
+  "_FORGE_READ_TIMEOUT_SECONDS",
+  "_gh_api_patch",
+  "_gh_api_post",
+  "_run_gh",
+  "gh_api_get",
+  "gh_api_get_paginated",
+  "gh_api_search_paginated",
+  "is_not_found",
+  "parse_issue_ref",
+  "run_gh_unchecked"
+]
+from = ["teatree.backends.github.api"]
+
+[[interfaces]]
+expose = [
   "fetch_required_checks_rollup",
   "fetch_workflow_runs_at_head",
   "get_issue",

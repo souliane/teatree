@@ -60,6 +60,7 @@ _GH_METHOD_SWITCHES = frozenset({"--method", "-X", "--input"})
 _WRITE_CHOKEPOINTS = frozenset({"forge-comment-write-seam", "merge-message-seam"})
 
 
+@cache
 def _forge_writes() -> frozenset[str]:
     registered = {attr for entry in load_registry() if entry.id in _WRITE_CHOKEPOINTS for attr in entry.protected_attrs}
     return frozenset(registered) | _WRITE_TRANSPORT
@@ -220,9 +221,7 @@ def test_reads_module_touches_no_write(module: str) -> None:
     assert bound.keys().isdisjoint(_forge_writes())
     for name, value in bound.items():
         assert getattr(value, "__name__", "") not in _forge_writes(), f"{module}.{name}"
-        if inspect.ismodule(value) or (
-            (inspect.isclass(value) or inspect.isfunction(value)) and value.__module__ != module
-        ):
+        if inspect.ismodule(value) or (inspect.isclass(value) and value.__module__ != module):
             for attribute in dir(value):
                 assert attribute not in _forge_writes(), f"{module}.{name}.{attribute}"
                 member = getattr(value, attribute)

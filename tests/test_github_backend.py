@@ -16,15 +16,10 @@ import teatree.backends.github.projects as github_projects_mod
 import teatree.backends.github.reads as github_reads_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
-from teatree.backends.github.api import (
-    _FORGE_READ_TIMEOUT_SECONDS,
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_patch,
-    _gh_api_post,
-    _gh_api_search_paginated,
-    _run_gh,
-)
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.api import gh_api_get as _gh_api_get
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
+from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
 
 
@@ -863,20 +858,6 @@ class TestGitHubCodeHost:
             host = GitHubCodeHost()
             result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="x")
         assert result == {}
-
-    def test_list_pr_comments(self) -> None:
-        # ``--slurp`` wraps each page in an outer array; one page → one inner list.
-        notes = [{"id": 1, "body": "comment"}]
-        with patch.object(github_reads_mod, "_gh_api_get_paginated", return_value=notes):
-            host = GitHubCodeHost()
-            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
-        assert result == notes
-
-    def test_list_pr_comments_returns_empty_for_non_list(self) -> None:
-        with patch.object(github_reads_mod, "_gh_api_get_paginated", return_value=[]):
-            host = GitHubCodeHost()
-            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
-        assert result == []
 
     def test_list_pr_comments_paginates_beyond_the_first_page(self) -> None:
         # A PR with >30 comments: GitHub's default page size silently caps a

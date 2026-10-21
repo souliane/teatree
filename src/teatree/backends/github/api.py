@@ -73,7 +73,7 @@ def run_gh_unchecked(args: list[str], *, token: str) -> CompletedProcess[str]:
         return CompletedProcess(args=argv, returncode=127, stdout="", stderr="gh not installed")
 
 
-def _gh_api_get(endpoint: str, *, token: str = "") -> object:
+def gh_api_get(endpoint: str, *, token: str = "") -> object:
     """Call ``gh api`` (GET) and return parsed JSON."""
     result = _run_gh(
         "gh",
@@ -87,7 +87,7 @@ def _gh_api_get(endpoint: str, *, token: str = "") -> object:
     return json.loads(result.stdout)
 
 
-def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+def gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
     """Fetch EVERY page of a list endpoint and return one flat list.
 
     A plain ``gh api`` GET returns only the first page — GitHub's default
@@ -122,11 +122,11 @@ def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]
     return flattened
 
 
-def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+def gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
     """Fetch every page of a GitHub search endpoint and return a flat item list.
 
     Search responses wrap results in ``{"items": [...], "total_count": N}``
-    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
+    rather than a bare JSON array, so ``gh_api_get_paginated`` (which expects
     bare arrays per page via ``--slurp``) cannot be used here.
     ``--paginate`` + ``--slurp`` emits each page as a search-object element;
     this pulls the ``items`` list from each page and flattens them.
@@ -201,7 +201,7 @@ def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> obj
     return _gh_api_write(endpoint, payload, method="PATCH", token=token)
 
 
-def _parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
+def parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
     """The ``(owner/repo, number)`` of a GitHub issue URL, or ``None`` when unparsable.
 
     The single source of truth for the ``urlparse`` + ``_ISSUE_URL_RE`` preamble the

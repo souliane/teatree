@@ -18,7 +18,8 @@ from collections.abc import Sequence
 from typing import cast
 from urllib.parse import urlparse
 
-from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_get, _run_gh
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
+from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.payloads import _GitHubPullRequestSummary, pr_open_state_from_payload
 from teatree.backends.types import dig
 from teatree.core.backend_protocols import ApprovalState, PrOpenState

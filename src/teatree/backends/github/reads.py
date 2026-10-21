@@ -1,6 +1,6 @@
 """GitHub's read interface: the PR, review, comment, check and issue reads, and no write.
 
-tach ``[[interfaces]]`` limits direct name imports to ``__all__``;
+tach ``[[interfaces]]`` limits direct name imports to the ``tach.toml`` expose list;
 ``tests/conformance/test_forge_read_interface.py`` fences module bindings.
 Writes stay on :class:`teatree.backends.github.client.GitHubCodeHost`.
 """
@@ -11,13 +11,11 @@ from urllib.parse import quote_plus
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.forge_merge_rpc import fetch_required_checks_rollup as _fetch_required_checks_rollup
 from teatree.backends.forge_merge_rpc import fetch_workflow_runs_at_head as _fetch_workflow_runs_at_head
-from teatree.backends.github.api import (
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_search_paginated,
-    _parse_issue_ref,
-    is_not_found,
-)
+from teatree.backends.github.api import gh_api_get as _gh_api_get
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
+from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
+from teatree.backends.github.api import is_not_found
+from teatree.backends.github.api import parse_issue_ref as _parse_issue_ref
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 
@@ -98,7 +96,7 @@ def list_issue_comments(*, issue_url: str, token: str) -> list[RawAPIDict]:
     return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=token)
 
 
-# Re-exposed under the reads interface so consumers reach the check reads without the merge RPC's write surface.
+# Wrappers keep the exposed checks owned by this module, as the interface test requires.
 def fetch_required_checks_rollup(*, slug: str, pr_id: int, token: str) -> list[RawAPIDict]:
     return _fetch_required_checks_rollup(slug=slug, pr_id=pr_id, token=token)
 

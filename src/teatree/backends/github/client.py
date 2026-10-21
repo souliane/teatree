@@ -6,17 +6,11 @@ from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.github import pr_reads as _pr_reads
-from teatree.backends.github.api import (
-    _FORGE_READ_TIMEOUT_SECONDS,
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_patch,
-    _gh_api_post,
-    _gh_api_search_paginated,
-    _parse_issue_ref,
-    _run_gh,
-    is_not_found,
-)
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_patch, _gh_api_post, _run_gh, is_not_found
+from teatree.backends.github.api import gh_api_get as _gh_api_get
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
+from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
+from teatree.backends.github.api import parse_issue_ref as _parse_issue_ref
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
 from teatree.backends.github.pr_content import GhPrContentReader

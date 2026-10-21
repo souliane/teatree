@@ -2,7 +2,8 @@
 
 from typing import cast
 
-from teatree.backends.github.api import _gh_api_get_paginated, _gh_api_patch, _gh_api_post
+from teatree.backends.github.api import _gh_api_patch, _gh_api_post
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.claims import record_github_note_claim
 from teatree.core.backend_protocols import PrReview
 from teatree.types import RawAPIDict
