@@ -285,7 +285,6 @@ def _skill_route_selection(
     failed = context.task.attempts.failed_route_candidates(source_skill) if context.task is not None else {}
     scalar_floors = [floor for skill in skills if isinstance((floor := config.skill_models.get(skill)), str)]
     floor_rank = max((tier_rank(floor) for floor in scalar_floors), default=-1)
-    paid_fallback_allowed = context.settings is not None and context.settings.agent_route_paid_fallback
     rejected: list[HarnessRejection] = []
     retry: SkillRouteSelection | None = None
     for index, candidate in enumerate(candidates):
@@ -296,7 +295,7 @@ def _skill_route_selection(
         if not isinstance(eligible, _EligibleCandidate):
             rejected.extend(eligible)
             continue
-        if index and eligible.metered and not paid_fallback_allowed:
+        if index and eligible.metered and (context.settings is None or not context.settings.agent_route_paid_fallback):
             rejected.append(_paid_fallback_rejection(candidate.harness, rejected))
             continue
         passing = SkillRouteSelection(
