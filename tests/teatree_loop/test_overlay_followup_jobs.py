@@ -147,7 +147,7 @@ class TestOverlayFollowupScanners(TestCase):
 
         class OrmReview(OverlayReview):
             def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
-                Loop.objects.count()
+                list(Loop.objects.raw("SELECT 1 AS id"))
                 wrappers.append(connections["default"])
                 hook_threads.append(current_thread())
                 assert wrappers[0].connection is not None
