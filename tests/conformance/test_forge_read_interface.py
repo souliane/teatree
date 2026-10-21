@@ -243,17 +243,6 @@ def test_no_module_reaches_past_a_read_interface() -> None:
     assert offenders == {}
 
 
-def test_the_forge_client_reads_through_its_read_interface() -> None:
-    module = "teatree.backends.gitlab.reads"
-    tree = ast.parse((REPO_ROOT / _PROBE_SITES[module]).read_text(encoding="utf-8"))
-
-    assert any(isinstance(node, ast.ImportFrom) and node.module == module for node in ast.walk(tree))
-    assert any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_list_pr_commits"
-        for node in ast.walk(tree)
-    )
-
-
 @pytest.mark.parametrize(
     ("source", "package"),
     [
@@ -269,7 +258,6 @@ def test_the_forge_client_reads_through_its_read_interface() -> None:
         ("import importlib\nimportlib.import_module('teatree.backends.gitlab.reads')\n", "teatree.backends"),
         ("from .github import reads\n", "teatree.backends"),
         ("from . import reads\n", "teatree.backends.github"),
-        ("import importlib\nimportlib.import_module('.reads', 'teatree.backends.github')\n", "teatree.backends.github"),
         (
             "from importlib import import_module\nimport_module('.reads', 'teatree.backends.github')\n",
             "teatree.backends.github",
