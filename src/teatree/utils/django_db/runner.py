@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from teatree.paths import PathHelpers
-from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, TimeoutExpired, run_allowed_to_fail, run_bounded_group
 from teatree.utils.venv_artifacts import foreign_venv_interpreter
 
 
@@ -34,6 +34,29 @@ def _is_pipenv_repo(repo: Path) -> bool:
         return True
 
 
+_SYNC_PROBE_TIMEOUT_SECONDS = 10
+
+
+def _uv_run_sync_args(repo: Path) -> list[str]:
+    """``["--no-sync"]`` only when uv confirms, read-only, that ``uv run`` would change nothing.
+
+    The probe mirrors ``uv run``'s own sync: ``--locked`` because ``uv run`` re-locks a
+    stale lock (``--frozen`` answers yes there), ``--inexact`` because ``uv run`` keeps
+    extra packages, ``--offline`` so it never waits on the network. Any doubt keeps the sync.
+    """
+    if not (repo / ".venv").is_dir() or not (repo / "uv.lock").is_file():
+        return []
+    try:
+        probe = run_bounded_group(
+            ["uv", "--directory", str(repo), "sync", "--locked", "--inexact", "--offline", "--check"],
+            timeout=_SYNC_PROBE_TIMEOUT_SECONDS,
+            expected_codes=None,
+        )
+    except SUBPROCESS_UNREACHABLE:
+        return []
+    return ["--no-sync"] if probe.returncode == 0 else []
+
+
 def runner_prefix(repo: Path) -> list[str]:
     """Build the interpreter prefix that runs ``python`` from *repo*'s environment.
 
@@ -43,13 +66,15 @@ def runner_prefix(repo: Path) -> list[str]:
     (souliane/teatree#1976, #1973; pinned by ``test_runner_prefix_chokepoint``).
     A project inside an image generation's sealed tree runs under the image's own interpreter.
     Pipenv repos (:func:`_is_pipenv_repo`) use ``pipenv run`` with
-    ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``.
+    ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``, with
+    ``--no-sync`` when :func:`_uv_run_sync_args` confirms the env already satisfies the lock,
+    so agents sharing one ``.venv`` write nothing to it in the steady state.
     """
     if PathHelpers.within_baked_generation(repo):
         return [sys.executable]
     if _is_pipenv_repo(repo):
         return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
-    return ["uv", "--directory", str(repo), "run", "python"]
+    return ["uv", "--directory", str(repo), "run", *_uv_run_sync_args(repo), "python"]
 
 
 def project_env_is_drivable(repo: Path) -> bool:
