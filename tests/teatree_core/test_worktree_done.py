@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import ConfigSetting, Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
@@ -565,6 +566,41 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
         assert [outcome.action for outcome in outcomes] == ["kept"]
         assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
 
+    def test_stored_checkout_path_wins_over_the_canonical_layout(self) -> None:
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        stored_path = self.workspace / "renamed" / "myrepo"
+        stored_path.parent.mkdir()
+        _run_git("worktree", "move", str(self.wt_path), str(stored_path), cwd=self.repo_main)
+        worktree.extra["worktree_path"] = str(stored_path)
+        worktree.save(update_fields=["extra"])
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["kept"]
+        assert outcomes[0].label.endswith(f"[checkout: {stored_path}]")
+
+    def test_sweep_preserves_emit_and_errors_while_naming_checkout(self) -> None:
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        kept = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in kept] == ["kept"]
+        assert kept[0].emit is not None
+        assert kept[0].emit.unique_commit_shas
+        assert kept[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+        self._push_branch()
+        self._drop_local_branch_ref()
+        Ticket.objects.filter(pk=worktree.ticket_id).update(state=Ticket.State.MERGED)
+        with patch(
+            "teatree.core.worktree.worktree_done.cleanup_worktree",
+            return_value=CleanupResult(label="cleanup finished", errors=["volume removal failed"]),
+        ):
+            wiped = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert [outcome.action for outcome in wiped] == ["wiped"]
+        assert wiped[0].errors == ["volume removal failed"]
+        assert wiped[0].label.endswith(f"[checkout: {self.wt_path}]")
+
     def test_each_pre_gate_line_names_the_checkout(self) -> None:
         """Django TestCase: real settings and git, with fixture liveness injected."""
         self._make_worktree(Ticket.State.MERGED)
@@ -623,6 +659,7 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
 
         outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
 
+        assert [outcome.action for outcome in outcomes] == ["error", "kept"]
         by_action = {outcome.action: outcome.label for outcome in outcomes}
         assert set(by_action) == {"error", "kept"}
         assert by_action["error"].endswith("[checkout: unresolvable]")
