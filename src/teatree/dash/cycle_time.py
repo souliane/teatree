@@ -19,8 +19,8 @@ from teatree.core.cycle_time import (
     MergeWaitBreakdown,
     TicketTimeline,
     TransitionStat,
+    build_merge_wait_breakdowns,
     build_ticket_timelines,
-    recent_merge_breakdowns,
     transition_distribution,
     transition_trend,
 )
@@ -133,7 +133,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
     ordered = sorted(timelines.values(), key=lambda line: line.ended_at or since, reverse=True)
     scale = max((line.lead_time_seconds for line in ordered), default=0.0)
     trend, buckets, peak = _trend(since=since, window_days=window_days, stats=stats)
-    merges = recent_merge_breakdowns()
+    merges = build_merge_wait_breakdowns()
     return CycleTimeView(
         window_days=window_days,
         since=since,
@@ -167,7 +167,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
 
 def build_merge_summary(rows: tuple[MergeWaitBreakdown, ...] | None = None) -> MergeSummary:
     if rows is None:
-        rows = recent_merge_breakdowns()
+        rows = build_merge_wait_breakdowns()
     reliable = [row for row in rows if row.measured and row.parks_retained]
     elapsed = sum(row.elapsed_seconds for row in reliable)
     working_share = f"{sum(row.work_seconds for row in reliable) / elapsed:.0%}" if elapsed else "unmeasured"

@@ -89,6 +89,35 @@ class StateEdgesTestCase(TestCase):
         _transition(ticket=ticket, move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"))
         assert list(TicketTransition.objects.recent_merges(10)) == []
 
+    def test_recent_merges_excludes_a_merged_to_merged_transition(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://example.test/pull/repeat",
+            repo="example/repo",
+            iid="repeat",
+            state=PullRequest.State.MERGED,
+        )
+        _transition(ticket=ticket, move=(Ticket.State.MERGED, Ticket.State.MERGED, "repeat"))
+        assert TicketTransition.objects.recent_merges(10) == []
+
+    def test_recent_merges_respects_the_requested_limit(self) -> None:
+        for index in range(11):
+            ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+            PullRequest.objects.create(
+                ticket=ticket,
+                url=f"https://example.test/pull/limit-{index}",
+                repo="example/repo",
+                iid=f"limit-{index}",
+                state=PullRequest.State.MERGED,
+            )
+            _transition(
+                ticket=ticket,
+                created_at=_RECENT + dt.timedelta(minutes=index),
+                move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"),
+            )
+        assert len(TicketTransition.objects.recent_merges(10)) == 10
+
 
 class TicketTransitionPrunableGuardTestCase(TestCase):
     def _closed_ticket_with_three_noops(self) -> tuple[Ticket, list[TicketTransition]]:

@@ -5,10 +5,12 @@ from datetime import datetime
 
 from teatree.core.models import Task, TaskAttempt
 
+CANCEL_SOURCE_KEY = "cancel_source"
+
 
 def cancel_source(task: Task) -> str:
-    attempt = TaskAttempt.objects.filter(task=task, result__has_key="cancel_source").order_by("-pk").first()
-    return str(attempt.result.get("cancel_source") or "") if attempt is not None else ""
+    attempt = TaskAttempt.objects.filter(task=task, result__has_key=CANCEL_SOURCE_KEY).order_by("-pk").first()
+    return str(attempt.result.get(CANCEL_SOURCE_KEY) or "") if attempt is not None else ""
 
 
 def count_recorded_cancels(
@@ -17,5 +19,7 @@ def count_recorded_cancels(
     if start is None:
         return 0
     return sum(
-        bool(result.get("cancel_source")) for ended, result in rows if ended is not None and start <= ended <= merged_at
+        bool(result.get(CANCEL_SOURCE_KEY))
+        for ended, result in rows
+        if ended is not None and start <= ended <= merged_at
     )

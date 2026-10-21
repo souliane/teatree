@@ -8,10 +8,12 @@ from teatree.core.models.ticket import Ticket
 
 
 class TicketTransitionQuerySet(models.QuerySet):
+    def merge_entries(self) -> "TicketTransitionQuerySet":
+        return self.filter(to_state=Ticket.State.MERGED).exclude(from_state__in=Ticket.merged_states())
+
     def recent_merges(self, limit: int) -> list[tuple[int, datetime]]:
         rows = (
-            self.filter(to_state=Ticket.State.MERGED)
-            .exclude(from_state__in=Ticket.merged_states())
+            self.merge_entries()
             .filter(ticket__pull_requests__state=PullRequest.State.MERGED)
             .values("ticket_id")
             .annotate(merged_at=models.Min("created_at"))
@@ -31,12 +33,7 @@ class TicketTransitionQuerySet(models.QuerySet):
 
     def merge_entry(self) -> "TicketTransition | None":
         """The newest edge that brought a ticket INTO merged from a pre-merged state."""
-        return (
-            self.filter(to_state=Ticket.State.MERGED)
-            .exclude(from_state__in=Ticket.merged_states())
-            .order_by("-created_at", "-pk")
-            .first()
-        )
+        return self.merge_entries().order_by("-created_at", "-pk").first()
 
     def excluding_each_tickets_boundary(self) -> "TicketTransitionQuerySet":
         """Drop each ticket's earliest and latest transition from the candidate set.

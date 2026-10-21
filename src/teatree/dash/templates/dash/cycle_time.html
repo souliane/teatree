@@ -21,7 +21,7 @@
         <tbody>
           {% for row in view.merge_rows %}
             <tr>
-              <td>{% if row.pr_url %}<a href="{{ row.pr_url }}">#{{ row.number }}</a>{% else %}#{{ row.number }}{% endif %}</td>
+              <td><a href="{{ row.pr_url }}">#{{ row.number }}</a></td>
               {% if row.measured %}
                 <td class="num">{{ row.elapsed }}</td><td class="num">{{ row.working }}</td>
                 {% for wait in row.waits %}<td class="num">{{ wait }}</td>{% endfor %}

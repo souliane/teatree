@@ -191,6 +191,11 @@ class OverlappingAndUnfinishedAttemptsTestCase(TestCase):
         record_task(self.ticket, phase="coding", queued=0, admitted=40)
         assert self._coding_work() == 60 * MINUTE
 
+    def test_a_pending_admitted_task_without_attempt_is_not_working(self) -> None:
+        task = record_task(self.ticket, phase="coding", queued=0, admitted=40)
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING)
+        assert self._coding_work() == 0
+
     def test_an_attempt_with_no_admission_stamp_leaves_the_split_unmeasured(self) -> None:
         """Work is UNKNOWN there, never zero — `admitted_at` is stamped going forward only."""
         record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=None), ended=50)
@@ -247,28 +252,17 @@ class CostRidesAlongsideTimeTestCase(TestCase):
 
 
 class ParkDoesNotImplyWorkTestCase(TestCase):
-    def test_park_only_task_does_not_count_as_agent_work(self) -> None:
+    def test_park_closes_prior_work_at_its_start(self) -> None:
         ticket = Ticket.objects.create(state=State.CODED)
         record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
         record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
         task = record_task(ticket, phase="coding", queued=0, admitted=10)
-        task.status = Task.Status.PENDING
-        task.save(update_fields=["status"])
-        record_attempt(task, ended=20, error="checkout_parked: refused")
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING)
+        record_attempt(task, ended=20, row_written=15, error="checkout_parked: refused")
 
         segment = build_ticket_timeline(ticket.pk).segments[0]
-        assert segment.work_seconds == 0
-        assert segment.queue_seconds == 100 * MINUTE
-
-    def test_billed_park_closes_work_at_its_end(self) -> None:
-        ticket = Ticket.objects.create(state=State.CODED)
-        record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
-        record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
-        task = record_task(ticket, phase="coding", queued=0, admitted=10)
-        record_attempt(task, ended=40, row_written=20, error="limit_parked: checkpoint", input_tokens=100)
-
-        segment = build_ticket_timeline(ticket.pk).segments[0]
-        assert segment.work_seconds == 30 * MINUTE
+        assert segment.work_seconds == 5 * MINUTE
+        assert segment.queue_seconds == 95 * MINUTE
 
     def test_park_only_completed_task_stops_at_first_park_not_phase_end(self) -> None:
         ticket = Ticket.objects.create(state=State.CODED)

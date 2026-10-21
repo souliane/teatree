@@ -28,6 +28,7 @@ LIMIT_PARKED_PREFIX = "limit_parked: "
 #: A checkout fence's park: a scheduling event like a limit park, never a usage window.
 CHECKOUT_PARKED_PREFIX = "checkout_parked: "
 PARK_ERROR_PREFIXES = (LIMIT_PARKED_PREFIX, CHECKOUT_PARKED_PREFIX)
+#: Attribution can claim complete park history only inside the park retention window.
 PARK_ATTEMPT_RETENTION_DAYS = 7
 
 

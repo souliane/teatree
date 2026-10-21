@@ -21,7 +21,8 @@ from teatree.core.cycle_time.waits import (
     WAIT_LABELS,
     MergeWaitBreakdown,
     WaitBlock,
-    recent_merge_breakdowns,
+    WaitCause,
+    build_merge_wait_breakdowns,
 )
 
 __all__ = [
@@ -35,10 +36,11 @@ __all__ = [
     "TransitionTrend",
     "TrendPoint",
     "WaitBlock",
+    "WaitCause",
+    "build_merge_wait_breakdowns",
     "build_ticket_timeline",
     "build_ticket_timelines",
     "percentile",
-    "recent_merge_breakdowns",
     "spans_for_tickets",
     "spans_since",
     "transition_distribution",

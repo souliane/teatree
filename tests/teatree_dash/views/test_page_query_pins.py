@@ -70,6 +70,8 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
 #: and flat at both. The two land together: 21 -> 23, not 22.
 #: The board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
+MERGE_READ_QUERIES = 9
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 14,
     "dash:board_columns": 11,
@@ -160,10 +162,10 @@ class DashboardPageQueryPlansTestCase(TestCase):
                 TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
                 for ticket_id in merged_ids
             )
-            for name, expected in (("dash:board", 23), ("dash:cycle_time", 20)):
+            for name in ("dash:board", "dash:cycle_time"):
                 with self.subTest(page=name, scale=scale):
                     cache.clear()
-                    with self.assertNumQueries(expected):
+                    with self.assertNumQueries(PAGE_QUERY_PINS[name] + MERGE_READ_QUERIES):
                         assert self.client.get(reverse(name), **_LOOPBACK).status_code == 200
 
     def test_the_ticket_drawer_holds_its_plan_however_much_history_the_ticket_has(self) -> None:

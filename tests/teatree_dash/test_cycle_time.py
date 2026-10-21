@@ -16,7 +16,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from teatree.core.cycle_time import recent_merge_breakdowns
+from teatree.core.cycle_time import build_merge_wait_breakdowns
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -259,17 +259,32 @@ class MergeWaitDisplayTestCase(TestCase):
         assert response.status_code == 200
         content = response.content.decode()
         assert "Last 10 merged pull requests" in content
-        assert "https://example.test/pull/5313" in content
-        assert "Not admitted, cause not recorded" in content
-        assert "Checkout fence" in content
-        assert "Sibling task holds checkout" in content
-        assert "Quota lane" in content
-        assert "Waiting for a human" in content
-        assert "No next task" in content
-        assert "Review" in content
-        assert "Review (30m from" in content
-        assert "Hand cancels" in content
-        assert "Tasks created by hand (inferred)" in content
+        section = content.split('id="merge-waits"', 1)[1].split("</section>", 1)[0]
+        headers = [
+            re.sub(r"<[^>]*>", "", header).strip() for header in re.findall(r"<th[^>]*>(.*?)</th>", section, re.DOTALL)
+        ]
+        assert headers == [
+            "ticket",
+            "elapsed",
+            "working",
+            "Waiting for a free seat",
+            "Not admitted, cause not recorded",
+            "Checkout fence",
+            "Sibling task holds checkout",
+            "Quota lane",
+            "Waiting for a human",
+            "No next task",
+            "Review",
+            "longest wait",
+            "Hand cancels",
+            "Tasks created by hand (inferred)",
+        ]
+        row = re.findall(r"<tr>(.*?)</tr>", section, re.DOTALL)[1]
+        cells = [re.sub(r"<[^>]*>", "", cell).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)]
+        assert 'href="https://example.test/pull/5313"' in row
+        assert cells[:11] == ["#5313", "1h 30m", "1h", "0s", "0s", "0s", "0s", "0s", "0s", "0s", "30m"]
+        assert cells[11].startswith("Review (30m from")
+        assert cells[12:] == ["0", "1"]
         assert "may include false positives" in content
         assert "not recorded yet" in content
 
@@ -290,7 +305,7 @@ class MergeWaitDisplayTestCase(TestCase):
         assert "at least unmeasured" not in body
 
     def test_merge_summary_uses_only_reliable_windows_and_recorded_actions(self) -> None:
-        base = recent_merge_breakdowns()[0]
+        base = build_merge_wait_breakdowns()[0]
         unmeasured = replace(
             base,
             measured=False,
@@ -315,15 +330,6 @@ class MergeWaitDisplayTestCase(TestCase):
         assert summary.interventions_per_merge == "2.0"
         assert summary.inferred_hand_tasks_per_merge == "5.0"
 
-    def test_merge_table_cells_keep_value_and_cause_order(self) -> None:
-        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
-        section = body.split('id="merge-waits"', 1)[1].split("</section>", 1)[0]
-        row = re.findall(r"<tr>(.*?)</tr>", section, re.DOTALL)[1]
-        cells = [re.sub(r"<[^>]*>", "", cell).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)]
-        assert cells[1:10] == ["1h 30m", "1h", "0s", "0s", "0s", "0s", "0s", "0s", "30m"]
-        assert cells[10].startswith("Review (30m from")
-        assert cells[11:] == ["0", "1"]
-
     def test_unmeasured_merge_and_incomplete_park_history_are_labelled(self) -> None:
         task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
         Task.objects.filter(pk=task.pk).update(admitted_at=None)
@@ -337,7 +343,7 @@ class MergeWaitDisplayTestCase(TestCase):
         task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
         TaskAttempt.objects.create(
             task=task,
-            ended_at=recent_merge_breakdowns()[0].merged_at - timedelta(minutes=1),
+            ended_at=build_merge_wait_breakdowns()[0].merged_at - timedelta(minutes=1),
             result={"cancel_source": "owner"},
         )
         Task.objects.create(ticket=task.ticket, session=task.session, phase="shipping")
