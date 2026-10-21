@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 from unittest.mock import patch
 
 import pytest
+import typer
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from django.db import connections
 from django.test import TransactionTestCase
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
+from typer.testing import CliRunner
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
@@ -41,6 +43,8 @@ from teatree.agents.live_mailbox import (
 )
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.cli.mcp import serve
+from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.core.models import Session, Task, TaskAttempt
 from teatree.mcp.agent_mailbox import INSTRUCTIONS, InboxPage, MailboxClient, SendReceipt
 from teatree.mcp.server import build_server
@@ -106,6 +110,48 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
         }
     ]
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
+
+
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+def test_a_read_only_phase_sends_and_receives_through_the_real_server(broker: LiveMailboxBroker, phase: str) -> None:
+    app = typer.Typer()
+    app.command()(serve)
+    with (
+        patch("teatree.cli.mcp.ensure_django"),
+        patch("teatree.cli.mcp.delegate_to_owning_domain"),
+        patch("teatree.mcp.server.build_server") as cli_build,
+    ):
+        result = CliRunner().invoke(app, serve_flags_for_phase(phase))
+    assert result.exit_code == 0
+    kwargs = cli_build.call_args.kwargs
+    assert kwargs["read_only"] is True
+
+    sender = broker.register(room="ticket", harness="claude_sdk", label=phase, phase=phase)
+    recipient = broker.register(room="ticket", harness="claude_sdk", label=phase, phase=phase)
+    with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+        with patch.dict("os.environ", sender.mcp_env()):
+            sender_server = build_server(**kwargs)
+        with patch.dict("os.environ", recipient.mcp_env()):
+            recipient_server = build_server(**kwargs)
+
+    names = {tool.name for tool in asyncio.run(sender_server.list_tools())}
+    assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
+
+    async def exchange() -> tuple[SendReceipt, InboxPage, InboxPage]:
+        sending = asyncio.create_task(
+            sender_server.call_tool(
+                "agent_mailbox_send", {"to": recipient.address, "text": "Please check this", "key": "peer-one"}
+            )
+        )
+        waited = await recipient_server.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 2})
+        sent = await sending
+        inbox = await recipient_server.call_tool("agent_mailbox_inbox", {"after_id": 0})
+        return structured(sent), structured(waited), structured(inbox)
+
+    sent, waited, inbox = asyncio.run(exchange())
+    assert sent["outcome"] == "accepted_inbox_read"
+    assert waited["messages"][0]["text"] == "Please check this"
+    assert inbox["messages"][0]["id"] == sent["id"]
 
 
 class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
