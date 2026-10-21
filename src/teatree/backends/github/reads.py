@@ -98,6 +98,7 @@ def list_issue_comments(*, issue_url: str, token: str) -> list[RawAPIDict]:
     return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=token)
 
 
+# Re-exposed under the reads interface so consumers reach the check reads without the merge RPC's write surface.
 def fetch_required_checks_rollup(*, slug: str, pr_id: int, token: str) -> list[RawAPIDict]:
     return _fetch_required_checks_rollup(slug=slug, pr_id=pr_id, token=token)
 

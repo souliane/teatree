@@ -179,8 +179,10 @@ def test_reads_module_exposes_no_write(module: str, tach_output_with_write_probe
     assert output.count("[FAIL]") == len(_PROBE_SITES), output
 
     assert reaches_past_the_interface(
-        ast.parse(f"from {module} import submit_pr_review\n"), _exposed(), "teatree.backends"
-    ) == [f"{module}.submit_pr_review"]
+        ast.parse(f"from {module} import submit_pr_review, _gh_api_post\nfrom {module} import *\n"),
+        _exposed(),
+        "teatree.backends",
+    ) == [f"{module}.submit_pr_review", f"{module}._gh_api_post", f"{module}.*"]
 
     imported = importlib.import_module(module)
     assert _exposed()[module], module
@@ -248,8 +250,6 @@ def test_no_module_reaches_past_a_read_interface() -> None:
     [
         ("import teatree.backends.github.reads\n", "teatree.backends"),
         ("from teatree.backends.gitlab import reads as gitlab_reads\n", "teatree.backends"),
-        ("from teatree.backends.github.reads import *\n", "teatree.backends"),
-        ("from teatree.backends.github.reads import _gh_api_post\n", "teatree.backends"),
         ("from teatree.backends.github.reads.sub import anything\n", "teatree.backends"),
         (
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from teatree.backends.gitlab import reads\n",

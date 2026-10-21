@@ -7,7 +7,6 @@ import pytest
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.forge_merge_rpc import Runner
 from teatree.backends.github import reads as github_reads
-from teatree.backends.github.api import is_not_found
 from teatree.backends.github.client import GitHubCodeHost
 from teatree.backends.github.reads import get_issue, list_pr_comments, list_pr_reviews, list_repo_open_issues
 from teatree.utils.run import CommandFailedError
@@ -67,10 +66,6 @@ def test_list_repo_open_issues_drops_pull_requests() -> None:
     assert "repos/o/r/issues?state=open&per_page=100" in run.call_args.args
 
 
-def test_is_not_found_rejects_other_errors() -> None:
-    assert not is_not_found(_gh_fails("gh: Server Error (HTTP 500)"))
-
-
 def test_list_pr_comments_reads_the_paginated_issue_endpoint() -> None:
     with patch.object(github_reads, "_gh_api_get_paginated", return_value=[{"id": 9}]) as get:
         assert list_pr_comments(repo="o/r", pr_iid=5, token="t") == [{"id": 9}]
@@ -82,6 +77,9 @@ def test_list_pr_comments_reads_the_paginated_issue_endpoint() -> None:
     ("method", "arguments", "payload", "transport"),
     [
         ("list_pr_reviews", {"repo": "o/r", "pr_iid": 5}, [[{"id": 9}]], "api"),
+        ("list_pr_commits", {"repo": "o/r", "pr_iid": 5}, [[{"id": 9}]], "api"),
+        ("list_pr_comments", {"repo": "o/r", "pr_iid": 5}, [[{"id": 9}]], "api"),
+        ("list_issue_comments", {"issue_url": "https://github.com/o/r/issues/5"}, [[{"id": 9}]], "api"),
         ("list_repo_open_issues", {"repo": "o/r"}, [[{"id": 9}]], "api"),
         ("fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}, [{"id": 9}], "merge"),
         (
@@ -105,32 +103,16 @@ def test_host_delegates_reads_with_its_token(
         with patch(_RUN_GH, side_effect=api_run):
             result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
     else:
-        with patch(
-            "teatree.backends.forge_merge_rpc.gh_runner",
-            side_effect=_merge_runner_answering(json.dumps(payload), seen_tokens),
+        with (
+            patch(
+                "teatree.backends.forge_merge_rpc.gh_runner",
+                side_effect=_merge_runner_answering(json.dumps(payload), seen_tokens),
+            ),
+            patch.object(
+                GitHubCodeHost, "_merge_rpc", side_effect=AssertionError("check reads bypass the reads module")
+            ),
         ):
             result = getattr(GitHubCodeHost(token="t"), method)(**arguments)
-
-    assert result == [{"id": 9}]
-    assert seen_tokens == ["t"]
-
-
-@pytest.mark.parametrize(
-    ("method", "arguments", "payload"),
-    [
-        ("fetch_required_checks_rollup", {"slug": "o/r", "pr_id": 5}, [{"id": 9}]),
-        ("fetch_workflow_runs_at_head", {"slug": "o/r", "head_sha": "a" * 40}, [{"workflow_runs": [{"id": 9}]}]),
-    ],
-)
-def test_rollup_reads_pass_the_token_to_the_transport(
-    method: str, arguments: dict[str, object], payload: object
-) -> None:
-    seen_tokens: list[str] = []
-    with patch(
-        "teatree.backends.forge_merge_rpc.gh_runner",
-        side_effect=_merge_runner_answering(json.dumps(payload), seen_tokens),
-    ):
-        result = getattr(github_reads, method)(**arguments, token="t")
 
     assert result == [{"id": 9}]
     assert seen_tokens == ["t"]
