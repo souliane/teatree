@@ -4,6 +4,7 @@ import json
 import subprocess
 import zipfile
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,11 @@ class TestMerged:
         older = _ledger(_owed("alpha", reason=OwedReason.LIMIT, since=NOW - DAY))
         assert newer.merged(older).scenarios == older.scenarios
         assert older.merged(newer).scenarios == older.scenarios
+
+    def test_duplicate_keeps_the_later_attempt_when_the_existing_debt_is_older(self) -> None:
+        old = replace(_owed("alpha", since=NOW - DAY), last_attempted=NOW - DAY)
+        recent = replace(_owed("alpha", since=NOW), last_attempted=NOW)
+        assert _ledger(old).merged(_ledger(recent)).scenarios == (replace(old, last_attempted=NOW),)
 
     def test_union_by_name_and_latest_harvest_mark(self) -> None:
         left = _ledger(_owed("alpha"), harvested_through=NOW - DAY)
@@ -292,6 +298,10 @@ def _workflows(*workflows: dict) -> bytes:
 
 def _runs_url(workflow_id: int, page: int = 1) -> str:
     return f"repos/{REPO}/actions/workflows/{workflow_id}/runs?per_page={PAGE_SIZE}&page={page}"
+
+
+def _head_runs_url(sha: str) -> str:
+    return f"repos/{REPO}/actions/runs?head_sha={sha}&per_page={PAGE_SIZE}&page=1"
 
 
 def _runs(*runs: dict) -> bytes:
@@ -551,12 +561,21 @@ class TestPrOwed:
         with pytest.raises(TruncatedListingError, match=PR_OWED_ARTIFACT):
             harvest.pr_owed([(42, "a" * 40)])
 
-    def test_old_artifact_page_ends_the_relevant_harvest_window(self) -> None:
-        old = NOW - dt.timedelta(days=100)
-        page = _listing([_artifact(1000 + index, created=old, head_sha="b" * 40) for index in range(PAGE_SIZE)])
-        harvest, gh, _ = _harvest({_artifacts_url(PR_OWED_ARTIFACT, 1): page})
+    def test_no_runs_for_a_merged_head_owe_nothing(self) -> None:
+        harvest, gh, _ = _harvest({_head_runs_url("a" * 40): _runs()})
         assert harvest.pr_owed([(42, "a" * 40)], since=NOW) == OwedLedger()
-        assert _artifacts_url(PR_OWED_ARTIFACT, 2) not in gh.calls
+        assert gh.calls[-1] == _head_runs_url("a" * 40)
+
+    def test_nightly_harvest_queries_only_the_merged_head_even_for_an_old_artifact(self) -> None:
+        head = "a" * 40
+        routes = {
+            _head_runs_url(head): _runs(_run(77, created=NOW - 80 * DAY, head_sha=head, branch="feature")),
+            _run_artifacts_url(77): _listing([_artifact(7, created=NOW - 80 * DAY, head_sha=head)]),
+            _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("still_owed")).to_json()),
+        }
+        harvest, gh, _ = _harvest(routes)
+        assert harvest.pr_owed([(42, head)], since=NOW - DAY).names == ("still_owed",)
+        assert _artifacts_url(PR_OWED_ARTIFACT) not in gh.calls
 
 
 class TestLegOwed:
@@ -650,7 +669,7 @@ class TestCollect:
             _artifacts_url(LEDGER_ARTIFACT): _listing([_artifact(1, created=mark)]),
             _zip_url(1): _zip(LEDGER_FILENAME, _ledger(harvested_through=mark).to_json()),
             _pulls_url(): json.dumps([_pull(10, final, merged=NOW - dt.timedelta(hours=2))]).encode(),
-            _artifacts_url(PR_OWED_ARTIFACT): _listing([]),
+            _head_runs_url(final): _runs(_run(200, created=NOW - 3 * DAY, head_sha=final, branch="feature")),
             _workflows_url(): _workflows(_WEEKLY_WORKFLOW, _HEAL_WORKFLOW),
             _runs_url(11): _runs(_run(100, created=NOW)),
             _run_artifacts_url(100): _listing([_artifact(2, created=NOW) | {"name": _WEEKLY_LEG}]),
@@ -679,7 +698,8 @@ class TestCollect:
         routes = {
             _artifacts_url(LEDGER_ARTIFACT): _listing([]),
             _pulls_url(): json.dumps([_pull(10, head, merged=NOW - 4 * DAY)]).encode(),
-            _artifacts_url(PR_OWED_ARTIFACT): _listing([_artifact(7, created=NOW - 5 * DAY, head_sha=head)]),
+            _head_runs_url(head): _runs(_run(70, created=NOW - 5 * DAY, head_sha=head, branch="feature")),
+            _run_artifacts_url(70): _listing([_artifact(7, created=NOW - 5 * DAY, head_sha=head)]),
             _zip_url(7): _zip(PR_OWED_FILENAME, _ledger(_owed("old_parked")).to_json()),
         }
         gh = FakeGh({f"repos/{REPO}": b'{"id":1,"default_branch":"main"}', _workflows_url(): _workflows(), **routes})
@@ -699,7 +719,10 @@ class TestCollect:
                     _pull(19, earlier_head, merged=mark - dt.timedelta(hours=1)),
                 ]
             ).encode(),
-            _artifacts_url(PR_OWED_ARTIFACT): _listing(
+            _head_runs_url(merged_head): _runs(
+                _run(80, created=NOW - dt.timedelta(hours=3), head_sha=merged_head, branch="feature")
+            ),
+            _run_artifacts_url(80): _listing(
                 [
                     _artifact(8, created=NOW - dt.timedelta(hours=3), head_sha=merged_head),
                     _artifact(7, created=mark - dt.timedelta(hours=2), head_sha=earlier_head),
@@ -719,8 +742,8 @@ class TestCollect:
             _artifacts_url(LEDGER_ARTIFACT): _listing([_artifact(1, created=NOW - DAY)]),
             _zip_url(1): _zip(LEDGER_FILENAME, _ledger(_owed("kept")).to_json()),
             _pulls_url(): json.dumps([_pull(10, "a" * 40, merged=NOW - dt.timedelta(hours=23))]).encode(),
-            _artifacts_url(PR_OWED_ARTIFACT): _listing([]),
+            _head_runs_url("a" * 40): _runs(),
         }
         harvest, gh, _ = _harvest(routes)
         assert harvest.collect(NOW).names == ("kept",)
-        assert _artifacts_url(PR_OWED_ARTIFACT) in gh.calls
+        assert _head_runs_url("a" * 40) in gh.calls

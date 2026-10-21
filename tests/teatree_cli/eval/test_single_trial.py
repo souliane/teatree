@@ -36,7 +36,7 @@ from teatree.eval.backends import (
     EvalRunner,
 )
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
+from teatree.eval.report import JudgeGrader, JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
@@ -113,6 +113,7 @@ class _Lane:
 
     backend: str = TRANSCRIPT_BACKEND
     require_executed: bool = False
+    grader: JudgeGrader | None = None
 
 
 _DEFAULT_LANE = _Lane()
@@ -136,8 +137,8 @@ def _call(
         effort=None,
         parallel=1,
         output_format="text",
-        grader=None,
-        judge=False,
+        grader=lane.grader,
+        judge=lane.grader is not None,
         transcript_html=transcript_html,
         summary_md=summary_md,
         gates=_NO_GATES,
@@ -546,6 +547,32 @@ def _raise_usage_limit(_name: str) -> EvalRun:
 
 
 class TestEscalationNeverSpendsIntoTheLimit:
+    def test_a_judge_limit_during_escalation_is_a_clean_red(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _run_with(monkeypatch, _failing_run)
+        escalation = _CountingEscalation(_failing_run)
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_escalation_runner", lambda **_k: escalation)
+        calls = 0
+
+        def grade(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise UsageLimitReachedError(_USAGE_LIMIT_MESSAGE)
+            return JudgeOutcome(passed=True, skipped=False, rationale="measured")
+
+        spec = dataclasses.replace(_spec("alpha"), judge=JudgeSpec(rubric="x"))
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [spec],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=dataclasses.replace(_METERED_LANE, grader=grade),
+            )
+        assert exc.value.code == 1
+        assert calls == 2
+        assert escalation.calls == 1
+
     @pytest.mark.parametrize("refusal", [_refused_run, _raise_usage_limit], ids=["skipped", "raised"])
     def test_the_first_refused_escalation_trial_stops_the_rest(self, monkeypatch: pytest.MonkeyPatch, refusal) -> None:
         _run_with(monkeypatch, _failing_run)

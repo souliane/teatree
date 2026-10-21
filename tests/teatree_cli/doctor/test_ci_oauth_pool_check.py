@@ -83,3 +83,17 @@ class LiveDoctorAllowlistTest(TestCase):
         with patch("teatree.cli.doctor.checks_ci_oauth_pool.typer.echo") as echo:
             assert check_ci_oauth_pool() is False
         assert any("allowlist is empty" in call.args[0] for call in echo.call_args_list)
+
+    def test_allowlisted_account_without_stored_row_fails_even_when_pool_matches(self) -> None:
+        rows = [_row("spare", TokenStatus.HEALTHY)]
+        with (
+            patch("teatree.token_report.TokenReport.rows", return_value=rows),
+            patch(
+                "teatree.cli.doctor.checks_ci_oauth_pool.get_effective_settings",
+                return_value=SimpleNamespace(eval_ci_account_allowlist=("primary",)),
+            ),
+            patch("teatree.ci_oauth_switch.CiAccountSwitcher.active_pool_accounts", return_value=("primary",)),
+            patch("teatree.cli.doctor.checks_ci_oauth_pool.typer.echo") as echo,
+        ):
+            assert check_ci_oauth_pool() is False
+        assert any("no stored OAuth row" in call.args[0] for call in echo.call_args_list)

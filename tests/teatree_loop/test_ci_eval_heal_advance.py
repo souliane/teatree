@@ -4,6 +4,7 @@ import datetime as dt
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -660,6 +661,14 @@ class TestParkOnTheSubscriptionReserve(TestCase):
         assert outcome.to_state == CiEvalHealSession.State.PENDING
         assert "parked" in outcome.note
 
+    def test_a_superseded_park_reports_the_owner_lost_the_claim(self) -> None:
+        session = _awaiting()
+        client = _FakeClient(runs=[_completed("success")], artifact=_parked())
+        with patch("teatree.loop.ci_eval_heal_advance._advance_owned", return_value=None):
+            outcome = advance_session(session, client=client, escalate=_never)
+        assert outcome.to_state == CiEvalHealSession.State.AWAITING_CI
+        assert "superseded" in outcome.note
+
     def test_a_parked_failure_with_no_red_requeues_instead_of_halting(self) -> None:
         session = _awaiting(head_sha="a" * 40)
         client = _FakeClient(runs=[_completed("failure")], artifact=_parked())
@@ -718,6 +727,20 @@ class TestParkOnTheSubscriptionReserve(TestCase):
 
                 session.refresh_from_db()
                 assert session.state == CiEvalHealSession.State.AWAITING_CI
+
+    def test_a_second_poll_waits_for_the_same_missing_artifact(self) -> None:
+        session = _awaiting()
+        client = _FakeClient(runs=[_completed("success")])
+        advance_session(session, client=client, escalate=_never)
+        session.refresh_from_db()
+        first_missing = session.artifact_missing_since
+        assert first_missing is not None
+
+        outcome = advance_session(session, client=client, escalate=_never)
+        session.refresh_from_db()
+        assert session.artifact_missing_since == first_missing
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert outcome.note == "awaiting readable eval artifact"
 
     def test_an_unreadable_artifact_eventually_halts(self) -> None:
         session = _awaiting(head_sha="a" * 40)

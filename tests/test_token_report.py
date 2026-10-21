@@ -25,7 +25,7 @@ from teatree.account_headroom import WindowReserve
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.credential_config import LIST_SETTING, TokenKind
+from teatree.credential_config import LIST_SETTING, AllTokensExhaustedError, TokenKind
 from teatree.llm.rate_limits import MeteredKeySnapshot, OverageUsage, RateLimitProbeError, RateLimitSnapshot
 from teatree.token_report import (
     TokenAccountPayload,
@@ -299,6 +299,10 @@ class CachedEvalReserveGateTest(TestCase):
 
     def test_the_local_gate_reads_the_factory_accounts_without_a_ci_allowlist(self) -> None:
         assert cached_local_eval_reserve_met() is True
+
+    def test_exhausted_selector_parks_the_local_eval(self) -> None:
+        with patch("teatree.token_report.PassPathSelector.select", side_effect=AllTokensExhaustedError("spent")):
+            assert cached_local_eval_reserve_met() is False
 
     def test_the_ci_gate_refuses_without_an_allowlist(self) -> None:
         assert cached_ci_eval_reserve_met() is False

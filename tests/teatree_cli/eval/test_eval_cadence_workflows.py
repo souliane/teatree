@@ -313,6 +313,16 @@ def test_reusable_parked_lanes_keep_durable_owed_artifacts() -> None:
     upload = next(step for step in pr if step.get("name") == "Upload the owed scenarios")
     assert "t3 eval owed record" in record["run"]
     assert upload["with"]["name"] == "eval-owed"
+
+
+def test_reusable_owed_steps_require_the_old_overlay_to_expose_the_command() -> None:
+    pr = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
+    availability = next(step for step in pr if step.get("id") == "owed-availability")
+    record = next(step for step in pr if step.get("name") == "Record owed scenarios")
+    upload = next(step for step in pr if step.get("name") == "Upload the owed scenarios")
+    assert "t3 eval owed --help" in availability["run"]
+    assert "steps.owed-availability.outputs.enabled == 'true'" in record["if"]
+    assert "steps.owed-availability.outputs.enabled == 'true'" in upload["if"]
     assert "always()" in upload["if"]
 
     weekly = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]

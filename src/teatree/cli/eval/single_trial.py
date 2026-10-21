@@ -147,6 +147,22 @@ def _grade_runs(specs: list[EvalSpec], runs: list[EvalRun], grader: JudgeGrader 
     return results
 
 
+def _escalation_trial_runner(latch: UsageLimitLatch, grader: JudgeGrader | None) -> TrialRunner:
+    judge_limited = False
+
+    def trial(spec: EvalSpec) -> ScenarioResult:
+        nonlocal judge_limited
+        if judge_limited:
+            return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+        try:
+            return evaluate(spec, latch.run(spec), judge=grader)
+        except UsageLimitReachedError:
+            judge_limited = True
+            return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+
+    return trial
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval run` value into the single-pass path.
     specs: list[EvalSpec],
@@ -221,12 +237,8 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         )
 
         latch = UsageLimitLatch(escalation_runner, limited=bool(_refused_by_the_usage_limit(results)))
-
-        def _escalation_trial(spec: EvalSpec) -> ScenarioResult:
-            return evaluate(spec, latch.run(spec), judge=grader)
-
         escalation_report = _escalate_and_gate(
-            results, escalation=escalation, trial=_escalation_trial, summary_md=summary_md
+            results, escalation=escalation, trial=_escalation_trial_runner(latch, grader), summary_md=summary_md
         )
         if summary_json is not None:
             write_summary_json(

@@ -3256,13 +3256,12 @@ Usage: t3 eval owed settle [OPTIONS]
 │ *  --out                   PATH  The owed-ledger JSON file, updated in       │
 │                                  place.                                      │
 │                                  [required]                                  │
-│    --passed-file           PATH  Scenario names that passed, one per line.   │
+│ *  --passed-file           PATH  Scenario names that passed, one per line.   │
+│                                  [required]                                  │
 │    --attempted-file        PATH  Scenario names attempted tonight.           │
 │    --scenarios-dir         PATH  Read the catalog from this scenario         │
 │                                  directory (default: the discovered          │
 │                                  catalog).                                   │
-│    --all-covered                 Clear every owed name after a complete      │
-│                                  green suite.                                │
 │    --help                        Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

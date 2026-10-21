@@ -356,12 +356,37 @@ class OwedHarvest:
     def pr_owed(self, heads: Sequence[tuple[int, str]], *, since: dt.datetime | None = None) -> OwedLedger:
         if not heads:
             return OwedLedger()
+        if since is not None:
+            return self._pr_owed_by_head(heads)
         wanted = {sha for _, sha in heads}
         artifacts = self._artifacts(
             PR_OWED_ARTIFACT,
             done=lambda seen: wanted <= {artifact.head_sha for artifact in seen},
-            older_than=None if since is None else since - PR_ARTIFACT_LOOKBACK,
         )
+        return self._pr_owed_from_artifacts(heads, artifacts)
+
+    def _pr_owed_by_head(self, heads: Sequence[tuple[int, str]]) -> OwedLedger:
+        repository_id, _ = self.repository_identity
+        artifacts: list[_Artifact] = []
+        for _, sha in heads:
+            runs = self._listing(
+                f"actions/runs?head_sha={sha}",
+                "workflow_runs",
+                _Run.from_fields,
+                what=f"workflow runs for {sha}",
+            )
+            for run in runs:
+                path = f"actions/runs/{run.id}/artifacts"
+                artifacts.extend(
+                    artifact
+                    for artifact in self._listing(path, "artifacts", _Artifact.from_fields, what=path)
+                    if artifact.name == PR_OWED_ARTIFACT
+                    and artifact.head_repository_id == repository_id
+                    and artifact.head_sha == sha
+                )
+        return self._pr_owed_from_artifacts(heads, artifacts)
+
+    def _pr_owed_from_artifacts(self, heads: Sequence[tuple[int, str]], artifacts: list[_Artifact]) -> OwedLedger:
         owed = OwedLedger()
         for number, sha in heads:
             candidates = [artifact for artifact in artifacts if artifact.head_sha == sha]

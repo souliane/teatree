@@ -77,6 +77,18 @@ class TestRecordAndOutputs:
         assert outputs.exit_code == 0, outputs.output
         assert outputs.stdout == "parked=true\nowed=alpha,beta\n"
 
+    def test_outputs_refuse_a_name_that_would_inject_another_output_line(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "eval-owed.json"
+        ledger.write_text(
+            OwedLedger()
+            .recorded(["alpha\ninjected=true"], reason=OwedReason.PARKED, source="pr", since=dt.datetime.now(dt.UTC))
+            .to_json(),
+            encoding="utf-8",
+        )
+        result = _owed("outputs", str(ledger))
+        assert result.exit_code != 0
+        assert "injected=true" not in result.stdout
+
     def test_deferred_only_is_owed_but_not_parked(self, tmp_path: Path) -> None:
         ledger = tmp_path / "eval-owed.json"
         assert _record(ledger, _names_file(tmp_path, "tail_one"), "deferred").exit_code == 0
@@ -199,12 +211,6 @@ class TestSettle:
         settled = OwedLedger.from_json(ledger.read_text(encoding="utf-8"))
         assert settled.names == ("beta",)
         assert settled.scenarios[0].last_attempted is not None
-
-    def test_a_complete_green_benchmark_clears_the_reusable_ledger(self, tmp_path: Path) -> None:
-        ledger = _seeded_ledger(tmp_path)
-        result = _owed("settle", "--out", str(ledger), "--all-covered")
-        assert result.exit_code == 0, result.output
-        assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")).names == ()
 
     def test_clears_passes_keeps_failures_and_drops_catalog_unknown(self, tmp_path: Path) -> None:
         ledger = _seeded_ledger(tmp_path)

@@ -80,3 +80,17 @@ def test_only_scenarios_passing_every_model_can_settle_debt() -> None:
     )
 
     assert passes == {"passed": True, "red": False, "skipped": False}
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<table><tr><td>scenario</td><td>model</td></tr></table>",
+        "<table><tr><td>scenario</td><td>model</td></tr><tr><td></td><td>pass</td></tr>"
+        + "<tr><td>model</td><td>passed</td><td>failed</td><td>skipped</td><td>errored</td><td>cost</td></tr></table>",
+    ],
+    ids=["missing-tally", "blank-scenario"],
+)
+def test_incomplete_scenario_matrix_refuses_settlement(html: str) -> None:
+    with pytest.raises(MatrixTallyError):
+        parse_scenario_passes(html)

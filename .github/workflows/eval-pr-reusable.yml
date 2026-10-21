@@ -276,6 +276,14 @@ jobs:
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Check owed ledger availability
+        id: owed-availability
+        run: |
+          if uv run t3 eval owed --help >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install the teatree cache action for overlay callers
         if: inputs.teatree-repo != '' && steps.verdict-cache-availability.outputs.enabled == 'true'
         run: |
@@ -436,7 +444,7 @@ jobs:
             echo "parked=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Record owed scenarios
-        if: always()
+        if: always() && steps.owed-availability.outputs.enabled == 'true'
         run: |
           touch "$RUNNER_TEMP/eval-owed-limit.txt"
           uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed.json" --reason limit \
@@ -479,7 +487,7 @@ jobs:
           "$RUNNER_TEMP/eval-run-pr.log"
           "$RUNNER_TEMP/eval-owed.json"
       - name: Upload the owed scenarios
-        if: always() && steps.redact.outcome == 'success'
+        if: always() && steps.owed-availability.outputs.enabled == 'true' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-owed

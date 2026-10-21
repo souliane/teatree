@@ -124,6 +124,8 @@ def record(
 def outputs(ledger: Path = _LEDGER_ARGUMENT) -> None:
     """Print the parked=/owed= lines a workflow step appends to $GITHUB_OUTPUT."""
     owed = _read(ledger)
+    if any(name.splitlines() != [name] for name in owed.names):
+        _fail("owed scenario name must fit on one output line", 1)
     typer.echo(f"parked={'true' if owed.is_parked else 'false'}")
     typer.echo(f"owed={','.join(owed.names)}")
 
@@ -170,30 +172,19 @@ def next_batch(
 @owed_app.command("settle")
 def settle(
     ledger: Path = _LEDGER_OUT_OPTION,
-    passed_file: Path | None = typer.Option(None, "--passed-file", help="Scenario names that passed, one per line."),
+    passed_file: Path = typer.Option(..., "--passed-file", help="Scenario names that passed, one per line."),
     attempted_file: Path | None = typer.Option(None, "--attempted-file", help="Scenario names attempted tonight."),
     scenarios_dir: Path | None = _SCENARIOS_DIR_OPTION,
-    *,
-    all_covered: bool = typer.Option(
-        False, "--all-covered", help="Clear every owed name after a complete green suite."
-    ),
 ) -> None:
     """Clear the owed scenarios that passed and the ones the catalog no longer defines."""
     if not ledger.is_file():
         _fail(f"no owed ledger at {ledger}: run `t3 eval owed collect` first", _USAGE_EXIT)
     owed = _read(ledger)
-    if all_covered:
-        if passed_file is not None or attempted_file is not None:
-            _fail("--all-covered cannot be combined with --passed-file or --attempted-file", _USAGE_EXIT)
-        settled, dropped = owed.settled(owed.names, owed.names)
-    else:
-        if passed_file is None:
-            _fail("--passed-file is required unless --all-covered is set", _USAGE_EXIT)
-        passed = _names(passed_file, "--passed-file")
-        attempted = _names(attempted_file, "--attempted-file") if attempted_file is not None else []
-        settled, dropped = owed.settled(
-            passed, _catalog_names(scenarios_dir, keep_when_degraded=owed.names), attempted=attempted
-        )
+    passed = _names(passed_file, "--passed-file")
+    attempted = _names(attempted_file, "--attempted-file") if attempted_file is not None else []
+    settled, dropped = owed.settled(
+        passed, _catalog_names(scenarios_dir, keep_when_degraded=owed.names), attempted=attempted
+    )
     _note_unknown(dropped)
     write_artifact(ledger, settled.to_json())
     cleared = len(owed.scenarios) - len(settled.scenarios) - len(dropped)
