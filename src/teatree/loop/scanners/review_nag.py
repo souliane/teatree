@@ -10,7 +10,7 @@ The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
 
 Mention. :mod:`teatree.loop.scanners.review_nag_mention` maps engaged forge users
-only when one active, non-bot, non-guest Slack user matches, then falls back to the
+and thread repliers only when one active, non-bot, non-guest Slack user matches, then falls back to the
 per-overlay ``review_nag_reask_mention`` setting when nobody maps.
 
 Cadence. The interval is ``TriageThresholds.nag_interval_for_attempt(owner,
@@ -53,6 +53,7 @@ import datetime as dt
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 from django.utils import timezone
 
@@ -65,10 +66,10 @@ from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner, TriageT
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.review_nag_activity import pause_skip as _pause_skip
 from teatree.loop.scanners.review_nag_activity import thread_activity
 from teatree.loop.scanners.review_nag_claim import ReviewNagClaim, ReviewNagPostReconciliationError
 from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
+from teatree.loop.scanners.review_nag_pause import pause_skip
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
@@ -190,19 +191,11 @@ class ReviewNagScanner:
         right_now: dt.datetime,
         thresholds: TriageThresholds,
     ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]], RawAPIDict | None] | None:
-        peers = list(
-            ReviewRequestPost.objects.filter(
-                overlay=post.overlay,
-                slack_channel_id=post.slack_channel_id,
-                slack_thread_ts=post.slack_thread_ts,
-                done_at__isnull=True,
-            )
-        )
-        if not peers:
-            return None
+        rows = ReviewRequestPost.objects.open_thread(post)
+        peers = list(rows)
         owned_peers = [(peer, self._repo_owner_for(peer)) for peer in peers]
         interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
-        if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
+        if rows.nagged_within(right_now, interval):
             return None
         observation = self._last_activity(post, messaging, right_now)
         if observation is None:
@@ -260,7 +253,7 @@ class ReviewNagScanner:
         settled = self._open_state_skip(post, messaging, right_now, host)
         if settled is not None:
             return settled
-        paused = _pause_skip(post, messaging, visible_root=visible_root)
+        paused = pause_skip(post, messaging, visible_root=visible_root)
         if paused is not None:
             return paused
         return _draft_or_approved_skip(post, host)
@@ -314,8 +307,8 @@ class ReviewNagScanner:
         try:
             mention = engaged_reask_mention(
                 messaging,
-                self.host,
-                list(ReviewRequestPost.objects.filter(pk__in=[post_id for post_id, _, _ in claim.previous])),
+                cast("CodeHostBackend", self.host),
+                claim.posts,
                 requester=RequesterIdentity(self.requester_slack_id, self.identities),
                 overlay_name=self.overlay_name,
             )

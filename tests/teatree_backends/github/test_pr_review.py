@@ -115,6 +115,17 @@ def test_dismissed_reviewer_remains_engaged() -> None:
         assert GitHubCodeHost(token="t").get_pr_engaged_reviewers(repo="o/r", pr_iid=5) == ["peer"]
 
 
+def test_pending_review_does_not_engage_its_author() -> None:
+    with (
+        patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
+        patch(
+            "teatree.backends.github.client._gh_api_get_paginated",
+            return_value=[{"state": "PENDING", "user": {"login": "peer"}}],
+        ),
+    ):
+        assert GitHubCodeHost(token="t").get_pr_engaged_reviewers(repo="o/r", pr_iid=5) == []
+
+
 def test_get_pr_file_diffs_raises_on_a_pr_it_cannot_find_rather_than_reading_no_diff() -> None:
     not_found = CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)")
     with (

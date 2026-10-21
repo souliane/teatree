@@ -222,9 +222,11 @@ def _active_directory_match(member: RawAPIDict, clean: str) -> str:
     names = (member.get("name"), member.get("real_name"))
     if isinstance(profile, dict):
         names += (profile.get("display_name"),)
-    if not any(isinstance(name, str) and name.casefold() == clean for name in names):
-        return ""
     user_id = member.get("id")
+    if not any(isinstance(name, str) and name.casefold() == clean for name in names) and not (
+        is_slack_user_id(user_id) and user_id.casefold() == clean
+    ):
+        return ""
     return user_id if is_slack_user_id(user_id) else ""
 
 

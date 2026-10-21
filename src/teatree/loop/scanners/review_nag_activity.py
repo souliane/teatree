@@ -1,11 +1,8 @@
-"""Find thread engagement and read the review request's pause state."""
+"""Find thread activity for a review request."""
 
 import datetime as dt
 
-from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewRequestPost
-from teatree.core.review.review_pause import PauseState, read_pause_state
-from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
 
@@ -59,21 +56,3 @@ def thread_activity(
     if latest <= 0.0:
         return post.created_at
     return dt.datetime.fromtimestamp(latest, tz=dt.UTC)
-
-
-def paused_signal(post: ReviewRequestPost, state: PauseState) -> ScanSignal:
-    return ScanSignal(
-        kind="review_nag.mr_paused",
-        summary=f"Skipping nag for {post.mr_url} — pause state is {state.value}",
-        payload={"mr_url": post.mr_url, "post_id": post.pk, "pause_state": state.value},
-    )
-
-
-def pause_skip(
-    post: ReviewRequestPost,
-    messaging: MessagingBackend,
-    *,
-    visible_root: RawAPIDict | None = None,
-) -> ScanSignal | None:
-    state = read_pause_state(post, messaging, visible_root=visible_root)
-    return None if state is PauseState.NOT_PAUSED else paused_signal(post, state)

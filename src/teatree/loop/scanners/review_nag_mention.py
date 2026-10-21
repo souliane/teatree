@@ -32,23 +32,22 @@ class RequesterIdentity:
 
 def engaged_reask_mention(
     messaging: MessagingBackend,
-    host: CodeHostBackend | None,
+    host: CodeHostBackend,
     posts: Sequence[ReviewRequestPost],
     *,
     requester: RequesterIdentity,
     overlay_name: str,
 ) -> str:
     post = posts[0]
-    fallback = reask_mention(messaging, overlay_name=overlay_name)
-    if fallback == f"<@{requester.slack_id}>" and requester.slack_id:
+    fallback_target = _fallback_target(messaging, overlay_name=overlay_name)
+    fallback = _render_target(fallback_target)
+    if fallback_target == ("user", requester.slack_id) and requester.slack_id:
         fallback = ""
     if not requester.slack_id:
-        return fallback if fallback.startswith("<!subteam^") else ""
-    if host is None:
-        return fallback
+        return fallback if fallback_target[0] == "group" else ""
     try:
         replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
-        slack_ids = _thread_engagers(replies)
+        slack_ids = _thread_engagers(messaging, replies)
         forge_names: set[str] = set()
         for request in posts:
             ref = pr_ref_from_url(request.mr_url)
@@ -96,7 +95,7 @@ def _forge_engagers(comments: object, reviewers: object) -> set[str]:
     return names
 
 
-def _thread_engagers(replies: object) -> set[str]:
+def _thread_engagers(messaging: MessagingBackend, replies: object) -> set[str]:
     ids: set[str] = set()
     if not isinstance(replies, list):
         return ids
@@ -104,24 +103,39 @@ def _thread_engagers(replies: object) -> set[str]:
         if not isinstance(reply, dict) or reply.get("bot_id") or reply.get("subtype") == "bot_message":
             continue
         user_id = reply.get("user")
-        if user_id != "USLACKBOT" and is_slack_user_id(user_id):
-            ids.add(user_id)
+        if (
+            user_id != "USLACKBOT"
+            and is_slack_user_id(user_id)
+            and (active_id := messaging.resolve_unique_active_user_id(user_id))
+        ):
+            ids.add(active_id)
     return ids
 
 
 def reask_mention(messaging: MessagingBackend, *, overlay_name: str) -> str:
+    return _render_target(_fallback_target(messaging, overlay_name=overlay_name))
+
+
+def _render_target(target: tuple[str, str]) -> str:
+    kind, user_id = target
+    if kind == "group":
+        return f"<!subteam^{user_id}>"
+    return f"<@{user_id}>" if kind == "user" else ""
+
+
+def _fallback_target(messaging: MessagingBackend, *, overlay_name: str) -> tuple[str, str]:
     configured = get_effective_settings(overlay_name or None).review_nag_reask_mention
     if not configured:
-        return ""
+        return ("", "")
     try:
         if group_id := messaging.resolve_usergroup_id(configured):
-            return f"<!subteam^{group_id}>"
+            return ("group", group_id)
         if user_id := messaging.resolve_user_id(configured):
-            return f"<@{user_id}>"
+            return ("user", user_id)
     except Exception:
         logger.debug("review_nag: re-ask mention lookup failed for %r", configured, exc_info=True)
     _warn_unresolved_mention_once(overlay_name, configured)
-    return ""
+    return ("", "")
 
 
 @cache

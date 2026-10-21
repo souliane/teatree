@@ -63,6 +63,7 @@ class _Slack:
     post_error: Exception | None = None
     post_response: RawAPIDict | None = None
     thread_replies: list[RawAPIDict] = field(default_factory=list)
+    active_user_ids: set[str] = field(default_factory=set)
     posted: list[tuple[str, str, str]] = field(default_factory=list)
 
     def route_token(self, channel: str) -> str:
@@ -96,8 +97,7 @@ class _Slack:
         return [self.fetch_message(channel=channel, ts=thread_ts), *self.thread_replies]
 
     def resolve_unique_active_user_id(self, handle: str) -> str:
-        _ = handle
-        return ""
+        return handle if handle in self.active_user_ids else ""
 
 
 @dataclass
@@ -214,7 +214,7 @@ class TestReviewRequestResumeScanner(TestCase):
 
     def test_engaged_thread_reviewer_gets_direct_resume_mention(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "")
-        slack = _Slack(thread_replies=[{"ts": "1780473409.000001", "user": "UPEER"}])
+        slack = _Slack(thread_replies=[{"ts": "1780473409.000001", "user": "UPEER"}], active_user_ids={"UPEER"})
 
         signals = self._scan(slack, _Host())
 

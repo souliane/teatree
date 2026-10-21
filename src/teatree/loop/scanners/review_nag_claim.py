@@ -15,32 +15,25 @@ class ReviewNagPostReconciliationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ReviewNagClaim:
     previous: tuple[tuple[int, dt.datetime | None, int], ...]
+    posts: tuple[ReviewRequestPost, ...]
     claimed_at: dt.datetime
     nag_count: int
 
     @classmethod
     def take(cls, post: ReviewRequestPost, right_now: dt.datetime, interval: dt.timedelta) -> "ReviewNagClaim | None":
         with transaction.atomic():
-            peers = list(
-                ReviewRequestPost.objects.select_for_update()
-                .filter(
-                    overlay=post.overlay,
-                    slack_channel_id=post.slack_channel_id,
-                    slack_thread_ts=post.slack_thread_ts,
-                    done_at__isnull=True,
-                )
-                .order_by("pk")
-            )
+            rows = ReviewRequestPost.objects.open_thread(post).select_for_update()
+            peers = list(rows.order_by("pk"))
             if not any(peer.pk == post.pk for peer in peers):
                 return None
-            if any(peer.last_nag_at is not None and right_now - peer.last_nag_at < interval for peer in peers):
+            if rows.nagged_within(right_now, interval):
                 return None
             previous = tuple((peer.pk, peer.last_nag_at, peer.nag_count) for peer in peers)
             count = max(peer.nag_count for peer in peers) + 1
             ReviewRequestPost.objects.filter(pk__in=[peer.pk for peer in peers]).update(
                 last_nag_at=right_now, nag_count=count
             )
-        return cls(previous=previous, claimed_at=right_now, nag_count=count)
+        return cls(previous=previous, posts=tuple(peers), claimed_at=right_now, nag_count=count)
 
     def release(self) -> None:
         with transaction.atomic():

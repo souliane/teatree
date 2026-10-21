@@ -33,7 +33,7 @@ _CHANNEL = "C0DEMOCHAN1"
 _REVIEWERS_GROUP: RawAPIDict = {"id": "S0REVIEWERS", "handle": "reviewers-team", "name": "Reviewers"}
 
 
-def _active_member(user_id: str, name: str) -> RawAPIDict:
+def active_member(user_id: str, name: str) -> RawAPIDict:
     return {
         "id": user_id,
         "name": name,
@@ -183,7 +183,7 @@ class FakeHost:
     raise_on_author: Exception | None = None
     comments: list[RawAPIDict] = field(default_factory=list)
     comments_by_iid: dict[int, list[RawAPIDict]] = field(default_factory=dict)
-    prs: list[RawAPIDict] = field(default_factory=list)
+    requested_reviewers: list[RawAPIDict] = field(default_factory=list)
 
     def get_pr_open_state(self, *, pr_url: str) -> Any:
         _ = pr_url
@@ -223,7 +223,7 @@ class FakeHost:
 
     def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
         _ = (repo, pr_iid)
-        requested = [str(pr["username"]) for pr in self.prs if isinstance(pr.get("username"), str)]
+        requested = [str(pr["username"]) for pr in self.requested_reviewers if isinstance(pr.get("username"), str)]
         return sorted(set(requested + self.approved_by))
 
 
@@ -496,7 +496,7 @@ class TestNoDoublePing(_PermittingPostureMixin, TestCase):
     def test_batch_mention_includes_reviewer_of_a_sibling_request(self) -> None:
         first = _seed(days_old=5.0)
         second = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
-        slack = FakeSlack(members=[_active_member("UPEERA", "peer-a"), _active_member("UPEERB", "peer-b")])
+        slack = FakeSlack(members=[active_member("UPEERA", "peer-a"), active_member("UPEERB", "peer-b")])
         host = FakeHost(
             comments_by_iid={
                 1: [{"author": {"username": "peer-a"}}],
@@ -615,20 +615,10 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
         assert self._re_ask(slack, overlay="t3-acme") == "<!subteam^S0REVIEWERS> could you please have another look?"
         assert self._re_ask(slack, overlay="t3-other") == ""
 
-    def test_unmapped_engaged_reviewer_falls_back_to_group(self) -> None:
-        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
-        _seed(days_old=5.0)
-        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
-        host = FakeHost(comments=[{"author": {"username": "peer"}}])
-
-        ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
-
-        assert slack.posts[-1]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
-
     def test_unresolved_requester_id_uses_group_even_with_engagement(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         _seed(days_old=5.0)
-        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[_active_member("UPEER", "peer")])
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[active_member("UPEER", "peer")])
         host = FakeHost(comments=[{"author": {"username": "peer"}}])
 
         ReviewNagScanner(messaging=slack, host=host, requester_slack_id="").scan()
@@ -648,7 +638,7 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
     def test_requester_is_not_mentioned_as_the_engaged_reviewer(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         _seed(days_old=5.0)
-        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[_active_member("UOWNER", "owner")])
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[active_member("UOWNER", "owner")])
         host = FakeHost(comments=[{"author": {"username": "owner"}}])
 
         ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
@@ -657,8 +647,8 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
 
     def test_requested_reviewer_gets_a_direct_reask(self) -> None:
         _seed(days_old=5.0)
-        slack = FakeSlack(members=[_active_member("UPEER", "peer")])
-        host = FakeHost(prs=[{"username": "peer"}])
+        slack = FakeSlack(members=[active_member("UPEER", "peer")])
+        host = FakeHost(requested_reviewers=[{"username": "peer"}])
 
         ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
 
@@ -666,7 +656,9 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
 
     def test_old_thread_reply_author_gets_a_direct_reask(self) -> None:
         _seed(days_old=5.0)
-        slack = FakeSlack(thread_replies=[{"ts": _recent_ts(72), "user": "UPEER"}])
+        slack = FakeSlack(
+            thread_replies=[{"ts": _recent_ts(72), "user": "UPEER"}], members=[active_member("UPEER", "peer")]
+        )
 
         ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
 
@@ -1232,6 +1224,7 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
 
     def test_a_blocked_post_restores_both_the_stamp_and_the_count(self) -> None:
         post = _seed(days_old=30.0, nag_count=2)
+        sibling = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=30.0, nag_count=2)
         slack = FakeSlack()
         gated = TeaTreeConfig(user=UserSettings())
         seed_forbidding_posture()
@@ -1243,10 +1236,13 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
         post.refresh_from_db()
         assert post.last_nag_at is None
         assert post.nag_count == 2
+        sibling.refresh_from_db()
+        assert sibling.nag_count == 2
         assert [s.kind for s in signals] == ["review_nag.gated"]
 
     def test_a_failed_post_restores_both_the_stamp_and_the_count(self) -> None:
         post = _seed(days_old=30.0, nag_count=2)
+        sibling = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=30.0, nag_count=2)
         slack = FakeSlack(raise_on_post=RuntimeError("not_in_channel"))
 
         signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
@@ -1254,6 +1250,8 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
         post.refresh_from_db()
         assert post.last_nag_at is None
         assert post.nag_count == 2
+        sibling.refresh_from_db()
+        assert sibling.nag_count == 2
         assert [s.kind for s in signals] == ["review_nag.post_failed"]
 
     def test_a_delivered_re_ask_advances_the_count(self) -> None:

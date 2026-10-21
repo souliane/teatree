@@ -36,6 +36,15 @@ def _active_user(user_id: str, name: str) -> RawAPIDict:
 
 
 class TestResolveUniqueActiveUserId:
+    def test_user_id_resolves_only_for_active_non_guest_member(self) -> None:
+        members = [_active_user("UACTIVE", "peer"), {**_active_user("UGUEST", "guest"), "is_restricted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="UACTIVE") == "UACTIVE"
+        assert resolve_unique_active_user_id(get=get, handle="UGUEST") == ""
+
     def test_display_name_matches_casefolded_handle(self) -> None:
         member = {**_active_user("UPEER", "other"), "profile": {"display_name": "Review Peer"}}
 
