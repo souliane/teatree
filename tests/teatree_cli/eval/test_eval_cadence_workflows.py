@@ -275,12 +275,12 @@ class TestNightlySmokeLane:
         assert "scripts/eval/select_oauth.py" in text
 
 
-def test_scheduled_sweep_window_allows_cron_delay_in_both_selectors() -> None:
+def test_scheduled_sweep_window_is_24_hours_in_both_selectors() -> None:
     workflow = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))
     prepare = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "sweep")
     selector = next(step for step in workflow["jobs"]["eval"]["steps"] if step.get("id") == "select")
     hours = int(prepare["env"]["EVAL_SWEEP_WITHIN_HOURS"])
-    assert hours == 30
+    assert hours == 24
     assert f"&& '{hours}' || ''" in selector["env"]["EVAL_SWEEP_WITHIN_HOURS"]
 
 
