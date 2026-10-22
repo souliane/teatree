@@ -93,20 +93,6 @@ class NoFilingRepoError(WorkItemFilingError):
         super().__init__(f"overlay {overlay or '(default)'} declares no repos, so there is nowhere to file")
 
 
-class AmbiguousFilingRepoError(WorkItemFilingError):
-    def __init__(self, overlay: str, candidates: tuple[str, ...], selected: str | None = None) -> None:
-        detail = f"selected {selected!r}; " if selected else ""
-        super().__init__(
-            f"overlay {overlay or '(default)'} cannot choose a filing repo: "
-            f"{detail}candidates are {', '.join(candidates)}"
-        )
-
-
-class RepoSelectionHookError(WorkItemFilingError):
-    def __init__(self, overlay: str, cause: Exception) -> None:
-        super().__init__(f"overlay {overlay or '(default)'} repo-selection hook failed: {cause}")
-
-
 class UntrackableIssueError(WorkItemFilingError):
     """The forge accepted the issue but returned no URL to track it by."""
 
@@ -135,7 +121,7 @@ def file_work_item(
     envelope: Mapping[str, object],
     *,
     host: "CodeHostBackend",
-    repo: str | None = None,
+    repo: str,
 ) -> FiledWorkItem | None:
     """File (or attach to) the forge issue *envelope* names; ``None`` only for declared no-work."""
     if envelope.get("no_work_reason"):
@@ -148,27 +134,19 @@ def file_work_item(
         return _attach(ticket, _validated_forge_url(existing))
     if not str(envelope.get("title") or "").strip():
         raise EmptyWorkItemError
-    destination = repo or filing_repo(
-        ticket.overlay, title=str(envelope.get("title") or "").strip(), body=str(envelope.get("body") or "").strip()
-    )
-    return _file_new(ticket, envelope, host=host, repo=destination)
+    return _file_new(ticket, envelope, host=host, repo=repo)
 
 
-def filing_repo(overlay: str, *, title: str = "", body: str = "") -> str:
-    """Choose among the overlay's owned repos; ambiguous multi-repo work is refused."""
-    selected_overlay = get_overlay(overlay or None)
-    slugs = owned_repo_slugs(selected_overlay)
+def filing_repo(overlay: str) -> str:
+    """The repo slug this overlay files owner requests into — its first owned repo.
+
+    Raises rather than guessing: filing into a repo nobody declared would put the
+    owner's request somewhere neither they nor intake is looking.
+    """
+    slugs = owned_repo_slugs(get_overlay(overlay or None))
     if not slugs:
         raise NoFilingRepoError(overlay)
-    if len(slugs) == 1:
-        return slugs[0]
-    try:
-        chosen = selected_overlay.review.select_work_item_repo(title, body, slugs)
-    except Exception as exc:
-        raise RepoSelectionHookError(overlay, exc) from exc
-    if chosen in slugs:
-        return chosen
-    raise AmbiguousFilingRepoError(overlay, slugs, chosen)
+    return slugs[0]
 
 
 def _file_new(ticket: Ticket, envelope: Mapping[str, object], *, host: "CodeHostBackend", repo: str) -> FiledWorkItem:
