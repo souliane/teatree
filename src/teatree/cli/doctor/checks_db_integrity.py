@@ -36,7 +36,7 @@ from django.db import DatabaseError, connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
-from teatree.db.journal_mode import JOURNAL_SIZE_LIMIT, ControlDbJournal
+from teatree.db.journal_mode import JOURNAL_SIZE_LIMIT, ControlDbJournal, sqlite_file_journal_mode
 from teatree.db.write_domain import (
     ControlDbWriteDomain,
     DescriptorTableUnavailableError,
@@ -51,8 +51,6 @@ _SQLITE_OK = "ok"
 # quick_check reports one row per problem and a wide corruption can produce thousands.
 # The operator needs the shape of the failure, not a wall of page numbers.
 _MAX_REPORTED_PROBLEMS = 3
-_JOURNAL_HEADER_OFFSET = 18
-_WAL_HEADER_VALUE = 2
 
 
 def _sqlite_path() -> Path | None:
@@ -284,20 +282,14 @@ def _check_control_db_journal() -> bool:
 
     try:
         expected_mode, reason = ControlDbJournal(path).selection
-        with path.open("rb") as source:
-            header = source.read(_JOURNAL_HEADER_OFFSET + 1)
+        mode = sqlite_file_journal_mode(path)
     except (OSError, ImproperlyConfigured) as error:
         typer.secho(f"FAIL  Control DB journal: cannot verify ({error})", fg=typer.colors.RED)
         return False
-    if (
-        len(header) <= _JOURNAL_HEADER_OFFSET
-        or not header.startswith(b"SQLite format 3\x00")
-        or header[_JOURNAL_HEADER_OFFSET] not in {1, _WAL_HEADER_VALUE}
-    ):
+    if mode is None:
         typer.secho("FAIL  Control DB journal: invalid SQLite journal header", fg=typer.colors.RED)
         return False
 
-    mode = "wal" if header[_JOURNAL_HEADER_OFFSET] == _WAL_HEADER_VALUE else "truncate"
     if mode != expected_mode:
         typer.secho(
             f"FAIL  Control DB journal: {mode}; expected {expected_mode} ({reason}). "

@@ -134,7 +134,12 @@ class TestCanonicalConfigDb:
         # DATA dir — TRUE_CANONICAL_DB now resolves into the control-DB volume and
         # carries no home segment at all.
         paths_home = teatree.paths._TRUE_CANONICAL_DATA_DIR.parents[2]
-        assert canonical_config_db(env={}, home=paths_home) == teatree.paths.TRUE_CANONICAL_DB
+        assert (
+            canonical_config_db(
+                env={teatree.paths.CONTROL_DB_DIR_ENV: str(teatree.paths.TRUE_CANONICAL_DB.parent)}, home=paths_home
+            )
+            == teatree.paths.TRUE_CANONICAL_DB
+        )
 
     def test_worktree_cwd_does_not_isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         worktree = tmp_path / "wt"

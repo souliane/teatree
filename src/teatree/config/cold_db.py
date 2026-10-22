@@ -1,5 +1,11 @@
 """Django-free read-only access to the primary control DB.
 
+This path resolver deliberately targets the primary DB even from a git worktree.
+The worktree-aware resolver in :mod:`teatree.paths` selects an isolated sibling
+instead, so the few lines that choose the primary path remain separate here.
+``tests/config/test_cold_reader.py`` pins the result equal to
+``teatree.paths.TRUE_CANONICAL_DB`` to prevent the two answers from drifting.
+
 The public cold probes convert SQLite failures to caller defaults; confirmed
 probes also report whether the query ran.
 """

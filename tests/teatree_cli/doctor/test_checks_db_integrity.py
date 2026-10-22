@@ -43,6 +43,7 @@ def test_database_health_reports_wal_and_warns_when_sidecar_grows(
     volume.mkdir()
     db = _sound_db(volume / "db.sqlite3")
     monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
     monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: True)
     monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
     monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
@@ -65,7 +66,7 @@ def test_database_health_reports_wal_and_warns_when_sidecar_grows(
         monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1, raising=False)
         assert checks_db_integrity._check_database_health() is True
         output = capsys.readouterr().out
-        assert "Control DB journal: wal (control-DB volume)" in output
+        assert "Control DB journal: wal (operator override)" in output
         assert "WARN" in output
         assert "-wal" in output
 
@@ -152,6 +153,30 @@ def test_doctor_fails_when_header_disagrees_with_selected_mode(
 
     assert checks_db_integrity._check_control_db_journal() is False
     assert "wal; expected truncate (operator override)" in capsys.readouterr().out
+
+
+def test_doctor_fails_on_invalid_journal_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "db.sqlite3"
+    db.write_bytes(b"not a SQLite database")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+
+    assert checks_db_integrity._check_control_db_journal() is False
+    assert "FAIL  Control DB journal: invalid SQLite journal header" in capsys.readouterr().out
+
+
+def test_doctor_skips_absent_control_db_before_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "absent.sqlite3"
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "invalid")
+
+    assert checks_db_integrity._check_control_db_journal() is True
+    assert not db.exists()
+    assert capsys.readouterr().out == ""
 
 
 def _sound_db(path: Path) -> Path:

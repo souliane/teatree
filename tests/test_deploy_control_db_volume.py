@@ -10,6 +10,7 @@ user's ownership rather than root's.
 import os
 import sqlite3
 import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -139,6 +140,38 @@ class TestMigrationScriptIsShipped:
             with closing(sqlite3.connect(target)) as reader:
                 assert reader.execute("SELECT body FROM note").fetchall() == [("wal-resident",)]
                 assert reader.execute("PRAGMA quick_check").fetchone() == ("ok",)
+            script = (
+                "import django, os; django.setup(); from pathlib import Path; "
+                "import teatree.db.boundary as boundary; import teatree.db.write_domain as domain; "
+                "from teatree.utils.mount_points import MountEntry; "
+                "boundary.is_running_in_container=lambda: True; "
+                "domain.read_mount_entries=lambda: (MountEntry(Path('/'), 'ext4'),); "
+                "from django.db.utils import ConnectionHandler; "
+                "from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS; "
+                "h=ConnectionHandler({'default': {'ENGINE':SQLITE_BOUNDARY_ENGINE, 'NAME':os.environ['DB'], "
+                "'OPTIONS':SQLITE_WRITE_SERIALIZATION_OPTIONS}}); "
+                "c=h['default'].cursor(); print(c.execute('SELECT body FROM note').fetchone()[0]); h.close_all()"
+            )
+            converted = subprocess.run(
+                [sys.executable, "-c", script],
+                env={
+                    **os.environ,
+                    "DB": str(target),
+                    "T3_CONFIG_DB": str(target),
+                    "T3_CONTROL_DB_DIR": str(target_dir),
+                    "T3_CONTROL_DB_JOURNAL_MODE": "truncate",
+                    "DJANGO_SETTINGS_MODULE": "teatree.settings",
+                    "TEATREE_ROLE": "worker",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            assert converted.returncode == 0, converted.stderr
+            assert converted.stdout.strip() == "wal-resident"
+            assert target.read_bytes()[18] == 1
+            assert not Path(f"{target}-wal").exists()
         finally:
             writer.close()
 

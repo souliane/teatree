@@ -31,6 +31,7 @@ from tests._db_template import restore_from_template
 @pytest.fixture
 def wal_control_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
     monkeypatch.setenv("TEATREE_ROLE", "worker")
     monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
 
@@ -105,6 +106,7 @@ def teardown_sqlite_alias(alias: str) -> None:
     for conn in connections.all():
         if conn.alias == alias:
             conn.close()
+            del connections[alias]
     connections.databases.pop(alias, None)
 
 

@@ -53,6 +53,19 @@ def _call_pairs_stock(node: ast.Call, parents: dict[ast.AST, ast.AST]) -> bool:
     return False
 
 
+def _changes_registered_engine(node: ast.Assign) -> bool:
+    return any(
+        isinstance(target, ast.Subscript)
+        and isinstance(target.slice, ast.Constant)
+        and target.slice.value == "ENGINE"
+        and isinstance(target.value, ast.Subscript)
+        and isinstance(target.value.value, ast.Attribute)
+        and target.value.value.attr == "databases"
+        and _name(target.value.value.value) == "connections"
+        for target in node.targets
+    )
+
+
 def _unsafe_pairs(source: str) -> list[int]:
     tree = ast.parse(source)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
@@ -61,6 +74,7 @@ def _unsafe_pairs(source: str) -> list[int]:
         for node in ast.walk(tree)
         if (isinstance(node, ast.Dict) and _literal_pair(node))
         or (isinstance(node, ast.Call) and _call_pairs_stock(node, parents))
+        or (isinstance(node, ast.Assign) and _changes_registered_engine(node))
     ]
 
 
@@ -72,8 +86,9 @@ def test_alias_pair_guard_detects_an_unsafe_call_and_literal() -> None:
         "_database_config(db, 'django.db.backends.sqlite3')\n"
         "with pytest.raises(ValueError):\n"
         "    register_sqlite_alias('x', db, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)\n"
+        "connections.databases[alias]['ENGINE'] = SQLITE_BOUNDARY_ENGINE\n"
     )
-    assert _unsafe_pairs(source) == [1, 2, 3, 4]
+    assert sorted(_unsafe_pairs(source)) == [1, 2, 3, 4, 7]
 
 
 def test_no_test_module_pairs_control_options_with_stock_engine() -> None:

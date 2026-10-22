@@ -8,6 +8,7 @@ import pytest
 
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.secret_settings import SECRET_SETTINGS
+from teatree.hooks import banned_term_registry
 from teatree.hooks.banned_term_registry import allowlist_terms, export_scan_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, load_brand_terms
@@ -79,6 +80,20 @@ def test_registry_secret_wins_over_row(tmp_path: Path, monkeypatch: pytest.Monke
     db = _seed(tmp_path, banned_term_registry={"leak": ["old"], "prose_collider": []})
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["new"], "prose_collider": []}))
     assert terms_for_gate("tree", db_path=db) == ("new",)
+
+
+def test_scratch_control_dir_cannot_replace_owner_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    owner = tmp_path / "owner"
+    scratch = tmp_path / "scratch"
+    owner.mkdir()
+    scratch.mkdir()
+    _seed(owner, banned_term_registry={"leak": ["owner-term"]}).rename(owner / "db.sqlite3")
+    _seed(scratch, banned_term_registry={"leak": ["scratch-term"]}).rename(scratch / "db.sqlite3")
+    monkeypatch.setattr(banned_term_registry, "DEFAULT_CONTROL_DB_DIR", owner)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(scratch))
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+
+    assert terms_for_gate("diff") == ("owner-term",)
 
 
 @pytest.mark.parametrize("registry", [[], {"leak": "bad", "prose_collider": []}])

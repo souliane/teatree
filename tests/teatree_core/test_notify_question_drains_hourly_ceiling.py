@@ -6,6 +6,7 @@ import itertools
 import os
 import threading
 from collections.abc import Callable, Generator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,10 +21,9 @@ from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
-from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._owner_channel import OWNER_DECISION
-from tests.db_alias import run_racing_threads, wal_control_db
+from tests.db_alias import register_control_db_alias, run_racing_threads, teardown_sqlite_alias, wal_control_db
 from tests.teatree_core.conftest import SchemaGuardAlias
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
 
@@ -449,9 +449,9 @@ class TestTheHourlyCeilingHoldsAcrossProcesses:
 
     def test_two_processes_racing_for_the_last_slot_send_one_ping(self, schema_guard_alias: SchemaGuardAlias) -> None:
         alias = schema_guard_alias.register_current()
-        connections.databases[alias]["ENGINE"] = SQLITE_BOUNDARY_ENGINE
-        connections.databases[alias]["OPTIONS"].update(SQLITE_WRITE_SERIALIZATION_OPTIONS)
-        connections[alias].close()
+        db_file = Path(str(connections.databases[alias]["NAME"]))
+        teardown_sqlite_alias(alias)
+        register_control_db_alias(alias, db_file)
         _seed_sent_question_pings(5)
         _backlog("Which DB host?")
         _backlog("Which region?")

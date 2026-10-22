@@ -273,11 +273,16 @@ fail at connection setup. The file's mode can change only when a connection
 opens, and a TRUNCATE opener fails with `database is locked` while another
 process holds a WAL connection open.
 
-On the first deploy, the new init may switch the file to WAL before the old
-admin and listener are replaced. Old processes can report `database is locked`
-on new connections during this bounded replacement window. The worker is
-drained during the roll; an exclusive SQLite mode change cannot corrupt the
-file. Confirm the journal mode with `t3 doctor` after the roll.
+An unshipped checkout preserves an existing database's journal header until
+the operator sets an override. If it points at the installed control-DB
+directory, it refuses an override that would change that header. The deployed
+source identified by `TEATREE_CLONE_DIR` makes the normal selection.
+
+On the first deploy, drain the worker and stop every database-using service
+before the new code opens the control DB. A mode change while an old process
+holds a connection can make new connections fail with `database is locked`.
+Start the new services only after the old processes have exited, then confirm
+the journal mode with `t3 doctor`.
 
 To return to TRUNCATE or roll back to an image from before this change, set
 `T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service

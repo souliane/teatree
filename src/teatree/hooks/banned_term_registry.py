@@ -15,6 +15,7 @@ from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.leak_policy import ALLOW, LEAK, PROSE_COLLIDER, TERM_CLASSES, TONE, Surface, classes_for_surface
 from teatree.hooks.term_refs import TermRefs
+from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME, DEFAULT_CONTROL_DB_DIR
 
 __all__ = [
     "ALLOW",
@@ -103,6 +104,8 @@ def load_registry(db_path: Path | None = None) -> dict[str, tuple[str, ...]] | N
             msg = f"${_REGISTRY_ENV} is set but not valid JSON — refusing to scan as empty"
             raise BannedTermsUnsetError(msg) from exc
         return _normalise_registry(parsed)
+    if db_path is None and os.environ.get(CONTROL_DB_DIR_ENV) and not os.environ.get("T3_CONFIG_DB"):
+        db_path = DEFAULT_CONTROL_DB_DIR / DB_FILENAME
     read = cold_reader.read_setting_confirmed(_REGISTRY_KEY, db_path=db_path)
     if not read.readable:
         raise BannedTermsUnreadableError.for_store(_REGISTRY_KEY, _REGISTRY_ENV)
