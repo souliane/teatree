@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 RESUME_HEADROOM_TOKENS = 80_000
 
 #: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
-_BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 
 #: Kinds where a route candidate ran and did not deliver. Outage and provisioning failures are deliberately
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
@@ -33,15 +33,15 @@ CANDIDATE_FAULT_KINDS = frozenset(
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
 
 
-_PARK_ERROR = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
+PARK_ERROR_Q = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
     def parks(self) -> "TaskAttemptQuerySet":
-        return self.filter(_PARK_ERROR)
+        return self.filter(PARK_ERROR_Q)
 
     def excluding_parks(self) -> "TaskAttemptQuerySet":
-        return self.exclude(_PARK_ERROR)
+        return self.exclude(PARK_ERROR_Q)
 
     def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (
@@ -84,7 +84,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         BILLED spend: it is a run that ended in a park (a checkpoint, a reactive limit),
         and folding it would drop its tokens and its session id from the ledger.
         """
-        if any(kwargs.get(column) is not None for column in _BILLED_COLUMNS):
+        if any(kwargs.get(column) is not None for column in BILLED_COLUMNS):
             return super().create(**kwargs)
         coalesced = self._coalesce_repeated_park(
             task=kwargs.get("task"),
@@ -138,7 +138,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         return (
             self.parks()
             .filter(
-                **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
+                **{f"{column}__isnull": True for column in BILLED_COLUMNS},
             )
             .filter(
                 models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
