@@ -4,10 +4,10 @@ Loads the page(s) the diff actually touches in a real browser and reports
 silent-render regressions: page crashes, console errors, raw ``app.*``
 translation keys, blocking asset 404s.
 
-Designed as a fast pre-push gate, not a regression suite.  Hard caps keep
-the gate well under 60 seconds per PR.  When the headless browser cannot
-launch the report records that the check did not run, which the gate refuses;
-only an explicit skip bypasses it.
+Designed as a bounded pre-push check, not a regression suite. The checkout
+server gets up to 90 seconds to start and the browser up to 150 seconds to
+inspect its pages. An unavailable server or browser is a did-not-run verdict;
+only an explicit, recorded skip bypasses it.
 
 The gate is a precondition of PR creation: ``pr create`` calls
 ``_run_visual_qa_gate`` before composing the PR, persists the summary on
@@ -17,7 +17,6 @@ and refuses to create the PR when findings are present or the check did not run.
 
 import contextlib
 import fnmatch
-import os
 import re
 import time
 from collections.abc import Callable
@@ -28,6 +27,9 @@ from typing import TYPE_CHECKING
 from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
+from teatree.visual_qa_server import ServedApp, ServerSpec, VisualQAUnavailableError
+from teatree.visual_qa_server import served_app as _served_app
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
@@ -50,9 +52,9 @@ DEFAULT_TRIGGER_GLOBS: tuple[str, ...] = (
     "**/static/**",
 )
 
-MAX_PAGES = 5
+MAX_PAGES = 12
 PER_PAGE_TIMEOUT_MS = 10_000
-TOTAL_TIMEOUT_S = 60
+TOTAL_TIMEOUT_S = 150
 DEFAULT_SCREENSHOT_DIR = ".t3/visual_qa"
 
 # 401/403 are common when an authenticated-only flow is logged out — not a blocker.
@@ -60,10 +62,6 @@ _HTTP_ERROR_THRESHOLD = 400
 _NON_BLOCKING_STATUSES = frozenset({401, 403})
 
 _TRANSLATION_KEY_RE = re.compile(r"\bapp\.[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){1,}\b", re.IGNORECASE)
-
-
-class VisualQAUnavailableError(RuntimeError):
-    """Raised when Playwright cannot run — the check did not run, so it cannot pass."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +76,8 @@ class PageResult:
     url: str
     screenshot_path: str = ""
     errors: list[PageError] = field(default_factory=list)
+    unreached: bool = False
+    unreached_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,15 +87,38 @@ class VisualQAReport:
     skipped_reason: str = ""
     base_url: str = ""
     not_run_reason: str = ""
+    server_failure: str = ""
 
     @property
     def unchecked(self) -> list[str]:
-        """Targets the total-deadline cut off before the browser reached them.
+        return list(self.unchecked_reasons)
 
-        A page nobody loaded is not a page with no findings, so the gate must not read
-        a truncated run as a clean one.
-        """
-        return [] if self.skipped_reason else self.targets[len(self.pages) :]
+    @property
+    def unchecked_reasons(self) -> dict[str, str]:
+        note = self.server_failure.replace("\n", " ")
+        if not note and self.not_run_reason:
+            note = self.not_run_reason.splitlines()[0]
+        unreached_reason = f"unreached ({note})" if note else "unreached"
+        reasons = {
+            target: f"unreached ({page.unreached_reason})"
+            if page.unreached_reason and not self.server_failure
+            else unreached_reason
+            for target, page in zip(self.targets, self.pages, strict=False)
+            if page.unreached
+        }
+        reasons.update(
+            {
+                target: (
+                    "page cap"
+                    if index >= MAX_PAGES
+                    else unreached_reason
+                    if self.server_failure or self.not_run_reason
+                    else "deadline"
+                )
+                for index, target in enumerate(self.targets[len(self.pages) :], start=len(self.pages))
+            }
+        )
+        return reasons
 
     @property
     def has_errors(self) -> bool:
@@ -104,6 +127,10 @@ class VisualQAReport:
     @property
     def total_errors(self) -> int:
         return sum(len(page.errors) for page in self.pages)
+
+    @property
+    def pages_checked(self) -> int:
+        return sum(not page.unreached for page in self.pages)
 
     def summary(self) -> "VisualQASummary":
         """Return a JSON-serialisable snapshot for ``Ticket.extra``."""
@@ -125,9 +152,11 @@ class VisualQAReport:
             skipped_reason=self.skipped_reason,
             not_run_reason=self.not_run_reason,
             base_url=self.base_url,
-            pages_checked=len(self.pages),
+            pages_checked=self.pages_checked,
             errors=self.total_errors,
             details=details,
+            unchecked_reasons=self.unchecked_reasons,
+            report_markdown=format_report(self),
         )
 
 
@@ -157,25 +186,8 @@ def detect_targets(diff: list[str], overlay: OverlayBase | None = None) -> list[
     """
     if overlay is not None:
         targets = overlay.review.visual_qa_targets(diff)
-        return list(targets[:MAX_PAGES]) if targets else []
+        return list(targets) if targets else []
     return ["/"] if matches_triggers(diff) else []
-
-
-# ── Bypass ───────────────────────────────────────────────────────────
-
-
-def should_run(*, skip_reason: str = "", env: dict[str, str] | None = None) -> tuple[bool, str]:
-    """Decide whether to run the gate.
-
-    Returns ``(run, reason)``.  When ``run`` is ``False``, ``reason``
-    explains why so the caller can surface it.
-    """
-    env = env if env is not None else dict(os.environ)
-    if skip_reason:
-        return (False, f"--skip: {skip_reason}")
-    if env.get("T3_VISUAL_QA", "").strip().lower() == "disabled":
-        return (False, "T3_VISUAL_QA=disabled")
-    return (True, "")
 
 
 # ── Runner ───────────────────────────────────────────────────────────
@@ -209,7 +221,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 1280, "height": 900})
-            for index, target in enumerate(targets[:MAX_PAGES]):
+            for index, target in enumerate(targets):
                 if time.monotonic() >= deadline:
                     break
                 results.append(_check_one(context, base_url, target, out_dir, index))
@@ -234,10 +246,16 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
     EvidenceRecorder(events.append).attach(page)
 
     navigation_error = ""
+    unreached = False
+    unreached_reason = ""
     try:
         page.goto(url, timeout=PER_PAGE_TIMEOUT_MS, wait_until="networkidle")
     except PlaywrightError as exc:
-        navigation_error = f"navigation failed: {exc}"
+        if _never_connected(str(exc)):
+            unreached = True
+            unreached_reason = str(exc).splitlines()[0]
+        else:
+            navigation_error = f"navigation failed: {exc}"
 
     body_text = ""
     with contextlib.suppress(Exception):
@@ -253,14 +271,32 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
         screenshot_path = ""
 
     page.close()
-    errors = [error for event in events if (error := _page_error(url, event)) is not None]
+    errors = [] if unreached else [error for event in events if (error := _page_error(url, event)) is not None]
     if navigation_error:
         errors.append(PageError(url=url, kind="page", message=navigation_error))
     errors.extend(
         PageError(url=url, kind="translation", message=f"raw key in DOM: {match}")
         for match in _TRANSLATION_KEY_RE.findall(body_text)
     )
-    return PageResult(url=url, screenshot_path=screenshot_path, errors=errors)
+    return PageResult(
+        url=url,
+        screenshot_path=screenshot_path,
+        errors=errors,
+        unreached=unreached,
+        unreached_reason=unreached_reason,
+    )
+
+
+def _never_connected(message: str) -> bool:
+    return any(
+        code in message
+        for code in (
+            "net::ERR_CONNECTION_REFUSED",
+            "net::ERR_NAME_NOT_RESOLVED",
+            "net::ERR_ADDRESS_UNREACHABLE",
+            "net::ERR_NETWORK_UNREACHABLE",
+        )
+    )
 
 
 def _page_error(url: str, event: BrowserEvent) -> PageError | None:
@@ -288,68 +324,115 @@ def evaluate(
     *,
     read_diff: Callable[[], list[str]],
     overlay: OverlayBase | None,
-    base_url: str,
+    base_url: str | Callable[[], str],
     skip_reason: str = "",
-    env: dict[str, str] | None = None,
+    server: ServerSpec | None = None,
 ) -> VisualQAReport:
     """Run the full gate end to end and return the report.
 
-    Single entry point used by the shipping gate.  An explicit bypass returns
-    a skipped report without reading the diff; no frontend change returns a
-    clean one.  Playwright being unavailable sets ``not_run_reason`` and leaves
-    every target unchecked, so the report has errors.
+    Single entry point used by the shipping gate. An explicit bypass still
+    gathers evidence; no frontend change returns a clean report.
     """
-    run, bypass_reason = should_run(skip_reason=skip_reason, env=env)
-    if not run:
-        return VisualQAReport(targets=[], skipped_reason=bypass_reason)
-
-    targets = detect_targets(read_diff(), overlay)
+    try:
+        targets = detect_targets(read_diff(), overlay)
+    except (CommandFailedError, OSError, RuntimeError, TimeoutExpired, ValueError, TypeError, AttributeError) as exc:
+        return VisualQAReport(
+            targets=[],
+            not_run_reason=str(exc) if isinstance(exc, VisualQAUnavailableError) else f"{type(exc).__name__}: {exc}",
+            skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+        )
     if not targets:
         return VisualQAReport(targets=[], skipped_reason="no frontend changes")
-
+    resolved_url = ""
+    server_failure = ""
+    server_attempted = False
     try:
-        pages = run_check(targets, base_url)
-    except VisualQAUnavailableError as exc:
-        return VisualQAReport(targets=targets, base_url=base_url, not_run_reason=str(exc))
+        if server is not None:
+            run_check([], "")
+            server_attempted = True
+        app_context: contextlib.AbstractContextManager[ServedApp | None] = (
+            _served_app(server) if server is not None else contextlib.nullcontext(None)
+        )
+        with app_context as served:
+            if served is not None:
+                resolved_url = served.base_url
+            elif isinstance(base_url, str):
+                resolved_url = base_url
+            else:
+                resolved_url = base_url()
+            pages = run_check(targets[:MAX_PAGES], resolved_url)
+            if served is not None:
+                server_failure = served.failure()
+    except (OSError, RuntimeError, TimeoutExpired, ValueError, TypeError, AttributeError) as exc:
+        return VisualQAReport(
+            targets=targets,
+            base_url=resolved_url,
+            not_run_reason=str(exc) if isinstance(exc, VisualQAUnavailableError) else f"{type(exc).__name__}: {exc}",
+            server_failure=str(exc) if server_attempted and not resolved_url else "",
+            skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+        )
 
-    return VisualQAReport(targets=targets, pages=pages, base_url=base_url)
+    return VisualQAReport(
+        targets=targets,
+        pages=pages,
+        base_url=resolved_url,
+        server_failure=server_failure,
+        skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
+    )
 
 
 # ── Report ───────────────────────────────────────────────────────────
 
 
+def _report_header(report: VisualQAReport) -> list[str]:
+    lines = ["## Visual QA", ""]
+    if report.skipped_reason == "no frontend changes":
+        lines.append(f"_skipped: {report.skipped_reason}_")
+    elif report.skipped_reason:
+        lines.extend((f"_explicit bypass: {_public_text(report.skipped_reason)}_", ""))
+    if report.not_run_reason:
+        first, *rest = report.not_run_reason.splitlines()
+        lines.append(f"did not run: {_public_text(first)}")
+        if rest:
+            lines.extend(("```text", *(_public_text(line) for line in rest), "```"))
+    if not report.targets and not report.skipped_reason and not report.not_run_reason:
+        lines.append("_no frontend changes detected_")
+    return lines
+
+
 def format_report(report: VisualQAReport) -> str:
     """Render a ``## Visual QA`` markdown section for the PR description."""
-    lines = ["## Visual QA", ""]
-    if report.skipped_reason:
-        lines.append(f"_skipped: {report.skipped_reason}_")
-        return "\n".join(lines) + "\n"
-    if report.not_run_reason:
-        lines.append(f"_did not run: {report.not_run_reason}_")
-        return "\n".join(lines) + "\n"
+    lines = _report_header(report)
     if not report.targets:
-        lines.append("_no frontend changes detected_")
         return "\n".join(lines) + "\n"
 
-    base = report.base_url
-    if base:
-        lines.extend((f"_base url: {base}_", ""))
     lines.extend(
         (
-            f"Checked {len(report.pages)} of {len(report.targets)} page(s) — {report.total_errors} finding(s).",
+            f"Checked {report.pages_checked} of {len(report.targets)} page(s) — {report.total_errors} finding(s).",
             "",
         ),
     )
     if report.unchecked:
-        lines.extend((f"**Not checked** — the {TOTAL_TIMEOUT_S}s budget ran out: {', '.join(report.unchecked)}", ""))
-    for page in report.pages:
-        path = page.url.removeprefix(base) or "/" if base else page.url
-        marker = ":x:" if page.errors else ":white_check_mark:"
+        lines.append("**Not checked**")
+        lines.extend(f"- `{path}`: {_public_text(reason)}" for path, reason in report.unchecked_reasons.items())
+        lines.append("")
+    for path, page in zip(report.targets, report.pages, strict=False):
+        marker = ":x:" if page.errors else ":warning:" if page.unreached else ":white_check_mark:"
         lines.append(f"### {marker} `{path}`")
-        if page.screenshot_path:
-            lines.append(f"![{path}]({page.screenshot_path})")
         if page.errors:
             lines.append("")
-            lines.extend(f"- **{error.kind}**: {error.message}" for error in page.errors)
+            lines.extend(f"- **{error.kind}**: {_public_message(error, report.base_url)}" for error in page.errors)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+_LOCAL_PATH_RE = re.compile(r"(?<![A-Za-z0-9:/])/(?:[^\s'\"<>`]+)")
+
+
+def _public_text(value: str) -> str:
+    return _LOCAL_PATH_RE.sub("[local path]", redact_secrets(value))
+
+
+def _public_message(error: PageError, base_url: str) -> str:
+    message = error.message.replace(base_url, "")
+    return redact_secrets(message) if error.kind == "http" else _public_text(message)
