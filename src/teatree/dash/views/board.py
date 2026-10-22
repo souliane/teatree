@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, TypedDict
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
+from teatree.dash.cycle_time import build_merge_summary
 from teatree.dash.selectors import BoardFilters, KanbanBoard, build_kanban_columns
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import nav_context
@@ -38,7 +39,11 @@ def _board_context(request: "HttpRequest") -> BoardContext:
 @require_GET
 def board(request: "HttpRequest") -> "HttpResponse":
     """Full board page — the kanban of tickets grouped by ``Ticket.state``."""
-    return render(request, "dash/board.html", {**nav_context("dash:board"), **_board_context(request)})
+    return render(
+        request,
+        "dash/board.html",
+        {**nav_context("dash:board"), **_board_context(request), "merge_summary": build_merge_summary()},
+    )
 
 
 @require_loopback_or_staff

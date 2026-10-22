@@ -338,6 +338,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `architectural-review`) |
 | `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
+| `agent_route_paid_fallback` | Default `false`: a later ordered skill-route or overlay phase candidate whose resolved lane is metered parks unless the owner authorized paid fallback; the selector honors the primary route's longer hold. A refused read-only brief parks when no later candidate exists, can try a later free route, and cannot reach a later metered route without this setting. The decision uses the resolved lane after credential policy, including provider-less candidates under `subscription_then_api_key`; an index-zero metered route and non-routed dispatch are unaffected. |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the host-free `slug_namespace_matches` segment grammar, so a namespace entry covers every repo under it. This is the PIN layer over the overlay's derived `review_exempt_repo_slugs()`, resolved by `teatree.core.review.repo_exemption`, and it wins in BOTH directions — an entry ADDS an exemption, a `!`-prefixed one SUBTRACTS one the overlay declared, so a changed policy is a config edit rather than a merge. Both sources feed one list where the deepest matching pattern decides and a tie does not exempt; both are empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
 | `review_exempt_repos_count_toward_group_readiness` | Whether a review-exempt merge request still gates its work group's readiness. Default `true` is the conservative reading — an exempt member keeps holding the group, biasing toward NOT broadcasting a partial batch. |
@@ -601,13 +602,14 @@ task through its own fault (`harness_crash`, `landing_unverified`, `result_error
 park); when every eligible candidate has failed it retries the last one, so a one-candidate route is unchanged.
 A route reached through a skill the phase merely loads never captures a phase that bars write tools, and a
 candidate on a phase pinned to another harness is rejected naming the pin. Availability is
-keyed by overlay, harness, provider, and model, persisted in
-`AgentRouteAvailability`, and held in process memory: healthy results are reused
-for ten minutes and unavailable results for two. A worker therefore does not
-query the DB on every request. Cached unavailability also avoids repeating a
-known-dead lane; cached health repeats only the cheap local capability probe so a
-durable observation from a Codex-equipped worker cannot make a Claude-only
-worker select a missing binary. A runtime failure immediately updates the cache. A quota or authentication
+keyed by overlay, harness, provider, and model and held in process memory: healthy
+results are reused for ten minutes and unavailable results for two. Only unavailable
+observations are persisted in `AgentRouteAvailability`; a healthy probe deletes the
+row for its key, so workers do not share healthy observations. A worker reads the
+durable row once per key and checks it again during a long quota or authentication
+hold, but does not query the DB on every other request. Cached unavailability avoids
+repeating a known-dead lane; cached health repeats the cheap local capability probe
+so a binary that disappears is detected. A runtime failure immediately updates the cache. A quota or authentication
 failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
 or an outcome made tool calls; other failures keep the two-minute hold.
 

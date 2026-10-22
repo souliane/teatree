@@ -1,5 +1,9 @@
 {
   "decisions": {
+    "agent_route_paid_fallback": {
+      "decision": "retain",
+      "reason": "Keep explicit operator consent before an ordered route reaches a metered lane"
+    },
     "answer_first_gate_enabled": {
       "decision": "unified-gate",
       "reason": "Folded into the unified gate primitive; the switch goes when it lands"
