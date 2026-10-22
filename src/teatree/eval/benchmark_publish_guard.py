@@ -29,7 +29,7 @@ a clean one.
 import dataclasses
 from pathlib import Path
 
-from teatree.eval.matrix_html_tally import parse_model_tallies
+from teatree.eval.matrix_html_tally import parse_model_tallies, parse_scenario_passes
 
 SHARD_GLOB = "eval-benchmark-*.html"
 _SHARD_PREFIX = "eval-benchmark-"
@@ -78,6 +78,14 @@ def contaminated_shards(dashboard_dir: Path) -> list[ContaminatedShard]:
 def shard_paths(dashboard_dir: Path) -> list[Path]:
     """Every collected shard artifact in *dashboard_dir*, sorted."""
     return sorted(dashboard_dir.glob(SHARD_GLOB))
+
+
+def passed_scenarios(dashboard_dir: Path) -> list[str]:
+    passes: dict[str, bool] = {}
+    for path in shard_paths(dashboard_dir):
+        for name, passed in parse_scenario_passes(path.read_text(encoding="utf-8")).items():
+            passes[name] = passes.get(name, True) and passed
+    return sorted(name for name, passed in passes.items() if passed)
 
 
 def verify_publishable(dashboard_dir: Path, *, expected_shards: int) -> None:

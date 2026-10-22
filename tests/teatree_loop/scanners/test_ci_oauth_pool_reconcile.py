@@ -2,6 +2,7 @@
 
 import os
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import teatree.loop.global_scanner_factories as scanner_factories
@@ -23,9 +24,13 @@ def test_scanner_reconciles_cached_configured_rows() -> None:
         switcher=lambda _: switcher,
     )
 
-    signals = scanner.scan()
+    with patch(
+        "teatree.loop.scanners.ci_oauth_pool_reconcile.get_effective_settings",
+        return_value=SimpleNamespace(eval_ci_account_allowlist=("primary", "spare")),
+    ):
+        signals = scanner.scan()
 
-    switcher.reconcile_pool.assert_called_once_with(rows)
+    switcher.reconcile_pool.assert_called_once_with(rows, allowlist=("primary", "spare"))
     assert signals[0].kind == "ci_oauth_pool.reconciled"
     assert "2" in signals[0].summary
 

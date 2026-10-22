@@ -841,7 +841,8 @@ depends_on = [
   "teatree.loop.rendering_zones",
   "teatree.loop.rendering",
   "teatree.loop.slack_answer",
-  "teatree.loop.question_binding"
+  "teatree.loop.question_binding",
+  "teatree.token_report"
 ]
 
 [[modules]]

@@ -54,7 +54,7 @@ def _exhausted(index: int) -> CandidateHealth:
 
 
 def _stub_selection(monkeypatch: pytest.MonkeyPatch, outcome: OAuthSelection) -> None:
-    monkeypatch.setattr(_MOD, "select_freshest", lambda tokens: outcome)
+    monkeypatch.setattr(_MOD, "select_freshest", lambda tokens, **kwargs: outcome)
 
 
 def _env_lines(env_file: Path) -> list[str]:
@@ -66,6 +66,7 @@ class TestFreshestWinnerExported:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
         # winner is the SECOND candidate (index 1) → tokens[1] == TOK_B.
         _stub_selection(monkeypatch, OAuthSelection(candidates=(_healthy(0), _healthy(1)), ranked=(_healthy(1),)))
         code = main(
@@ -73,12 +74,14 @@ class TestFreshestWinnerExported:
                 "EVAL_CREDENTIAL": "subscription_oauth",
                 "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}\n",
                 "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
             }
         )
         assert code == 0
         lines = _env_lines(env_file)
         assert f"CLAUDE_CODE_OAUTH_TOKEN={TOK_B}" in lines
         assert "T3_AGENT_HARNESS_PROVIDER=subscription_oauth" in lines
+        assert _env_lines(output_file) == ["parked=false"]
         out = capsys.readouterr().out
         assert f"::add-mask::{TOK_B}" in out
 
@@ -117,11 +120,12 @@ class TestFreshestWinnerExported:
         assert leaking == []
 
 
-class TestBackwardSafePassthrough:
-    def test_empty_tokens_passes_through_the_existing_secret(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+class TestSingleSecretReserveProbe:
+    def test_empty_tokens_probes_the_existing_secret(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_file = tmp_path / "gh_env"
+        _stub_selection(monkeypatch, OAuthSelection(candidates=(_healthy(0),), ranked=(_healthy(0),)))
         code = main(
             {
                 "EVAL_CREDENTIAL": "subscription_oauth",
@@ -135,14 +139,37 @@ class TestBackwardSafePassthrough:
         assert f"CLAUDE_CODE_OAUTH_TOKEN={FALLBACK}" in lines
         assert f"::add-mask::{FALLBACK}" in capsys.readouterr().out
 
+    def test_single_token_secret_is_probed_before_export(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
+        _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0),), ranked=()))
+        code = main(
+            {"CLAUDE_CODE_OAUTH_TOKEN": FALLBACK, "GITHUB_ENV": str(env_file), "GITHUB_OUTPUT": str(output_file)}
+        )
+        assert code == 75
+        assert "parked=true" in _env_lines(output_file)
+        assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
+
     def test_empty_tokens_and_no_fallback_is_a_clean_noop(self, tmp_path: Path) -> None:
         env_file = tmp_path / "gh_env"
-        code = main({"EVAL_CREDENTIAL": "subscription_oauth", "EVAL_OAUTH_TOKENS": "", "GITHUB_ENV": str(env_file)})
+        output_file = tmp_path / "gh_output"
+        code = main(
+            {
+                "EVAL_CREDENTIAL": "subscription_oauth",
+                "EVAL_OAUTH_TOKENS": "",
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
+            }
+        )
         assert code == 0
         assert _env_lines(env_file) == []
+        assert not output_file.exists()
 
-    def test_missing_eval_credential_defaults_to_subscription_oauth(self, tmp_path: Path) -> None:
+    def test_missing_eval_credential_defaults_to_subscription_oauth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         env_file = tmp_path / "gh_env"
+        _stub_selection(monkeypatch, OAuthSelection(candidates=(_healthy(0),), ranked=(_healthy(0),)))
         code = main({"EVAL_OAUTH_TOKENS": "", "CLAUDE_CODE_OAUTH_TOKEN": FALLBACK, "GITHUB_ENV": str(env_file)})
         assert code == 0
         assert f"CLAUDE_CODE_OAUTH_TOKEN={FALLBACK}" in _env_lines(env_file)
@@ -168,19 +195,72 @@ class TestNonOauthCredentialIsNoOp:
 
 
 class TestAllExhausted:
-    def test_fails_loud_when_fallback_off(
+    def test_sweep_window_is_forwarded_to_selection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[tuple[float | None, float, float]] = []
+
+        def select(tokens: list[str], **kwargs: object) -> OAuthSelection:
+            reserve = kwargs["reserve"]
+            seen.append((kwargs["sweep_within_hours"], reserve.min_5h_free, reserve.min_7d_free))
+            return OAuthSelection(candidates=(_exhausted(0),), ranked=())
+
+        monkeypatch.setattr(_MOD, "select_freshest", select)
+        code = main(
+            {
+                "EVAL_OAUTH_TOKENS": TOK_A,
+                "EVAL_SWEEP_WITHIN_HOURS": "24",
+                "EVAL_RESERVE_5H_FREE": "0.65",
+                "EVAL_RESERVE_7D_FREE": "0.55",
+                "GITHUB_OUTPUT": str(tmp_path / "out"),
+            }
+        )
+
+        assert code == 75
+        assert seen == [(24.0, 0.65, 0.55)]
+
+    def test_negative_sweep_window_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_MOD, "select_freshest", lambda tokens, **kwargs: pytest.fail("selector was called"))
+
+        with pytest.raises(ValueError, match="EVAL_SWEEP_WITHIN_HOURS must be nonnegative"):
+            main({"EVAL_OAUTH_TOKENS": TOK_A, "EVAL_SWEEP_WITHIN_HOURS": "-1"})
+
+    @pytest.mark.parametrize(
+        "status", [TokenProbeStatus.BELOW_RESERVE, TokenProbeStatus.UNKNOWN, TokenProbeStatus.UNREACHABLE]
+    )
+    def test_metered_fallback_requires_every_account_exhausted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: TokenProbeStatus
+    ) -> None:
+        env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
+        other = CandidateHealth(index=1, label="token[2]", status=status)
+        _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0), other), ranked=()))
+        code = main(
+            {
+                "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}",
+                "EVAL_API_KEY_FALLBACK": "true",
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
+            }
+        )
+        assert code == 75
+        assert "parked=true" in _env_lines(output_file)
+        assert "T3_AGENT_HARNESS_PROVIDER=api_key" not in _env_lines(env_file)
+
+    def test_parks_when_fallback_off(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_file = tmp_path / "gh_env"
+        output_file = tmp_path / "gh_output"
         _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0), _exhausted(1)), ranked=()))
         code = main(
             {
                 "EVAL_CREDENTIAL": "subscription_oauth",
                 "EVAL_OAUTH_TOKENS": f"{TOK_A}\n{TOK_B}",
                 "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output_file),
             }
         )
-        assert code == 1
+        assert code == 75
+        assert "parked=true" in _env_lines(output_file)
         assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
         out = capsys.readouterr().out
         assert "no eligible OAuth account" in out
@@ -206,7 +286,7 @@ class TestAllExhausted:
         assert not any(line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") for line in _env_lines(env_file))
         assert "falling back to the metered ANTHROPIC_API_KEY" in capsys.readouterr().out
 
-    def test_fallback_flag_off_values_still_fail_loud(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fallback_flag_off_values_still_park(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / "gh_env"
         _stub_selection(monkeypatch, OAuthSelection(candidates=(_exhausted(0),), ranked=()))
         code = main(
@@ -217,4 +297,4 @@ class TestAllExhausted:
                 "GITHUB_ENV": str(env_file),
             }
         )
-        assert code == 1
+        assert code == 75

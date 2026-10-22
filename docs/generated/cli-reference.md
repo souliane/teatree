@@ -1613,8 +1613,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
-│                           shard or not backed by metered spend.              │
+│ verify-benchmark-publish  Verify complete metered shards and optionally      │
+│                           write the passing scenario names.                  │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -1627,8 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
-│ list                      List discovered eval scenarios as a table (Name,   │
-│                           Scenario, Agent, File, Asserts).                   │
+│ list                      List discovered eval scenarios as a table or one   │
+│                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
 │                           name is given.                                     │
 │ ci-heal                   Operator control of the CI-eval self-healing loop  │
@@ -1641,6 +1641,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           a label, review the corpus.                        │
 │ quarantine                The known-red quarantine: scenarios the bounded PR │
 │                           lane does not select.                              │
+│ owed                      The owed-scenario ledger: evals a lane could not   │
+│                           run, re-run by the nightly until they pass.        │
 │ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1962,9 +1964,10 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --require-specs                 Fail loud (exit 2) when the filtered catalog │
 │                                 is empty, instead of skipping like 'nothing  │
 │                                 changed'.                                    │
-│ --diff-file            PATH     Unified diff (git diff --unified=0) for the  │
-│                                 same range, to narrow section-scoped         │
-│                                 scenarios.                                   │
+│ --diff-file            PATH     Unified diff for the same range, to narrow   │
+│                                 section-scoped scenarios.                    │
+│ --deferred-out         PATH     Write the scenario names the cap deferred,   │
+│                                 one per line (redacted).                     │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2059,8 +2062,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when the collected dashboard is short a shard or not backed by metered
- spend.
+ Verify complete metered shards and optionally write the passing scenario
+ names.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2072,6 +2075,8 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                                      collected artifacts refuses the         │
 │                                      publish.                                │
 │                                      [required]                              │
+│    --passed-file            PATH     Write scenario names that passed every  │
+│                                      collected matrix cell.                  │
 │    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2267,11 +2272,13 @@ Usage: t3 eval history [OPTIONS]
 ```
 Usage: t3 eval list [OPTIONS]
 
- List discovered eval scenarios as a table (Name, Scenario, Agent, File,
- Asserts).
+ List discovered eval scenarios as a table or one name per line.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --lane              TEXT                                                     │
+│ --shard             TEXT                                                     │
+│ --names-only                                                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3122,6 +3129,141 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval owed`
+
+```
+Usage: t3 eval owed [OPTIONS] COMMAND [ARGS]...
+
+ The owed-scenario ledger: evals a lane could not run, re-run by the nightly
+ until they pass.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record   Add the scenario names in --names-file to the --out ledger as owed. │
+│ outputs  Print the parked=/owed= lines a workflow step appends to            │
+│          $GITHUB_OUTPUT.                                                     │
+│ collect  Fold the previous nightly ledger with the owed artifacts of merged  │
+│          PRs and weekly and heal legs.                                       │
+│ next     Print the oldest owed scenarios the catalog still defines, one per  │
+│          line.                                                               │
+│ settle   Clear the owed scenarios that passed and the ones the catalog no    │
+│          longer defines.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed record`
+
+```
+Usage: t3 eval owed record [OPTIONS]
+
+ Add the scenario names in --names-file to the --out ledger as owed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out               PATH                     The owed-ledger JSON file,   │
+│                                                 updated in place.            │
+│                                                 [required]                   │
+│ *  --reason            [parked|deferred|limit]  Why the lane could not run   │
+│                                                 them.                        │
+│                                                 [required]                   │
+│ *  --source            TEXT                     Where the debt came from,    │
+│                                                 e.g. pr#123@<sha> or         │
+│                                                 nightly@<run>.               │
+│                                                 [required]                   │
+│ *  --names-file        PATH                     Scenario names, one per      │
+│                                                 line.                        │
+│                                                 [required]                   │
+│    --now               TEXT                     Override 'now' (ISO-8601);   │
+│                                                 for testing.                 │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed outputs`
+
+```
+Usage: t3 eval owed outputs [OPTIONS] LEDGER
+
+ Print the parked=/owed= lines a workflow step appends to $GITHUB_OUTPUT.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed collect`
+
+```
+Usage: t3 eval owed collect [OPTIONS]
+
+ Fold the previous nightly ledger with the owed artifacts of merged PRs and
+ weekly and heal legs.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --repo                       TEXT                  OWNER/NAME of the      │
+│                                                       repository whose       │
+│                                                       artifacts hold the     │
+│                                                       debt.                  │
+│                                                       [required]             │
+│ *  --out                        PATH                  Where to write the     │
+│                                                       harvested ledger.      │
+│                                                       [required]             │
+│    --now                        TEXT                  Override 'now'         │
+│                                                       (ISO-8601); for        │
+│                                                       testing.               │
+│    --first-lookback-days        INTEGER RANGE [x>=1]  [default: 1]           │
+│    --help                                             Show this message and  │
+│                                                       exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed next`
+
+```
+Usage: t3 eval owed next [OPTIONS] LEDGER
+
+ Print the oldest owed scenarios the catalog still defines, one per line.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --cap                  INTEGER RANGE [x>=1]  The most owed scenarios to   │
+│                                                 run.                         │
+│                                                 [required]                   │
+│    --scenarios-dir        PATH                  Read the catalog from this   │
+│                                                 scenario directory (default: │
+│                                                 the discovered catalog).     │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed settle`
+
+```
+Usage: t3 eval owed settle [OPTIONS]
+
+ Clear the owed scenarios that passed and the ones the catalog no longer
+ defines.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out                   PATH  The owed-ledger JSON file, updated in       │
+│                                  place.                                      │
+│                                  [required]                                  │
+│ *  --passed-file           PATH  Scenario names that passed, one per line.   │
+│                                  [required]                                  │
+│    --attempted-file        PATH  Scenario names attempted tonight.           │
+│    --scenarios-dir         PATH  Read the catalog from this scenario         │
+│                                  directory (default: the discovered          │
+│                                  catalog).                                   │
+│    --help                        Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

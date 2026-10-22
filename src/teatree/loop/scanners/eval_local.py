@@ -28,6 +28,7 @@ The scanner is one of the periodic task-queuing family that share
     long-running suite never blocks the tick.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from django.utils import timezone
@@ -35,6 +36,7 @@ from django.utils import timezone
 from teatree.core.modelkit.phases import EVAL_LOCAL_PHASE
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
+from teatree.token_report import EvalReserveDecision, local_eval_reserve_decision
 
 
 @dataclass(slots=True)
@@ -53,6 +55,7 @@ class EvalLocalScanner:
     overlay_name: str
     skill: str
     name: str = "eval_local"
+    reserve_met: Callable[[], EvalReserveDecision] = local_eval_reserve_decision
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE)
@@ -61,6 +64,17 @@ class EvalLocalScanner:
 
         trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
+            return []
+        reserve = self.reserve_met()
+        if reserve.stale and not reserve.met:
+            return [
+                ScanSignal(
+                    kind="eval_local.parked",
+                    summary=f"local eval parked for {self.overlay_name}: {reserve.reason}",
+                    payload={"overlay": self.overlay_name, "reason": reserve.reason},
+                )
+            ]
+        if not reserve.met:
             return []
 
         task = cadence.queue_task(

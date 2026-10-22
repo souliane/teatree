@@ -96,6 +96,7 @@ SETTING_HELP: dict[str, str] = {
     "dream_umbrella_url": "issue whose ticket queues the dream pass's collected gaps for the backlog sweep",
     "e2e_repos": "external repositories containing Playwright test specs and their clone locations",
     "envelope_stop_gate_refusals": "refuse a turn that ends without the required result envelope",
+    "eval_ci_account_allowlist": "password-store OAuth accounts allowed in the CI eval pool",
     "eval_local_skill": "skill the local eval loop runs",
     "excluded_skills": "skills never offered to an agent, whatever the loader suggests",
     "harness_skill_exclusions": (

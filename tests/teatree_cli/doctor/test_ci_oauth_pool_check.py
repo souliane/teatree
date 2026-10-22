@@ -1,10 +1,14 @@
 """A depleted CI OAuth fleet must not leave doctor green."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.test import TestCase
 
 from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool, check_ci_oauth_pool_membership
 from teatree.cli.doctor.run_checks import _run_loop_intent_gates
-from teatree.credential_config import TokenKind
+from teatree.core.models.config_setting import ConfigSetting
+from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.token_rows import TokenSource, TokenStatus
 
 
@@ -50,3 +54,46 @@ def test_unknown_pool_membership_fails_loud(capsys) -> None:
 def test_matching_pool_membership_passes(capsys) -> None:
     assert check_ci_oauth_pool_membership([_row("primary", TokenStatus.HEALTHY)], ("primary",)) is True
     assert "FAIL" not in capsys.readouterr().out
+
+
+def test_pool_membership_checks_allowlist_instead_of_all_stored_accounts(capsys) -> None:
+    rows = [_row("primary", TokenStatus.HEALTHY), _row("spare", TokenStatus.HEALTHY)]
+    assert check_ci_oauth_pool_membership(rows[:1], ("primary",)) is True
+    assert "FAIL" not in capsys.readouterr().out
+
+    rows = [_row("primary", TokenStatus.EXHAUSTED), _row("spare", TokenStatus.HEALTHY)]
+    with (
+        patch("teatree.token_report.TokenReport.rows", return_value=rows),
+        patch(
+            "teatree.cli.doctor.checks_ci_oauth_pool.get_effective_settings",
+            return_value=SimpleNamespace(eval_ci_account_allowlist=("primary",)),
+        ),
+        patch("teatree.ci_oauth_switch.CiAccountSwitcher.active_pool_accounts", return_value=("primary",)),
+    ):
+        assert check_ci_oauth_pool() is False
+    assert "primary" in capsys.readouterr().out
+
+
+class LiveDoctorAllowlistTest(TestCase):
+    def test_an_install_with_no_oauth_account_stays_green_without_an_allowlist(self) -> None:
+        assert check_ci_oauth_pool() is True
+
+    def test_oauth_accounts_without_an_allowlist_fail(self) -> None:
+        ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], ["anthropic/oauth/a"])
+        with patch("teatree.cli.doctor.checks_ci_oauth_pool.typer.echo") as echo:
+            assert check_ci_oauth_pool() is False
+        assert any("allowlist is empty" in call.args[0] for call in echo.call_args_list)
+
+    def test_allowlisted_account_without_stored_row_fails_even_when_pool_matches(self) -> None:
+        rows = [_row("spare", TokenStatus.HEALTHY)]
+        with (
+            patch("teatree.token_report.TokenReport.rows", return_value=rows),
+            patch(
+                "teatree.cli.doctor.checks_ci_oauth_pool.get_effective_settings",
+                return_value=SimpleNamespace(eval_ci_account_allowlist=("primary",)),
+            ),
+            patch("teatree.ci_oauth_switch.CiAccountSwitcher.active_pool_accounts", return_value=("primary",)),
+            patch("teatree.cli.doctor.checks_ci_oauth_pool.typer.echo") as echo,
+        ):
+            assert check_ci_oauth_pool() is False
+        assert any("no stored OAuth row" in call.args[0] for call in echo.call_args_list)
