@@ -564,6 +564,8 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
         outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
 
         assert [outcome.action for outcome in outcomes] == ["kept"]
+        assert outcomes[0].emit is not None
+        assert outcomes[0].emit.unique_commit_shas
         assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
 
     def test_stored_checkout_path_wins_over_the_canonical_layout(self) -> None:
@@ -581,13 +583,6 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
 
     def test_sweep_preserves_emit_and_errors_while_naming_checkout(self) -> None:
         worktree = self._make_worktree(Ticket.State.WORK_STARTED)
-        kept = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
-
-        assert [outcome.action for outcome in kept] == ["kept"]
-        assert kept[0].emit is not None
-        assert kept[0].emit.unique_commit_shas
-        assert kept[0].label.endswith(f"[checkout: {self.wt_path}]")
-
         self._push_branch()
         self._drop_local_branch_ref()
         Ticket.objects.filter(pk=worktree.ticket_id).update(state=Ticket.State.MERGED)
