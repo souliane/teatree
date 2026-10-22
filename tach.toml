@@ -140,6 +140,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.sqlite_integrity"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.request_cache"
 layer = "foundation"
 depends_on = []
@@ -250,7 +255,7 @@ depends_on = []
 [[modules]]
 path = "teatree.utils"
 layer = "foundation"
-depends_on = ["teatree.paths"]
+depends_on = ["teatree.paths", "teatree.sqlite_integrity"]
 
 [[modules]]
 path = "teatree.utils.disk_consumers"
