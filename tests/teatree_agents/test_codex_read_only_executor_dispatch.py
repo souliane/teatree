@@ -205,6 +205,24 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert "issue body could not be read" in third.error
         assert "agent_route_paid_fallback" not in third.error
 
+    def test_third_park_after_a_refusing_codex_and_a_gated_metered_candidate_fails_the_task(self) -> None:
+        self._register_claude()
+        task = self._task()
+
+        attempts = [
+            self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"}, task=task)
+            for _ in range(3)
+        ]
+
+        task.refresh_from_db()
+        assert [attempt.error.startswith("limit_parked:") for attempt in attempts] == [True, True, False]
+        assert task.status == Task.Status.FAILED
+        assert "issue body could not be read" in attempts[-1].error
+        assert "agent_route_paid_fallback" in attempts[-1].error
+        assert task.attempts.filter(error__startswith="read-only executor brief refused:").count() == 3
+        assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert self.built == []
+
     def test_enabled_paid_fallback_runs_after_read_only_refusal(self) -> None:
         self._register_claude()
         settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)

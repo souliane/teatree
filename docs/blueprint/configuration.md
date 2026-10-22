@@ -606,13 +606,14 @@ task through its own fault (`harness_crash`, `landing_unverified`, `result_error
 park); when every eligible candidate has failed it retries the last one, so a one-candidate route is unchanged.
 A route reached through a skill the phase merely loads never captures a phase that bars write tools, and a
 candidate on a phase pinned to another harness is rejected naming the pin. Availability is
-keyed by overlay, harness, provider, and model, persisted in
-`AgentRouteAvailability`, and held in process memory: healthy results are reused
-for ten minutes and unavailable results for two. A worker therefore does not
-query the DB on every request. Cached unavailability also avoids repeating a
-known-dead lane; cached health repeats only the cheap local capability probe so a
-durable observation from a Codex-equipped worker cannot make a Claude-only
-worker select a missing binary. A runtime failure immediately updates the cache. A quota or authentication
+keyed by overlay, harness, provider, and model and held in process memory: healthy
+results are reused for ten minutes and unavailable results for two. Only unavailable
+observations are persisted in `AgentRouteAvailability`; a healthy probe deletes the
+row for its key, so workers do not share healthy observations. A worker reads the
+durable row once per key and checks it again during a long quota or authentication
+hold, but does not query the DB on every other request. Cached unavailability avoids
+repeating a known-dead lane; cached health repeats the cheap local capability probe
+so a binary that disappears is detected. A runtime failure immediately updates the cache. A quota or authentication
 failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
 or an outcome made tool calls; other failures keep the two-minute hold.
 

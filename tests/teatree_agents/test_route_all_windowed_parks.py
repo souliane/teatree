@@ -124,6 +124,16 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
 
         assert "agent_route_paid_fallback" in str(refused.value)
 
+    def test_overlay_phase_candidates_refuse_a_later_metered_lane_without_settings(self) -> None:
+        self._register_metered_harness("metered_phase")
+
+        with pytest.raises(NoAvailableHarnessError) as refused:
+            harness_dispatch_mod.candidate_selection(
+                HarnessBuildContext(phase=_PHASE), ["missing_first", "metered_phase"]
+            )
+
+        assert "agent_route_paid_fallback" in str(refused.value)
+
     def test_a_later_candidate_without_credentials_is_rejected_not_raised(self) -> None:
         self._register_resolved_paid_harness()
         context = HarnessBuildContext(settings=get_effective_settings(None), phase=_PHASE)

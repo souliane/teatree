@@ -184,9 +184,7 @@ def cached_unavailable_reason(
         if observation is not None and observation.retry_at > now:
             if observation.unavailable_reason:
                 return observation.unavailable_reason
-            # A durable/process-local healthy result cannot prove that this worker
-            # still has the harness binary. Keep the DB off the hot path, but repeat
-            # the cheap local capability probe before trusting cached health.
+            # A process-local healthy result cannot prove the harness binary still exists.
             reason = probe()
             if reason:
                 unavailable = RouteAvailabilityObservation(reason, now, now + UNAVAILABLE_TTL)
