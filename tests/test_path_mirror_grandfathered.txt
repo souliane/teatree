@@ -73,7 +73,6 @@ tests/teatree_cli/test_review_approval_pagination.py
 tests/teatree_cli/test_review_live_approval_phrase.py
 tests/teatree_cli/test_review_post_impl_non_diffnote.py
 tests/teatree_core/management/test_questions_command_atomicity.py
-tests/teatree_core/management_commands/test_dogfood.py
 tests/teatree_core/management_commands/test_notify_post_speaks.py
 tests/teatree_core/management_commands/test_review_record_triggers_sweep.py
 tests/teatree_core/management_commands/test_tool.py

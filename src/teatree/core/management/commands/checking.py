@@ -193,7 +193,7 @@ class Command(MachineOutputCommand):
         )
         stamp = _stamp(report.since)
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
-        groups = [report.merged, report.in_flight, report.needs_you]
+        groups = report.groups
         # The checkpoint consumes the window, so advancing it over an undelivered
         # recap loses those rows for good — deliver first, advance only on success.
         delivered = _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
@@ -227,7 +227,7 @@ class Command(MachineOutputCommand):
 
         stamp = _stamp(report.earliest_since)
         header = f"Since {stamp} · all overlays"
-        groups = [report.merged, report.in_flight, report.needs_you]
+        groups = report.groups
         delivered = _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
         if not delivered:
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")

@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt, WorkerGeneration
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt, Task, WorkerGeneration
 from teatree.loop import worker_lifecycle
 from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
@@ -81,6 +81,12 @@ class TestWorkerStatus(django.test.TestCase):
 
     def test_status_shows_how_the_agent_ceiling_is_derived(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        for phase in ("reviewing", "reviewing", "shipping"):
+            TaskFactory(
+                phase=phase,
+                status=Task.Status.CLAIMED,
+                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+            )
         with (
             mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
             mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
@@ -89,11 +95,15 @@ class TestWorkerStatus(django.test.TestCase):
             as_json = runner.invoke(worker_app, ["status", "--json"])
         assert text.exit_code == 0
         assert "agent admission: ceiling 8 = 8 cores x 1 per core (8) x weekly pace unread" in text.stdout
-        assert "lanes 8 expensive + 2 cheap (review lane outside the ceiling)" in text.stdout
-        assert "occupied 0 expensive + 0 cheap" in text.stdout
+        assert "lanes 8 expensive + 3 cheap" in text.stdout
+        assert "+ up to 2 retiring (requesting_review, shipping)" in text.stdout
+        assert "occupied 0 expensive + 3 cheap (2 review + 1 retiring)" in text.stdout
         admission = json.loads(as_json.stdout)["agent_admission"]
         assert (admission["ceiling"], admission["cores"], admission["per_core"]) == (8, 8, 1.0)
-        assert (admission["expensive_lane"], admission["cheap_lane"]) == (8, 2)
+        assert (admission["expensive_lane"], admission["cheap_lane"]) == (8, 3)
+        assert (admission["review_lane"], admission["retiring_lane"]) == (2, 2)
+        assert (admission["review_occupied"], admission["retiring_occupied"]) == (2, 1)
+        assert admission["retiring_phases"] == ["requesting_review", "shipping"]
 
     def test_an_unreadable_admission_still_reports_the_worker(self) -> None:
         # deploy.sh certifies a deploy by grepping `"running": true` out of `--json`.

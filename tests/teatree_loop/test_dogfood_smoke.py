@@ -19,6 +19,7 @@ from teatree.loop.dogfood_smoke import (
     SmokeReport,
     SmokeStep,
     StepResult,
+    WorktreePathRefusalError,
     default_steps,
     pick_alias_variant,
     report_summary,
@@ -61,7 +62,7 @@ def _fixed_worktree_path() -> str:
 
 
 class TestDefaultSteps:
-    def test_sequence_order_provision_then_start_then_ready_then_teardown_then_clean(self) -> None:
+    def test_sequence_ends_at_its_own_teardown(self) -> None:
         names = [step.name for step in default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")]
         assert names == [
             "workspace_ticket",
@@ -72,8 +73,24 @@ class TestDefaultSteps:
             "worktree_start",
             "worktree_ready",
             "worktree_teardown",
-            "workspace_clean_all",
         ]
+
+    def test_workspace_ticket_gets_the_orphan_scan_budget(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+        assert {step.name: step.timeout_seconds for step in steps} == {
+            "workspace_ticket": 180,
+            "env_show": 60,
+            "worktree_provision": 60,
+            "workspace_provision_env_unset": 60,
+            "workspace_provision_env_set": 60,
+            "worktree_start": 120,
+            "worktree_ready": 120,
+            "worktree_teardown": 60,
+        }
+
+    def test_final_step_tears_down_only_the_fixture_checkout(self) -> None:
+        step = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")[-1]
+        assert step.command == ("t3", "testoverlay", "worktree", "teardown", "--path", WORKTREE_PATH_PLACEHOLDER)
 
     def test_workspace_ticket_carries_fixture_url_and_variant(self) -> None:
         step = default_steps(
@@ -100,6 +117,23 @@ class TestDefaultSteps:
 
 
 class TestRunSmoke:
+    def test_refused_worktree_path_is_reported_without_exception_name(self) -> None:
+        runner = _RecordingRunner()
+
+        def refuse() -> str:
+            reason = "fixture checkout pre-existed"
+            raise WorktreePathRefusalError(reason)
+
+        report = run_smoke(
+            default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1"),
+            runner=runner,
+            resolve_worktree_path=refuse,
+        )
+
+        assert report.outcome is SmokeOutcomeKind.PROVISION_FAILED
+        assert report.failing_step_stderr == "worktree path unresolved: fixture checkout pre-existed"
+        assert len(runner.commands) == 1
+
     def test_all_steps_pass_marks_report_pass(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         runner = _ScriptedRunner(_all_green(steps))
@@ -197,7 +231,6 @@ class TestRunSmoke:
         assert "worktree_start" not in runner.calls
         assert "worktree_ready" not in runner.calls
         assert "worktree_teardown" not in runner.calls
-        assert "workspace_clean_all" not in runner.calls
 
     def test_unknown_step_name_falls_back_to_unknown_outcome(self) -> None:
         custom = [SmokeStep(name="unmapped_step", command=("noop",))]
@@ -260,12 +293,12 @@ class TestStepOutcomeKindCoverage:
             ("workspace_provision_env_set", SmokeOutcomeKind.PROVISION_FAILED),
         ],
     )
-    def test_every_default_step_has_an_outcome_mapping(self, step_name: str, expected_kind: SmokeOutcomeKind) -> None:
+    def test_step_maps_to_its_outcome_kind(self, step_name: str, expected_kind: SmokeOutcomeKind) -> None:
         assert STEP_OUTCOME_KIND[step_name] is expected_kind
 
     def test_no_default_step_is_missing_from_the_outcome_table(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
-        assert [s.name for s in steps if s.name not in STEP_OUTCOME_KIND] == []
+        assert {step.name for step in steps} <= set(STEP_OUTCOME_KIND)
 
     def test_empty_smoke_passes_trivially(self) -> None:
         report = run_smoke([], runner=_step_result)
@@ -506,7 +539,7 @@ class TestTotalStepBudget:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         matrix = [s for s in steps if s.name.startswith("workspace_provision_env_")]
         assert len(matrix) == 2
-        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 540
+        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 600
 
 
 class TestRunnerEnvControl:
@@ -627,9 +660,7 @@ class _RecordingRunner:
 class TestWorktreePathThreading:
     """Every worktree-scoped step targets the worktree ``workspace_ticket`` created."""
 
-    #: The two steps that must NOT carry ``--path`` — one creates the worktree, one sweeps
-    #: the whole workspace and takes no path at all.
-    PATHLESS = frozenset({"workspace_ticket", "workspace_clean_all"})
+    PATHLESS = frozenset({"workspace_ticket"})
 
     def _steps(self) -> list[SmokeStep]:
         return default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")

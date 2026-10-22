@@ -7,7 +7,16 @@ These pin the classification that verdict is now resolved against: what is cheap
 what is not, and — the safety property — that anything unrecognised is EXPENSIVE.
 """
 
-from teatree.core.modelkit.phases import CHEAP_PHASES, KNOWN_PHASES, PhaseCost, cheap_phase_spellings, phase_cost
+from teatree.core.modelkit.phases import (
+    CHEAP_PHASES,
+    KNOWN_PHASES,
+    RETIRING_PHASES,
+    REVIEW_PHASES,
+    CheapClass,
+    PhaseCost,
+    cheap_phase_spellings,
+    phase_cost,
+)
 
 #: Write-heavy long-running phases that must NEVER inherit the exemption — the class
 #: that CAUSED the measured load, listed explicitly so a future edit to the cheap set
@@ -52,6 +61,15 @@ class TestPhaseCost:
 
     def test_the_cheap_set_is_not_empty(self) -> None:
         assert CHEAP_PHASES
+
+    def test_cheap_classes_partition_the_existing_cheap_phases(self) -> None:
+        assert not REVIEW_PHASES & RETIRING_PHASES
+        assert CheapClass.of("review") is CheapClass.REVIEW
+        assert CheapClass.of("ship") is CheapClass.RETIRING
+        assert CheapClass.of("request-review") is CheapClass.RETIRING
+        assert CheapClass.of("coding") is None
+        assert "review" in CheapClass.REVIEW.spellings()
+        assert "ship" in CheapClass.RETIRING.spellings()
 
     def test_cheap_spellings_cover_every_alias_of_every_cheap_phase(self) -> None:
         # The DB filter matches on stored spellings, so a cheap phase stored under its
