@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
@@ -28,9 +28,11 @@ from teatree.agents.read_only_venue_brief import (
     READ_ONLY_DIRECTIVE,
     TICKET_CONTEXT_CAP_BYTES,
     ReadOnlyFacts,
+    _issue,
     read_only_system_context,
 )
 from teatree.agents.runner_preparation import PreparedRun
+from teatree.backends.github.client import GitHubCodeHost
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
@@ -70,9 +72,21 @@ class _Host:
 
     def get_issue(self, issue_url: str) -> dict[str, object]:
         assert issue_url.startswith("https://github.com/example-org/example-repo/")
+        if "/pull/" in issue_url:
+            return {"error": "Not a GitHub issue URL"}
         if isinstance(self.issue, Exception):
             raise self.issue
         return self.issue
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> SimpleNamespace:
+        assert (slug, pr_id) == ("example-org/example-repo", 5)
+        return SimpleNamespace(title="Review title", body="Review PR body")
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        assert (repo, pr_iid) == ("example-org/example-repo", 5)
+        if isinstance(self.comments, Exception):
+            raise self.comments
+        return self.comments or _COMMENTS
 
     def list_issue_comments(self, *, issue_url: str) -> list[dict[str, object]]:
         assert issue_url.startswith("https://github.com/example-org/example-repo/")
@@ -262,6 +276,10 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
             assert required == review
 
+    def test_read_only_planning_requires_only_selected_skills(self) -> None:
+        required = read_only_required_skills("planning", [], lifecycle_skill="architecture-design", stage_skills=[])
+        assert required == set()
+
     def test_a_brief_that_still_names_a_teatree_command_refuses_the_executor_run(self) -> None:
         self._stack_skill("Run t3 doctor check before planning.\n")
 
@@ -280,11 +298,30 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Prior Task Result" not in self._system_context(prepared)
 
     def test_an_over_budget_system_context_refuses_the_executor_run(self) -> None:
-        self._stack_skill("s" * (MAX_APPEND_BYTES + 1024))
-
-        refusal = self._refusal(self._task())
+        with patch(
+            "teatree.agents.runner_preparation.build_read_only_system_context",
+            return_value="x" * (MAX_APPEND_BYTES + 1024),
+        ):
+            refusal = self._refusal(self._task())
 
         assert "read-only brief over budget: system context" in str(refusal)
+
+    def test_an_over_budget_skill_moves_whole_into_the_task_message(self) -> None:
+        self._stack_skill("s" * (MAX_APPEND_BYTES + 1024))
+
+        prepared = self._prepare(self._task())
+
+        assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+        assert "s" * (MAX_APPEND_BYTES + 1024) in prepared.prompt
+
+    def test_a_moved_skill_has_its_teatree_command_rewritten_after_assurance(self) -> None:
+        self._stack_skill("Before planning, run `t3 placeholder check`.\n" + "s" * (MAX_APPEND_BYTES + 1024))
+
+        prepared = self._prepare(self._task())
+
+        assert "fastapi" in prepared.skill_assurance["injected"]
+        assert f"Before planning, run {ABSENT_TOOL}." in prepared.prompt
+        assert "`t3 placeholder check`" not in prepared.prompt
 
     def test_planning_brief_in_the_executor_names_no_t3_command(self) -> None:
         prepared = self._prepare(self._task())
@@ -314,6 +351,47 @@ class TestTheReadOnlyVenueBrief(TestCase):
         later = "--- comment by example-dev at 2026-10-02T00:00:00Z ---\na later note"
         assert prompt.index(owner) < prompt.index(later)
         assert "added label example" not in prompt
+
+    def test_github_pull_url_reads_the_pr_message_and_conversation_through_the_real_host(self) -> None:
+        host = GitHubCodeHost(token="example-token")
+        ticket = Ticket(issue_url="https://github.com/example-org/example-repo/pull/5")
+        pr_response = SimpleNamespace(
+            returncode=0, stdout=json.dumps({"title": "Title", "body": "PR decision"}), stderr=""
+        )
+        comments_response = SimpleNamespace(
+            stdout=json.dumps([[{"body": "Review comment", "user": {"login": "owner"}}]])
+        )
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(host)),
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
+            patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", return_value=pr_response) as pr_call,
+            patch("teatree.backends.github.api.run_checked", return_value=comments_response) as api_call,
+        ):
+            body, comments = _issue(ticket)
+
+        assert body == "PR decision"
+        assert "Review comment" in comments
+        assert "--json" in pr_call.call_args.args[0]
+        assert "GH_TOKEN" in pr_call.call_args.kwargs["env"]
+        assert "repos/example-org/example-repo/issues/5/comments?per_page=100" in api_call.call_args.args[0]
+
+    def test_gitlab_merge_request_reads_its_message_and_notes(self) -> None:
+        ticket = Ticket(issue_url="https://gitlab.example/group/team/repo/-/merge_requests/17")
+        host = Mock()
+        host.fetch_pr_message.return_value = SimpleNamespace(body="MR decision")
+        host.list_pr_comments.return_value = [{"body": "MR note", "author": {"username": "owner"}}]
+
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(host)),
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
+        ):
+            body, comments = _issue(ticket)
+
+        assert body == "MR decision"
+        assert "MR note" in comments
+        host.fetch_pr_message.assert_called_once_with(slug="group/team/repo", pr_id=17)
+        host.list_pr_comments.assert_called_once_with(repo="group/team/repo", pr_iid=17)
+        host.get_issue.assert_not_called()
 
     def test_unreadable_issue_comments_refuse_the_executor_run(self) -> None:
         refusal = self._refusal(self._task(), _Host(comments=CommandFailedError(["gh"], 1, "", "boom")))
@@ -347,7 +425,26 @@ class TestTheReadOnlyVenueBrief(TestCase):
     def test_a_ticket_without_a_survey_refuses_the_executor_run(self) -> None:
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
 
-        assert "no intake landscape survey" in str(self._refusal(self._task(ticket)))
+        with patch("teatree.agents.read_only_venue_brief.ensure_planning_landscape", side_effect=RuntimeError("down")):
+            refusal = self._refusal(self._task(ticket))
+
+        assert "no intake landscape survey" in str(refusal)
+        assert "RuntimeError" in str(refusal)
+
+    def test_auto_planning_recovers_a_missing_survey_before_the_read_only_brief(self) -> None:
+        ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}47", overlay="test")
+        task = ticket.begin_planning()
+        survey = {"worktrees": [], "open_prs": [], "recommendations": [], "warnings": []}
+
+        with patch("teatree.core.intake.landscape_persist.run_landscape", return_value=survey) as gather:
+            prepared = self._prepare(task)
+
+        artifact = LandscapeArtifact.latest_for(ticket)
+        assert artifact is not None
+        assert artifact.recorded_by == "t3:planning"
+        assert json.dumps(survey, sort_keys=True) in prepared.prompt
+        gather.assert_called_once()
+        assert gather.call_args.kwargs["overlay_name"] == "test"
 
     def test_review_brief_needs_no_planning_survey(self) -> None:
         self.skills = self._phase_bundle("reviewing")
@@ -392,6 +489,23 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "--- SKILL: review ---" in self._system_context(prepared)
         assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
 
+    def test_real_review_bundles_deliver_required_skills_without_file_loads(self) -> None:
+        for phase in ("reviewing", "critic_reviewing"):
+            with self.subTest(phase=phase):
+                self.skills = self._phase_bundle(phase)
+                task = self._task(Ticket.objects.create(issue_url=f"{_ISSUE_URL}-{phase}"))
+                task.phase = phase
+                task.save(update_fields=["phase"])
+
+                prepared = self._prepare(task)
+                delivered = f"{self._system_context(prepared)}\n{prepared.prompt}"
+
+                assert {"rules", "review"} <= set(prepared.skill_assurance["injected"])
+                assert prepared.skill_assurance["explicit_load"] == []
+                assert "REQUIRED: Load /rules" not in delivered
+                assert "Read /home/" not in delivered
+                assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+
     def test_remote_review_gets_the_dispatched_head_and_full_diff_from_the_worker(self) -> None:
         head = "a" * 40
         ticket = Ticket.objects.create(
@@ -415,6 +529,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
             prepared = self._prepare(task)
 
         assert head in prepared.prompt
+        assert "Review PR body" in prepared.prompt
+        assert "decision: plan it first" in prepared.prompt
         assert "src/example.py" in prepared.prompt
         assert "+new" in prepared.prompt
         assert f"WORKER CI at dispatched head {head}: green" in prepared.prompt
@@ -423,6 +539,42 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Use the dispatched head in the DIFF UNDER REVIEW block" in context
         assert "Set gh_verify_result green only when WORKER CI says green" in context
         assert "git rev-parse HEAD" not in context
+
+    def test_large_review_keeps_required_skill_and_full_diff_within_system_budget(self) -> None:
+        head = "a" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        self._stack_skill("required-review-rule " * 3800)
+        self.skills = ["fastapi", *self._phase_bundle("reviewing")]
+        host = _Host(comments=[{"body": "comment-evidence " * 3500}])
+        host.diffs = {"src/example.py": "+review-evidence " * 7000}
+
+        with (
+            patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["fastapi"]),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="2 runs"),
+            ),
+        ):
+            prepared = self._prepare(task, host=host)
+
+        context = self._system_context(prepared)
+        delivered = f"{context}\n{prepared.prompt}"
+        assert len(context.encode()) <= MAX_APPEND_BYTES
+        assert "required-review-rule " * 3800 in delivered
+        assert "--- SKILL: review ---" in delivered
+        assert "+review-evidence " * 7000 in prepared.prompt
+        assert "comment-evidence " * 3500 in prepared.prompt
 
     def test_author_review_receives_its_branch_diff_in_the_task_message(self) -> None:
         task = self._task(Ticket.objects.create(issue_url=f"{_ISSUE_URL}0", role=Ticket.Role.AUTHOR))

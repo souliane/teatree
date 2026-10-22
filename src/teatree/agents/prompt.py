@@ -273,7 +273,8 @@ def read_only_required_skills(
         needed = {"rules", lifecycle_skill, *review_full, *review_explicit}
         return {name for name in skills if _explicit_load_name(name) in needed}
     full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
-    return full | explicit
+    needed = full | explicit
+    return {name for name in skills if _explicit_load_name(name) in needed}
 
 
 def _assigned_reviewer_identity(task: Task) -> str:
