@@ -681,6 +681,13 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         assert len(rows) == 1
         assert [cell.value for cell in rows[0].cells] == [2, 4]
 
+    def test_resolving_scope_aliases_logs_nothing_and_touches_no_row(self) -> None:
+        local = _box(LOCAL_LABEL, {"t3-example": {"merge_wip": 2}})
+        peer = _box("peer", {"example": {"merge_wip": 4}})
+        with self.assertNoLogs(level="DEBUG"):
+            view = self._view(local, peer, filters=CompareFilters(scope="example"))
+        assert [cell.value for cell in next(row for row in view.rows if row.title == "merge_wip").cells] == [2, 4]
+
 
 class TestEveryColumnBelongsToTheBoxAboveIt(_RowBuilderCase):
     """Headings and cells must come from ONE sequence.

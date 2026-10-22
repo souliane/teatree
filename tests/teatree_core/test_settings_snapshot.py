@@ -19,6 +19,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.override_reader import load_overlay_rows
 from teatree.core.config_interchange.seed_tables import seed_models
 from teatree.core.models import ConfigSetting, Mode
 from teatree.core.settings_snapshot import (
@@ -301,6 +302,18 @@ def test_stored_scope_aliases_fold_through_the_resolution_merge() -> None:
         "": {"autoload": False},
         "t3-example": {"shared": "qualified", "only_qualified": 1, "only_bare": 2},
     }
+
+
+class TestOverlayAliasFoldIsOnePath(TestCase):
+    def test_the_snapshot_folds_the_rows_the_resolution_read_applies(self) -> None:
+        ConfigSetting.objects.create(scope="t3-example", key="merge_wip", value=3)
+        ConfigSetting.objects.create(scope="example", key="merge_wip", value=4)
+        ConfigSetting.objects.create(scope="t3-example", key="autoload", value=True)
+
+        applied, _ = load_overlay_rows("example")
+
+        assert build_snapshot("box-a")["values"]["settings"]["example"] == applied.rows
+        assert applied.rows == {"merge_wip": 4, "autoload": True}
 
 
 def test_registry_family_covers_cold_hook_table_and_regular_keys() -> None:
