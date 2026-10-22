@@ -9,17 +9,25 @@ import io
 import json
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.cli.doctor.self_heal_slack_listener import check_slack_listener_alive
 from teatree.core.models import ConfigSetting
 from teatree.core.slack_first.factory_slack_liveness import factory_slack_live
 from teatree.core.slack_first.slack_listener_heartbeat import FILENAME
+from tests._loop_principal_env import pinned_loop_principal
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_loop_principal() -> Generator[None]:
+    with pinned_loop_principal():
+        yield
 
 
 def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
