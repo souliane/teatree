@@ -25,9 +25,14 @@ from teatree.core.modelkit.phases import normalize_phase
 #: Grants the teatree MCP server's write tools; a phase without it gets ``t3 mcp serve --read-only``.
 MCP_WRITE: Final = "mcp_write"
 
-#: The one write tool a phase without :data:`MCP_WRITE` still reaches: its own deliverable.
+#: Named non-read-only tools a phase without :data:`MCP_WRITE` still reaches.
+_PEER_MAILBOX_TOOLS: Final[frozenset[str]] = frozenset(
+    {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+)
+#: Peer text changes delivery state, not repository state; it never runs a tool for the sender.
 _MCP_WRITE_TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "requesting_review": frozenset({"review_request_post"}),
+    **dict.fromkeys(("planning", "reviewing", "critic_reviewing"), _PEER_MAILBOX_TOOLS),
 }
 
 #: Every capability tool name Lane B can expose. A phase's allowance is a subset;
@@ -106,7 +111,9 @@ ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 #: merge_safe/hold verdict (F4). The teatree MCP server's read tools reach every
 #: phase that mounts it; its write tools need :data:`MCP_WRITE`, which only the
 #: authoring phases and ``shipping`` hold — ``requesting_review`` reaches the one
-#: tool that posts its request instead. An unknown phase falls back to read-only
+#: tool that posts its request instead. Planning, reviewing and critic_reviewing
+#: retain only the three peer-mailbox tools; other read-only phases retain self
+#: and peers. An unknown phase falls back to read-only
 #: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently inherits shell/write until it is
 #: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
 #: explicit entry here (the ``test_registry_parity`` totality lane), so the
@@ -185,6 +192,10 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
 }
 
 
+def phase_writes_checkout(phase: str) -> bool:
+    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
+
+
 def tools_for_phase(phase: str) -> frozenset[str]:
     """Return the capability tool names *phase* may call.
 
@@ -202,5 +213,5 @@ def disallowed_tools_for_phase(phase: str) -> frozenset[str]:
 
 
 def mcp_write_tools_for_phase(phase: str) -> frozenset[str]:
-    """The teatree MCP write tools a phase without :data:`MCP_WRITE` still reaches — none for most."""
+    """Named non-read-only MCP tools a phase without :data:`MCP_WRITE` still reaches."""
     return _MCP_WRITE_TOOLS_BY_PHASE.get(normalize_phase(phase), frozenset())

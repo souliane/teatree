@@ -74,9 +74,12 @@ class TestPreToolUseArm:
 
     def test_the_escape_token_allows_one_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen = _braking(monkeypatch)
-        data = _agent_dispatch("[admission-ok: cold review is the merge blocker] review the diff")
+        data = _agent_dispatch("[gate-escape:dispatch_admission: cold review is the merge blocker] review the diff")
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda event, gate_id: gate_id == "dispatch_admission"
+        )
         assert gate.handle_dispatch_admission(data) is False
-        assert seen == [], "the token short-circuits before the probe"
+        assert seen == [True], "the gate still measures pressure before the audit permits the action"
 
     def test_an_empty_escape_reason_does_not_allow(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _braking(monkeypatch)

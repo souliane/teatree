@@ -77,11 +77,11 @@ _FAIL_OPEN_ROUTER: Final[str] = "_fail_open_or_deny"
 # is tracked here with a TODO rather than silently bare-denying.
 _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     # Public-egress leak path — fail-closed by design (privacy, not lockout).
-    "handle_quote_scanner_pretool": "public-egress quote leak; fail-closed by design, [quote-ok:] escape",
-    "handle_banned_terms_pretool": "public-egress banned-term leak; fail-closed by design, [banned-ok:] escape",
+    "handle_quote_scanner_pretool": "public-egress quote leak; fail-closed by design, no inline escape",
+    "handle_banned_terms_pretool": "public-egress banned-term leak; fail-closed by design, no inline escape",
     "handle_block_ai_signature": "public-egress AI-signature leak on commit/publish; fail-closed by design",
     "handle_dispatch_prompt_quote_scanner": (
-        "public-egress verbatim-quote leak in an Agent/Task dispatch prompt; fail-closed by design, [quote-ok:] escape"
+        "public-egress verbatim-quote leak in an Agent/Task dispatch prompt; fail-closed by design, no inline escape"
     ),
     "handle_block_verbatim_operator_paste": (
         "public-egress republication of the operator's own messages; fail-closed by design, "
@@ -98,7 +98,9 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
         "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
         "bot-token self-DM path and self_dm_gate_enabled kill-switch remain available"
     ),
-    "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
+    "handle_validate_mr_metadata": (
+        "denies only `glab mr create/update` with missing metadata; audited per-action escape"
+    ),
     "handle_block_void_merge": (
         "denies only a command naming `void-merge` that is not a standalone read-only call, never arbitrary Bash; "
         "`--dry-run` passes and a human runs the void from their own terminal"
