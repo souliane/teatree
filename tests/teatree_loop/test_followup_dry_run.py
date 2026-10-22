@@ -84,6 +84,9 @@ class _Slack:
         _ = handle
         return ""
 
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return "S0REVIEWERS" if handle == "reviewers-team" else ""
+
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         self.posts.append((channel, text, thread_ts))
         return {"ok": True, "ts": "posted"}
@@ -307,7 +310,9 @@ def _review_request_post_checksum(path: Path) -> tuple[int, str]:
 
 @contextmanager
 def _scanner_dependencies(*, inline_workers: bool = True) -> Generator[Path]:
-    config = TeaTreeConfig(user=UserSettings(review_nag_max_interval_days=30))
+    config = TeaTreeConfig(
+        user=UserSettings(review_nag_max_interval_days=30, review_nag_reask_mention="reviewers-team")
+    )
     target = GuardTarget(channel_id=_CHANNEL, channel_name="review", token="unused")
     with ExitStack() as stack:
         source = stack.enter_context(file_backed_default_database())

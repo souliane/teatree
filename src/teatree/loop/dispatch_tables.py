@@ -76,6 +76,7 @@ AGENT_BY_KIND: dict[str, str] = {
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "owner_action.result": "in_flight",
+    "review_nag.mention_held": "action_needed",
     # The MR-triage surveyor names what an open MR needs next. Every verdict it
     # emits is an owner decision it deliberately does not take, so it belongs where
     # the owner looks for what they owe rather than in the in-flight fallback.
@@ -189,6 +190,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request.pause_unreadable": "action_needed",
     "review_request.authorship_unreadable": "action_needed",
     "review_request.resume_gated": "action_needed",
+    "review_request.resume_mention_held": "action_needed",
     "review_request.resume_failed": "in_flight",
     # The followup sender: a sent request went out under the owner's name and a refusal is put
     # to them; a deferral (a hold, a declined or moved head, a transient read) retries itself.
