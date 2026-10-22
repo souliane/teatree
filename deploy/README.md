@@ -97,7 +97,7 @@ carries — its revision label — not what the registry last recorded: a `deplo
 run replaces the containers without touching the registry, so every other active
 registry row is failed as displaced. It drains N (its own claims only; the global
 drain when N is the legacy source-mounted stack or a generation the registry does
-not list as serving), stops N's worker and listener, runs N+1's init (migrate,
+not list as serving), stops N's worker and both listeners, runs N+1's init (migrate,
 setup, seed — no fetch, no installs), brings N+1 up, verifies every runtime
 container's label, the worker's activation and the admin answering inside its
 container, then promotes N+1 (retags `teatree-headless:latest`) and retires N.
@@ -112,7 +112,7 @@ and the admin can never be optional.
 
 A failure, a SIGTERM or a SIGHUP once N's drain has started rolls back: N+1 is
 marked failed, N is reinstated (a draining row resumes, a failed or retired one starts
-again), comes back up from its own image and must verify exactly as N+1 had to — a
+again), comes back up from its own image and must verify the services in N's own topology — a
 restore that does not verify exits 1 rather than claiming N serves. A failure before
 N started draining leaves N — legacy or generation — serving untouched, marks N+1
 failed and reports the original error. Promotion comes after verification and never undoes it: if the tag
@@ -196,6 +196,7 @@ A second stack can be rolled on the same daemon without touching the live one:
 | `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, host `t3` routing, and the container the host hooks probe |
 | `TEATREE_PROMOTED_TAG` | `teatree-headless:latest` | the tag a verified generation is promoted to |
 | `TEATREE_ADMIN_PORT` | `8000` | the admin's loopback bind and the roller's probe |
+| `TEATREE_WEBHOOK_PORT` | `8001` | the forge webhook listener's loopback bind |
 | `TEATREE_DEPLOY_LOCK` | `/tmp/teatree-deploy.lock` | the deploy lock; must sit under `TEATREE_HOST_TMP` |
 
 ## How the one-click deploy works
@@ -219,7 +220,7 @@ manual run skips the wait.
    converges the stack one service at a time — see
    [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
-The stack is five services from one image (`deploy/Dockerfile`), selected by
+The stack is six services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`, plus the read-only executor, which runs its own minimal image:
 
 | Service | Role | Restart | Notes |
@@ -227,6 +228,7 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus read-only code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -375,9 +377,9 @@ logs which branch it took. Notes:
 ### Staged convergence: the control plane never goes fully down (#4214)
 
 A single `up -d --build` recreates every service at once. `teatree-admin`,
-`teatree-worker` and `teatree-slack-listener` each `depends_on` init with
-`service_completed_successfully`, so compose creates all five container objects
-and holds three of them in `Created` until init exits — **67 seconds measured on
+`teatree-worker`, `teatree-slack-listener` and `teatree-webhooks` each `depends_on`
+init with `service_completed_successfully`, so compose creates every container
+object and holds those four in `Created` until init exits — **67 seconds measured on
 the box**, once per deploy. In that window the dashboard is gone, the only
 control-DB CLI route is gone, and the container logs a live diagnosis was reading
 have been destroyed with the container objects.
@@ -1638,7 +1640,7 @@ applies when a container is next recreated; a log that grew before then stays un
 | `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-worker teatree-admin` | services (first reachable wins) to run the doctor/DM commands in — the worker leads because the health probe is heavy (#3651) |
 | `TEATREE_WATCHDOG_DOCTOR_RETRIES` | `3` | attempts when the probe cannot run because its target is restarting / not running |
 | `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
-| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
+| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-webhooks teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
