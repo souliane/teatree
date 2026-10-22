@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0017_cievalhealsession_park_cycles"),
+        ("core", "0018_forge_ingest_identity"),
     ]
 
     operations = [

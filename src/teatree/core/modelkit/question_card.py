@@ -109,8 +109,18 @@ def safe_card_title(title: str, fallback: str) -> str:
 
 def safe_ticket_card_title(short_description: object, extra: object, fallback: str) -> str:
     legacy = extra.get("issue_title", "") if isinstance(extra, dict) else ""
-    title = short_description if isinstance(short_description, str) and short_description.strip() else legacy
-    return safe_card_title(title if isinstance(title, str) else "", fallback)
+    stored = short_description if isinstance(short_description, str) else ""
+    short = stored.strip()
+    full = legacy.strip() if isinstance(legacy, str) else ""
+    ellipsis_prefix = short.removesuffix("...").removesuffix("\u2026")
+    cut = bool(full and full.startswith(ellipsis_prefix)) and (
+        short.endswith(("\u2026", "...")) or (len(stored) >= MAX_CARD_TITLE_CHARS and len(full) > len(short))
+    )
+    if full and (cut or not short) and (safe_full := safe_card_title(full, "")):
+        return safe_full
+    if len(short) == MAX_CARD_TITLE_CHARS and short[-1].isalnum() and short != full:
+        short = f"{short}..."  # a seed at the column limit may end mid-word; the ellipsis trims it at a word
+    return safe_card_title(short, fallback)
 
 
 def counted(count: int, noun: str) -> str:

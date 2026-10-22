@@ -1,6 +1,7 @@
 """Refuse a writing task when its checkout cannot be proven to be its own."""
 
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,7 +27,12 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest, checkout_rows
+from teatree.core.worktree.checkout_attest import (
+    CheckoutAttestation,
+    ask_owner_to_attest,
+    checkout_rows,
+    declined_attest_tasks,
+)
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
@@ -40,6 +46,12 @@ class CheckoutFenceError(RuntimeError):
     def __init__(self, message: str, *, attestable: CheckoutAttestation | None = None) -> None:
         super().__init__(message)
         self.attestable = attestable
+
+
+@dataclass(frozen=True)
+class _AttestationStatus:
+    digest: str | None
+    declined: bool
 
 
 def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> None:
@@ -87,7 +99,9 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         message = f"checkout {path} state could not be read: {exc}"
         raise CheckoutFenceError(message) from exc
     worktree = rows[0]
-    attested = worktree.get_extra().get("attested_state")
+    # Another step's owner Accept never covers a step the owner declined for this same folder state.
+    declined = task.pk in declined_attest_tasks(worktree, state.digest, task_id=task.pk)
+    attested = None if declined else worktree.get_extra().get("attested_state")
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:
         message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
@@ -96,22 +110,25 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
-    if attested is None and state.pristine:
+    if attested is None and state.pristine and not declined:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
         attested = state.digest
-    _accept_changed_checkout(task, worktree, state, table, attested=attested)
+    _accept_changed_checkout(task, worktree, state, table, _AttestationStatus(attested, declined))
     _anchor_verified_checkout(task, worktree, state, namespace=namespace)
 
 
 def _accept_changed_checkout(
-    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, *, attested: str | None
+    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, status: _AttestationStatus
 ) -> None:
-    if attested != state.digest and not (
-        attest_deferred_exit(task, worktree, state, table)
-        or reattest_on_proof(task, worktree, state, table)
-        or reattest_released_pr_head(task, worktree, state, table)
+    if status.digest != state.digest and not (
+        not status.declined
+        and (
+            attest_deferred_exit(task, worktree, state, table)
+            or reattest_on_proof(task, worktree, state, table)
+            or reattest_released_pr_head(task, worktree, state, table)
+        )
     ):
-        if attested is None:
+        if status.digest is None and not status.declined:
             message = (
                 f"checkout {worktree.worktree_path} has no attested state; inspect it and run "
                 f"`t3 <overlay> worktree attest {worktree.worktree_path}`"

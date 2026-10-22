@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -23,11 +24,14 @@ MAX_PENDING_INPUTS = 4
 MAX_RECEIPTS = 256
 DEFAULT_STEER_WAIT_SECONDS = 60.0
 MAX_STEER_WAIT_SECONDS = 900.0
+DEFAULT_IDLE_WINDOW_SECONDS = 60.0
+MAX_FOLLOW_UP_TURNS = 4
 _DRAIN_SECONDS = 5.0
 
 
 class ControlOutcome(StrEnum):
     ACCEPTED_CURRENT_TURN = "accepted_current_turn"
+    ACCEPTED_NEW_TURN = "accepted_new_turn"
     ACCEPTED_INBOX_READ = "accepted_inbox_read"
     REJECTED = "rejected"
     UNKNOWN_DELIVERY = "unknown_delivery"
@@ -35,6 +39,7 @@ class ControlOutcome(StrEnum):
 
 class RejectCode(StrEnum):
     TURN_ENDED = "turn_ended"
+    NOT_IDLE = "not_idle"
     NOT_ACCEPTED_IN_TIME = "not_accepted_in_time"
     NOT_STEERABLE = "not_steerable"
     TOO_LARGE = "too_large"
@@ -67,6 +72,11 @@ class SteerableSession(Protocol):
 
 class InterruptibleSession(Protocol):
     async def interrupt(self) -> None: ...
+
+
+@runtime_checkable
+class FollowUpSession(Protocol):
+    async def follow_up(self, prompt: str) -> None: ...
 
 
 class StreamFacts(Protocol):
@@ -163,11 +173,26 @@ class ControlReceipt:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class FollowUp:
+    prompt: str
+    wait: float
+    started: asyncio.Future[Exception | None]
+
+
 def frame_operator_input(text: str, command_id: str) -> str:
     return (
         f"[TeaTree operator input id={command_id}] From the operator supervising this task, delivered mid-run.\n"
         f"{text}\n"
         "[end operator input: continue your task; your final message must still carry your result envelope]"
+    )
+
+
+def frame_follow_up(text: str, command_id: str) -> str:
+    return (
+        f"[TeaTree operator follow-up id={command_id}] From the operator supervising this task; start one new turn.\n"
+        f"{text}\n"
+        "[end operator follow-up: finish with your complete result envelope as the last plain JSON object]"
     )
 
 
@@ -186,8 +211,8 @@ def _quote_peer_lines(text: str) -> str:
     return "\n".join(f"> {line}" for line in text.splitlines() or [""])
 
 
-def _digest(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
+def _digest(text: str, kind: str = "steer") -> str:
+    return hashlib.sha256(f"{kind}\0{text}".encode()).hexdigest()
 
 
 class LiveSessionController:
@@ -196,7 +221,9 @@ class LiveSessionController:
     Every method that touches the session runs on the session's own event loop.
     """
 
-    def __init__(self, task: LiveTask, capture: StreamFacts) -> None:
+    def __init__(
+        self, task: LiveTask, capture: StreamFacts, claim_live: Callable[[], Awaitable[bool]] | None = None
+    ) -> None:
         self.task = task
         self._capture = capture
         self._session: InterruptibleSession | None = None
@@ -205,27 +232,58 @@ class LiveSessionController:
         self._receipts: dict[str, tuple[str, asyncio.Future[ControlReceipt]]] = {}
         self._in_flight: set[asyncio.Future[ControlReceipt]] = set()
         self._pushing = 0
+        self._idle: asyncio.Future[FollowUp | None] | None = None
+        self._starting: FollowUp | None = None
+        self._follow_up_active = False
+        self._turn_running = True
+        self._claim_live = claim_live
 
     def bind(self, session: InterruptibleSession) -> None:
         self._session = session
 
     def close(self) -> None:
         self._closed = True
+        self._claim_live = None
+        if self._idle is not None and not self._idle.done():
+            self._idle.set_result(None)
+        self._idle = None
+        if self._starting is not None and not self._starting.started.done():
+            self._starting.started.set_result(RuntimeError("session closed during follow-up start"))
 
     async def interrupt(self) -> None:
         """Refuse new commands, then stop the running turn."""
         self.close()
-        if self._session is not None:
+        if self._session is not None and self._turn_running:
             await self._session.interrupt()
 
     @property
+    def idle(self) -> bool:
+        return self._idle is not None and not self._closed
+
+    def begin_idle(self) -> asyncio.Future[FollowUp | None]:
+        self._turn_running = False
+        self._follow_up_active = False
+        self._idle = asyncio.get_running_loop().create_future()
+        return self._idle
+
+    async def wait_idle(self, window: asyncio.Future[FollowUp | None], seconds: float) -> FollowUp | None:
+        done, _ = await asyncio.wait({window}, timeout=seconds)
+        if self._idle is window:
+            self._idle = None
+        return window.result() if done else None
+
+    @property
     def steerable(self) -> bool:
-        return not self._closed and isinstance(self._session, SteerableSession)
+        return not self._closed and not self.idle and isinstance(self._session, SteerableSession)
 
     @property
     def state(self) -> str:
         if self._closed:
             return "closed"
+        if self.idle:
+            return "idle"
+        if self._turn_running and self._follow_up_active:
+            return "busy"
         if self._capture.result_message is not None:
             return "finishing"
         return "busy" if self._capture.last_event_at is not None else "starting"
@@ -253,13 +311,13 @@ class LiveSessionController:
             "generation": self.task.fence.generation,
         }
 
-    def known_receipt(self, command_id: str, text: str) -> ControlReceipt | None:
+    def known_receipt(self, command_id: str, text: str, kind: str = "steer") -> ControlReceipt | None:
         """The settled receipt of an earlier identical command, or the refusal of a reused id."""
         entry = self._receipts.get(command_id)
         if entry is None:
             return None
         digest, settled = entry
-        if digest != _digest(text):
+        if digest != _digest(text, kind):
             return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.DUPLICATE_MISMATCH)
         return settled.result() if settled.done() else None
 
@@ -289,11 +347,92 @@ class LiveSessionController:
         settled.set_result(receipt)
         return receipt
 
+    def _start_turn(self, prompt: str, wait: float) -> FollowUp | None:
+        window = self._idle
+        if window is None or window.done() or self._closed:
+            return None
+        follow_up = FollowUp(prompt, wait, asyncio.get_running_loop().create_future())
+        self._idle = None
+        self._starting = follow_up
+        self._turn_running = True
+        self._follow_up_active = True
+        window.set_result(follow_up)
+        return follow_up
+
+    async def _started_receipt(self, follow_up: FollowUp, command_id: str) -> ControlReceipt:
+        error = await asyncio.shield(follow_up.started)
+        if self._starting is follow_up:
+            self._starting = None
+        if isinstance(error, SteerRejectedError):
+            self.close()
+            return ControlReceipt.rejected(command_id, self.task.pk, error.code)
+        if error is not None:
+            self.close()
+            return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+        return ControlReceipt(
+            command_id,
+            self.task.pk,
+            ControlOutcome.ACCEPTED_NEW_TURN,
+            accepted_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+
+    async def follow_up(self, text: str, *, command_id: str, wait: float) -> ControlReceipt:
+        entry = self._receipts.get(command_id)
+        if entry is not None:
+            if entry[0] != _digest(text, "follow_up"):
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.DUPLICATE_MISMATCH)
+            return await asyncio.shield(entry[1])
+        if refusal := self._follow_up_refusal(text):
+            return ControlReceipt.rejected(command_id, self.task.pk, refusal)
+        if not self.idle:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
+        settled: asyncio.Future[ControlReceipt] = asyncio.get_running_loop().create_future()
+        self._receipts[command_id] = (_digest(text, "follow_up"), settled)
+        self._in_flight.add(settled)
+        try:
+            if self._claim_live is not None and not await self._claim_live():
+                self.close()
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
+            elif self._closed:
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+            elif not self.idle:
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
+            else:
+                follow_up = self._start_turn(frame_follow_up(text, command_id), wait)
+                receipt = (
+                    await self._started_receipt(follow_up, command_id)
+                    if follow_up is not None
+                    else ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
+                )
+        except asyncio.CancelledError:
+            settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
+            raise
+        except Exception:
+            logger.warning("Task %s: follow-up claim could not be verified", self.task.pk, exc_info=True)
+            receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+        finally:
+            self._in_flight.discard(settled)
+        settled.set_result(receipt)
+        return receipt
+
+    def _follow_up_refusal(self, text: str) -> RejectCode | None:
+        if self._closed:
+            return RejectCode.SESSION_CLOSED
+        if not isinstance(self._session, FollowUpSession):
+            return RejectCode.NOT_STEERABLE
+        if len(text.encode()) > MAX_INPUT_BYTES:
+            return RejectCode.TOO_LARGE
+        if len(self._in_flight) >= MAX_PENDING_INPUTS or len(self._receipts) >= MAX_RECEIPTS:
+            return RejectCode.BACKPRESSURE
+        return None
+
     async def push(self, framed: str, *, command_id: str, wait: float) -> ControlReceipt:
         """Deliver a framed peer message; its sender's broker, not this controller, keeps the receipt."""
         refusal = self._session_refusal() or (RejectCode.BACKPRESSURE if self._pushing >= MAX_PENDING_INPUTS else None)
         if refusal is not None:
             return ControlReceipt.rejected(command_id, self.task.pk, refusal)
+        if self.idle:
+            return await self._push_idle(framed, command_id, wait)
         self._pushing += 1
         try:
             return await self._deliver(framed, command_id, wait)
@@ -302,6 +441,26 @@ class LiveSessionController:
             return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._pushing -= 1
+
+    async def _push_idle(self, framed: str, command_id: str, wait: float) -> ControlReceipt:
+        if self._claim_live is not None:
+            try:
+                claim_holds = await self._claim_live()
+            except Exception:
+                logger.warning("Task %s: peer wake claim could not be verified", self.task.pk, exc_info=True)
+                return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+            if not claim_holds:
+                self.close()
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
+        if self._closed:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+        if not self.idle:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
+        prompt = f"{framed}\nFinish with your complete result envelope as the last plain JSON object."
+        follow_up = self._start_turn(prompt, wait)
+        if follow_up is None:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
+        return await self._started_receipt(follow_up, command_id)
 
     def _session_refusal(self) -> RejectCode | None:
         if self._closed:
