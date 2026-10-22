@@ -621,10 +621,9 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
 
         assert control_db.primary_data_dir() == tmp_path / ".local" / "share" / "teatree"
 
-    def test_the_data_dir_and_the_database_diverge_for_the_real_install(self) -> None:
-        # The module-level constants are the REAL install's answers, resolved at import
-        # from the real home — the test harness's tmp `HOME` deliberately does not reach
-        # them, which is the same isolation that keeps a worktree off the canonical DB.
+    def test_the_primary_data_dir_and_control_db_diverge(self) -> None:
+        # The data dir captures the original HOME at import; the DB captures the
+        # control-dir override then. The test harness's later HOME changes neither.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
         assert paths.TRUE_CANONICAL_DB.parent == paths.control_db_dir(os.environ)
 
