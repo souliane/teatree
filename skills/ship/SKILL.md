@@ -312,10 +312,11 @@ Agent(
 
 `pr create` also runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff actually touches and reports silent-render regressions (page crashes, console errors, raw `app.*` translation keys, blocking asset 404s). Target URLs come from the overlay's `review.visual_qa_targets(changed_files)` — overlays opt in by mapping diff paths to URLs.
 
-- Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']`.
+- Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']` and included in the PR body.
+- If `runtime.visual_qa_server(worktree)` supplies a command, the gate syncs its prerequisites and serves the checkout beside its browser in an isolated scratch environment. Otherwise it discovers the stack's live port from the browser venue.
 - Blocks PR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
-- Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
-- Refuses as `[gate:visual_qa] DID NOT RUN` when the check cannot run: the diff is unreadable, the browser cannot start, or the page budget runs out. Run `playwright install chromium` and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
+- Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` still runs the check and records its evidence plus the reason, head SHA, and timestamp.
+- Refuses as `[gate:visual_qa] DID NOT RUN` when the diff is unreadable, the server or browser cannot start, a page is unreachable, or the page budget runs out. Repair the named cause and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
 
 ### 5. Create MR/PR
 

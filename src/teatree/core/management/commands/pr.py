@@ -229,6 +229,7 @@ def _run_skip_validation_path(
     title must not slip onto GitLab via the bypass; only the explicit
     ``--skip-mr-format-check`` opt-in disables the format check too.
     """
+    ticket.merge_extra(pop_keys=["visual_qa"])
     reconcile_fsm_for_ship(ticket)
     if skip_mr_format_check:
         return None

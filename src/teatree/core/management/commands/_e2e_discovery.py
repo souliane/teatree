@@ -38,12 +38,16 @@ def detect_local_port(port: int) -> int | None:
     ``e2e external --target local`` with "Frontend not running" on a host
     whose frontend was up and serving.
     """
+    return port if detect_local_address(port) is not None else None
+
+
+def detect_local_address(port: int) -> str | None:
     for family, address in _LOOPBACK_ADDRESSES:
         try:
             with socket.socket(family, socket.SOCK_STREAM) as probe:
                 probe.settimeout(_LOOPBACK_CONNECT_TIMEOUT)
                 if probe.connect_ex((address, port)) == 0:
-                    return port
+                    return f"[{address}]" if family == socket.AF_INET6 else address
         except OSError:
             continue  # family unavailable on this host (e.g. IPv6 disabled)
     return None
