@@ -34,7 +34,8 @@ compose)
         esac
     done
     log "compose image=$TEATREE_IMAGE clone_dir=${TEATREE_CLONE_DIR:-} files=$files args=$*"
-    if [ -f "$FAKE_DIR/compose_rc" ]; then echo "init: migrations failed"; exit "$(cat "$FAKE_DIR/compose_rc")"; fi ;;
+    if [ -f "$FAKE_DIR/compose_rc" ]; then echo "init: migrations failed"; exit "$(cat "$FAKE_DIR/compose_rc")"; fi
+    if [ "$*" = "config --services" ]; then cat "$FAKE_DIR/service_list"; fi ;;
 ps)
     log "ps $*"
     service="$(printf '%s\n' "$@" | sed -n 's/^label=com.docker.compose.service=//p')"
@@ -91,6 +92,13 @@ class TestImageRevision:
 
 
 class TestTopology:
+    def test_previous_image_reports_only_services_in_its_baked_topology(self, fake: Path) -> None:
+        (fake / "service_list").write_text("teatree-worker\nteatree-admin\n", encoding="utf-8")
+
+        assert _engine(fake).topology_services(N) == frozenset({"teatree-worker", "teatree-admin"})
+        assert _compose_line(fake).endswith("args=config --services")
+        assert f"# baked docker-compose.yml from teatree-factory:{N}|" in _compose_line(fake)
+
     def test_an_image_generation_comes_up_with_the_topology_baked_in_its_image(self, fake: Path) -> None:
         _engine(fake).up(N, ["teatree-worker"])
 

@@ -26,7 +26,7 @@ The seat's ordinary end is the ``dispatch_seat_release`` sibling, on ``SubagentS
 NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
-a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt allows one
+a per-call ``[gate-escape:dispatch_admission: <reason>]`` token in the dispatch prompt allows one
 call (an empty reason does not); and ANY internal error, an unbootstrappable
 Django and an unimportable ``teatree`` all fail OPEN.
 
@@ -34,7 +34,6 @@ Cold-import safe: the module top imports only stdlib plus the already-extracted
 ``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
 """
 
-import re
 import sys
 
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
@@ -47,14 +46,6 @@ sys.modules.setdefault("hooks.scripts.dispatch_admission_gate", sys.modules[__na
 #: The two harness tool names that spawn a sub-agent.
 DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
-# Per-call opt-out, mirroring ``[fg-ok: <reason>]`` / ``[quote-ok: <reason>]``.
-# An empty reason does not unblock.
-_ADMISSION_OK_RE = re.compile(r"\[admission-ok:\s*\S[^\]]*?\s*\]")
-
-#: Scanned prefix of the dispatch payload — a token buried deep in a long brief
-#: must not silently authorise the whole prompt (the ``[quote-ok:]`` precedent).
-_TOKEN_SCAN_CHARS = 512
-
 
 def _block_message(reason: str) -> str:
     return (
@@ -63,7 +54,7 @@ def _block_message(reason: str) -> str:
         "An interactive dispatch adds to the SAME box the factory lanes run on, so it is "
         "governed by the same governor. Wait for the brake to release "
         "(the load watermark has hysteresis, so it re-admits under the lower one), or add an "
-        "explicit `[admission-ok: <reason>]` marker to the dispatch for a genuine "
+        "explicit `[gate-escape:dispatch_admission: <reason>]` marker to the dispatch for a genuine "
         "must-run-now dispatch."
     )
 
@@ -101,10 +92,6 @@ def handle_dispatch_admission(data: dict) -> bool:
     """
     try:
         if data.get("tool_name") not in DISPATCH_TOOLS:
-            return False
-        tool_input = data.get("tool_input") or {}
-        prompt = tool_input.get("prompt", "") if isinstance(tool_input, dict) else ""
-        if isinstance(prompt, str) and _ADMISSION_OK_RE.search(prompt[:_TOKEN_SCAN_CHARS]):
             return False
         reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
     except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch

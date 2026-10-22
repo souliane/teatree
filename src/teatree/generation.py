@@ -6,12 +6,10 @@ legacy generation ``""``, which keeps every pre-generation behaviour.
 """
 
 import os
-import re
 
 GENERATION_ENV = "TEATREE_GENERATION"
 IMAGE_REPOSITORY = "teatree-factory"
 
-_GENERATION_SHA = re.compile(r"[0-9a-f]{40}")
 _SHORT_SHA_LENGTH = 12
 
 
@@ -21,10 +19,6 @@ def current_generation() -> str:
 
 def is_image_generation() -> bool:
     return bool(current_generation())
-
-
-def is_generation_sha(value: str) -> bool:
-    return _GENERATION_SHA.fullmatch(value) is not None
 
 
 def short_sha(sha: str) -> str:

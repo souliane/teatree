@@ -5,7 +5,7 @@
 
 Three escape paths for ``handle_block_edit_before_planned``:
 
-1. Per-call ``[skip-plan-gate: <reason>]`` token → ALLOW that call.
+1. Per-action ``[gate-escape:plan_gate: <reason>]`` token → ALLOW that call once its audit is recorded.
 2. ``[teatree] plan_edit_gate_enabled = false`` kill-switch → ALLOW all calls.
 3. ``t3 <overlay> gate plan disable`` self-rescue CLI → flips the kill-switch.
 
@@ -31,6 +31,7 @@ import hooks.scripts.hook_router as router
 from teatree.cli.teatree_gate import PLAN_GATE_KEY, _gate_key_is_enabled, register_gate_commands
 from teatree.config import cold_reader
 from teatree.core.models import Ticket, Worktree
+from tests._gate_escape_audit import audited_escape
 from tests._git_repo import make_git_repo, run_git
 
 _REAL_SCHEMA = (
@@ -93,8 +94,8 @@ def _started_ticket_in_repo(toplevel: str, repo_path: str = "backend") -> None:
     )
 
 
-class TestSkipPlanGateToken(TestCase):
-    """Per-call ``[skip-plan-gate: <reason>]`` token escape."""
+class TestPlanGateEscapeToken(TestCase):
+    """Per-action ``[gate-escape:plan_gate: <reason>]`` token escape."""
 
     def _edit_input(self, cwd: str, *, new_string: str = "b") -> dict:
         return {
@@ -142,46 +143,16 @@ class TestSkipPlanGateToken(TestCase):
         assert payload["gate_id"] == "plan_gate"
         assert payload["hookSpecificOutput"]["gate_id"] == "plan_gate"
 
-    def test_edit_carrying_skip_plan_gate_token_is_allowed(self) -> None:
-        """[skip-plan-gate: trivial typo] in new_string → ALLOW.
-
-        RED-on-revert: remove the ``_skip_plan_gate_token`` check from
-        ``handle_block_edit_before_planned`` and this test flips to blocked=True.
-        """
+    def test_edit_carrying_an_audited_token_is_allowed_once_the_audit_is_recorded(self) -> None:
+        """RED-on-revert: drop the ``escape_allows`` call from ``emit_pretooluse_deny`` and this blocks."""
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
             _started_ticket_in_repo(toplevel)
-            data = self._edit_input(toplevel, new_string="[skip-plan-gate: trivial typo] b")
-            blocked, _ = _capture_block(data)
+            data = self._edit_input(toplevel, new_string="[gate-escape:plan_gate: trivial typo] b")
+            with audited_escape(data) as requests:
+                blocked, _ = _capture_block(data)
         assert blocked is False
-
-    def test_write_carrying_skip_plan_gate_token_in_content_is_allowed(self) -> None:
-        """[skip-plan-gate: add comment] in Write content → ALLOW."""
-        with tempfile.TemporaryDirectory() as tmp:
-            toplevel = _git_repo(Path(tmp))
-            _started_ticket_in_repo(toplevel)
-            data = self._write_input(toplevel, content="[skip-plan-gate: add comment] x = 1")
-            blocked, _ = _capture_block(data)
-        assert blocked is False
-
-    def test_empty_reason_in_skip_plan_gate_token_is_not_an_escape(self) -> None:
-        """[skip-plan-gate:] with empty reason must not escape the gate."""
-        with tempfile.TemporaryDirectory() as tmp:
-            toplevel = _git_repo(Path(tmp))
-            _started_ticket_in_repo(toplevel)
-            data = self._edit_input(toplevel, new_string="[skip-plan-gate:] b")
-            blocked, _ = _capture_block(data)
-        assert blocked is True
-
-    def test_token_truncation_beyond_512_chars_is_not_an_escape(self) -> None:
-        """A token buried beyond char 512 must not escape the gate."""
-        with tempfile.TemporaryDirectory() as tmp:
-            toplevel = _git_repo(Path(tmp))
-            _started_ticket_in_repo(toplevel)
-            buried = "x" * 513 + "[skip-plan-gate: hidden]"
-            data = self._edit_input(toplevel, new_string=buried)
-            blocked, _ = _capture_block(data)
-        assert blocked is True
+        assert [(request["gate"], request["reason"]) for request in requests] == [("plan_gate", "trivial typo")]
 
 
 class TestPlanGateKillSwitch(TestCase):

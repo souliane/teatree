@@ -1,4 +1,4 @@
-"""GitLab wave-2 read helpers — PR list/diff/commits + repo metadata (#3076).
+"""GitLab wave-2 read helpers — PR list/diff + repo metadata (#3076).
 
 Free functions the :class:`~teatree.backends.gitlab.GitLabCodeHost` delegates the
 wave-2 ``CodeHostBackend`` reads to, keeping the host class focused on the
@@ -92,12 +92,6 @@ def project_pr_file_diffs(client: GitLabAPI, project: ProjectInfo, *, pr_iid: in
         for path in (entry.get("old_path"), entry.get("new_path"))
         if path
     }
-
-
-def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
-    if project is None:
-        return []
-    return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/commits?per_page=100")
 
 
 def project_engaged_reviewers(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, pr_iid: int) -> list[str]:

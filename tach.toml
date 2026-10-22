@@ -46,6 +46,16 @@
 # depends_on is the exact outbound allow-list. tests/quality/test_slack_catchup_fence.py
 # covers what tach cannot see (TYPE_CHECKING imports, root-module files, string paths).
 #
+# teatree.backends.github.reads / teatree.backends.gitlab.reads -- each forge's read
+# interface. Each reads module binds no write-capable name, so binding its module
+# object in any form reaches no write. [[interfaces]] and the conformance scan
+# additionally reject imports of names outside the exposed reads. Same-layer and
+# unlayered consumers get tach's dependency fence; higher layers can import
+# lower-layer clients directly under tach's layered rules. The gh transport
+# (teatree.backends.github.api) is its own module so the GitHub reads use it without
+# cycling through the client. tests/conformance/test_forge_read_interface.py covers what
+# tach admits: module bindings, submodule paths, and supported literal dynamic imports.
+#
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only
 # SAME-layer edges bind here. teatree.mcp (integration), for example, also
@@ -73,6 +83,39 @@ layers = [
 ]
 
 [[interfaces]]
+expose = [
+  "_FORGE_READ_TIMEOUT_SECONDS",
+  "_gh_api_patch",
+  "_gh_api_post",
+  "_run_gh",
+  "gh_api_get",
+  "gh_api_get_paginated",
+  "gh_api_search_paginated",
+  "is_not_found",
+  "parse_issue_ref",
+  "run_gh_unchecked"
+]
+from = ["teatree.backends.github.api"]
+
+[[interfaces]]
+expose = [
+  "fetch_required_checks_rollup",
+  "fetch_workflow_runs_at_head",
+  "get_issue",
+  "list_issue_comments",
+  "list_pr_comments",
+  "list_pr_commits",
+  "list_pr_reviews",
+  "list_prs",
+  "list_repo_open_issues"
+]
+from = ["teatree.backends.github.reads"]
+
+[[interfaces]]
+expose = ["list_pr_commits"]
+from = ["teatree.backends.gitlab.reads"]
+
+[[interfaces]]
 expose = ["catch_up", "CatchUpSlice"]
 from = ["teatree.slack_catchup"]
 
@@ -84,7 +127,7 @@ depends_on = []
 [[modules]]
 path = "teatree.paths"
 layer = "foundation"
-depends_on = ["teatree.generation", "teatree.mount_identity", "teatree.sqlite_snapshot"]
+depends_on = ["teatree.generation", "teatree.git_sha", "teatree.mount_identity", "teatree.sqlite_snapshot"]
 
 [[modules]]
 path = "teatree.mount_identity"
@@ -605,9 +648,15 @@ depends_on = [
 ]
 
 [[modules]]
+path = "teatree.backends.gitlab.reads"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.backends.gitlab"
 layer = "domain"
 depends_on = [
+  "teatree.backends.gitlab.reads",
   "teatree.types",
   "teatree.utils",
   "teatree.core",
@@ -621,9 +670,25 @@ depends_on = [
 ]
 
 [[modules]]
+path = "teatree.backends.github.api"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends.github.reads"
+layer = "domain"
+depends_on = [
+  "teatree.backends.errors",
+  "teatree.backends.forge_merge_rpc",
+  "teatree.backends.github.api"
+]
+
+[[modules]]
 path = "teatree.backends.github"
 layer = "domain"
 depends_on = [
+  "teatree.backends.github.api",
+  "teatree.backends.github.reads",
   "teatree.types",
   "teatree.utils",
   "teatree.core",
@@ -959,6 +1024,7 @@ depends_on = [
   "teatree.backends",
   "teatree.backends.errors",
   "teatree.backends.github",
+  "teatree.backends.github.api",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
   "teatree.loop.url_specificity",
@@ -1162,6 +1228,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.git_sha"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.on_behalf_gate"
 layer = "platform"
 depends_on = ["teatree.config"]
@@ -1185,6 +1256,21 @@ depends_on = []
 path = "teatree.settings"
 layer = "platform"
 depends_on = ["teatree.config", "teatree.paths", "teatree.timeouts"]
+
+[[modules]]
+path = "teatree.webhook_settings"
+layer = "interface"
+depends_on = []
+
+[[modules]]
+path = "teatree.webhook_urls"
+layer = "interface"
+depends_on = []
+
+[[modules]]
+path = "teatree.webhook_wsgi"
+layer = "interface"
+depends_on = []
 
 [[modules]]
 path = "teatree.cli_reference"

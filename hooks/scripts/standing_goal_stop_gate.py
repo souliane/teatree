@@ -4,7 +4,7 @@ While ≥ 1 active :class:`~teatree.core.models.standing_goal.StandingGoal` exis
 this Stop gate re-runs each goal's ``check_command`` at turn-end (short timeout,
 briefly cached). If a goal is unmet, it DENIES the stop — the deny leads with the
 blunt binary ("``<goal>`` green? NO."), instructs the agent to keep driving OR to
-surface the blocker and hold, and MINTS a single-use escape token. A passing
+surface the blocker and hold, and offers an audited, per-action escape. A passing
 check auto-clears the deny AND retires the goal (``active`` → False). Deferring
 via a question or a win-led partial report does NOT bypass — the deny re-fires on
 every subsequent stop while unmet.
@@ -13,9 +13,7 @@ NEVER-LOCKOUT (critical for a stop-gate — it must fail-open / self-rescue, nev
 hard-lock the session):
 
 * fires ONLY on a loop-driven turn (an attended human turn is never blocked);
-* per-call single-use token — end the turn with
-    ``[standing-goal-hold: <token> <reason>]`` to hold this ONE stop; the token
-    dies after one use, so it is never a blanket bypass;
+* per-call ``[gate-escape:standing_goal_stop: <reason>]`` token, audited before allow;
 * kill-switch ``[teatree] standing_goal_stop_gate_enabled = false`` (flipped by
     ``t3 <overlay> gate standing-goal disable``);
 * crash-proof per the Stop-hook contract — ANY internal error, an unbootstrappable
@@ -29,12 +27,12 @@ NEVER crash turn-end).
 
 import contextlib
 import json
-import re
-import secrets
 import subprocess  # noqa: S404 — runs the operator-registered green check_command by design.
 import sys
 import time
 from pathlib import Path
+
+from hooks.scripts.gate_escape import escape_allows
 
 # Alias both identities so a bare ``from standing_goal_stop_gate import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.standing_goal_stop_gate``
@@ -42,14 +40,9 @@ from pathlib import Path
 sys.modules.setdefault("standing_goal_stop_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.standing_goal_stop_gate", sys.modules[__name__])
 
-# ``[standing-goal-hold: <token> <reason>]`` — the token then a non-empty reason.
-_HOLD_TOKEN_RE = re.compile(r"\[standing-goal-hold:\s*(\S+)\s+(\S[^\]]*?)\s*\]")
-
-_HOLD_SUFFIX = "standing-goal-hold"
 _CHECK_CACHE_SUFFIX = "standing-goal-check-cache"
 _CHECK_TIMEOUT_SECONDS = 15
 _CHECK_CACHE_TTL_SECONDS = 15
-_USED_TOKEN_CAP = 50
 
 
 def _gate_enabled() -> bool:
@@ -62,8 +55,8 @@ def handle_standing_goal_stop(data: dict) -> bool | None:
     """Block a Stop while a registered standing goal is unmet; else allow.
 
     Returns ``True`` (emitting a ``decision: block``) only when an active goal's
-    check ran and exited non-zero AND the turn carries no valid single-use hold
-    token. Otherwise returns ``None`` so the session may end normally. Fail-safe-
+    check ran and exited non-zero AND no audited escape was recorded.
+    Otherwise returns ``None`` so the session may end normally. Fail-safe-
     to-silent: any malformed input or unexpected error returns ``None``.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
@@ -107,16 +100,11 @@ def _run(data: dict) -> bool | None:
     unmet = _first_unmet_goal()
     if unmet is None:
         return None
-    session_id = data.get("session_id", "")
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     text = turn[0] if turn else ""
-    token = _hold_token(text)
-    if token and _valid_hold(session_id, token):
-        _consume_hold(session_id, token)
-        sys.stderr.write(f"NOTE: standing-goal stop honoured a single-use hold token while {unmet!r} is unmet.\n")
+    if escape_allows(data, "standing_goal_stop", turn_text=text):
         return None
-    minted = _mint_hold(session_id)
-    json.dump({"decision": "block", "reason": _format_deny(unmet, minted)}, sys.stdout)
+    json.dump({"decision": "block", "reason": _format_deny(unmet)}, sys.stdout)
     return True
 
 
@@ -187,97 +175,17 @@ def _retire_goal(name: str) -> None:
         return
 
 
-def _format_deny(goal_name: str, token: str) -> str:
-    """The blunt-binary deny reason that mints the single-use escape token."""
+def _format_deny(goal_name: str) -> str:
     return (
         f"`{goal_name}` green? NO. — the standing verified-green goal is unmet, so this stop is a "
         "CHECKPOINT, not done. A status report is not the deliverable.\n"
         "Either KEEP DRIVING the next fix toward green, OR surface the specific blocker and HOLD "
-        "(the goal stays open) by ending your turn with the single-use token below:\n"
-        f"    [standing-goal-hold: {token} <one-line reason>]\n"
-        "The token dies after one use, so a hold is one checkpoint — not a blanket bypass; the deny "
-        "re-fires on the next stop while the goal is unmet.\n"
+        "(the goal stays open) by ending your turn with "
+        "`[gate-escape:standing_goal_stop: <reason>]`. The escape is audited before this one stop; "
+        "the deny re-fires on the next stop while the goal is unmet.\n"
         "To retire the goal or disable the gate: `t3 goal clear <name>` / "
         "`t3 <overlay> gate standing-goal disable`."
     )
-
-
-# ── single-use hold-token state ────────────────────────────────────────────
-
-
-def _hold_token(text: str) -> str | None:
-    """The token from a ``[standing-goal-hold: <token> <reason>]`` in the turn text, else None."""
-    match = _HOLD_TOKEN_RE.search(text)
-    if match is None:
-        return None
-    token = match.group(1).strip()
-    reason = match.group(2).strip()
-    return token if token and reason else None
-
-
-def _hold_state(session_id: str) -> dict | None:
-    """The parsed hold-state (``{"minted": tok, "used": [...]}``) or ``None`` on an IO/JSON error.
-
-    ``None`` (unreadable state) is distinct from ``{}`` (no state yet): the caller
-    fail-opens the escape on ``None`` so a broken state dir never wedges a hold.
-    """
-    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
-
-    path = _state_file(session_id, _HOLD_SUFFIX)
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else {}
-
-
-def _valid_hold(session_id: str, token: str) -> bool:
-    """Whether *token* is the currently-minted, not-yet-consumed hold token.
-
-    Fail-open: an unreadable state (``None``) accepts any well-formed token so a
-    broken state dir can never lock the session out of the escape.
-    """
-    state = _hold_state(session_id)
-    if state is None:
-        return True
-    used = state.get("used", [])
-    return token == state.get("minted") and token not in used
-
-
-def _consume_hold(session_id: str, token: str) -> None:
-    """Mark *token* used single-use and clear the minted slot; best-effort, never raises."""
-    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
-
-    try:
-        _ensure_state_dir()
-        state = _hold_state(session_id) or {}
-        used = [*state.get("used", []), token][-_USED_TOKEN_CAP:]
-        path = _state_file(session_id, _HOLD_SUFFIX)
-        path.write_text(json.dumps({"minted": None, "used": used}), encoding="utf-8")
-    except OSError:
-        return
-
-
-def _mint_hold(session_id: str) -> str:
-    """Mint a fresh single-use token, persist it as the active minted slot, and return it.
-
-    Best-effort persistence: a write failure still returns the token (the deny
-    surfaces it and the fail-open branch of :func:`_valid_hold` accepts it next
-    stop), so a broken state dir never denies the agent an escape.
-    """
-    token = secrets.token_hex(4)
-    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
-
-    try:
-        _ensure_state_dir()
-        state = _hold_state(session_id) or {}
-        path = _state_file(session_id, _HOLD_SUFFIX)
-        path.write_text(json.dumps({"minted": token, "used": state.get("used", [])}), encoding="utf-8")
-    except OSError:
-        return token
-    return token
 
 
 # ── brief check-result cache ───────────────────────────────────────────────

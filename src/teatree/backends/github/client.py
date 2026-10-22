@@ -5,24 +5,27 @@ from typing import cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
-from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.github import pr_reads as _pr_reads
-from teatree.backends.github.api import (
-    _FORGE_READ_TIMEOUT_SECONDS,
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_patch,
-    _gh_api_post,
-    _gh_api_search_paginated,
-    _parse_issue_ref,
-    _run_gh,
-)
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_patch, _gh_api_post, _run_gh, is_not_found
+from teatree.backends.github.api import gh_api_get as _gh_api_get
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
+from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
+from teatree.backends.github.api import parse_issue_ref as _parse_issue_ref
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
 from teatree.backends.github.pr_content import GhPrContentReader
 from teatree.backends.github.pr_create import create_pr as _create_pr
 from teatree.backends.github.pr_notes import GitHubPrNotes
 from teatree.backends.github.pr_reads import PR_URL_RE
+from teatree.backends.github.reads import fetch_required_checks_rollup as _fetch_required_checks_rollup
+from teatree.backends.github.reads import fetch_workflow_runs_at_head as _fetch_workflow_runs_at_head
+from teatree.backends.github.reads import get_issue as _get_issue
+from teatree.backends.github.reads import list_issue_comments as _list_issue_comments
+from teatree.backends.github.reads import list_pr_comments as _list_pr_comments
+from teatree.backends.github.reads import list_pr_commits as _list_pr_commits
+from teatree.backends.github.reads import list_pr_reviews as _list_pr_reviews
+from teatree.backends.github.reads import list_prs as _list_prs
+from teatree.backends.github.reads import list_repo_open_issues as _list_repo_open_issues
 from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
@@ -154,20 +157,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
-        """Return PRs on ``owner/repo`` filtered by *state* and *author*.
-
-        *state* is GitHub's search qualifier (``open`` / ``closed`` / ``merged``);
-        an empty *state* lists every state. Uses the issue-search API so an
-        ``author`` filter is a first-class qualifier (the ``pulls`` list endpoint
-        cannot filter by author).
-        """
-        terms = [f"repo:{repo} is:pr"]
-        if state:
-            terms.append(f"is:{state}")
-        if author:
-            terms.append(f"author:{author}")
-        query = quote_plus(" ".join(terms))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return _list_prs(repo=repo, state=state, author=author, token=self._token)
 
     def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
         """PRs on *repo* merged at or after ISO-8601 *since* — the external-outcome read.
@@ -191,7 +181,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         try:
             return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
         except CommandFailedError as exc:
-            if _pr_reads.is_not_found(exc):
+            if is_not_found(exc):
                 return []
             raise
 
@@ -205,35 +195,10 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         }
 
     def list_pr_reviews(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        """Return the PR's submitted reviews (state + author); ``[]`` ONLY for a genuine HTTP 404.
-
-        The existing-review surface ``t3 review run`` reports: which logins
-        approved, and how many of the viewer's own reviews are still ``PENDING``
-        (GitHub's analogue of a GitLab draft note — the endpoint exposes a
-        pending review only to the account that owns it). Shares
-        :meth:`get_pr_diff`'s polarity: an unknown PR degrades to ``[]``, every
-        other failure re-raises rather than reading as "nobody has reviewed".
-        """
-        try:
-            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/reviews?per_page=100", token=self._token)
-        except CommandFailedError as exc:
-            if _pr_reads.is_not_found(exc):
-                return []
-            raise
+        return _list_pr_reviews(repo=repo, pr_iid=pr_iid, token=self._token)
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        """Return the commits on the PR; ``[]`` ONLY for a genuine HTTP 404.
-
-        Like :meth:`get_pr_diff`, an unknown PR degrades to ``[]`` but any other
-        failure (auth/rate-limit/network/5xx) re-raises rather than being read as
-        an empty commit list.
-        """
-        try:
-            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/commits?per_page=100", token=self._token)
-        except CommandFailedError as exc:
-            if _pr_reads.is_not_found(exc):
-                return []
-            raise
+        return _list_pr_commits(repo=repo, pr_iid=pr_iid, token=self._token)
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         """Return ``owner/repo`` metadata (default branch, visibility, …).
@@ -255,7 +220,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._notes.update_comment(repo=repo, comment_id=comment_id, body=body)
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+        return _list_pr_comments(repo=repo, pr_iid=pr_iid, token=self._token)
 
     def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
         pr = _gh_api_get(f"repos/{repo}/pulls/{pr_iid}", token=self._token)
@@ -355,17 +320,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _gh_api_search_paginated(f"search/issues?q={terms}&per_page=100", token=self._token)
 
     def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
-        """Every OPEN issue on ``owner/repo``, all pages — the create-dedupe landscape (#162).
-
-        Uses the repository issues endpoint rather than search: search is
-        eventually consistent and its index lags a just-filed issue by up to a
-        minute, which is precisely the window a retrying filer would create a
-        duplicate in. GitHub returns pull requests from this endpoint too, so
-        entries carrying ``pull_request`` are dropped — an MR is never a
-        candidate for an issue dedupe.
-        """
-        raw = _gh_api_get_paginated(f"repos/{repo}/issues?state=open&per_page=100", token=self._token)
-        return [issue for issue in raw if "pull_request" not in issue]
+        return _list_repo_open_issues(repo=repo, token=self._token)
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         """Close a GitHub issue, optionally leaving an audit-trail comment first.
@@ -411,33 +366,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         raise NotImplementedError(msg)
 
     def get_issue(self, issue_url: str) -> RawAPIDict:
-        """Fetch a GitHub issue from its full URL.
-
-        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
-        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
-        issue URL.
-
-        Raises:
-            IssueNotFoundError: when ``gh api`` reports HTTP 404 (issue
-                permanently deleted or never existed).  Any other failure
-                (5xx, timeout, network error) propagates as the original
-                ``CommandFailedError`` so the scanner keeps retrying it.
-        """
-        ref = _parse_issue_ref(issue_url)
-        if ref is None:
-            return {"error": f"Not a GitHub issue URL: {issue_url}"}
-        repo, number = ref
-        endpoint = f"repos/{repo}/issues/{number}"
-        try:
-            data = _gh_api_get(endpoint, token=self._token)
-        except CommandFailedError as exc:
-            # ``gh api`` exits non-zero for ALL HTTP errors (404, 5xx alike).
-            # The only reliable signal for a permanent 404 is the literal
-            # "HTTP 404" string in stderr — returncode is always 1.
-            if "HTTP 404" in exc.stderr:
-                raise IssueNotFoundError(issue_url) from exc
-            raise
-        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
+        return _get_issue(issue_url=issue_url, token=self._token)
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the ``<owner>/<repo>`` that owns *issue_url*, or ``""`` when unparsable."""
@@ -468,12 +397,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return result
 
     def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
-        """List the comments on a GitHub issue; returns ``[]`` on a non-issue URL."""
-        ref = _parse_issue_ref(issue_url)
-        if ref is None:
-            return []
-        repo, number = ref
-        return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=self._token)
+        return _list_issue_comments(issue_url=issue_url, token=self._token)
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
         """Edit a GitHub issue comment in place via /repos/{repo}/issues/comments/{id}.
@@ -548,7 +472,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _pr_reads.open_pr_url_for_branch(repo=repo, branch=branch)
 
     def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
-        return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))
+        return _forge_merge.gh_merge_rpc(self._token)
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
@@ -569,13 +493,13 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._merge_rpc().fetch_pr_same_repo(slug=slug, pr_id=pr_id)
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
-        return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+        return _fetch_required_checks_rollup(slug=slug, pr_id=pr_id, token=self._token)
 
     def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         return self._merge_rpc().fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
 
     def fetch_workflow_runs_at_head(self, *, slug: str, head_sha: str) -> list[RawAPIDict]:
-        return self._merge_rpc().fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)
+        return _fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha, token=self._token)
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)

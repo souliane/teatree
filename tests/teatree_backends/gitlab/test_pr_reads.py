@@ -5,7 +5,6 @@ import pytest
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.pr_reads import (
-    list_project_pr_commits,
     list_project_prs,
     project_engaged_reviewers,
     project_pr_diff,
@@ -94,20 +93,6 @@ def test_get_pr_diff_hits_diffs_endpoint() -> None:
 
 def test_get_pr_diff_unresolvable_project_returns_empty() -> None:
     assert project_pr_diff(MagicMock(spec=GitLabAPI), None, pr_iid=7) == []
-
-
-def test_list_pr_commits_hits_commits_endpoint() -> None:
-    client = MagicMock(spec=GitLabAPI)
-    client.get_json_paginated.return_value = [{"id": "abc"}]
-
-    result = list_project_pr_commits(client, _project(), pr_iid=7)
-
-    assert result == [{"id": "abc"}]
-    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/commits?per_page=100")
-
-
-def test_list_pr_commits_unresolvable_project_returns_empty() -> None:
-    assert list_project_pr_commits(MagicMock(spec=GitLabAPI), None, pr_iid=7) == []
 
 
 def test_repo_metadata_returns_project_fields() -> None:

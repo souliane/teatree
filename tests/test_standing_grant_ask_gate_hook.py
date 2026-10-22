@@ -19,6 +19,7 @@ from hooks.scripts import standing_grant_ask_gate
 from hooks.scripts.hook_router import handle_block_standing_grant_ask
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._gate_escape_audit import audited_escape
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -137,17 +138,19 @@ class TestNeverLockout:
         with _grant_on():
             assert handle_block_standing_grant_ask(_ask(_COVERED_ASK)) is False
 
-    def test_per_call_token_allows_and_notes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        question = f"[grant-ask-ok: the owner asked to review this one personally] {_COVERED_ASK}"
+    def test_an_audited_token_allows_once_recorded(self) -> None:
+        question = (
+            f"[gate-escape:block-standing-grant-ask: the owner asked to review this one personally] {_COVERED_ASK}"
+        )
+        event = _ask(question)
+        with _grant_on(), audited_escape(event) as requests:
+            assert handle_block_standing_grant_ask(event) is False
+        assert [request["gate"] for request in requests] == ["block-standing-grant-ask"]
 
+    def test_a_retired_marker_does_not_allow(self) -> None:
         with _grant_on():
-            assert handle_block_standing_grant_ask(_ask(question)) is False
-
-        assert "grant-ask-ok" in capsys.readouterr().err
-
-    def test_an_empty_token_reason_does_not_escape(self) -> None:
-        with _grant_on():
-            assert handle_block_standing_grant_ask(_ask(f"[grant-ask-ok: ] {_COVERED_ASK}")) is True
+            marker = "[grant-ask-ok: the owner asked to review this one personally]"
+            assert handle_block_standing_grant_ask(_ask(f"{marker} {_COVERED_ASK}")) is True
 
     def test_cold_env_without_the_core_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(standing_grant_ask_gate, "_load_core", lambda: None)

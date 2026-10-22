@@ -40,6 +40,7 @@ from hooks.scripts.hook_router import (
     handle_quote_scanner_pretool,
     handle_validate_mr_metadata,
 )
+from tests._gate_escape_audit import audited_escape
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -561,7 +562,8 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
     (#1442) is now default-ON (#1733: matcher wired #1646, fail-open-routed
     #1692). Every off-ramp keeps an unattended run from being locked out of its
     own dispatches: the explicit kill-switch, ``run_in_background``, a sub-agent
-    context, and the ``[fg-ok: <reason>]`` token. These rows guard the four safe
+    context, and the audited ``[gate-escape:orchestrator_foreground_dispatch: <reason>]`` token.
+    These rows guard the four safe
     paths and the one genuine deny (flag ON + bare foreground main-agent
     dispatch with no escape).
     """
@@ -605,13 +607,26 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
         assert verdict is not True, "LOCKOUT regression — background Agent dispatch denied even with the flag ON."
         assert capsys.readouterr().out.strip() == ""
 
-    def test_foreground_agent_passes_with_fg_ok_token(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_foreground_agent_passes_with_audited_escape(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._enable()
-        verdict = handle_enforce_orchestrator_boundary(
-            self._agent(run_in_background=False, prompt="[fg-ok: attended-debug] implement")
+        data = self._agent(
+            run_in_background=False,
+            prompt="[gate-escape:orchestrator_foreground_dispatch: attended-debug] implement",
         )
-        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch with a valid [fg-ok:] token denied."
+        with audited_escape(data) as requests:
+            verdict = handle_enforce_orchestrator_boundary(data)
+        assert verdict is not True
+        assert requests[0]["gate"] == "orchestrator_foreground_dispatch"
         assert capsys.readouterr().out.strip() == ""
+
+    def test_legacy_foreground_agent_marker_is_denied(self) -> None:
+        self._enable()
+        assert (
+            handle_enforce_orchestrator_boundary(
+                self._agent(run_in_background=False, prompt="[fg-ok: attended-debug] implement")
+            )
+            is True
+        )
 
     def test_subagent_context_dispatch_is_exempt(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._enable()
@@ -627,7 +642,7 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
             "BYPASS regression — bare foreground main-agent Agent dispatch was allowed with the gate ON."
         )
         assert out, "an enabled deny must emit a hookSpecificOutput payload"
-        assert "[fg-ok:" in out
+        assert "[gate-escape:orchestrator_foreground_dispatch:" in out
         assert "run_in_background" in out
 
 
