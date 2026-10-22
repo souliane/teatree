@@ -26,6 +26,7 @@ from teatree.core.models import (
     ConfigSetting,
     Mode,
     ModeOverride,
+    PullRequest,
     Session,
     Task,
     TaskAttempt,
@@ -34,6 +35,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.checkout_exit import attest_checkout_on_park
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
@@ -217,6 +219,106 @@ class TestDrainHeadlessQueue(TestCase):
         assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    def test_cap_held_unknown_overlay_fails_and_drain_still_admits(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create(overlay="test")
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 200}"
+            )
+
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+            phase="shipping",
+        )
+        live_ticket = Ticket.objects.create(overlay="test")
+        live = Task.objects.create(
+            ticket=live_ticket,
+            session=Session.objects.create(ticket=live_ticket, overlay="test"),
+            phase="reviewing",
+        )
+
+        claim_snapshot: list[tuple[str, object, object]] = []
+        original_complete = Task.complete_with_attempt
+
+        def record_claim(task: Task, *, exit_code: int, error: str, result: dict[str, str]) -> TaskAttempt:
+            claim_snapshot.append((task.claimed_by, task.claimed_at, task.lease_expires_at))
+            return original_complete(task, exit_code=exit_code, error=error, result=result)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.models.task.record_lifecycle_transition") as record,
+            patch.object(Task, "complete_with_attempt", new=record_claim),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            result = drain_queue_body()
+
+        assert result["failed_unknown_overlay"] == [poison.pk]
+        assert live.pk in result["enqueued"]
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.FAILED
+        assert len(claim_snapshot) == 1
+        assert claim_snapshot[0][0] == "drain-poison"
+        assert claim_snapshot[0][1] is not None
+        assert claim_snapshot[0][2] is not None
+        assert any(call.kwargs.get("kind") == "task.claimed" for call in record.call_args_list)
+        assert TaskAttempt.objects.filter(task=poison, exit_code=1).exists()
+
+    def test_poison_cleanup_leaves_a_rival_claim_and_still_admits(self) -> None:
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+            phase="coding",
+        )
+        live_ticket = Ticket.objects.create(overlay="test")
+        live = Task.objects.create(
+            ticket=live_ticket,
+            session=Session.objects.create(ticket=live_ticket, overlay="test"),
+            phase="reviewing",
+        )
+        original = Ticket.has_dispatchable_overlay
+
+        def rival_claims_first(ticket: Ticket) -> bool:
+            if ticket.pk == poison_ticket.pk:
+                Task.objects.filter(pk=poison.pk).update(
+                    status=Task.Status.CLAIMED,
+                    claimed_by="rival",
+                    lease_expires_at=timezone.now() + timedelta(hours=1),
+                )
+                return False
+            return original(ticket)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(Ticket, "has_dispatchable_overlay", new=rival_claims_first),
+        ):
+            result = drain_queue_body()
+
+        assert result["failed_unknown_overlay"] == []
+        assert live.pk in result["enqueued"]
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=poison).exists()
+
+    def test_cleanup_claim_refuses_a_dispatchable_overlay(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="test"),
+            phase="shipping",
+        )
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(InvalidTransitionError, match="unknown overlay"),
+        ):
+            task.claim(claimed_by="drain-poison", cleanup_unknown_overlay=True)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_quiescing_withholds_every_live_row_but_still_fails_poison_rows(self) -> None:
@@ -431,7 +533,7 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
             result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
-        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        assert result == {"skipped": "not claimable: Task already finished"}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_task_claimed_by_live_rival_does_not_re_execute(self) -> None:
@@ -448,9 +550,24 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
             result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
-        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        assert result == {"skipped": "not claimable: Task already claimed"}
         task.refresh_from_db()
         assert task.claimed_by == "rival-worker"
+
+    def test_cap_held_worker_refusal_names_the_cap(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 900}"
+            )
+        ticket = Ticket.objects.create()
+        held = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
+
+        with self.assertLogs("teatree.core.tasks", level="INFO") as logs:
+            result = execute_task.func(held.pk, held.phase)
+
+        assert "pull requests are open" in result["skipped"]
+        assert any("pull requests are open" in message for message in logs.output)
 
     def _run_frozen(self) -> tuple[Task, object, MagicMock]:
         task = self._make_task(status=Task.Status.PENDING)

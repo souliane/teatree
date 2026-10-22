@@ -1103,7 +1103,7 @@
       ]
     },
     {
-      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "help": "Print the factory signals over the trailing window vs its baseline.",
       "name": "signals",
       "subcommands": []
     },
