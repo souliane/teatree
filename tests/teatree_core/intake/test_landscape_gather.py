@@ -194,3 +194,19 @@ class TestRunLandscape(TestCase):
 
         assert report["warnings"] == []
         assert report["open_prs"] == []
+
+    def test_explicit_overlay_selects_its_host_and_repository_scope(self) -> None:
+        host = _FakeHost(my_prs=[{"url": "https://github.com/acme/app/pull/3", "title": "Work"}], issues=[])
+
+        def host_for(name: str | None) -> _FakeHost:
+            assert name == "acme"
+            return host
+
+        def overlay_for(name: str | None) -> _FakeOverlay:
+            assert name == "acme"
+            return _FakeOverlay()
+
+        with patch(_FACTORY, side_effect=host_for), patch(_OVERLAY, side_effect=overlay_for):
+            report = run_landscape(self.workspace, overlay_name="acme")
+
+        assert [pr["url"] for pr in report["open_prs"]] == ["https://github.com/acme/app/pull/3"]

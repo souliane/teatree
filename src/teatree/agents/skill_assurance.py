@@ -1,7 +1,8 @@
 """Bounded, truthful receipts for skills requested by a headless dispatch."""
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
@@ -61,6 +62,12 @@ class SkillDispatchError(ValueError):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SkillDelivery:
+    text: str
+    skill_text: Callable[[str, str], str]
+
+
 def required_load_line(name: str, skill_md: Path | None) -> str:
     load = f"REQUIRED: Load /{name} via the Skill tool before you start"
     if skill_md is None:
@@ -98,6 +105,11 @@ def _explicit_directive_names(rendered_context: str) -> set[str]:
     return names
 
 
+def _expected_section(name: str, path: Path, skill_text: Callable[[str, str], str] | None) -> str:
+    body = path.read_text(encoding="utf-8")
+    return f"--- SKILL: {name} ---\n{skill_text(name, body) if skill_text else body}"
+
+
 def recover_truncated_inline_skills(
     *,
     required_inline: set[str],
@@ -120,7 +132,7 @@ def recover_truncated_inline_skills(
         path = resolve_skill_md(bare, directories)
         if path is None:
             continue  # The ordinary dispatch assessment names the missing body.
-        section = f"--- SKILL: {bare} ---\n{path.read_text(encoding='utf-8')}"
+        section = _expected_section(bare, path, None)
         if section in rendered_context:
             continue
         inline.discard(name)
@@ -134,12 +146,14 @@ def assess_skill_dispatch(
     skills: Sequence[str],
     required_inline: set[str],
     required_explicit: set[str],
-    rendered_context: str,
+    rendered_context: str | SkillDelivery,
     skills_dirs: Sequence[Path] | None = None,
 ) -> SkillAssurance:
     """Refuse missing bodies/directives without treating optional companions as mandatory."""
     inline = _required_names(skills, required_inline)
     explicit = _required_names(skills, required_explicit)
+    context = rendered_context.text if isinstance(rendered_context, SkillDelivery) else rendered_context
+    skill_text = rendered_context.skill_text if isinstance(rendered_context, SkillDelivery) else None
     requested = list(dict.fromkeys([*inline, *explicit]))
     directories = list(skills_dirs) if skills_dirs is not None else harness_skills_dirs()
     found = [name for name in requested if resolve_skill_md(name, directories) is not None]
@@ -148,9 +162,9 @@ def assess_skill_dispatch(
         name
         for name in inline
         if (path := resolve_skill_md(name, directories)) is not None
-        and f"--- SKILL: {name} ---\n{path.read_text(encoding='utf-8')}" in rendered_context
+        and _expected_section(name, path, skill_text) in context
     ]
-    directives = _explicit_directive_names(rendered_context)
+    directives = _explicit_directive_names(context)
     explicit_load = [name for name in explicit if name in directives]
     delivery_gap = len(injected) != len(inline) or len(explicit_load) != len(explicit)
     status = "missing" if missing else "injection_gap" if delivery_gap else "unverified"
