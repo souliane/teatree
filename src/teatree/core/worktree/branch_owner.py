@@ -4,6 +4,7 @@ from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.models import Ticket, Worktree
 from teatree.utils.git_remote import slug_from_remote
 from teatree.utils.git_remote_ops import remote_url
+from teatree.utils.git_run import run_with_status
 
 
 def ticket_owning_pr_branch(branch: str, *, slug: str) -> Ticket | None:
@@ -24,7 +25,7 @@ def ticket_owning_pr_branch(branch: str, *, slug: str) -> Ticket | None:
 def _owns(row: Worktree, *, branch: str, slug: str) -> bool:
     issue_url = row.ticket.issue_url
     return (
-        _row_slug(row).casefold() == slug.casefold()
+        worktree_repo_slug(row).casefold() == slug.casefold()
         and row.ticket.role == Ticket.Role.AUTHOR
         and row.ticket.state not in Ticket.marker_release_states()
         and not is_synthetic_ticket_url(issue_url)
@@ -32,8 +33,16 @@ def _owns(row: Worktree, *, branch: str, slug: str) -> bool:
     )
 
 
-def _row_slug(row: Worktree) -> str:
+def worktree_repo_slug(row: Worktree, *, timeout: float | None = None) -> str:
     """``repo_path`` is a slug or the clone directory's arbitrary leaf, so the leaf is read from origin."""
     if "/" in row.repo_path:
         return row.repo_path
-    return slug_from_remote(remote_url(row.worktree_path)) if row.worktree_path else ""
+    if not row.worktree_path:
+        return ""
+    if timeout is None:
+        return slug_from_remote(remote_url(row.worktree_path))
+    result = run_with_status(repo=row.worktree_path, args=["remote", "get-url", "origin"], timeout=timeout)
+    if result.returncode:
+        message = f"git remote get-url failed with status {result.returncode}"
+        raise OSError(message)
+    return slug_from_remote(result.stdout.strip())

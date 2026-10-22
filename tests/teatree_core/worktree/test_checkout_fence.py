@@ -105,14 +105,14 @@ class CheckoutFenceTests(TestCase):
         notice.assert_not_called()
         row = self.task.deferred_questions.get()
         assert row.is_pending
-        assert row.question.startswith("Should I accept the checkout of <https://github.com/example/repo/issues/17|")
+        assert row.question.startswith("Should the coding step of <https://github.com/example/repo/issues/17|")
         assert row.evidence["checked"] == [
             "The checkout differs from its last recorded state.",
             "Nothing is running in the checkout.",
             "It holds 0 commits not on the target branch.",
             "It has 1 uncommitted file.",
         ]
-        assert "Nothing is running in the checkout" in render_text(row)
+        assert "nothing is running in its folder" in render_text(row)
         assert row.evidence["action"]["kind"] == "attest"
 
     def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:

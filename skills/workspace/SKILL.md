@@ -131,11 +131,20 @@ cancel waits two beats and signals nothing; an owner stop follows the narrower
 descendant-writer rule.
 A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
 
-An attestable refusal also asks the owner in Slack. The card links the ticket and
-states the checkout's commit count, uncommitted-file count and whether the host
-process list ruled out live work in the checkout.
-Accepting rechecks the checkout and releases the parked task; declining leaves it
-parked. The terminal command remains available for an owner with host access.
+An attestable refusal also asks the owner in Slack. The card links the ticket,
+names the waiting step and what it will do, links any open pull request in the
+checkout's repo that it may hold up while open or says none was open when asked;
+design-review and wrap-up cards link it without claiming those steps hold it up,
+gives the commit and uncommitted-file counts and whether nothing was found running,
+and says what Accept and Decline each do. A re-ask replaces a pending card for
+the same task when its step, pull-request wording, or other displayed evidence
+changes; a card for an older checkout state is retired for every task, and its
+posted buttons are closed. Different parked tasks keep their own cards; accepting
+one retires the others for that checkout.
+Accepting rechecks the checkout and releases its parked tasks; declining leaves
+that step parked, and another step's Accept for the same state does not release
+it. A later direct owner attestation of that state releases the decline at the
+writer fence. The terminal command remains available for an owner with host access.
 Only the owner's Slack button tap can approve or decline the action card.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
