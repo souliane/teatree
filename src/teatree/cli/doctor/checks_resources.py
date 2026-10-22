@@ -59,7 +59,7 @@ _ROLE_ENV_SUFFIX = "_ROLE"
 # An alias is only honoured when its VALUE names a role we know. Without this an
 # unrelated `*_ROLE` var (cloud IAM ones are common) would be read as a role and could
 # make a non-worker host emit a worker FAIL.
-_KNOWN_ROLES = frozenset({"worker", "admin", "init", "slack-listener", "watchdog"})
+_KNOWN_ROLES = frozenset({"worker", "admin", "init", "slack-listener", "webhook-listener", "watchdog"})
 _CLAUDE_PLUGIN_ID = "t3@souliane"
 
 _BYTES_PER_GIB = 1024**3

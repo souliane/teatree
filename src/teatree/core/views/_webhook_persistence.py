@@ -5,9 +5,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
+from django.http import HttpResponse
 from django.utils import timezone
 
+from teatree.core.modelkit.db_retry import is_locked_error
 from teatree.core.models import IncomingEvent
 from teatree.core.models.provenance import classify_provenance
 
@@ -78,3 +80,14 @@ def ingest(record: IngestionRecord) -> IngestOutcome:
 
 def persist_incoming_event(record: IngestionRecord) -> bool:
     return ingest(record) is IngestOutcome.NEW
+
+
+def ingest_response(record: IngestionRecord) -> HttpResponse:
+    try:
+        persist_incoming_event(record)
+    except OperationalError as exc:
+        if not is_locked_error(exc):
+            raise
+        logger.warning("%s not stored: the database is locked, answered 503", record.idempotency_key)
+        return HttpResponse(status=503)
+    return HttpResponse(status=200)

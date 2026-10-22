@@ -14,7 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.intake.github_payload import GitHubPayloadFields
 from teatree.core.models import IncomingEvent
-from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
+from teatree.core.views._webhook_persistence import IngestionRecord, ingest_response
 from teatree.core.views._webhook_secrets import WebhookSecretUnavailableError, webhook_secrets
 from teatree.types import RawAPIDict
 
@@ -68,7 +68,7 @@ class GitHubWebhookView(View):
         if payload is None:
             return HttpResponse(status=400)
         fields = GitHubPayloadFields.from_payload(headers.event, payload)
-        persist_incoming_event(
+        return ingest_response(
             IngestionRecord(
                 source=IncomingEvent.Source.GITHUB,
                 idempotency_key=f"github:{headers.delivery}",
@@ -86,7 +86,6 @@ class GitHubWebhookView(View):
                 settled=True,
             ),
         )
-        return HttpResponse(status=200)
 
     @staticmethod
     def _length_refusal(request: HttpRequest, headers: DeliveryHeaders) -> HttpResponse | None:

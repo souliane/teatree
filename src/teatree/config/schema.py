@@ -363,6 +363,7 @@ class TeatreeSettingsSchema(BaseSettings):
     orchestrator_turn_budget: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     orchestrator_turn_wall_clock_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     out_of_band_merge_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    owner_question_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     raw_pr_create_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     plan_edit_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     visible_plan_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]

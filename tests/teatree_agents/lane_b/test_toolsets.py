@@ -144,7 +144,18 @@ class TestMcpHonoursEmptyPhaseAllowance:
 
     def test_the_mounted_server_matches_the_phase_grant(self) -> None:
         for phase, serve_flags in (
-            ("reviewing", ["--read-only"]),
+            (
+                "reviewing",
+                [
+                    "--read-only",
+                    "--allow-write",
+                    "agent_mailbox_inbox",
+                    "--allow-write",
+                    "agent_mailbox_send",
+                    "--allow-write",
+                    "agent_mailbox_wait",
+                ],
+            ),
             ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),
             ("shipping", []),
             ("coding", []),

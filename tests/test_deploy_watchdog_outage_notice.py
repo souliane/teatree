@@ -41,7 +41,7 @@ _HALTED = (
 
 _ALL_UP = "\n".join(
     f"{svc}\trunning\tUp 8 hours"
-    for svc in ("teatree-worker", "teatree-admin", "teatree-slack-listener", "teatree-watchdog")
+    for svc in ("teatree-worker", "teatree-admin", "teatree-slack-listener", "teatree-webhooks", "teatree-watchdog")
 )
 _WORKER_DOWN = _ALL_UP.replace("teatree-worker\trunning\tUp 8 hours", "teatree-worker\texited\tExited (0) 4 hours ago")
 
