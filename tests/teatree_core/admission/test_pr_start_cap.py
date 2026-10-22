@@ -95,7 +95,7 @@ class TestNewPullRequestStartEligibility(TestCase):
             )
         held = self._task("shipping", Ticket.objects.create())
 
-        assert Task.objects.record_admission(held.pk, cheap=False, lane_ceiling=None) is False
+        assert Task.objects.record_admission(held.pk, cheap_class=None, lane_ceiling=None) is False
         held.refresh_from_db()
         assert held.admitted_at is None
 

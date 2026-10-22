@@ -186,8 +186,7 @@ class PhaseCost(StrEnum):
     EXPENSIVE = "expensive"
 
 
-#: The REVIEW LANE: phases that gate a merge — the verdict producers plus the lanes whose
-#: whole job is to RETIRE work — admitted outside the coding ceiling on their own runners.
+#: Review and work-retiring phases have separate bounds outside the coding ceiling.
 #: Background assessors gate no merge, so they stay in the coding lane.
 #: Cheap is not free: ``_TOOLS_BY_PHASE`` grants these phases ``shell``, the
 #: cold-review procedure provisions a detached review checkout, a
@@ -195,25 +194,36 @@ class PhaseCost(StrEnum):
 #: hook — so one of these agents can load the box. What separates them is that their
 #: work CONVERGES: a review ends at a verdict, a ship ends at a merged PR that frees a
 #: worktree and its agent, where a coding agent's turn count is open-ended. Because
-#: cheap still costs, the exemption is a small CEILING rather than a free pass — the
+#: cheap still costs, each exemption has a small CEILING rather than a free pass — the
 #: bound is what makes the class safe, not the cost of one member. Membership is
 #: deliberately harness-owned (beside :data:`SUBAGENT_BY_PHASE`) and NOT
 #: operator-configurable: a per-deployment override could move ``coding`` into the
 #: exempt lane, which is the unbounded-lane failure this exemption must never become.
-CHEAP_PHASES: frozenset[str] = frozenset(
-    {
-        # Review lanes — the verdict producers that unblock everything else.
-        "reviewing",
-        "e2e_reviewing",
-        "codex_reviewing",
-        "codex_adversarial_reviewing",
-        "critic_reviewing",
-        # Work-retiring lanes: opening/merging the PR is what frees the worktree and
-        # its agent, so refusing these under load removes the only relief available.
-        "shipping",
-        "requesting_review",
-    }
+#: Verdict producers unblock work waiting for review.
+REVIEW_PHASES: frozenset[str] = frozenset(
+    {"reviewing", "e2e_reviewing", "codex_reviewing", "codex_adversarial_reviewing", "critic_reviewing"}
 )
+#: Opening or merging a PR frees the worktree and agent, so these must retain a seat under load.
+RETIRING_PHASES: frozenset[str] = frozenset({"shipping", "requesting_review"})
+CHEAP_PHASES: frozenset[str] = REVIEW_PHASES | RETIRING_PHASES
+
+
+class CheapClass(StrEnum):
+    REVIEW = "review"
+    RETIRING = "retiring"
+
+    @classmethod
+    def of(cls, phase: str) -> "CheapClass | None":
+        canonical = normalize_phase(phase)
+        if canonical in REVIEW_PHASES:
+            return cls.REVIEW
+        if canonical in RETIRING_PHASES:
+            return cls.RETIRING
+        return None
+
+    def spellings(self) -> frozenset[str]:
+        phases = REVIEW_PHASES if self is CheapClass.REVIEW else RETIRING_PHASES
+        return frozenset(spelling for phase in phases for spelling in phase_spellings(phase))
 
 
 def phase_cost(phase: str) -> PhaseCost:

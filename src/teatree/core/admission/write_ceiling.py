@@ -43,6 +43,13 @@ def admission_ceiling(quota: QuotaSignal, machine: MachineSignal) -> AdmissionCe
     )
 
 
+def review_lane_width() -> int:
+    """Floor the stored review width so a zero setting cannot stop the review drain."""
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — avoids a config import cycle
+
+    return max(1, int(get_effective_settings().cheap_phase_admission_ceiling))
+
+
 def _write_concurrency_per_core() -> float:
     """The operator's per-core factor, clamped; an unreadable setting keeps the shipped default."""
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle

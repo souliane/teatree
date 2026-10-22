@@ -241,8 +241,9 @@ def _check_drain_lane_starved() -> bool:
     if not state.starved:
         return True
     typer.echo(
-        f"WARN  {state.report()}. Widen the review lane with "
-        "`t3 <overlay> config_setting set cheap_phase_admission_ceiling <n>` (#5051).",
+        f"WARN  {state.report()}. Cheap work is exempt from the machine brake and holds at most "
+        "one seat more than the review width in total. Widen reviews with "
+        "`t3 <overlay> config_setting set cheap_phase_admission_ceiling <n>` (#5051, #5327).",
     )
     return False
 

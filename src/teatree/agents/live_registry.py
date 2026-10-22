@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from teatree.agents.live_control import (
     ControlOutcome,
     ControlReceipt,
+    LiveFence,
     LiveSessionController,
     LiveTask,
     RejectCode,
@@ -63,11 +64,14 @@ class LiveSessionRegistry:
             entry = self._live.get(task_pk)
         return entry.controller.facts() if entry is not None else None
 
-    async def steer(self, task_pk: int, text: str, *, command_id: str, wait: float) -> ControlReceipt:
+    async def steer(self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence) -> ControlReceipt:
         """Hand the command to the session's owning loop and await its receipt from any other loop."""
         with self._lock:
             entry = self._live.get(task_pk)
             tombstone = self._closed.get(task_pk)
+            target = entry.controller if entry is not None else tombstone
+            if target is not None and target.task.fence != fence:
+                return ControlReceipt.rejected(command_id, task_pk, RejectCode.STALE_COMMAND)
         if entry is None:
             if tombstone is None:
                 return ControlReceipt.rejected(command_id, task_pk, RejectCode.UNKNOWN_SESSION)
@@ -76,11 +80,16 @@ class LiveSessionRegistry:
         command = entry.controller.steer(text, command_id=command_id, wait=wait)
         return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
 
-    async def push(self, task_pk: int, framed: str, *, command_id: str, wait: float) -> ControlReceipt:
+    async def push(
+        self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence
+    ) -> ControlReceipt:
         """A peer message into the session's current turn; a closed session keeps no peer receipt."""
         with self._lock:
             entry = self._live.get(task_pk)
             closed = task_pk in self._closed
+            target = entry.controller if entry is not None else self._closed.get(task_pk)
+            if target is not None and target.task.fence != fence:
+                return ControlReceipt.rejected(command_id, task_pk, RejectCode.STALE_COMMAND)
         if entry is None:
             code = RejectCode.SESSION_CLOSED if closed else RejectCode.UNKNOWN_SESSION
             return ControlReceipt.rejected(command_id, task_pk, code)

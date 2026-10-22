@@ -38,6 +38,7 @@ from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
 from teatree.core.models.checkout_exit import attest_checkout_on_park
+from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
@@ -378,7 +379,12 @@ def park_on_timed_rejections(task: Task, rejected: Sequence["HarnessRejection"])
 
 
 def _consecutive_route_hold_parks(task: Task) -> int:
-    latest_first = task.attempts.order_by("-pk").values_list("error", "park_repeats")
+    # A pre-turn refusal sits between successive parks without executing the route.
+    latest_first = (
+        task.attempts.exclude(error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX)
+        .order_by("-pk")
+        .values_list("error", "park_repeats")
+    )
     holds = itertools.takewhile(lambda row: row[0].startswith(_ROUTE_HOLD_PARK), latest_first)
     return sum(1 + repeats for _, repeats in holds)
 
