@@ -13,7 +13,7 @@ precision comes instead from the detector's three-way conjunction (a question, a
 delegation report, no answer) rather than from the turn's audience.
 
 Never-lockout: ``stop_hook_active`` short-circuits the re-fire, the per-call
-``[skip-answer-gate: <reason>]`` token in the turn text clears one stop, the
+``[gate-escape:answer_first: <reason>]`` token in the turn text clears one stop, the
 ``[teatree] answer_first_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate answer-first disable``) clears all of them, and any internal
 error allows the stop — a Stop hook must never crash turn-end.
@@ -25,12 +25,13 @@ import re
 import sys
 from pathlib import Path
 
+from hooks.scripts.gate_escape import escape_allows
+
 # Alias both identities so the live hook's bare import and a test's
 # ``hooks.scripts.answer_first_gate`` import resolve ONE module object.
 sys.modules.setdefault("answer_first_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.answer_first_gate", sys.modules[__name__])
 
-_SKIP_TOKEN_RE = re.compile(r"\[skip-answer-gate:\s*(\S[^\]]*?)\s*\]")
 
 # The loop injects the agent's OWN unanswered questions into the next user turn
 # so it does not re-ask them. They are second-person by construction ("#12 — Do
@@ -53,13 +54,6 @@ def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
     return teatree_bool_setting("answer_first_gate_enabled", default=True)
-
-
-def _skip_token(text: str) -> str | None:
-    match = _SKIP_TOKEN_RE.search(text)
-    if match is None:
-        return None
-    return match.group(1).strip() or None
 
 
 def user_words_only(text: str) -> str:
@@ -146,6 +140,7 @@ def _run(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
     from hooks.scripts.owner_prompts import last_owner_turn  # noqa: PLC0415 deferred cold-hook import
     from teatree.hooks import answer_first_scanner  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.gate_escape import strip_escape  # noqa: PLC0415 — deferred: cold-hook import
     from teatree.hooks.slack_first_scanner import has_relay_receipt  # noqa: PLC0415 — deferred: cold-hook import
 
     if data.get("stop_hook_active") or not _gate_enabled():
@@ -155,14 +150,13 @@ def _run(data: dict) -> bool | None:
     if turn is None:
         return None
     agent_text = turn[0]
-    if reason := _skip_token(agent_text):
-        sys.stderr.write(f"NOTE: answer-first gate skipped via [skip-answer-gate: {reason}].\n")
-        return None
     relay_receipt = has_relay_receipt(last_owner_turn(transcript_path).tool_results)
     verdict = answer_first_scanner.find_unanswered_question(
-        _last_user_text(transcript_path), agent_text, relay_receipt=relay_receipt
+        _last_user_text(transcript_path), strip_escape(agent_text), relay_receipt=relay_receipt
     )
     if verdict is None:
+        return None
+    if escape_allows(data, "answer_first", turn_text=agent_text):
         return None
     json.dump({"decision": "block", "reason": answer_first_scanner.format_block_message(verdict)}, sys.stdout)
     return True

@@ -25,6 +25,7 @@ import pytest
 import hooks.scripts.completion_claim_gate as gate
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_completion_claim_gate
+from tests._gate_escape_audit import audited_escape
 
 # A multi-deliverable completion claim with no on-target evidence map — the real
 # incident shape. Must BLOCK.
@@ -133,14 +134,19 @@ class TestPassesWhenCompliantOrOutOfScope:
 
 
 class TestEscapesAndRefireGuard:
-    def test_skip_token_in_turn_text_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        body = _STRANDED_CLAIM + "\n[skip-completion-gate: single doc deliverable, map not applicable]"
+    def test_audited_token_is_recorded_under_its_own_gate_id_then_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body = _STRANDED_CLAIM + "\n[gate-escape:completion_claim: single doc deliverable, map not applicable]"
         transcript = _write_transcript(tmp_path, [_user("deliver"), _assistant(body)])
 
-        result = handle_completion_claim_gate({"transcript_path": str(transcript)})
+        data = {"transcript_path": str(transcript)}
+        with audited_escape(data, event="Stop") as requests:
+            result = handle_completion_claim_gate(data)
 
         assert _decision(capsys) == {}
         assert result is not True
+        assert [request["gate"] for request in requests] == ["completion_claim"]
 
     def test_kill_switch_disables_gate(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -179,3 +185,12 @@ class TestFailSafeAndEdgeInputs:
         result = handle_completion_claim_gate({"transcript_path": str(path)})
         assert _decision(capsys) == {}
         assert result is not True
+
+
+def test_legacy_escape_token_no_longer_suppresses_stop(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    transcript = _write_transcript(
+        tmp_path, [_user("deliver"), _assistant(_STRANDED_CLAIM + "\n[skip-completion-gate: legacy]\n")]
+    )
+    result = handle_completion_claim_gate({"transcript_path": str(transcript)})
+    assert result is True
+    assert _decision(capsys)["decision"] == "block"

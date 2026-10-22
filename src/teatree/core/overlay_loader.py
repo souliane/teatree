@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from teatree.core.models import Ticket, Worktree
     from teatree.core.overlay import OverlayBase
 
-_FieldT = TypeVar("_FieldT", list[str], dict[str, list[str]])
+_FieldT = TypeVar("_FieldT", str, list[str], dict[str, list[str]])
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,11 @@ class OverlayConfigResolver:
         return dict(declared) if isinstance(declared, dict) else {}
 
     @classmethod
+    def dogfood_smoke_fixture_url(cls, name: str | None) -> str:
+        """Read the fixture declaration from a loaded or path-only overlay."""
+        return cls._resolve(name, "dogfood_smoke_fixture_url", "")
+
+    @classmethod
     def path_only_owned_scopes(cls) -> list[dict[str, list[str]]]:
         """The opted-in ``owned_repos`` of every path-only overlay.
 
@@ -315,6 +320,7 @@ OverlayConfigResolver.RESOLVABLE_FIELDS = {
     "frontend_repos": OverlayConfigResolver.frontend_repos,
     "owned_repos": OverlayConfigResolver.owned_repos,
     "factory_phase_harness_candidates": OverlayConfigResolver.factory_phase_harness_candidates,
+    "dogfood_smoke_fixture_url": OverlayConfigResolver.dogfood_smoke_fixture_url,
 }
 
 

@@ -27,7 +27,6 @@ back-import), so the self-rescue allowlist and the master
 
 import contextlib
 import os
-import re
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `git rev-parse` call
 import sys
 from dataclasses import dataclass
@@ -42,14 +41,6 @@ from hooks.scripts.managed_repo import teatree_src_on_path
 sys.modules.setdefault("plan_edit_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.plan_edit_gate", sys.modules[__name__])
 
-# Per-call escape for the plan-edit gate: ``[skip-plan-gate: <non-empty-reason>]``
-# in the current tool call's new_string/content/file_path/command unblocks that
-# single call. Mirrors ``_SKILL_LOAD_OK_RE`` / ``_SKIP_SKILL_GATE_RE`` in shape
-# and 512-char truncation scope — buried tokens do not silently escape.
-SKIP_PLAN_GATE_RE: re.Pattern[str] = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
-
-_TOKEN_SCAN_LIMIT = 512
-_SKIP_TOKEN_FIELDS = ("new_string", "content", "file_path", "command")
 _GATED_TOOLS: Final[frozenset[str]] = frozenset({"Edit", "Write", "Bash"})
 
 
@@ -71,30 +62,6 @@ class BashWriteVerdict:
 
 
 _NO_WRITE: Final[BashWriteVerdict] = BashWriteVerdict(gated_paths=(), ambiguous=False)
-
-
-def skip_plan_gate_token(data: dict) -> str | None:
-    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
-
-    Scans the current tool call's ``new_string``, ``content``, ``file_path`` and
-    ``command`` within the first 512 characters of each field — mirroring the
-    skill-loading gate's token scanner — so a buried token in a long body does
-    not silently authorise the call. An empty reason returns None.
-    """
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in _SKIP_TOKEN_FIELDS:
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = SKIP_PLAN_GATE_RE.search(value[:_TOKEN_SCAN_LIMIT])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
 
 
 def classify_bash_write(command: str, cwd: str) -> BashWriteVerdict:
@@ -128,7 +95,7 @@ def handle_block_edit_before_planned(data: dict) -> bool:
 
     **Never-lockout escapes (mirror the skill-loading gate):**
 
-    1. Per-call token ``[skip-plan-gate: <non-empty-reason>]`` in ``new_string``
+    1. Per-call token ``[gate-escape:plan_gate: <non-empty-reason>]`` in ``new_string``
         / ``content`` / ``file_path`` / ``command`` (first 512 chars).
     2. Config kill-switch — the DB-home ``plan_edit_gate_enabled = false`` setting
         (flipped by ``t3 <overlay> gate plan disable``).
@@ -149,7 +116,7 @@ def handle_block_edit_before_planned(data: dict) -> bool:
     verdict = classify_bash_write(_bash_command(data), cwd) if tool_name == "Bash" else None
     if (verdict is not None and verdict.is_silent) or not _ticket_is_unplanned(cwd):
         return False
-    if _call_is_excused(data, verdict):
+    if _call_is_excused(verdict):
         return False
     # Stamp the non-privacy ``plan_gate`` marker so the transcript-conformance
     # eval (``no_code_edit_before_planned``) keys on THIS gate's deny without
@@ -167,15 +134,12 @@ def _ticket_is_unplanned(cwd: str) -> bool:
         return False
 
 
-def _call_is_excused(data: dict, verdict: BashWriteVerdict | None) -> bool:
+def _call_is_excused(verdict: BashWriteVerdict | None) -> bool:
     """True iff the call escapes the deny — an explicit token, or an unpinnable write.
 
     An unpinnable write target is a suspicion, not a proof, so it emits the warn
     the house doctrine prescribes for an ambiguous case and lets the call through.
     """
-    if reason_token := skip_plan_gate_token(data):
-        sys.stderr.write(f"NOTE: plan-gate edit-block skipped via [skip-plan-gate: {reason_token}].\n")
-        return True
     if verdict is not None and not verdict.gated_paths:
         sys.stderr.write(
             "NOTE: plan-gate could not pin this command's write target — the ticket is still "
@@ -193,7 +157,7 @@ def _deny_reason(tool_name: str, verdict: BashWriteVerdict | None) -> str:
         f"{subject}the worktree's ticket is still in WORK_STARTED state — "
         "a plan must be recorded before coding can begin. "
         "Run the planning phase first so the ticket advances to PLAN_RECORDED. "
-        "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
+        "If this is a trivial mechanical edit, add `[gate-escape:plan_gate: <reason>]` to proceed."
     )
 
 

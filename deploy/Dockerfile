@@ -1,5 +1,5 @@
-# teatree headless deployment image — one image, five roles (init/worker/admin/
-# slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
+# teatree headless deployment image — one image, six roles (init/worker/admin/
+# webhook-listener/slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
 # dev/Dockerfile.test toolchain and adds gh. The image is SELF-CONTAINED (#3451):
 # it BAKES a pinned source@ref + the managed Python interpreter + the locked
 # editable install (see the bake stage near the end), so a fresh box with only

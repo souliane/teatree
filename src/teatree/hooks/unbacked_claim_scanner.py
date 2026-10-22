@@ -191,5 +191,5 @@ def format_block_message(verdict: ClaimVerdict) -> str:
         "it yet, say exactly that instead ('I have not opened the logs; my guess is …'). "
         "An alarm waits for the evidence you asked for: downgrade it until that evidence "
         "is in hand. Escape for a genuine false fire: end the turn with "
-        "[skip-evidence-gate: <reason>]."
+        "[gate-escape:unbacked_claim: <reason>]."
     )

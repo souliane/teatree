@@ -4,19 +4,26 @@ import hashlib
 import hmac
 import json
 import logging
+import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError, connection
 from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from teatree import webhook_settings
 from teatree.core.models import IncomingEvent, Task
 from teatree.core.views import _webhook_secrets, github_webhook
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.utils import secrets
+from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
 
 PREFIX = "teatree/github-webhook"
 SECRET_A = "test-secret-alpha"
@@ -28,6 +35,8 @@ TARGET_B = {"X-GitHub-Hook-Installation-Target-Type": "integration", "X-GitHub-H
 TARGET_EMPTY = {"X-GitHub-Hook-Installation-Target-ID": "303"}
 TARGET_UNLISTED = {"X-GitHub-Hook-Installation-Target-ID": "999"}
 DEFAULT_BODY = json.dumps({"action": "opened", "sender": {"login": "bob"}}).encode()
+LOCK_TIMEOUT_SECONDS = 5
+LOCK_WAIT_MARGIN_SECONDS = 4
 
 
 def _sign(body: bytes, secret: str) -> str:
@@ -81,6 +90,7 @@ class GitHubWebhookTestCase(TestCase):
         *,
         secret: str = SECRET_A,
         headers: dict[str, str | None] | None = None,
+        url: str | None = None,
         **meta: str,
     ) -> HttpResponse:
         sent: dict[str, str | None] = {
@@ -91,7 +101,7 @@ class GitHubWebhookTestCase(TestCase):
             "X-Hub-Signature-256": _sign(body, secret),
         } | (headers or {})
         return self.client.post(
-            reverse("teatree:github_webhook"),
+            url or reverse("teatree:github_webhook"),
             data=body,
             content_type="application/json",
             headers={name: value for name, value in sent.items() if value is not None},
@@ -99,7 +109,53 @@ class GitHubWebhookTestCase(TestCase):
         )
 
 
+class TestLockedDatabase(GitHubWebhookTestCase):
+    def deliver_on_a_listener_thread(self) -> HttpResponse:
+        def deliver() -> HttpResponse:
+            try:
+                return self.deliver()
+            finally:
+                close_thread_db_connections()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(deliver).result()
+
+    def test_locked_db_answers_503_fast(self) -> None:
+        with file_backed_default_database() as database:
+            connection.settings_dict["OPTIONS"] = webhook_settings.DATABASES["default"]["OPTIONS"]
+            with closing(sqlite3.connect(database, isolation_level=None)) as holder:
+                holder.execute("BEGIN IMMEDIATE")
+                started = time.monotonic()
+                locked = self.deliver_on_a_listener_thread()
+                elapsed = time.monotonic() - started
+                holder.execute("ROLLBACK")
+            accepted = self.deliver_on_a_listener_thread()
+
+        assert locked.status_code == 503
+        assert webhook_settings.DATABASES["default"]["OPTIONS"]["timeout"] == LOCK_TIMEOUT_SECONDS
+        assert elapsed < LOCK_TIMEOUT_SECONDS + LOCK_WAIT_MARGIN_SECONDS
+        assert accepted.status_code == 200
+
+    def test_other_database_errors_still_raise(self) -> None:
+        with file_backed_default_database() as database:
+            with closing(sqlite3.connect(database)) as schema:
+                schema.execute(f"DROP TABLE {IncomingEvent._meta.db_table}")
+            with pytest.raises(OperationalError, match="no such table"):
+                self.deliver_on_a_listener_thread()
+
+
 class TestAcceptedDelivery(GitHubWebhookTestCase):
+    def test_large_signed_delivery_accepted(self) -> None:
+        body = b'{"action":"opened","padding":"' + b"x" * (20 * 1024 * 1024 - 32) + b'"}'
+        with override_settings(
+            ROOT_URLCONF=webhook_settings.ROOT_URLCONF,
+            DATA_UPLOAD_MAX_MEMORY_SIZE=webhook_settings.DATA_UPLOAD_MAX_MEMORY_SIZE,
+        ):
+            response = self.deliver(body, url=reverse("github_webhook"))
+
+        assert response.status_code == 200
+        assert IncomingEvent.objects.filter(idempotency_key="github:d-1").exists()
+
     def test_signed_delivery_stores_one_row_keyed_by_delivery_with_event_name(self) -> None:
         body = _payload(
             sender={"login": "bob"},

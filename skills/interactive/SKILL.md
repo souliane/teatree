@@ -63,7 +63,7 @@ order being read as wider than it is:
 
 - **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
   ticket the factory already started.
-- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+- **The recorded per-action emergency escape** — `[gate-escape:headless_authoring: <reason>]`, for a
   genuine emergency (the factory itself is down). Single-use, recorded, per action.
 
 The deterministic backstop is the PreToolUse authoring gate
@@ -94,7 +94,7 @@ The deterministic backstop is the PreToolUse delegation gate
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
 `AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
-is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+is its job. Escapes: `[gate-escape:orchestrator_delegation_gate: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)
@@ -222,7 +222,7 @@ so the repetition is automated rather than remembered.
 |---|---|---|---|
 | `standing-golden-rule` | 300s | every attended session | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
 | `standing-todo-consolidate` | 1800s | every attended session | Every user request is captured as a task, and every OPEN task is drained — closed when durable state already satisfies it; reconcile from durable state first, rescan the transcript only if unaccounted for; then implement the outstanding requests, oldest first. |
-| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact; open PRs are listed with age and pending task, started PRs first, oldest first, and a stalled one gets its cause fixed at once. |
 
 Every slot arrives as context on a turn that is already happening: all three when the
 session starts, resumes, clears or compacts, and each again on the first tool call after

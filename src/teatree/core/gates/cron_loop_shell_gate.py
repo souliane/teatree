@@ -32,12 +32,6 @@ REACTIVE_RUN_SLOTS: tuple[str, ...] = ("slack-answer", "self-improve", "drain-qu
 
 _TICK_RE = re.compile(r"\bt3 loops? tick\b(?:\s+--loop\s+\S+)?")
 _REACTIVE_RE = re.compile(rf"\bt3 loop (?:{'|'.join(REACTIVE_RUN_SLOTS)}) run\b")
-_OK_TOKEN_RE = re.compile(r"\[cron-loop-ok:\s*(\S[^\]]*?)\s*\]")
-
-#: Only the head of a field is scanned for the escape token, mirroring the other
-#: per-call escapes so a token buried in a long body cannot silently relax the gate.
-_TOKEN_SCAN_CHARS = 512
-
 TICK = "tick"
 REACTIVE = "reactive"
 
@@ -90,17 +84,9 @@ def deny_reason(finding: CronLoopShellFinding) -> str:
         )
     return (
         f"BLOCKED: this cron/wakeup shells `{finding.command}` — {why} {remedy} "
-        "Override this one call with a `[cron-loop-ok: <reason>]` token in the prompt, or disable "
+        "Override this one call with a `[gate-escape:block-cron-loop-shell: <reason>]` token in the prompt, or disable "
         "the gate with `t3 <overlay> gate cron-loop-shell disable`."
     )
-
-
-def cron_loop_ok_reason(text: str) -> str | None:
-    """The reason from a ``[cron-loop-ok: <reason>]`` escape token in *text*, else None."""
-    if not text:
-        return None
-    match = _OK_TOKEN_RE.search(text[:_TOKEN_SCAN_CHARS])
-    return match.group(1).strip() or None if match else None
 
 
 __all__ = [
@@ -108,7 +94,6 @@ __all__ = [
     "REACTIVE_RUN_SLOTS",
     "TICK",
     "CronLoopShellFinding",
-    "cron_loop_ok_reason",
     "deny_reason",
     "find_cron_loop_shell",
 ]

@@ -210,4 +210,4 @@ class TestDenyMessageNamesTheRule:
         assert "group/widget-core" in reason
         # The rule must say how it ENDS, or the next operator works around it.
         assert "single_branch_repos" in reason
-        assert "[single-branch-ok:" in reason
+        assert "[gate-escape:single_branch_repo: <reason>]" in reason

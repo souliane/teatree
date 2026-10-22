@@ -54,6 +54,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "merge_wip": _parse_strict_int,
     "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
+    "agent_route_paid_fallback": _parse_strict_bool,
     "harness_skill_exclusions": _parse_harness_skill_exclusions,
     "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
@@ -380,5 +381,6 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "trusted_issue_authors",
         "independent_reviewer_identities",
         "bulk_close_threshold",
+        "agent_route_paid_fallback",
     }
 )
