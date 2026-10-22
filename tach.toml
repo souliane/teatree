@@ -127,7 +127,7 @@ depends_on = []
 [[modules]]
 path = "teatree.paths"
 layer = "foundation"
-depends_on = ["teatree.generation", "teatree.mount_identity", "teatree.sqlite_snapshot"]
+depends_on = ["teatree.generation", "teatree.git_sha", "teatree.mount_identity", "teatree.sqlite_snapshot"]
 
 [[modules]]
 path = "teatree.mount_identity"
@@ -1225,6 +1225,11 @@ depends_on = []
 
 [[modules]]
 path = "teatree.generation"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+path = "teatree.git_sha"
 layer = "foundation"
 depends_on = []
 
