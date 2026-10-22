@@ -407,12 +407,18 @@ class LiveMailboxBroker:
     async def _accepted(self, delivery: PeerDelivery, recipient: _Participant | None, wait: float) -> SendReceipt:
         """Push into the recipient's running turn while its inbox read can still accept first."""
         deadline = asyncio.get_running_loop().time() + wait
-        if not delivery.settled.done() and not delivery.unknown_reported:
-            if recipient is not None and recipient.task is not None and delivery.push is None:
-                delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
-            if delivery.push is not None:
-                await asyncio.wait({delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
-            if delivery.push_outcome is not ControlOutcome.UNKNOWN_DELIVERY:
+        if not delivery.settled.done():
+            was_unknown = delivery.unknown_reported
+            if not was_unknown:
+                if recipient is not None and recipient.task is not None and delivery.push is None:
+                    delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
+                if delivery.push is not None:
+                    await asyncio.wait(
+                        {delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                    )
+            if delivery.push_outcome is not ControlOutcome.UNKNOWN_DELIVERY or (
+                was_unknown and delivery.queued_in_inbox
+            ):
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())

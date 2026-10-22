@@ -23,6 +23,7 @@ from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
+from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveFence, RejectCode
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
@@ -271,8 +272,20 @@ def test_one_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None
 
     session = _PeerSession()
     task = Task(pk=_TASK_PK, ticket_id=3, phase="coding")
+    harness = GuardedHarness(OneSessionHarness(session), CompactionGuard(), "codex_app_server")
+    runtime = HeartbeatRuntime(
+        watchdog=_NO_BREACH.watchdog,
+        heartbeat_interval=_NO_BREACH.heartbeat_interval,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=lambda: "",
+    )
+
+    def drive_codex() -> HarnessOutcome:
+        return asyncio.run(drive_with_heartbeat(task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+
     with ThreadPoolExecutor(max_workers=1) as pool:
-        drive = pool.submit(_drive, session, drain_reason=lambda: "", task=task)
+        drive = pool.submit(drive_codex)
         broker = shared_broker()
         deadline = time.monotonic() + 5
         while not (facts := shared_registry().facts(_TASK_PK)) or not broker.identities():
