@@ -9,7 +9,7 @@ from django.db import DEFAULT_DB_ALIAS, connections
 from django.db.migrations.recorder import MigrationRecorder
 
 from teatree.core.models import ConfigSetting, WorkerGeneration
-from teatree.deploy.roll import ContainerState, RollError, RollInterruptedError
+from teatree.deploy.roll import RUNTIME_SERVICES, ContainerState, RollError, RollInterruptedError
 
 
 def quiescing() -> bool:
@@ -22,6 +22,7 @@ class FakeEngine:
 
     images: dict[str, str]
     running: dict[str, str]
+    topology: dict[str, tuple[str, ...]] = field(default_factory=dict)
     fail_init: bool = False
     #: A migration N+1's init records before it fails or succeeds — the schema moving under N.
     init_applies: str = ""
@@ -79,6 +80,9 @@ class FakeEngine:
 
     def up(self, generation: str, services: Sequence[str]) -> None:
         self.calls.append(("up", generation, *services))
+        if unknown := set(services) - set(self.topology_services(generation)):
+            msg = f"no such service: {min(unknown)}"
+            raise RollError(msg)
         if self.signal_up_of is not None and generation == self.signal_up_of:
             os.kill(os.getpid(), signal.SIGTERM)
         if generation == self.fail_up_of:
@@ -89,6 +93,9 @@ class FakeEngine:
         self.running.update(dict.fromkeys(services, generation))
         if generation and self.worker_boots and "teatree-worker" in services:
             WorkerGeneration.objects.boot(generation)
+
+    def topology_services(self, generation: str) -> frozenset[str]:
+        return frozenset(self.topology.get(generation, RUNTIME_SERVICES))
 
     def stop(self, services: Sequence[str]) -> None:
         self.calls.append(("stop", *services))

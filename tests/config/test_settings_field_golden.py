@@ -11,7 +11,7 @@ change must be a deliberate, reviewed edit here, not an incidental drift.
 
 import dataclasses
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS, UserSettings
 from teatree.config.setting_taxonomy import SettingClass, classify, owner_only_reason
 from teatree.mcp.write_tools import refuse_reason
 
@@ -25,6 +25,14 @@ def test_forced_repro_setting_is_declared_and_owner_governed() -> None:
     assert refuse_reason(key)
 
 
+def test_paid_route_fallback_requires_owner_authorization() -> None:
+    key = "agent_route_paid_fallback"
+    assert UserSettings().agent_route_paid_fallback is False
+    assert key in OVERLAY_OVERRIDABLE_SETTINGS
+    assert key in SAFETY_POSTURE_KEYS
+    assert refuse_reason(key)
+
+
 #: Every ``UserSettings`` field name at the current schema. Editing the dataclass
 #: WITHOUT updating this set is a red test — see the module docstring for routing.
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
@@ -34,6 +42,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
+        "agent_route_paid_fallback",
         "anthropic_api_key_pass_paths",
         "anthropic_oauth_pass_paths",
         "eval_ci_account_allowlist",

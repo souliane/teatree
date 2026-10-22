@@ -37,7 +37,6 @@ read are imported lazily inside the functions.
 
 import re
 import sys
-import time
 from pathlib import Path
 
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed, resolve_branch_and_root, teatree_src_on_path
@@ -48,19 +47,6 @@ from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKN
 # here operate on the SAME module object — the pattern every sibling uses.
 sys.modules.setdefault("headless_authoring_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.headless_authoring_gate", sys.modules[__name__])
-
-#: The audited, single-use override. Modelled on the sibling ``[main-clone-ok:]`` /
-#: ``[skill-load-ok:]`` tokens, and RECORDED (unlike them): a genuine emergency — the factory
-#: itself is down and a fix is needed to restore it — must not be blocked by the thing it is
-#: trying to repair, but it must leave a trace. An empty reason does not unblock.
-_OVERRIDE_RE = re.compile(r"\[headless-authoring-ok:\s*(\S[^\]]*?)\s*\]")
-
-#: How much of a call's text the override scanner reads. A ``git commit`` puts its message
-#: — the documented place to carry the token in an emergency — thousands of characters into
-#: the command, so a window sized for a flag line makes the escape unreachable for exactly
-#: the calls most likely to need it. Bounded rather than unlimited because a ``Write``
-#: ``content`` field has no size ceiling and the hook has a 30s one.
-_OVERRIDE_SCAN_MAX_CHARS = 64 * 1024
 
 #: The directories that ARE teatree's authored source. A path outside them (a scratch file,
 #: a log, a note) is not authoring and is never refused.
@@ -96,11 +82,8 @@ _REFUSAL = (
     "...`), then let intake pick it up; check progress with `t3 <overlay> followup sync`.\n"
     "Already-started work is exempt — an edit, a commit OR a push inside a live t3 worktree for "
     "the ticket is allowed.\n"
-    "For a genuine emergency (the factory itself is down), put `[headless-authoring-ok: <reason>]` "
-    "INSIDE the call's own text: the `command` string for Bash (a trailing "
-    "`# [headless-authoring-ok: <reason>]` comment works, and the first 64 KiB is read, so a "
-    "commit message carries it), or `new_string`/`content` for a file edit. The `description` "
-    "field is NOT scanned. It unblocks exactly this one action and is recorded.\n"
+    "For a genuine emergency, put `[gate-escape:headless_authoring: <reason>]` in the action. "
+    "The audit must commit before the action is allowed.\n"
     "To turn the gate off entirely: "
     "`t3 <overlay> config_setting set headless_authoring_gate_enabled false`."
 )
@@ -184,42 +167,6 @@ def _bash_repo_probe(command: str, cwd: str) -> str:
     return str(landing / "src" / "_") if isinstance(landing, Path) else ""
 
 
-def _call_text(data: dict) -> str:
-    """The tool call's own text, where a per-call override token would appear."""
-    tool_input = data.get("tool_input", {}) or {}
-    parts = [
-        str(tool_input.get(field, "") or "")
-        for field in ("command", "new_string", "content", "file_path", "prompt", "new_source")
-    ]
-    return " ".join(parts)[:_OVERRIDE_SCAN_MAX_CHARS]
-
-
-def _consume_override(data: dict, session_id: str) -> str:
-    """Return the override reason if this call carries one, recording it; else ``""``.
-
-    Recorded per session in ``<session>.authoring-overrides``, one line per use, so a bypass
-    leaves a trace rather than being an invisible escape. A failure to WRITE the record does
-    not withhold the override — the operator is mid-emergency, and refusing them because an
-    audit line could not be appended is the lockout this whole gate must not become.
-    """
-    match = _OVERRIDE_RE.search(_call_text(data))
-    if match is None:
-        return ""
-    reason = match.group(1).strip()
-    if not reason:
-        return ""
-    try:
-        from hooks.scripts.hook_router import _append_line, _ensure_state_dir, _state_file  # noqa: PLC0415 back-import
-
-        _ensure_state_dir()
-        tool = str(data.get("tool_name", "?"))
-        _append_line(_state_file(session_id, "authoring-overrides"), f"{int(time.time())}\t{tool}\t{reason}")
-    except Exception:  # noqa: BLE001 — the audit line is best-effort; it never withholds the override
-        sys.stderr.write(f"WARNING: headless-authoring override used but NOT recorded: {reason}\n")
-    sys.stderr.write(f"NOTE: headless-authoring gate overridden for one call: {reason}\n")
-    return reason
-
-
 def _is_authoring_call(data: dict) -> bool:
     """Whether this call AUTHORS teatree — the only shape the gate refuses."""
     tool = str(data.get("tool_name", ""))
@@ -253,9 +200,7 @@ def _refusal_applies(data: dict, session_id: str) -> bool:
 
     if not _teatree_engaged(session_id):
         return False
-    if not _is_authoring_call(data):
-        return False
-    return not _consume_override(data, session_id)
+    return _is_authoring_call(data)
 
 
 def handle_block_interactive_authoring(data: dict) -> bool:

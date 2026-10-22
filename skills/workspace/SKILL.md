@@ -111,6 +111,16 @@ attestation, the next writer's fence can re-attest, including an in-session clai
 Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
 A writing run whose exit was deferred by a checkout process records that exit state;
 the next writer attests it only after the process is gone and the state is unchanged.
+A released writing run may leave a clean checkout ahead of its prior attestation.
+The next writing claim can re-attest a released same-ticket custody chain with at least
+one writer when its current holder and occupancy match, no process holds the checkout,
+the old clean digest resolves to a reflog ancestor, and the checkout HEAD matches both
+the ticket-owned GitHub pull request head and its exact live source branch ref.
+The proof reads the GitHub API with the overlay's routed token, checks the digest again,
+and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
+The pull request read needs a `gh` that returns `headRepository.nameWithOwner`
+(the worker's 2.102.1 does; the host's 2.63.2 omits it, so the proof parks there).
+An unreadable or mismatched proof parks the task for the existing owner path.
 On completion, ordinary failure, lease-expiry reap, and attested park, checkout
 settlement waits two 60-second beats for descendants and marked children, sends
 SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
@@ -280,7 +290,7 @@ Until a dir is stamped the reclaim is deliberately conservative and frees less; 
 
 **Remote-state freshness gates the whole pass.** The "is it on a remote?" probe reads local `refs/remotes/*`, which go stale when a branch is deleted upstream by anything other than this clone — the ordinary forge auto-delete-on-merge. Against a stale ref, unpushed work reads as pushed and the last copy gets reaped. So each clone's tracking refs are refreshed (`git fetch --all --prune`) before any of its orphans is classified, and a **failed refresh fails closed**: the clone is skipped whole (`SKIPPED clone <path>: could not refresh remote refs`) and nothing in it is touched. On an offline host the pass therefore reaps nothing rather than reaping wrongly.
 
-Each per-worktree teardown funnels through one resilient seam (`reap_done_worktree`), so a single bad row never aborts the whole run. The sweep wraps every call to it (`reap_done_worktrees_detailed`), so a row that raises for any reason at all is reported as its own `ERROR wt#<pk> '<branch>': <exc> — row skipped, nothing wiped` outcome and the remaining rows are still examined; before that, one raising row ended the whole first pass and every row after it went unread, so the backlog could only grow. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
+Each per-worktree teardown funnels through one resilient seam (`reap_done_worktree`), so a single bad row never aborts the whole run. The sweep wraps every call to it (`reap_done_worktrees_detailed`), so a row that raises for any reason at all is reported as its own `ERROR wt#<pk> '<branch>': <exc> — row skipped, nothing wiped [checkout: <path>]` outcome and the remaining rows are still examined; before that, one raising row ended the whole first pass and every row after it went unread, so the backlog could only grow. Every reaper sweep line ends with `[checkout: <path>]`, or `[checkout: unresolvable]` when the row's path cannot be read. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
 
 **A row with nothing anywhere is released by `workspace doctor --fix`, never by the sweep.** A pure ghost — the checkout dir absent here, `refs/heads/<slug>` proven absent in the row's stored clone or the single clone a name scan finds, and no surviving `git worktree` registration for the path — has no bytes for any probe to speak for, and it pins its `db_name` against the orphan-DB reaper until released. `broken_checkout.is_pure_ghost` is the predicate `--fix` tears it down on: several same-basename clones, or a ref probe that fails rather than answering "missing", keep the row. The automatic `clean-all` sweep keeps every ghost row.
 

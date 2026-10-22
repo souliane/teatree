@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0015_cievalhealsession_rerun_and_artifact_wait"),
+        ("core", "0016_cievalhealsession_rerun_and_artifact_wait"),
     ]
 
     operations = [

@@ -16,10 +16,17 @@ class Engagement:
 
     start: datetime
     end: datetime | None
+    task_id: int | None = None
 
 
 def merged_seconds(engagements: Iterable[Engagement], *, start: datetime, end: datetime) -> float:
     """Elapsed seconds inside ``[start, end]`` covered by at least one engagement."""
+    return sum((upper - lower).total_seconds() for lower, upper in merged_intervals(engagements, start=start, end=end))
+
+
+def merged_intervals(
+    engagements: Iterable[Engagement], *, start: datetime, end: datetime
+) -> tuple[tuple[datetime, datetime], ...]:
     merged: list[tuple[datetime, datetime]] = []
     for lower, upper in sorted(_clip(engagements, start=start, end=end)):
         if merged and lower <= merged[-1][1]:
@@ -27,7 +34,29 @@ def merged_seconds(engagements: Iterable[Engagement], *, start: datetime, end: d
             merged[-1] = (open_from, max(open_to, upper))
         else:
             merged.append((lower, upper))
-    return sum((upper - lower).total_seconds() for lower, upper in merged)
+    return tuple(merged)
+
+
+def subtract_intervals(
+    intervals: Iterable[tuple[datetime, datetime]], removed: Iterable[tuple[datetime, datetime]]
+) -> tuple[tuple[datetime, datetime], ...]:
+    removals = sorted(removed)
+    remaining: list[tuple[datetime, datetime]] = []
+    for start, end in intervals:
+        cursor = start
+        for lower, upper in removals:
+            if upper <= cursor:
+                continue
+            if lower >= end:
+                break
+            if lower > cursor:
+                remaining.append((cursor, min(lower, end)))
+            cursor = min(end, max(cursor, upper))
+            if cursor >= end:
+                break
+        if cursor < end:
+            remaining.append((cursor, end))
+    return tuple(remaining)
 
 
 def _clip(

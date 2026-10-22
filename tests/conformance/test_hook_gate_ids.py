@@ -1,12 +1,16 @@
 """Every hook deny names its gate with a declared id that no other gate uses."""
 
 import ast
+import re
+import shutil
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
 from hooks.scripts.gate_ledger import DECLARED_GATES
+from teatree.hooks.gate_escape import KNOWN_GATES, EscapePolicy, policy_for
 
 _SCRIPTS = Path(__file__).resolve().parents[2] / "hooks" / "scripts"
 _DENY_ROUTES = frozenset({"emit_pretooluse_deny", "_fail_open_or_deny"})
@@ -262,3 +266,117 @@ def test_the_check_sees_a_deny_however_the_route_is_reached(source: str, expecte
     problems, _count = gate_id_problems({"synthetic.py": source}, frozenset())
 
     assert problems == expected
+
+
+def test_every_declared_gate_has_one_escape_policy() -> None:
+    stop_gates = {"answer_first", "completion_claim", "owner-question-decision", "standing_goal_stop", "unbacked_claim"}
+    assert DECLARED_GATES | stop_gates == KNOWN_GATES
+
+
+_RETIRED_MARKERS = (
+    "add-all-ok",
+    "admission-ok",
+    "brief-anchor-ok",
+    "config-overwrite-ok",
+    "cron-loop-ok",
+    "delegate-ok",
+    "fg-ok",
+    "fp-confirmed",
+    "general-purpose-ok",
+    "glab-base-ok",
+    "grant-ask-ok",
+    "headless-authoring-ok",
+    "main-clone-ok",
+    "merge-detect-ok",
+    "orchestration-ok",
+    "owner-question-ok",
+    "quote-ok",
+    "reviewer-ok",
+    "scope-push-ok",
+    "single-branch-ok",
+    "skill-load-ok",
+    "skip-answer-gate",
+    "skip-completion-gate",
+    "skip-evidence-gate",
+    "skip-plan-gate",
+    "slack-mcp-ok",
+    "standing-goal-hold",
+    "visible-plan-ok",
+    "worktree-containment-ok",
+)
+_RETIRED_MARKER_RE = re.compile(rf"(?<![\w-])(?:{'|'.join(map(re.escape, _RETIRED_MARKERS))})(?![\w-])")
+_REPO = Path(__file__).resolve().parents[2]
+_TEXT_SUFFIXES = frozenset({".py", ".md", ".toml", ".yaml", ".yml", ".json", ".sh", ".html", ".txt"})
+
+
+def retired_marker_mentions(files: dict[str, str]) -> list[str]:
+    return [
+        f"{name}:{number}"
+        for name, text in files.items()
+        for number, line in enumerate(text.splitlines(), 1)
+        if _RETIRED_MARKER_RE.search(line)
+    ]
+
+
+def _tracked_non_test_files() -> dict[str, str]:
+    git = shutil.which("git")
+    assert git is not None, "git is needed to list the tracked files"
+    listing = subprocess.run([git, "ls-files", "-z"], cwd=_REPO, check=True, capture_output=True, text=True).stdout
+    return {
+        name: (_REPO / name).read_text(encoding="utf-8", errors="replace")
+        for name in listing.split("\0")
+        if name and Path(name).suffix in _TEXT_SUFFIXES and not name.startswith("tests/") and (_REPO / name).is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "x = re.compile(r'\\[main-clone-ok:\\s*(\\S[^\\]]*)\\]')",
+        "x = re.compile(r'\\[(?:main-clone-ok|zz):')",
+        "A token `[fp-confirmed: <reason>]` grants it.",
+        "STOP = r'[skip-answer-gate:'",
+    ],
+)
+def test_a_retired_marker_is_seen_however_it_is_spelled(line: str) -> None:
+    assert retired_marker_mentions({"synthetic.py": line}) == ["synthetic.py:1"]
+
+
+def test_no_retired_marker_is_documented_or_parsed_outside_tests() -> None:
+    assert retired_marker_mentions(_tracked_non_test_files()) == []
+
+
+def escape_literal_problems(sources: dict[str, str]) -> tuple[list[str], set[str]]:
+    problems: list[str] = []
+    literals: set[str] = set()
+    for module, source in sources.items():
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call) and _callee(node.func) == "escape_allows" and len(node.args) > 1):
+                continue
+            gate = node.args[1]
+            if not (isinstance(gate, ast.Constant) and isinstance(gate.value, str)):
+                continue
+            literals.add(gate.value)
+            if policy_for(gate.value) is not EscapePolicy.AUDITED:
+                problems.append(f"{module}:{node.lineno} escape_allows({gate.value!r}) names no audited gate")
+    return problems, literals
+
+
+def test_a_mistyped_escape_gate_literal_is_caught() -> None:
+    problems, literals = escape_literal_problems({"synthetic.py": "escape_allows(data, 'answr_first', turn_text=text)"})
+
+    assert literals == {"answr_first"}
+    assert problems == ["synthetic.py:1 escape_allows('answr_first') names no audited gate"]
+
+
+def test_gate_id_literals_at_escape_call_sites_are_declared() -> None:
+    problems, literals = escape_literal_problems(hook_sources())
+
+    assert problems == []
+    assert literals >= {
+        "answer_first",
+        "completion_claim",
+        "owner-question-decision",
+        "standing_goal_stop",
+        "unbacked_claim",
+    }

@@ -266,6 +266,12 @@ def _compose_ups(tmp_path: Path) -> list[str]:
     return [line for line in lines if " up -d" in line]
 
 
+def test_completed_init_restarts_the_forge_listener(tmp_path: Path) -> None:
+    _run_pass(tmp_path)
+
+    assert any("teatree-webhooks" in line for line in _compose_ups(tmp_path))
+
+
 class TestTheSupervisorStandsBackDuringAConvergence:
     """A convergence is not an outage the supervisor should repair.
 

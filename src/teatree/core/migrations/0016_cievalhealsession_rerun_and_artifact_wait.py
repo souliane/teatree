@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0014_review_verdict_identity_and_verdict_key"),
+        ("core", "0015_gate_escape"),
     ]
 
     operations = [

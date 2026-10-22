@@ -176,6 +176,7 @@ class TeatreeSettingsSchema(BaseSettings):
     agent_harness_provider: Annotated[
         AgentHarnessProvider | None, BeforeValidator(_provider_or_none), _PERSONAL_OVERLAY
     ] = None
+    agent_route_paid_fallback: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     anthropic_api_key_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     anthropic_oauth_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     approved_recipe_sha: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]

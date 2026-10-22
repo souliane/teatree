@@ -3446,6 +3446,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ privacy-scan         Scan text for privacy-sensitive patterns (emails, keys, │
 │                      IPs).                                                   │
+│ gate-escape                                                                  │
 │ validate-mr          Validate MR/PR title+description against the active     │
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
@@ -3516,6 +3517,16 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   path      [PATH]  File or '-' for stdin [default: -]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool gate-escape`
+
+```
+Usage: t3 tool gate-escape [OPTIONS]
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯

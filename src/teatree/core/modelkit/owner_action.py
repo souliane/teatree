@@ -4,9 +4,12 @@ import hashlib
 from enum import StrEnum
 from typing import NotRequired, TypedDict
 
+from teatree.core.modelkit.escape_scope import ESCAPE_SCOPE_FIELDS
+
 
 class OwnerActionKind(StrEnum):
     ATTEST = "attest"
+    ESCAPE = "escape"
     VOID = "void"
 
 
@@ -16,9 +19,11 @@ class ActionRequest(TypedDict):
     binding: str
     note: NotRequired[str]
     host_evidence: NotRequired[bool]
+    scope: NotRequired[dict[str, str]]
 
 
 MARKER_PREFIX = "owner-action:"
+ATTEST_MARKER_PREFIX = f"{MARKER_PREFIX}{OwnerActionKind.ATTEST}:"
 
 
 def action_marker(action: ActionRequest) -> str:
@@ -43,6 +48,14 @@ def read_action(evidence: object) -> ActionRequest | None:
         return None
     if "note" in action and not isinstance(action["note"], str):
         return None
-    if "host_evidence" in action and not isinstance(action["host_evidence"], bool):
+    scope = action.get("scope")
+    scope_valid = "scope" not in action
+    if action["kind"] == OwnerActionKind.ESCAPE:
+        scope_valid = (
+            isinstance(scope, dict)
+            and set(scope) == ESCAPE_SCOPE_FIELDS
+            and all(isinstance(value, str) for value in scope.values())
+        )
+    if ("host_evidence" in action and not isinstance(action["host_evidence"], bool)) or not scope_valid:
         return None
     return action
