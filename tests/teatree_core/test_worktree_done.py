@@ -581,7 +581,7 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
         assert [outcome.action for outcome in outcomes] == ["kept"]
         assert outcomes[0].label.endswith(f"[checkout: {stored_path}]")
 
-    def test_sweep_preserves_emit_and_errors_while_naming_checkout(self) -> None:
+    def test_sweep_preserves_errors_while_naming_checkout(self) -> None:
         worktree = self._make_worktree(Ticket.State.WORK_STARTED)
         self._push_branch()
         self._drop_local_branch_ref()
