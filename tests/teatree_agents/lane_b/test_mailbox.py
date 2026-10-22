@@ -3,8 +3,9 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from pydantic_ai import Agent, Tool
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -20,21 +21,10 @@ def _tool(tools: Mapping[str, Tool[None]], name: str) -> Callable[..., Awaitable
     return cast("Callable[..., Awaitable[Any]]", tools[name].function)
 
 
-def test_native_mailbox_tools_have_the_peer_names() -> None:
-    client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
-    toolset = build_mailbox_toolset(client, "coding")
-
-    assert set(toolset.tools) == {
-        "agent_mailbox_peers",
-        "agent_mailbox_send",
-        "agent_mailbox_inbox",
-        "agent_mailbox_wait",
-    }
-
-
 def test_phase_grants_and_mcp_outage_do_not_remove_native_tools() -> None:
     client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
     all_four = {"agent_mailbox_peers", "agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+    assert set(build_mailbox_toolset(client, "coding").tools) == all_four
     with patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False):
         coding = build_lane_b_toolsets(LaneBToolConfig(phase="coding", mailbox=client))
         reviewing = build_lane_b_toolsets(LaneBToolConfig(phase="reviewing", mailbox=client))
@@ -67,6 +57,40 @@ def test_a_broker_outage_returns_tool_data_and_the_agent_finishes() -> None:
     agent: Agent[None, str] = Agent(FunctionModel(respond), toolsets=[build_mailbox_toolset(client, "coding")])
     assert asyncio.run(agent.run("go")).output == "done"
     assert "Live mailbox is unavailable" in observed[1]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [b"garbage\n", b"x" * 2_000_001 + b"\n"],
+    ids=["malformed-json", "oversized-line"],
+)
+def test_a_bad_broker_reply_is_tool_data(tmp_path: Path, reply: bytes) -> None:
+    async def run() -> object:
+        async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            writer.write(reply)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        socket = tmp_path / "mailbox.sock"
+        server = await asyncio.start_unix_server(answer, path=str(socket))
+        async with server:
+            client = MailboxClient(socket, "private-token")
+            return await _tool(build_mailbox_toolset(client, "coding").tools, "agent_mailbox_peers")()
+
+    assert asyncio.run(run()) == {"error": "Live mailbox returned an invalid response"}
+
+
+def test_native_wait_calls_the_client_wait() -> None:
+    client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    page = {"messages": [], "next_cursor": 3, "truncated": False}
+    with patch.object(client, "wait", new=AsyncMock(return_value=page)) as waiting:
+        result = asyncio.run(
+            _tool(build_mailbox_toolset(client, "coding").tools, "agent_mailbox_wait")(after_id=3, timeout_seconds=0.5)
+        )
+    assert result == page
+    waiting.assert_awaited_once_with(after_id=3, timeout_seconds=0.5)
 
 
 def test_send_inbox_and_peers_round_trip_over_the_broker_socket(tmp_path: Path) -> None:

@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import cast
 
 from teatree.agents.live_control import PeerIdentity
-from teatree.agents.live_delivery import InboxPage, SendReceipt
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV, InboxPage, SendReceipt
 
 _MAX_RESPONSE_BYTES = 2_000_000
+_INVALID_RESPONSE = "Live mailbox returned an invalid response"
 
 
 class MailboxError(Exception):
@@ -29,8 +30,8 @@ class MailboxClient:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "MailboxClient | None":
         source = os.environ if env is None else env
-        socket_path = source.get("T3_AGENT_MAILBOX_SOCKET")
-        token = source.get("T3_AGENT_MAILBOX_TOKEN")
+        socket_path = source.get(MAILBOX_SOCKET_ENV)
+        token = source.get(MAILBOX_AUTH_ENV)
         if not socket_path or not token:
             return None
         return cls(Path(socket_path), token)
@@ -45,20 +46,23 @@ class MailboxClient:
             request = {"token": self.token, "method": method, **arguments}
             writer.write(json.dumps(request).encode() + b"\n")
             await writer.drain()
-            raw = await reader.readline()
+            try:
+                raw = await reader.readline()
+            except ValueError as exc:
+                raise MailboxError(_INVALID_RESPONSE) from exc
             if not raw or len(raw) > _MAX_RESPONSE_BYTES:
-                msg = "Live mailbox returned an invalid response"
-                raise MailboxError(msg)
-            response = json.loads(raw)
+                raise MailboxError(_INVALID_RESPONSE)
+            try:
+                response = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise MailboxError(_INVALID_RESPONSE) from exc
             if not isinstance(response, dict):
-                msg = "Live mailbox returned an invalid response"
-                raise MailboxError(msg)
+                raise MailboxError(_INVALID_RESPONSE)
             if "error" in response:
                 msg = str(response["error"])
                 raise MailboxError(msg)
             if "result" not in response:
-                msg = "Live mailbox returned an invalid response"
-                raise MailboxError(msg)
+                raise MailboxError(_INVALID_RESPONSE)
             return response["result"]
         finally:
             writer.close()

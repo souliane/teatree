@@ -18,8 +18,6 @@ async def _result(request: Awaitable[object]) -> object:
 def build_mailbox_toolset(client: MailboxClient, phase: str) -> FunctionToolset[None]:
     allowed = tools_for_phase(phase)
     toolset: FunctionToolset[None] = FunctionToolset()
-    if not allowed:
-        return toolset
     names = (
         {"agent_mailbox_peers", "agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
         if MCP_WRITE in allowed

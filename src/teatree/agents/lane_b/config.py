@@ -15,6 +15,7 @@ from typing import Final
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
 from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.config import cold_reader
 
@@ -133,7 +134,7 @@ class LaneBToolConfig:
         fs_root = Path(cwd) if cwd else None
         overrides = dict(options.env or {})
         resolved_env = {**os.environ, **overrides}
-        identity_names = {"T3_AGENT_MAILBOX_SOCKET", "T3_AGENT_MAILBOX_TOKEN"}
+        identity_names = {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV}
         shell_env = (
             {name: value for name, value in resolved_env.items() if name not in identity_names}
             if overrides or identity_names.intersection(resolved_env)

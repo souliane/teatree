@@ -22,7 +22,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ToolUseBlock
 from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
-from teatree.agents import live_control, runner_heartbeat
+from teatree.agents import runner_heartbeat
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask, RejectCode
 from teatree.agents.live_registry import shared_registry
@@ -36,15 +36,12 @@ from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
 from teatree.loop.drain import set_worker_quiescing
+from tests.teatree_agents._live_fence import NEEDS_LIVE_FENCE
 from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, result_message
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
 _TASK_PK = 7
-_NEEDS_FENCE = pytest.mark.skipif(  # https://github.com/souliane/teatree/issues/5417
-    getattr(live_control, "LiveFence", None) is None,
-    reason="the task-attempt fence is supplied by the Codex mailbox change",
-)
 
 
 _WATCHDOG = LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0)
@@ -368,7 +365,7 @@ class TestTheProductionDrainRead(TestCase):
             raws[0].execute("SELECT 1")
 
 
-@_NEEDS_FENCE
+@NEEDS_LIVE_FENCE
 def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
     mailbox_tasks: list[LiveTask] = []
     registry_tasks: list[LiveTask] = []

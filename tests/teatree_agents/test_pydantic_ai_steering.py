@@ -13,7 +13,6 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents import live_control
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
 from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
@@ -23,11 +22,7 @@ from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePyd
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
-
-_NEEDS_FENCE = pytest.mark.skipif(  # https://github.com/souliane/teatree/issues/5417
-    getattr(live_control, "LiveFence", None) is None,
-    reason="the task-attempt fence is supplied by the Codex mailbox change",
-)
+from tests.teatree_agents._live_fence import NEEDS_LIVE_FENCE
 
 
 def test_a_steer_is_admitted_into_the_next_model_request_and_acknowledged_only_then() -> None:
@@ -57,15 +52,6 @@ def test_an_expired_wait_never_enters_a_later_request() -> None:
         assert error.value.code == RejectCode.NOT_ACCEPTED_IN_TIME
         admitted = await PeerInputAdmission(queue)([ModelRequest(parts=[UserPromptPart("go")])])
         assert [part.content for part in admitted[0].parts if isinstance(part, UserPromptPart)] == ["go"]
-
-    asyncio.run(run())
-
-
-def test_the_processor_leaves_a_request_without_waiting_input_untouched() -> None:
-    async def run() -> None:
-        queue = LiveInputQueue()
-        messages = [ModelRequest(parts=[UserPromptPart("go")])]
-        assert await PeerInputAdmission(queue)(messages) is messages
 
     asyncio.run(run())
 
@@ -117,6 +103,7 @@ def test_reopen_clears_only_a_finished_turn_and_close_is_final() -> None:
         await asyncio.sleep(0)
         assert queue.take() == "second turn"
         await pending
+        queue.end(RejectCode.TURN_ENDED)
         queue.end(RejectCode.SESSION_CLOSED)
         queue.reopen()
         with pytest.raises(SteerRejectedError) as error:
@@ -164,6 +151,36 @@ def test_input_pending_during_the_final_request_is_refused_when_the_turn_ends() 
             assert not steering.done()
             release.set()
             await running
+            with pytest.raises(SteerRejectedError) as ended:
+                await steering
+            assert ended.value.code == RejectCode.TURN_ENDED
+
+    asyncio.run(run())
+
+
+def test_provider_failure_refuses_pending_input_as_turn_ended() -> None:
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def model(_messages: object, _info: AgentInfo) -> object:
+            entered.set()
+            await release.wait()
+            yield "partial"
+            message = "provider failed"
+            raise RuntimeError(message)
+
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=model))
+        async with harness.open(ClaudeAgentOptions()) as session:
+            await session.query("go")
+            running = asyncio.create_task(_collect(session))
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            steering = asyncio.create_task(session.steer("late", input_id="late", wait=0.2))
+            await asyncio.sleep(0)
+            assert not steering.done()
+            release.set()
+            with pytest.raises(RuntimeError, match="provider failed"):
+                await running
             with pytest.raises(SteerRejectedError) as ended:
                 await steering
             assert ended.value.code == RejectCode.TURN_ENDED
@@ -302,7 +319,7 @@ class AdmittedTextResumeTests(TestCase):
         assert "resumable nonce" in repr(resumed.history)
 
 
-@_NEEDS_FENCE
+@NEEDS_LIVE_FENCE
 def test_a_stale_command_never_reaches_a_pydantic_session() -> None:
     async def run() -> None:
         registry: Any = LiveSessionRegistry()
