@@ -33,6 +33,7 @@ from teatree.core.settings.settings_compare import (
     CONFIRM_GATED_REASON,
     WITHHELD_REASON,
     Cell,
+    CompareFilters,
     CompareRow,
     build_compare_view,
     reading_order,
@@ -303,6 +304,23 @@ class TestTheEndpoints(TestCase):
         assert response.status_code == 200
         assert b"no reachable peer to compare against" in response.content
 
+    def test_the_compare_page_accepts_the_shared_filters(self) -> None:
+        response = self.client.get(
+            reverse("dash:settings_compare"),
+            {"family": "table", "group": "Agents", "text": "tier", "scope": "all", "differs_only": "off"},
+            **_LOOPBACK,
+        )
+        assert response.status_code == 200
+        filters = response.context["filters"]
+        assert (filters.family, filters.group, filters.text, filters.scope, filters.differs_only) == (
+            "table",
+            "Agents",
+            "tier",
+            "all",
+            False,
+        )
+        assert b'name="family"' in response.content
+
     def test_the_compare_page_changes_nothing_however_it_is_reached(self) -> None:
         """Its POST carries snapshot FILES to compare against — it is not a write path."""
         ConfigSetting.objects.set_value("merge_wip", 3, scope="")
@@ -495,6 +513,12 @@ def _box(label: str, stored: dict[str, dict[str, Any]], declares: tuple[str, ...
     return PeerSnapshot(label=label, url=f"http://127.0.0.1/{label}", note="", payload=_payload(stored, declares))
 
 
+def _mutable_payload(box: PeerSnapshot) -> dict[str, Any]:
+    payload = box.payload
+    assert isinstance(payload, dict)
+    return payload
+
+
 def _down(label: str) -> PeerSnapshot:
     return PeerSnapshot(label=label, url=f"http://127.0.0.1/{label}", note="", error="ConnectError")
 
@@ -502,12 +526,12 @@ def _down(label: str) -> PeerSnapshot:
 class _RowBuilderCase(SimpleTestCase):
     """Drives the real row builder over crafted snapshots, so the assertions are the page's."""
 
-    def _view(self, local: PeerSnapshot, *peers: PeerSnapshot) -> Any:
+    def _view(self, local: PeerSnapshot, *peers: PeerSnapshot, filters: CompareFilters | None = None) -> Any:
         with (
             patch.object(settings_compare_module, "local_snapshot", return_value=local),
             patch.object(settings_compare_module, "peer_snapshots", return_value=peers),
         ):
-            return build_compare_view()
+            return build_compare_view(filters=filters)
 
 
 class TestSeedWriteEligibility(_RowBuilderCase):
@@ -599,6 +623,65 @@ class TestKindFilteringPrecedesTheRenderCap(_RowBuilderCase):
         assert not view.truncated
 
 
+class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
+    def test_every_differing_row_survives_the_render_cap(self) -> None:
+        keys = tuple(f"difference_{index:03d}" for index in range(501))
+        local = _box(LOCAL_LABEL, {"": dict.fromkeys(keys, "left")}, declares=keys)
+        peer = _box("peer", {"": dict.fromkeys(keys, "right")}, declares=keys)
+        view = self._view(local, peer)
+        assert len(view.rows) == 501
+        assert not view.truncated
+
+    def test_filters_can_select_family_group_text_and_identical_rows(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 2, "overlays": {}}})
+        peer = _box("peer", {"": {"merge_wip": 2, "overlays": {}}})
+        for box in (local, peer):
+            _mutable_payload(box)["registry"]["settings"]["merge_wip"].update(family="setting", group="Agents / Limits")
+            _mutable_payload(box)["registry"]["settings"]["overlays"].update(family="registry", group="Registries")
+        with (
+            patch.object(settings_compare_module, "local_snapshot", return_value=local),
+            patch.object(settings_compare_module, "peer_snapshots", return_value=(peer,)),
+        ):
+            view = build_compare_view(
+                filters=CompareFilters(family="setting", group="agents", text="merge", differs_only=False)
+            )
+        assert [row.title for row in view.rows] == ["merge_wip"]
+        assert view.rows[0].kind is RowKind.SAME
+
+    def test_each_cell_uses_its_own_default_and_source(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 2}})
+        peer = _box("peer", {"": {"merge_wip": 3}})
+        _mutable_payload(local)["values"].update(defaults={"merge_wip": 2}, provenance={"": {"merge_wip": "db"}})
+        _mutable_payload(peer)["values"].update(defaults={"merge_wip": 5}, provenance={"": {"merge_wip": "env"}})
+        row = next(row for row in self._view(local, peer).rows if row.title == "merge_wip")
+        assert [(reading.default_text, reading.source) for reading in row.readings] == [
+            ("2", "db"),
+            ("5", "env"),
+        ]
+
+    def test_v1_table_default_is_not_claimed_as_empty(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"agent_tier_models": {"cheap": "left"}}}, declares=("agent_tier_models",))
+        peer = _box("peer", {"": {"agent_tier_models": {"cheap": "right"}}}, declares=("agent_tier_models",))
+        _mutable_payload(peer)["format_version"] = 1
+        _mutable_payload(peer)["values"]["defaults"] = {"agent_tier_models": {}}
+        row = next(row for row in self._view(local, peer).rows if row.title == "agent_tier_models")
+        assert row.readings[1].default_text == "not recorded"
+
+    def test_a_scope_uses_each_boxes_registered_exact_spelling(self) -> None:
+        local = _box(LOCAL_LABEL, {"t3-example": {"merge_wip": 2}, "example": {"merge_wip": 1}})
+        peer = _box("peer", {"t3-example": {"merge_wip": 3}, "example": {"merge_wip": 4}})
+        _mutable_payload(local)["instance"] = {"overlays_installed": [{"name": "t3-example"}]}
+        _mutable_payload(peer)["instance"] = {"overlays_installed": [{"name": "example"}]}
+        with (
+            patch.object(settings_compare_module, "local_snapshot", return_value=local),
+            patch.object(settings_compare_module, "peer_snapshots", return_value=(peer,)),
+        ):
+            view = build_compare_view(filters=CompareFilters(scope="all"))
+        rows = [row for row in view.rows if row.title == "merge_wip"]
+        assert len(rows) == 1
+        assert [cell.value for cell in rows[0].cells] == [2, 4]
+
+
 class TestEveryColumnBelongsToTheBoxAboveIt(_RowBuilderCase):
     """Headings and cells must come from ONE sequence.
 
@@ -644,11 +727,12 @@ class TestTheRowBuilderKeepsTheNoOpinionRule(_RowBuilderCase):
         assert [(row.title, row.kind) for row in view.rows] == [("merge_wip", RowKind.VALUES)]
 
     def test_a_scope_one_box_never_uses_is_not_a_difference_per_key(self) -> None:
-        view = self._view(
-            _box("this instance", {"": {"merge_wip": True}, "solo": {"merge_wip": True}}),
-            _box("box-b", {"": {"merge_wip": True}}),
-        )
-        assert [row.scope for row in view.rows] == ["solo"]
+        local = _box("this instance", {"": {"merge_wip": True}, "solo": {"merge_wip": True}})
+        peer = _box("box-b", {"": {"merge_wip": True}})
+        view = self._view(local, peer)
+        assert [row.scope for row in view.rows] == []
+        all_scopes = self._view(local, peer, filters=CompareFilters(scope="all"))
+        assert [row.scope for row in all_scopes.rows] == ["solo"]
 
     def test_a_key_one_box_does_not_declare_is_a_code_version_row_not_a_value_difference(self) -> None:
         view = self._view(

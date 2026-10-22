@@ -7330,16 +7330,9 @@ Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 Usage: t3 settings compare [OPTIONS]
 
  What differs between this box and its peers, and whether it can be read as
- drift.
-
- Exits non-zero only when there was nothing to compare — fewer than two
- instances answered. A
- comparison that RAN is a success whatever it found, "not comparable" included:
- that verdict is
- a true reading of boxes running different code, not a failure of this command.
-
- The table is laid out in the terminal's own width, so ``COLUMNS`` sets it for
- a redirected run.
+ drift. Exits non-zero only when fewer than two instances answered. A completed
+ comparison succeeds even when instances are not comparable. COLUMNS sets table
+ width for a redirected run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
@@ -7352,6 +7345,12 @@ Usage: t3 settings compare [OPTIONS]
 │                          registry entry. A forward under load answers late,  │
 │                          and a wait too short reports a live box as one that │
 │                          did not answer.                                     │
+│ --family          TEXT   Show one setting or seed family.                    │
+│ --group           TEXT   Match a setting group by name.                      │
+│ --text            TEXT   Search row names and descriptions.                  │
+│ --scope           TEXT   Global, all, or one overlay scope.                  │
+│                          [default: global]                                   │
+│ --all-rows               Include matching identical rows.                    │
 │ --full                   Do not truncate a value, and print each row's       │
 │                          import reason.                                      │
 │ --json                   Emit the whole view as JSON, nothing summarised     │

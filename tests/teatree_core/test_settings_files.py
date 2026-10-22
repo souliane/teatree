@@ -30,7 +30,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting
-from teatree.core.settings.settings_compare import RowKind, build_compare_view
+from teatree.core.settings.settings_compare import CompareFilters, RowKind, build_compare_view
 from teatree.core.settings.settings_compat import Severity, build_compat_report
 from teatree.core.settings.settings_files import MAX_SNAPSHOT_BYTES, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
@@ -294,7 +294,7 @@ class TestAnOlderRecordOfThisBoxIsStillComparable(TestCase):
             patch("teatree.core.settings.settings_compare.local_snapshot", return_value=self.local),
             patch("teatree.core.settings.settings_compare.peer_snapshots", return_value=()),
         ):
-            return build_compare_view(loaded.snapshots)
+            return build_compare_view(loaded.snapshots, filters=CompareFilters(scope="all"))
 
     def test_a_record_of_this_box_as_it_is_differs_from_it_in_nothing(self) -> None:
         assert self._against(self.payload).total_rows == 0

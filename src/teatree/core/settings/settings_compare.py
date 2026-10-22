@@ -44,14 +44,12 @@ from typing import Any, Final
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.cold_defaults import shipped_defaults_table
-from teatree.config.seed_defaults import SEED_ROW_FIELDS
-from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.core.setting_cell import DriftVerdict, SettingCell, env_pin_refusal, settings_write_url, verdict_for
+from teatree.config.override_reader import column_spelling, fold_overlay_rows
+from teatree.config.secret_settings import is_pass_key_setting
+from teatree.config.seed_defaults import SEED_FAMILIES
+from teatree.config.settings import OverlayEntry
 from teatree.core.setting_control import SettingControl
-from teatree.core.settings.seed_editing import write_refusal as seed_write_refusal
-from teatree.core.settings.seed_editing import write_url as seed_write_url
 from teatree.core.settings.settings_compare_rendering import (
-    ABSENT_TEXT,
     GROUP_NOTES,
     KIND_RANK,
     OPAQUE_DIFFERS,
@@ -60,245 +58,30 @@ from teatree.core.settings.settings_compare_rendering import (
     RowGroup,
     RowKind,
 )
-from teatree.core.settings.settings_compare_sync import SEED, SETTING, WITHHELD_CATEGORY, Outcome, classify
+from teatree.core.settings.settings_compare_rows import (
+    ABSENT,
+    CONFIRM_GATED_REASON,
+    ENV_SOURCE,
+    RENDER_CAP,
+    WITHHELD_REASON,
+    Cell,
+    CompareRow,
+)
+from teatree.core.settings.settings_compare_sync import SEED, SETTING
 from teatree.core.settings.settings_compat import CompatReport, build_compat_report
 from teatree.core.settings.settings_peers import PeerSnapshot, local_snapshot, peer_snapshots
 from teatree.core.settings_snapshot import canonical_json
-from teatree.core.settings_snapshot.serialisation import Json
+from teatree.core.settings_snapshot.payload import _setting_family
 from teatree.core.settings_snapshot.withholding import carries_stub
 
-#: U+0000 cannot occur in a setting key, an overlay name or a captured value canonical JSON, so
-#: it is the one safe sentinel: nothing real can canonicalise onto it. Written as an ESCAPE — a
-#: raw NUL byte in the source would make git call the file binary.
-ABSENT: Final = "\u0000absent"
-
-
-#: The resolution tier that outranks every stored row: teatree reads env first.
-ENV_SOURCE: Final = "env"
-
-
-#: The largest number of rows the page renders; a diff longer than this is a skew, not a diff.
-RENDER_CAP: Final = 500
-
-WITHHELD_REASON: Final = "the value was withheld at capture"
-
-CONFIRM_GATED_REASON: Final = "confirm-gated — change it on the settings page"
-
 
 @dataclass(frozen=True, slots=True)
-class Cell:
-    """One instance's answer for one row — and, crucially, whether it has an OPINION at all."""
-
-    label: str
-    present: bool
-    known: bool
-    value: Json = None
-    #: Whether this answer is THIS process's own — the one column the page may write to.
-    local: bool = False
-
-    @property
-    def opinion(self) -> str:
-        """The canonical form this cell compares by — :data:`ABSENT` when it has no opinion."""
-        if not self.present or not self.known:
-            return ABSENT
-        return canonical_json(self.value)
-
-    @property
-    def stale(self) -> bool:
-        """A stored row for something this box's code does not declare — visible, never a diff."""
-        return self.present and not self.known
-
-    @property
-    def text(self) -> str:
-        return ABSENT_TEXT if not self.present else canonical_json(self.value)
-
-
-@dataclass(frozen=True, slots=True)
-class CompareRow:
-    """One (surface, scope, key) across every instance."""
-
-    surface: str
-    scope: str
-    title: str
-    subtitle: str
-    cells: tuple[Cell, ...]
-    syncable: bool = True
-    sync_note: str = ""
-    redacted: bool = False
-    category: str = ""
-    equals_shipped_default: bool = False
-    env_shadowed: bool = False
-    #: Which tier THIS box resolved the key from — the cell's tooltip, and what the env-pin
-    #: refusal is keyed on. Empty for a seed row and for a key this box's code does not declare.
-    source: str = ""
-    #: The seed entry addressed by this row. Empty on a ConfigSetting row.
-    entry: str = ""
-    #: Whether defaults.toml carries the seed entry, which is required for a restorative write.
-    seed_shipped: bool = False
-    #: The ONE derivation of how this key is edited, shared with the single-instance grid. Absent
-    #: for a seed field and for a key this box's schema does not know — neither has a control.
-    control: SettingControl | None = None
-
-    @property
-    def opinions(self) -> tuple[str, ...]:
-        return tuple(cell.opinion for cell in self.cells)
-
-    @property
-    def held(self) -> tuple[Cell, ...]:
-        return tuple(cell for cell in self.cells if cell.opinion != ABSENT)
-
-    @property
-    def blind(self) -> tuple[str, ...]:
-        """The instances whose code cannot carry this row at all."""
-        return tuple(cell.label for cell in self.cells if not cell.known)
-
-    @property
-    def stale_on(self) -> tuple[str, ...]:
-        return tuple(cell.label for cell in self.cells if cell.stale)
-
-    @property
-    def opinions_differ(self) -> bool:
-        """Whether the instances hold different OPINIONS — never merely different silences."""
-        return len(set(self.opinions)) > 1
-
-    @property
-    def differs(self) -> bool:
-        return self.opinions_differ or bool(self.stale_on)
-
-    @property
-    def kind(self) -> RowKind:
-        if not self.opinions_differ:
-            # A stored row on a box whose code has no such key is not an opinion, but it IS
-            # worth seeing — shown, called what it is, and sorted with the code-version rows.
-            return RowKind.CODE if self.stale_on else RowKind.SAME
-        if len({cell.opinion for cell in self.held}) > 1:
-            return RowKind.VALUES
-        silent = len(self.cells) - len(self.held)
-        if silent and silent == len(self.blind):
-            return RowKind.CODE
-        return RowKind.OVERRIDE
-
-    @property
-    def rank(self) -> int:
-        return KIND_RANK[self.kind]
-
-    @property
-    def candidate(self) -> Json:
-        """The value an import would carry — the first instance that holds an opinion at all."""
-        return self.held[0].value if self.held else None
-
-    @property
-    def outcome(self) -> Outcome:
-        return classify(self)
-
-    @property
-    def has_write_target(self) -> bool:
-        """Whether a write from this page has anywhere to land — the two surfaces, both asked.
-
-        Decided from the DECLARATIONS, never from whether a control happened to be attached:
-        the control supplies a setting widget's options, and a row that lost one would
-        otherwise go silently read-only rather than fail. A seed row's declaration is
-        ``SEED_ROW_FIELDS`` — the same table the interchange writes through.
-        """
-        if self.surface == SEED:
-            return self.title in SEED_ROW_FIELDS.get(self.scope, {})
-        return self.surface == SETTING and self.title in ALL_KNOWN_CONFIG_SETTINGS
-
-    @property
-    def unwritable_reason(self) -> str:
-        """Why this box's cell cannot be written, or ``""`` — one sentence the page SHOWS.
-
-        A withheld value cannot be edited by a page that never showed it, and a safety-posture
-        key's write is gated on a typed confirm phrase this page does not ask for — a second
-        edit surface that did not ask for one would weaken that gate. The env tier is asked LAST
-        and through the shared rule, so a key a ``T3_*`` var pins reads the same refusal here as
-        it does on the settings grid.
-        """
-        if self.redacted or self.category == WITHHELD_CATEGORY:
-            return WITHHELD_REASON
-        if self.surface == SEED:
-            # A seed field has no env tier and no confirm gate; what it can have is a
-            # dedicated editor holding an invariant a raw write would skip.
-            local = next((cell for cell in self.cells if cell.local), None)
-            return seed_write_refusal(
-                self.scope,
-                self.entry,
-                self.title,
-                local_present=local is not None and local.known,
-                shipped_entry=self.seed_shipped,
-            )
-        if self.title in SAFETY_POSTURE_KEYS:
-            return CONFIRM_GATED_REASON
-        return env_pin_refusal(self.title, self.source)
-
-    @property
-    def writable(self) -> bool:
-        """Whether the operator can actually change this row HERE — what the ordering leads on."""
-        return self.has_write_target and not self.unwritable_reason
-
-    @property
-    def readings(self) -> tuple[Reading, ...]:
-        """One rendering per instance, decided against the row's own reference reading."""
-        reference = self.held[0].opinion if self.held else ABSENT
-        return tuple(self._reading(cell, reference) for cell in self.cells)
-
-    def _reading(self, cell: Cell, reference: str) -> Reading:
-        agrees = cell.opinion == reference
-        opaque = self.redacted and cell.present
-        return Reading(
-            label=cell.label,
-            present=cell.present,
-            local=cell.local,
-            agrees=agrees,
-            text=(OPAQUE_SAME if agrees else OPAQUE_DIFFERS) if opaque else cell.text,
-            opaque=opaque,
-            cell=self._edit_cell(cell),
-        )
-
-    def _edit_cell(self, cell: Cell) -> SettingCell | None:
-        """This box's answer as the EDIT the grid would make — ``None`` where there is no edit.
-
-        No page may write over another box's tunnel, and a row nothing on this box declares has
-        nowhere to write, so both carry no cell at all. Everything else about the edit — what a
-        control holds, whether it may be offered — is
-        :class:`~teatree.core.setting_cell.SettingCell`'s to answer, not this module's.
-        """
-        if not cell.local or not self.has_write_target:
-            return None
-        if self.surface == SEED:
-            return self._seed_edit_cell(cell)
-        if self.control is None:
-            return None
-        value = self.control.display_value(cell.value if cell.present else None)
-        return SettingCell(
-            key=self.title,
-            scope=self.scope,
-            value=value,
-            selected=self.control.wire_value(cell.value if cell.present else None),
-            source=self.source,
-            verdict=verdict_for(self.control, overridden=cell.present, value=value),
-            unwritable_reason=self.unwritable_reason,
-            post_url=settings_write_url(self.title, self.scope),
-        )
-
-    def _seed_edit_cell(self, cell: Cell) -> SettingCell:
-        """A loop / preset / schedule field as the edit this page would make.
-
-        No shipped-default comparison: what a seed row is measured against lives in the
-        ``defaults.toml`` seed table rather than in the settings defaults, and the page already
-        shows that column. The verdict is therefore the honest ``NO_DEFAULT``, not a claim
-        about a comparison this cell never performed.
-        """
-        return SettingCell(
-            key=self.title,
-            scope=self.scope,
-            value=canonical_json(cell.value) if cell.present else ABSENT_TEXT,
-            selected=canonical_json(cell.value) if cell.present else "",
-            source="",
-            verdict=DriftVerdict.NO_DEFAULT,
-            unwritable_reason=self.unwritable_reason,
-            post_url=seed_write_url(self.scope, self.entry, self.title),
-        )
+class CompareFilters:
+    scope: str = "global"
+    family: str = ""
+    group: str = ""
+    text: str = ""
+    differs_only: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +105,9 @@ class CompareView:
     #: Every differing row before a caller narrows the view by kind.
     differing_rows: int = 0
     error: str = ""
+    families: tuple[str, ...] = ()
+    setting_groups: tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()
 
     @property
     def labels(self) -> tuple[str, ...]:
@@ -361,12 +147,14 @@ def build_compare_view(
     *,
     timeout: float | None = None,
     kinds: Sequence[RowKind] = (),
+    filters: CompareFilters | None = None,
 ) -> CompareView:
     """Fetch every peer, add every loaded record, and build the rows the instances differ on.
 
     *timeout* raises the per-peer wait for a caller that would rather wait than be told a slow
     forward did not answer; ``None`` leaves each peer on the wait its registry entry declares.
     """
+    filters = filters or CompareFilters()
     instances = (local_snapshot(), *peer_snapshots(timeout), *loaded)
     live = tuple(instance for instance in instances if instance.reachable)
     compat = build_compat_report(instances)
@@ -376,18 +164,50 @@ def build_compare_view(
     # overlay, one loop, one preset — arrives as a contiguous block the page can set apart. Keyed
     # the other way round, a seed field shared by twenty loops produces twenty consecutive rows
     # with the same visible name and the distinguishing scope scattered down the column.
-    built = [*_setting_rows(live), *_seed_rows(live)]
+    all_rows = [*_setting_rows(live, "all"), *_seed_rows(live)]
+    available_scopes = tuple(_comparison_scopes(live, "all"))
+    available_families = tuple(sorted({row.family for row in all_rows if row.family}))
+    available_groups = tuple(sorted({row.group for row in all_rows if row.group}))
+    built = [row for row in all_rows if _matches_filters(row, filters)]
     differences = sorted((row for row in built if row.differs), key=reading_order)
-    rows = [row for row in differences if row.kind in kinds] if kinds else differences
+    selected = differences if filters.differs_only else sorted(built, key=reading_order)
+    if kinds:
+        selected = [row for row in selected if row.kind in kinds]
+    if filters.differs_only:
+        shown = selected
+    else:
+        differing = [row for row in selected if row.differs]
+        identical = [row for row in selected if not row.differs]
+        shown = [*differing, *identical[:RENDER_CAP]]
     return CompareView(
         instances=instances,
         compared=live,
         compat=compat,
-        rows=tuple(rows[:RENDER_CAP]),
-        total_rows=len(rows),
+        rows=tuple(shown),
+        total_rows=len(selected),
         compared_rows=len(built),
         differing_rows=len(differences),
+        families=available_families,
+        setting_groups=available_groups,
+        scopes=available_scopes,
     )
+
+
+def _matches_filters(row: CompareRow, filters: CompareFilters) -> bool:
+    if row.surface == SETTING and filters.scope == "global" and row.scope:
+        return False
+    if (
+        row.surface == SETTING
+        and filters.scope not in {"global", "all"}
+        and OverlayEntry.canonical_overlay_name(row.scope) != OverlayEntry.canonical_overlay_name(filters.scope)
+    ):
+        return False
+    if filters.family and row.family != filters.family:
+        return False
+    if filters.group and filters.group.casefold() not in row.group.casefold():
+        return False
+    needle = filters.text.casefold().strip()
+    return not needle or needle in f"{row.title} {row.subtitle} {row.group} {row.family}".casefold()
 
 
 def reading_order(row: CompareRow) -> tuple[Any, ...]:
@@ -408,9 +228,24 @@ _NOTHING_TO_COMPARE: Final = (
 )
 
 
-def _setting_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
-    keys = sorted({key for instance in live for key in _registry(instance, "settings")})
-    scopes = sorted({"", *(scope for instance in live for scope in _values(instance, "settings"))})
+def _setting_rows(live: Sequence[PeerSnapshot], scope_filter: str) -> list[CompareRow]:
+    keys = sorted(
+        {
+            key
+            for instance in live
+            for key in (
+                *_registry(instance, "settings"),
+                *(
+                    key
+                    for rows in _values(instance, "settings").values()
+                    if isinstance(rows, Mapping)
+                    for key in rows
+                    if is_pass_key_setting(key)
+                ),
+            )
+        }
+    )
+    scopes = _comparison_scopes(live, scope_filter)
     controls = _controls(keys)
     rows = []
     for scope in scopes:
@@ -423,6 +258,17 @@ def _setting_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
                     title=key,
                     subtitle=f"overlay scope {scope}" if scope else "global scope",
                     cells=tuple(_setting_cell(instance, scope, key) for instance in live),
+                    family=str(
+                        meta.get("family")
+                        or (
+                            "credential"
+                            if is_pass_key_setting(key)
+                            else _setting_family(key)
+                            if key in ALL_KNOWN_CONFIG_SETTINGS
+                            else "setting"
+                        )
+                    ),
+                    group=str(meta.get("group", "")),
                     syncable=meta.get("syncable", True) is not False,
                     sync_note=str(meta.get("sync_note", "")),
                     redacted=any(_is_redacted(instance, scope, key) for instance in live),
@@ -437,15 +283,72 @@ def _setting_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
 
 
 def _setting_cell(instance: PeerSnapshot, scope: str, key: str) -> Cell:
-    bucket = _values(instance, "settings").get(scope, {})
+    bucket = _setting_bucket(instance, scope)
     present = key in bucket
+    defaults = _values(instance, "defaults")
+    recorded = _default_recorded(instance, key)
     return Cell(
         label=instance.label,
         present=present,
-        known=key in _registry(instance, "settings"),
+        known=key in _registry(instance, "settings") or is_pass_key_setting(key),
         value=bucket.get(key) if present else None,
+        default_value=defaults.get(key) if recorded else None,
+        default_recorded=recorded,
+        source=_source(instance, scope, key),
         local=instance.local,
     )
+
+
+def _default_recorded(instance: PeerSnapshot, key: str) -> bool:
+    if key not in _values(instance, "defaults"):
+        return False
+    version = (instance.payload or {}).get("format_version", 2)
+    return version != 1 or key not in ALL_KNOWN_CONFIG_SETTINGS or _setting_family(key) != "table"
+
+
+def _registered_scopes(instance: PeerSnapshot) -> set[str]:
+    facts = (instance.payload or {}).get("instance", {})
+    installed = facts.get("overlays_installed", ()) if isinstance(facts, Mapping) else ()
+    registered = {str(row["name"]) for row in installed if isinstance(row, Mapping) and "name" in row}
+    if isinstance(facts, Mapping) and facts.get("overlay"):
+        registered.add(str(facts["overlay"]))
+    return registered
+
+
+def _scope_spelling(instance: PeerSnapshot, scope: str) -> str:
+    if not scope:
+        return ""
+    canonical = OverlayEntry.canonical_overlay_name(scope)
+    registered = {
+        name for name in _registered_scopes(instance) if OverlayEntry.canonical_overlay_name(name) == canonical
+    }
+    if registered:
+        return column_spelling(registered, registered)
+    stored = {name for name in _values(instance, "settings") if OverlayEntry.canonical_overlay_name(name) == canonical}
+    return column_spelling(stored, set()) if stored else scope
+
+
+def _setting_bucket(instance: PeerSnapshot, scope: str) -> Mapping[str, Any]:
+    stored = _values(instance, "settings")
+    if not scope:
+        return stored.get("", {})
+    return fold_overlay_rows(stored, _scope_spelling(instance, scope)).rows
+
+
+def _comparison_scopes(live: Sequence[PeerSnapshot], selected: str) -> list[str]:
+    if selected == "global":
+        return [""]
+    all_scopes = {scope for instance in live for scope in _values(instance, "settings") if scope}
+    groups: dict[str, set[str]] = {}
+    for scope in all_scopes:
+        groups.setdefault(OverlayEntry.canonical_overlay_name(scope), set()).add(scope)
+    local = next((instance for instance in live if instance.local), None)
+    local_registered = _registered_scopes(local) if local is not None else set()
+    columns = sorted(column_spelling(group, local_registered) for group in groups.values())
+    if selected == "all":
+        return ["", *columns]
+    canonical = OverlayEntry.canonical_overlay_name(selected)
+    return [scope for scope in columns if OverlayEntry.canonical_overlay_name(scope) == canonical]
 
 
 def _local_source(live: Sequence[PeerSnapshot], scope: str, key: str) -> str:
@@ -481,6 +384,8 @@ def _seed_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
                         subtitle=f"{table}.{name}",
                         entry=name,
                         cells=tuple(_seed_cell(instance, table, name, field) for instance in live),
+                        family=next((name for name, key in SEED_FAMILIES.items() if key == table), table),
+                        group=table,
                         syncable=meta.get("syncable", True) is not False,
                         sync_note=str(meta.get("sync_note", "")),
                         redacted=any(_seed_is_redacted(instance, table, name, field) for instance in live),
@@ -494,11 +399,16 @@ def _seed_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
 def _seed_cell(instance: PeerSnapshot, table: str, name: str, field: str) -> Cell:
     entity = _values(instance, "seed").get(table, {}).get(name)
     present = isinstance(entity, Mapping) and field in entity
+    shipped = _values(instance, "seed_shipped").get(table, {}).get(name)
+    default_recorded = isinstance(shipped, Mapping) and field in shipped
     return Cell(
         label=instance.label,
         present=present,
         known=isinstance(entity, Mapping),
         value=entity.get(field) if present and isinstance(entity, Mapping) else None,
+        default_value=shipped.get(field) if default_recorded and isinstance(shipped, Mapping) else None,
+        default_recorded=default_recorded,
+        source="stored" if present else "",
         local=instance.local,
     )
 
@@ -542,7 +452,7 @@ def _is_redacted(instance: PeerSnapshot, scope: str, key: str) -> bool:
     coordinate), so reading only the row's top level calls it an ordinary difference and the
     page offers to import a value that is a redaction stub.
     """
-    return carries_stub(_values(instance, "settings").get(scope, {}).get(key))
+    return carries_stub(_setting_bucket(instance, scope).get(key))
 
 
 def _seed_is_redacted(instance: PeerSnapshot, table: str, name: str, field: str) -> bool:
@@ -563,7 +473,7 @@ def _source(instance: PeerSnapshot, scope: str, key: str) -> str:
     overruled by the global one.
     """
     all_scopes = _values(instance, "provenance")
-    here = all_scopes.get(scope)
+    here = all_scopes.get(_scope_spelling(instance, scope))
     if isinstance(here, Mapping) and key in here:
         return str(here[key])
     globally = all_scopes.get("")
@@ -571,15 +481,12 @@ def _source(instance: PeerSnapshot, scope: str, key: str) -> str:
 
 
 def _equals_default(live: Sequence[PeerSnapshot], scope: str, key: str) -> bool:
-    stored = [
-        _values(instance, "settings").get(scope, {})[key]
-        for instance in live
-        if key in _values(instance, "settings").get(scope, {})
-    ]
+    stored = [_setting_bucket(instance, scope)[key] for instance in live if key in _setting_bucket(instance, scope)]
     if not stored:
         return False
-    defaults = _values(live[0], "defaults")
-    return key in defaults and canonical_json(stored[0]) == canonical_json(defaults[key])
+    target = next((instance for instance in live if instance.local), live[0])
+    defaults = _values(target, "defaults")
+    return _default_recorded(target, key) and canonical_json(stored[0]) == canonical_json(defaults[key])
 
 
 def _equals_seed_default(live: Sequence[PeerSnapshot], table: str, name: str, field: str) -> bool:
@@ -602,6 +509,7 @@ __all__ = [
     "RENDER_CAP",
     "WITHHELD_REASON",
     "Cell",
+    "CompareFilters",
     "CompareRow",
     "CompareView",
     "Reading",

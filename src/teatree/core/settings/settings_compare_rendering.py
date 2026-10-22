@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final
 from teatree.core.setting_cell import SettingCell
 
 if TYPE_CHECKING:
-    from teatree.core.settings.settings_compare import CompareRow
+    from teatree.core.settings.settings_compare_rows import CompareRow
 
 
 #: The longest value a table row can hold and still be read across. A `loops` or `entities`
@@ -62,6 +62,9 @@ class Reading:
     local: bool
     agrees: bool
     text: str
+    default_text: str = "not recorded"
+    source: str = ""
+    wire_value: str = ""
     opaque: bool = False
     cell: SettingCell | None = None
 

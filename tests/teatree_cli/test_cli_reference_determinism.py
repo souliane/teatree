@@ -75,3 +75,9 @@ class TestGeneratorRenderIsByteStableAcrossEnvironments:
         a = self._generate(tmp_path / "a.md", {"COLUMNS": "80", "HOME": "/tmp/fake-home-a"})
         b = self._generate(tmp_path / "b.md", {"COLUMNS": "200", "HOME": "/tmp/fake-home-b"})
         assert a == b
+
+    def test_forwarded_compare_options_come_from_the_management_command(self, tmp_path: Path) -> None:
+        markdown = self._generate(tmp_path / "compare.md", {})
+        section = markdown.split("#### `t3 settings compare`", 1)[1].split("### `t3 teatree`", 1)[0]
+        for flag in ("--snapshot", "--kind", "--family", "--group", "--text", "--scope", "--all-rows"):
+            assert flag in section

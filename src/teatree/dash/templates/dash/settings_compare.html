@@ -14,6 +14,35 @@
   agreement between the instances that did answer, which is the one wrong answer this page must
   never give.
   {% endcomment %}
+  <form method="get" action="{% url 'dash:settings_compare' %}" class="toolbar compare-filters">
+    <label>Family
+      <select name="family">
+        <option value="">All families</option>
+        {% for family in comparison.families %}<option value="{{ family }}" {% if filters.family == family %}selected{% endif %}>{{ family }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Group
+      <select name="group">
+        <option value="">All groups</option>
+        {% for group in comparison.setting_groups %}<option value="{{ group }}" {% if filters.group == group %}selected{% endif %}>{{ group }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Search <input type="search" name="text" value="{{ filters.text }}"></label>
+    <label>Scope
+      <select name="scope">
+        <option value="global" {% if filters.scope == "global" %}selected{% endif %}>Global</option>
+        <option value="all" {% if filters.scope == "all" %}selected{% endif %}>All scopes</option>
+        {% for scope in comparison.scopes %}{% if scope %}<option value="{{ scope }}" {% if filters.scope == scope %}selected{% endif %}>{{ scope }}</option>{% endif %}{% endfor %}
+      </select>
+    </label>
+    <label>Rows
+      <select name="differs_only">
+        <option value="on" {% if filters.differs_only %}selected{% endif %}>Differences</option>
+        <option value="off" {% if not filters.differs_only %}selected{% endif %}>All rows</option>
+      </select>
+    </label>
+    <button class="dash-btn" type="submit">Filter</button>
+  </form>
   {% if comparison.error %}
     <div class="banner-red">{{ comparison.error }}</div>
   {% else %}
@@ -24,7 +53,7 @@
       Ordered flat, ninety rows of "one box has an override here" bury the handful of rows where
       the two boxes hold different values, which is the only thing the page exists to show.
       {% endcomment %}
-      <p class="muted">Only what the instances do not agree on. A box that holds no row has no
+      <p class="muted">Changes from this page apply to this instance only. A box that holds no row has no
         opinion, and every way of having none compares equal — only a stored value differs from
         silence.{% if comparison.identical %} <span class="mono">{{ comparison.identical }}</span>
         settings and seed fields read the same on every instance and are not listed.{% endif %}</p>
@@ -39,7 +68,7 @@
           — that box did not answer, so it has no column here.</p>
       {% endif %}
       {% if comparison.truncated %}
-        <p class="banner-red">Showing the first {{ comparison.rows|length }} of {{ comparison.total_rows }} rows.</p>
+        <p class="banner-amber">Showing {{ comparison.rows|length }} of {{ comparison.total_rows }} rows; only identical rows are limited.</p>
       {% endif %}
       {% for group in comparison.groups %}
         <details class="compare-group" {% if group.open %}open{% endif %}>
@@ -62,7 +91,7 @@
                 {% endcomment %}
                 <th class="col-shipped">defaults.toml</th>
                 {% for instance in comparison.compared %}
-                  <th class="mono">{{ instance.label }}{% if instance.local %} <span class="muted">editable</span>{% endif %}
+                  <th class="mono">{{ instance.label }} <span class="muted">v{{ instance.instance.teatree_version|default:"unknown" }}</span>{% if instance.local %} <span class="muted">editable</span>{% endif %}
                     {% if instance.from_file %}<span class="muted">record of {{ instance.captured_at|default:"an unstated time" }}</span>{% endif %}
                   </th>
                 {% endfor %}
@@ -108,6 +137,20 @@
                         </details>
                       {% else %}
                         <span class="mono {% if reading.opaque %}cell-opaque{% endif %}">{{ reading.text }}</span>
+                      {% endif %}
+                      <span class="row-note">default here: <span class="mono">{{ reading.default_text }}</span>{% if reading.source %} · via {{ reading.source }}{% endif %}</span>
+                      {% if not reading.local and reading.present and not reading.opaque and row.can_apply and row.local_edit %}
+                        <div class="compare-apply">
+                          <form class="compare-use-here" hx-post="{{ row.apply_url }}" hx-swap="none">
+                            <input type="hidden" name="value" value="{{ reading.wire_value }}">
+                            <button class="dash-btn" type="submit">Use here</button>
+                          </form>
+                          <form class="compare-revert" hx-post="{{ row.revert_url }}" hx-swap="none" hidden>
+                            <input type="hidden" name="value" value="{{ row.local_edit.selected }}">
+                            <button class="dash-btn" type="submit">Revert</button>
+                          </form>
+                          <span class="cell-status" role="status" aria-live="polite"></span>
+                        </div>
                       {% endif %}
                       {% if reading.cell.unwritable_reason %}<span class="row-note">{{ reading.cell.unwritable_reason }}
                         {% if row.surface == "setting" %}— <a href="{% url 'dash:settings' %}">open it on the settings page</a>{% endif %}</span>{% endif %}
@@ -193,6 +236,11 @@
       nothing on this box, and the loaded columns last only for the page they produce.</p>
     <form method="post" action="{% url 'dash:settings_compare' %}" enctype="multipart/form-data">
       {% csrf_token %}
+      <input type="hidden" name="family" value="{{ filters.family }}">
+      <input type="hidden" name="group" value="{{ filters.group }}">
+      <input type="hidden" name="text" value="{{ filters.text }}">
+      <input type="hidden" name="scope" value="{{ filters.scope }}">
+      <input type="hidden" name="differs_only" value="{% if filters.differs_only %}on{% else %}off{% endif %}">
       <p class="toolbar">
         <input type="file" name="snapshot_files" accept=".json,application/json" multiple
           aria-label="snapshot files to compare against">
