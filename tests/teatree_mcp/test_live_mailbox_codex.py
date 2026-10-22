@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.codex_app_server import CodexAppServerHarness, CodexAppServerSession
@@ -240,16 +241,16 @@ def test_the_delivery_scenario_fails_when_steering_or_routing_is_disabled(tmp_pa
         assert (absent["outcome"], absent["code"]) == ("rejected", "session_closed")
 
 
-def test_a_push_only_peer_never_claims_an_inbox_copy(tmp_path: Path) -> None:
-    for mode, outcome in (
-        ("accept", "accepted_current_turn"),
-        ("silent", "unknown_delivery"),
-        ("no-steer", "rejected"),
-    ):
-        receipt, _, inbox = _exchange(tmp_path / mode, mode=mode)
-        assert receipt["outcome"] == outcome
-        assert receipt["queued_in_inbox"] is False
-        assert inbox == []
+@pytest.mark.parametrize(
+    ("mode", "outcome"),
+    [("accept", "accepted_current_turn"), ("silent", "unknown_delivery"), ("no-steer", "rejected")],
+)
+def test_a_push_only_peer_never_claims_an_inbox_copy(tmp_path: Path, mode: str, outcome: str) -> None:
+    receipt, _, inbox = _exchange(tmp_path, mode=mode)
+
+    assert receipt["outcome"] == outcome
+    assert receipt["queued_in_inbox"] is False
+    assert inbox == []
 
 
 def test_a_push_queued_for_an_old_participant_is_stale_in_the_new_attempt(tmp_path: Path) -> None:
