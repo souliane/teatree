@@ -74,6 +74,14 @@ _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI = (
 )
 
 
+_SLACK_SECTIONS_THAT_ONLY_POST = (
+    "## Tables — use the formatter, never a hand-rolled pipe table",
+    "## mrkdwn gotchas",
+    "## Line length — wrapped at 90, at the transport",
+    "## CLI tables",
+)
+
+
 def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     skills = Path(__file__).resolve().parents[2] / "skills"
     raw = (skills / "review" / "SKILL.md").read_text(encoding="utf-8")
@@ -89,14 +97,15 @@ def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monke
 
 def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
     skills = Path(__file__).resolve().parents[2] / "skills"
+    raw = (skills / "slack-formatting" / "SKILL.md").read_text(encoding="utf-8")
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
 
     rendered = read_only_venue_skill_contents(["slack-formatting"], {"slack-formatting"})
 
     assert "--- SKILL: slack-formatting ---" in rendered
     assert "## Be concise" in rendered
-    assert "## Tables" not in rendered
-    assert "## mrkdwn gotchas" not in rendered
+    assert all(f"\n{heading}\n" in raw for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
+    assert not any(heading in rendered for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
 
 
 def test_read_only_venue_section_drop_ends_at_the_next_heading_of_the_same_or_higher_level(

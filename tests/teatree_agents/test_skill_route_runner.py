@@ -27,10 +27,12 @@ from teatree.agents.session_lineage import resume_session_id
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Session, Task, TaskAttempt, UsageWindowState
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
+from tests.teatree_agents._route_fakes import scripted_session
+from tests.teatree_agents._sdk_fake import FakeHarnessSession, result_message, success_stream
 
 _CODEX_THREAD_ID = "22222222-2222-4222-8222-222222222222"
 
@@ -161,6 +163,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert {call.kwargs["idempotency_key"] for call in notify.call_args_list} == {
             f"agent_route_paid_fallback:{timezone.now().date().isoformat()}"
         }
+        assert {call.kwargs["audience"] for call in notify.call_args_list} == {NotifyAudience.OWNER_ESCALATION}
 
     def test_a_metered_first_candidate_is_not_a_fall_through_and_sends_no_owner_alert(self) -> None:
         self._register("claude_like", FakeHarnessSession, metered_lane=True)
@@ -170,6 +173,21 @@ class TestSkillRouteRuntimeFallback(TestCase):
 
         assert attempt.lane == TaskAttempt.Lane.METERED
         notify.assert_not_called()
+
+    def test_a_metered_fall_through_that_fails_still_alerts_the_owner(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        overloaded = result_message(is_error=True, subtype="error_during_execution", result="API Error: 503")
+        self._register("claude_like", scripted_session([overloaded]), metered_lane=True)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user") as notify,
+        ):
+            attempt = self._run(self._config("codex_like", "claude_like"))
+
+        assert attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED, exit_code=1).exists()
+        notify.assert_called()
 
     def test_a_failing_owner_alert_does_not_fail_the_metered_fall_through(self) -> None:
         self._register("codex_like", _TypedFailureSession)

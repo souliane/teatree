@@ -35,6 +35,7 @@ from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolv
 from teatree.core.admission.dispatch_lane import dispatch_lane
 from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.overlay_loader import OverlayConfigResolver
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.index import build_skill_index, harness_skills_dirs
@@ -128,8 +129,6 @@ _PAID_FALLBACK_REQUIRED = "metered route fallback requires agent_route_paid_fall
 
 
 def _is_metered_route(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> bool:
-    from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred Django model import
-
     return _route_lane(capabilities, provider) == TaskAttempt.Lane.METERED
 
 
@@ -148,8 +147,6 @@ def _paid_fallback_blocked(
 
 
 def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> str:
-    from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred Django model import
-
     if capabilities.managed_lane:
         return TaskAttempt.Lane.MANAGED
     return dispatch_lane(provider=provider, metered_harness=capabilities.metered_lane)
@@ -292,15 +289,10 @@ def route_hold(harness: str, reason: str) -> HarnessRejection:
     return HarnessRejection(harness, reason, retry_at=timezone.now() + UNAVAILABLE_TTL, held=True)
 
 
-def paid_fallback_hold(harness: str) -> HarnessRejection:
-    """A re-checkable refusal: only the owner's ``agent_route_paid_fallback`` lets this dispatch spend."""
-    return route_hold(harness, _PAID_FALLBACK_REQUIRED)
-
-
 def _paid_fallback_rejection(harness: str, earlier: list[HarnessRejection]) -> HarnessRejection:
     if any(rejection.retry_at is not None for rejection in earlier):
         return HarnessRejection(harness, _PAID_FALLBACK_REQUIRED)
-    return paid_fallback_hold(harness)
+    return route_hold(harness, _PAID_FALLBACK_REQUIRED)
 
 
 def _skill_route_selection(

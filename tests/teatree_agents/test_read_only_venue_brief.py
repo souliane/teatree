@@ -247,15 +247,20 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "REQUIRED: Load /fastapi" not in context
         assert [str(root) for root in harness_skills_dirs() if str(root) in context] == []
 
-    def test_review_companions_are_required_in_the_read_only_bundle(self) -> None:
-        skills = ["rules", "review", "code-review", "overlay-review", "companion-review"]
-        with patch(
-            "teatree.agents.skill_bundle.active_overlay_review_skills",
-            return_value=["overlay-review", "companion-review"],
-        ):
-            required = read_only_required_skills("reviewing", skills, lifecycle_skill="review", stage_skills=[])
+    def test_a_read_only_review_bundle_requires_its_review_skills_and_no_stack_style_guide(self) -> None:
+        review = {"rules", "review", "code-review", "overlay-review", "companion-review"}
+        skills = [*review, "ac-python", "ac-django"]
+        for phase in ("reviewing", "critic_reviewing"):
+            with (
+                self.subTest(phase=phase),
+                patch(
+                    "teatree.agents.skill_bundle.active_overlay_review_skills",
+                    return_value=["overlay-review", "companion-review"],
+                ),
+            ):
+                required = read_only_required_skills(phase, skills, lifecycle_skill="review", stage_skills=[])
 
-        assert required == set(skills)
+            assert required == review
 
     def test_a_brief_that_still_names_a_teatree_command_refuses_the_executor_run(self) -> None:
         self._stack_skill("Run t3 doctor check before planning.\n")

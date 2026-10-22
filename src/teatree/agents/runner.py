@@ -5,7 +5,6 @@ import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -186,7 +185,6 @@ def _retry_route_exception(
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
-        _alert_owner_of_metered_fallback(attempt)
         _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
     if (
@@ -316,7 +314,7 @@ def run_agent(
 def _alert_owner_of_metered_fallback(attempt: TaskAttempt) -> None:
     if attempt.lane != TaskAttempt.Lane.METERED or not attempt.route_candidate_index:
         return
-    day = timezone.now().astimezone(UTC).date().isoformat()
+    day = timezone.now().date().isoformat()
     try:
         notify_user(
             f"An agent route fell through to the metered lane on {day} UTC. "

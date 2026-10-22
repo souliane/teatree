@@ -413,11 +413,7 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
         ),
     )
 
-    phase_lines = phase_specific_lines(task, skills, stage_exclude=stage_exclude, read_only_venue=read_only_venue)
-    if read_only_venue:
-        lines.extend(read_only_text(line) for line in phase_lines)
-    else:
-        lines.extend(phase_lines)
+    lines.extend(phase_specific_lines(task, skills, stage_exclude=stage_exclude, read_only_venue=read_only_venue))
 
     lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 

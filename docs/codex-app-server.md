@@ -356,9 +356,9 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   body, resolving the document beside the selected
   `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
   a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
-  `<teatree tool, absent here>`, and so does every bare `t3` command in executable phase instructions.
-  Quoted issue text, comments, handoffs, and diffs remain byte-for-byte intact as evidence; a system context that still names a `t3` command, or that is
-  over the context budget, refuses the run rather than being cut.
+  `<teatree tool, absent here>`, and so does every bare `t3` command in the task message's rubric and plan seams.
+  Quoted issue text, comments, handoffs, and diffs remain byte-for-byte intact as evidence; a system context that
+  still names a `t3` command, or that is over the context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an

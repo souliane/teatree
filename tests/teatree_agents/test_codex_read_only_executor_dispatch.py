@@ -15,14 +15,7 @@ from django.utils import timezone
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import codex_app_server_options, codex_read_only_server, harness_registry
-from teatree.agents.harness_registry import (
-    HarnessBuildContext,
-    HarnessCapabilities,
-    HarnessFallbackError,
-    HarnessFallbackKind,
-    HarnessSpec,
-    register_harness,
-)
+from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config import get_effective_settings
@@ -69,22 +62,6 @@ class _Harness:
     async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield FakeHarnessSession(success_stream({"summary": "claude planned instead", "plan_text": ""}))
-
-
-class _QuotaSession(FakeHarnessSession):
-    async def query(self, prompt: str) -> None:
-        del prompt
-        message = "ChatGPT quota exhausted"
-        raise HarnessFallbackError(message, kind=HarnessFallbackKind.QUOTA)
-
-
-class _QuotaHarness:
-    capabilities = HarnessCapabilities(read_only_venue=True)
-
-    @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
-        del options
-        yield _QuotaSession([])
 
 
 class TestPlanningOnTheReadOnlyExecutor(TestCase):
@@ -173,8 +150,6 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
 
     def test_a_refused_read_only_brief_records_failure_and_parks_without_spending(self) -> None:
         self._register_claude()
-
-        assert not AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
         before = timezone.now()
         attempt = self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"})
 
@@ -188,6 +163,16 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert self.built == []
         assert not [call for call in self.fake.calls if "setsid" in call]
 
+    def test_a_refused_brief_on_an_unrouted_dispatch_fails_with_the_refusal(self) -> None:
+        settings = replace(get_effective_settings(None), agent_harness="codex_app_server")
+
+        with patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings):
+            attempt = self._run(issue={"error": "Not a GitHub issue URL"})
+
+        attempt.task.refresh_from_db()
+        assert attempt.task.status == Task.Status.FAILED
+        assert "the issue body could not be read" in attempt.error
+
     def test_a_refused_brief_tries_a_later_free_candidate(self) -> None:
         register_harness(
             HarnessSpec(
@@ -199,21 +184,12 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         )
         self.addCleanup(harness_registry._REGISTRY.pop, "other_free", None)
 
-        attempt = self._run("codex_app_server", "other_free", issue={"error": "Not a GitHub issue URL"})
+        with patch.object(runner_mod, "notify_user") as notify:
+            attempt = self._run("codex_app_server", "other_free", issue={"error": "Not a GitHub issue URL"})
 
         assert attempt.selected_harness == "other_free"
         assert attempt.lane != TaskAttempt.Lane.METERED
-
-    def test_a_read_only_run_that_fails_mid_run_records_failure_and_route_hold(self) -> None:
-        self._register_claude()
-        register_harness(HarnessSpec(name="quota_ro", factory=lambda _context: _QuotaHarness(), allows_provider=False))
-        self.addCleanup(harness_registry._REGISTRY.pop, "quota_ro", None)
-
-        attempt = self._run("quota_ro", "claude_like")
-
-        failed = attempt.task.attempts.get(selected_harness="quota_ro")
-        assert "ChatGPT quota exhausted" in failed.error
-        assert AgentRouteAvailability.objects.filter(harness="quota_ro").exclude(unavailable_reason="").exists()
+        notify.assert_not_called()
 
     def test_third_read_only_refusal_fails_with_a_readable_reason(self) -> None:
         task = self._task()

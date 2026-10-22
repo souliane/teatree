@@ -22,6 +22,7 @@ from teatree.agents.skill_routing import QUOTA_AUTH_HOLD, record_route_unavailab
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import LIMIT_PARKED_PREFIX, Mode, ModeOverride, Session, Task, TaskAttempt, UsageWindowState
+from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import (
     CLAUDE_LIKE,
@@ -78,17 +79,19 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         )
         self.addCleanup(harness_registry._REGISTRY.pop, name, None)
 
-    def test_gated_metered_fallback_does_not_count_as_an_open_lane(self) -> None:
+    def _register_metered_harness(self, name: str) -> None:
         capabilities = HarnessCapabilities(metered_lane=True)
         register_harness(
             HarnessSpec(
-                name="metered_side",
+                name=name,
                 factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
                 capabilities=capabilities,
                 allows_provider=False,
             )
         )
-        self.addCleanup(harness_registry._REGISTRY.pop, "metered_side", None)
+        self.addCleanup(harness_registry._REGISTRY.pop, name, None)
+
+    def _another_lane_can_dispatch(self, *harnesses: str) -> bool:
         settings = replace(
             get_effective_settings(None),
             agent_harness=MANAGED,
@@ -97,21 +100,22 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         )
         with (
             patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
-            routed_by(route_config("route-skill", MANAGED, "metered_side")),
+            routed_by(route_config("route-skill", *harnesses)),
         ):
-            assert not harness_dispatch_mod.another_lane_can_dispatch(TaskAttempt.Lane.MANAGED)
+            return harness_dispatch_mod.another_lane_can_dispatch(TaskAttempt.Lane.MANAGED)
+
+    def test_gated_metered_fallback_does_not_count_as_an_open_lane(self) -> None:
+        self._register_metered_harness("metered_side")
+
+        assert not self._another_lane_can_dispatch(MANAGED, "metered_side")
+
+    def test_a_metered_primary_route_counts_as_an_open_lane_without_authorization(self) -> None:
+        self._register_metered_harness("metered_side")
+
+        assert self._another_lane_can_dispatch("metered_side", MANAGED)
 
     def test_overlay_phase_candidates_gate_a_later_metered_lane(self) -> None:
-        capabilities = HarnessCapabilities(metered_lane=True)
-        register_harness(
-            HarnessSpec(
-                name="metered_phase",
-                factory=lambda _context: StubHarness(capabilities, FakeHarnessSession),
-                capabilities=capabilities,
-                allows_provider=False,
-            )
-        )
-        self.addCleanup(harness_registry._REGISTRY.pop, "metered_phase", None)
+        self._register_metered_harness("metered_phase")
         settings = replace(get_effective_settings(None), agent_route_paid_fallback=False)
         context = HarnessBuildContext(settings=settings, phase=_PHASE)
 
@@ -120,6 +124,37 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
 
         assert "agent_route_paid_fallback" in str(refused.value)
 
+    def test_a_later_candidate_without_credentials_is_rejected_not_raised(self) -> None:
+        self._register_resolved_paid_harness()
+        context = HarnessBuildContext(settings=get_effective_settings(None), phase=_PHASE)
+
+        with (
+            patch.object(
+                harness_dispatch_mod, "resolve_credential_provider", side_effect=CredentialError("no API key")
+            ),
+            pytest.raises(NoAvailableHarnessError) as refused,
+        ):
+            harness_dispatch_mod.candidate_selection(context, ["missing_first", "resolved_paid"])
+
+        assert "no API key" in str(refused.value)
+
+    def test_a_route_candidate_without_credentials_is_not_an_open_lane(self) -> None:
+        self._register_resolved_paid_harness()
+
+        with patch.object(
+            harness_dispatch_mod, "resolve_credential_provider", side_effect=CredentialError("no API key")
+        ):
+            assert not self._another_lane_can_dispatch(MANAGED, "resolved_paid")
+
+    def test_overlay_phase_candidates_allow_a_metered_first_candidate_without_authorization(self) -> None:
+        self._register_metered_harness("metered_phase")
+        context = HarnessBuildContext(settings=get_effective_settings(None), phase=_PHASE)
+
+        selection = harness_dispatch_mod.candidate_selection(context, ["metered_phase", MANAGED])
+
+        assert selection is not None
+        assert selection.spec.name == "metered_phase"
+
     def test_overlay_phase_candidates_allow_a_later_free_lane_without_settings(self) -> None:
         selection = harness_dispatch_mod.candidate_selection(
             HarnessBuildContext(phase=_PHASE), ["missing_first", MANAGED]
@@ -127,21 +162,6 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
 
         assert selection is not None
         assert selection.spec.name == MANAGED
-
-    def test_providerless_second_candidate_resolving_to_metered_parks_without_authorization(self) -> None:
-        task = self._task()
-        self._register_resolved_paid_harness()
-        self._hold_codex(task)
-        with patch.object(
-            harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
-        ):
-            attempt = self._dispatch(task, MANAGED, "resolved_paid")
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
-        assert task.not_before > timezone.now()
-        assert "agent_route_paid_fallback" in attempt.error
-        assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
 
     def test_a_long_codex_window_parks_through_the_metered_gate_until_it_resets(self) -> None:
         task = self._task()
@@ -158,6 +178,8 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         assert task.status == Task.Status.PENDING
         assert task.not_before == window.resets_at
         assert all(attempt.error.startswith(LIMIT_PARKED_PREFIX) for attempt in attempts)
+        assert "resolved_paid: metered route fallback requires agent_route_paid_fallback" in attempts[0].error
+        assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
 
     def test_a_gated_metered_candidate_after_a_barred_one_fails_after_two_parks_with_a_readable_reason(self) -> None:
         capabilities = HarnessCapabilities(managed_lane=True)
@@ -181,23 +203,6 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         assert task.status == Task.Status.FAILED
         assert [attempt.error.startswith(LIMIT_PARKED_PREFIX) for attempt in attempts] == [True, True, False]
         assert "agent_route_paid_fallback" in attempts[-1].error
-
-    def test_owner_authorization_permits_a_resolved_metered_second_candidate(self) -> None:
-        task = self._task()
-        self._register_resolved_paid_harness()
-        self._hold_codex(task)
-        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
-        with (
-            patch.object(
-                harness_dispatch_mod, "resolve_credential_provider", return_value=AgentHarnessProvider.API_KEY
-            ),
-            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
-            routed_by(route_config("route-skill", MANAGED, "resolved_paid")),
-        ):
-            selected = harness_dispatch_mod.resolve_dispatch_harness(task, phase=_PHASE, skills=["route-skill"])
-
-        assert selected.name == "resolved_paid"
-        assert selected.provider == AgentHarnessProvider.API_KEY
 
     def test_a_held_codex_and_a_windowed_claude_park_until_the_hold_lifts(self) -> None:
         task = self._task()
