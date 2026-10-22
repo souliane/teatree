@@ -13,6 +13,7 @@ from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV, I
 
 _MAX_RESPONSE_BYTES = 2_000_000
 _INVALID_RESPONSE = "Live mailbox returned an invalid response"
+_UNAVAILABLE = "Live mailbox is unavailable; this TeaTree session may have ended"
 
 
 class MailboxError(Exception):
@@ -39,35 +40,34 @@ class MailboxClient:
     async def _request(self, method: str, **arguments: object) -> object:
         try:
             reader, writer = await asyncio.open_unix_connection(str(self.socket_path), limit=_MAX_RESPONSE_BYTES)
-        except (OSError, ConnectionError) as exc:
-            msg = "Live mailbox is unavailable; this TeaTree session may have ended"
-            raise MailboxError(msg) from exc
-        try:
-            request = {"token": self.token, "method": method, **arguments}
-            writer.write(json.dumps(request).encode() + b"\n")
-            await writer.drain()
             try:
-                raw = await reader.readline()
-            except ValueError as exc:
-                raise MailboxError(_INVALID_RESPONSE) from exc
-            if not raw or len(raw) > _MAX_RESPONSE_BYTES:
-                raise MailboxError(_INVALID_RESPONSE)
-            try:
-                response = json.loads(raw)
-            except (ValueError, RecursionError) as exc:
-                raise MailboxError(_INVALID_RESPONSE) from exc
-            if not isinstance(response, dict):
-                raise MailboxError(_INVALID_RESPONSE)
-            if "error" in response:
-                msg = str(response["error"])
-                raise MailboxError(msg)
-            if "result" not in response:
-                raise MailboxError(_INVALID_RESPONSE)
-            return response["result"]
-        finally:
-            writer.close()
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await writer.wait_closed()
+                request = {"token": self.token, "method": method, **arguments}
+                writer.write(json.dumps(request).encode() + b"\n")
+                await writer.drain()
+                try:
+                    raw = await reader.readline()
+                except ValueError as exc:
+                    raise MailboxError(_INVALID_RESPONSE) from exc
+                if not raw or len(raw) > _MAX_RESPONSE_BYTES:
+                    raise MailboxError(_INVALID_RESPONSE)
+                try:
+                    response = json.loads(raw)
+                except (ValueError, RecursionError) as exc:
+                    raise MailboxError(_INVALID_RESPONSE) from exc
+                if not isinstance(response, dict):
+                    raise MailboxError(_INVALID_RESPONSE)
+                if "error" in response:
+                    msg = str(response["error"])
+                    raise MailboxError(msg)
+                if "result" not in response:
+                    raise MailboxError(_INVALID_RESPONSE)
+                return response["result"]
+            finally:
+                writer.close()
+                with suppress(OSError):
+                    await writer.wait_closed()
+        except (OSError, ValueError) as exc:
+            raise MailboxError(_UNAVAILABLE) from exc
 
     async def self_identity(self) -> PeerIdentity:
         """Return the address TeaTree assigned to this running task."""

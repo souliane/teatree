@@ -1,7 +1,9 @@
 """Native mailbox tools for a task-owned Lane B identity."""
 
 from collections.abc import Awaitable
+from typing import Annotated
 
+from pydantic import Field
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
@@ -17,7 +19,12 @@ async def _result(request: Awaitable[object]) -> object:
 
 def build_mailbox_toolset(client: MailboxClient, phase: str) -> FunctionToolset[None]:
     allowed = tools_for_phase(phase)
-    toolset: FunctionToolset[None] = FunctionToolset()
+    toolset: FunctionToolset[None] = FunctionToolset(
+        instructions=(
+            "A mailbox receipt is acceptance, not obedience. "
+            "After not_accepted_in_time, retry with the same key; a new key sends a second copy."
+        )
+    )
     names = (
         {"agent_mailbox_peers", "agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
         if MCP_WRITE in allowed
@@ -28,7 +35,11 @@ def build_mailbox_toolset(client: MailboxClient, phase: str) -> FunctionToolset[
         """List live TeaTree tasks on this host."""
         return await _result(client.peers())
 
-    async def send(to: str, text: str, key: str) -> object:
+    async def send(
+        to: str,
+        text: str,
+        key: Annotated[str, Field(description="Reuse the same key on retries to avoid duplicate messages.")],
+    ) -> object:
         """Send a keyed message to one peer and await its receipt for at most 20 seconds."""
         return await _result(client.send(to, text, key))
 

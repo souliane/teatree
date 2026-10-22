@@ -346,14 +346,13 @@ class PydanticAiHarness:
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
-        # A lambda, because pydantic_ai resolves a processor's annotations at runtime to pick its calling convention.
         inputs = LiveInputQueue()
-        capabilities = (
-            [ProcessHistory(lambda messages: elide_stale_tool_results(messages, keep_tool_results))]
-            if self._phase
-            else []
-        )
-        capabilities.append(ProcessHistory(PeerInputAdmission(inputs)))
+        capabilities = [ProcessHistory(PeerInputAdmission(inputs))]
+        if self._phase:
+            # A lambda keeps annotations from changing pydantic_ai's processor calling convention.
+            capabilities.insert(
+                0, ProcessHistory(lambda messages: elide_stale_tool_results(messages, keep_tool_results))
+            )
         # ``config.shell_tool_retries`` is None outside the shell-exploration phase
         # family — passing ``retries=None`` there is byte-identical to omitting it,
         # so only those phases' Agent gets a widened tool-retry budget.
@@ -381,6 +380,7 @@ class PydanticAiHarness:
                     run=run,
                 )
             finally:
+                inputs.reopen()
                 inputs.end(RejectCode.SESSION_CLOSED)
 
 

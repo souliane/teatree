@@ -71,7 +71,7 @@ class LiveInputQueue:
 
     def end(self, code: RejectCode) -> None:
         """Refuse every input still waiting, and every later one, with *code*."""
-        if self._ended is None or code == RejectCode.SESSION_CLOSED:
+        if self._ended is None:
             self._ended = code
         while self._pending:
             item = self._pending.popleft()

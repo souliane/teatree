@@ -91,7 +91,7 @@ async def _collect(session: SteerablePydanticAiSession) -> list[object]:
     return [message async for message in session.receive_response()]
 
 
-def test_reopen_clears_only_a_finished_turn_and_close_is_final() -> None:
+def test_reopen_clears_only_a_finished_turn_and_preserves_first_end_reason() -> None:
     async def run() -> None:
         queue = LiveInputQueue()
         queue.end(RejectCode.TURN_ENDED)
@@ -102,10 +102,9 @@ def test_reopen_clears_only_a_finished_turn_and_close_is_final() -> None:
         await pending
         queue.end(RejectCode.TURN_ENDED)
         queue.end(RejectCode.SESSION_CLOSED)
-        queue.reopen()
         with pytest.raises(SteerRejectedError) as error:
             await queue.submit("too late", wait=1)
-        assert error.value.code == RejectCode.SESSION_CLOSED
+        assert error.value.code == RejectCode.TURN_ENDED
 
     asyncio.run(run())
 

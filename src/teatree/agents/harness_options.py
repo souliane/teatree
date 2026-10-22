@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.live_mailbox_client import MailboxClient
+from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME
 
 
 def extract_system_prompt(options: ClaudeAgentOptions) -> str:
@@ -73,7 +74,7 @@ class HarnessOptions:
     def from_sdk_options(cls, options: ClaudeAgentOptions) -> "HarnessOptions":
         """Adapt the vendor ``ClaudeAgentOptions`` into the neutral options at the ``open`` boundary."""
         servers = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
-        teatree = servers.get("teatree")
+        teatree = servers.get(TEATREE_MCP_SERVER_NAME)
         identity = teatree.get("env") if isinstance(teatree, dict) else None
         return cls(
             model=options.model,

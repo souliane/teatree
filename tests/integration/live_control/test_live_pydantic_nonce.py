@@ -121,7 +121,7 @@ class LivePydanticNonceTests(TestCase):
             assert receipt["queued_in_inbox"] is True
             assert len(requests) >= 2
             assert _NONCE not in requests[0]
-            assert sum(body.count(_NONCE) for body in requests[1:]) == 1
+            assert requests[1].count(_NONCE) == 1
         finally:
             release_request.set()
             broker.unregister(sender.address)

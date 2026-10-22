@@ -36,6 +36,23 @@ def test_phase_grants_and_mcp_outage_do_not_remove_native_tools() -> None:
         assert set(build_mailbox_toolset(client, "reviewing").tools) == {"agent_mailbox_peers"}
 
 
+def test_native_send_explains_how_to_retry_without_a_second_copy() -> None:
+    client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    toolset = build_mailbox_toolset(client, "coding")
+    schema = toolset.tools["agent_mailbox_send"].function_schema.json_schema
+    observed: list[str] = []
+
+    def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        observed.append(repr(messages))
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent: Agent[None, str] = Agent(FunctionModel(respond), toolsets=[toolset])
+    assert asyncio.run(agent.run("go")).output == "done"
+
+    assert "retry with the same key" in observed[0]
+    assert "same key" in schema["properties"]["key"]["description"]
+
+
 def test_a_broker_outage_returns_tool_data_and_the_agent_finishes() -> None:
     client = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
     observed: list[str] = []
@@ -57,6 +74,44 @@ def test_a_broker_outage_returns_tool_data_and_the_agent_finishes() -> None:
     agent: Agent[None, str] = Agent(FunctionModel(respond), toolsets=[build_mailbox_toolset(client, "coding")])
     assert asyncio.run(agent.run("go")).output == "done"
     assert "Live mailbox is unavailable" in observed[1]
+
+
+def test_an_oversized_send_returns_tool_data_and_the_agent_finishes(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        sender = broker.register(room="ticket", harness="pydantic_ai", label="sender")
+        client = MailboxClient(sender.socket_path, sender.token)
+        observed: list[str] = []
+
+        def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+            if not observed:
+                observed.append("first")
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="agent_mailbox_send",
+                            args={"to": "absent", "text": "x" * 400_000, "key": "retry-key"},
+                            tool_call_id="c1",
+                        )
+                    ]
+                )
+            observed.append(
+                repr(
+                    [
+                        part
+                        for message in messages
+                        if isinstance(message, ModelRequest)
+                        for part in message.parts
+                        if isinstance(part, ToolReturnPart)
+                    ]
+                )
+            )
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        with patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False):
+            toolsets = build_lane_b_toolsets(LaneBToolConfig(phase="coding", mailbox=client)).toolsets
+        agent: Agent[None, str] = Agent(FunctionModel(respond), toolsets=toolsets)
+        assert asyncio.run(agent.run("go")).output == "done"
+        assert "Live mailbox is unavailable" in observed[1]
 
 
 @pytest.mark.parametrize(
