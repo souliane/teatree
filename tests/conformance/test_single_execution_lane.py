@@ -131,7 +131,7 @@ class TestInteractiveSkillSurvives:
     def test_it_names_both_exemptions_so_the_order_is_not_over_read(self) -> None:
         body = self._skill()
         assert "Work already in flight" in body
-        assert "[headless-authoring-ok: <reason>]" in body
+        assert "[gate-escape:headless_authoring: <reason>]" in body
 
     def test_it_says_review_merge_diagnose_answer_are_not_implementation(self) -> None:
         body = self._skill()

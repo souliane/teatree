@@ -39,7 +39,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, TypedDict
 
-from teatree.hooks import _dispatch_quote_ok
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.hooks._hook_state import hook_state_root
@@ -441,7 +440,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | N
 # before the sub-agent loads it into context and can echo it into a later
 # published output (the #1213 publish gate fires too late for that).
 _DISPATCH_TOOLS: Final[frozenset[str]] = frozenset({"Agent", "Task"})
-_DISPATCH_PROMPT_FIELDS: Final[tuple[str, ...]] = _dispatch_quote_ok.DISPATCH_PROMPT_FIELDS
+_DISPATCH_PROMPT_FIELDS: Final[tuple[str, ...]] = ("description", "prompt")
 
 
 def extract_dispatch_payload(tool_name: str, tool_input: ToolInput) -> str | None:
@@ -464,28 +463,7 @@ def extract_dispatch_payload(tool_name: str, tool_input: ToolInput) -> str | Non
     return "\n".join(parts)
 
 
-# ── Override + ledger ──────────────────────────────────────────────
-
-
-# In-prompt opt-out token for the dispatch-prompt gate (#1401): an Agent/Task prompt
-# body has no command line or env to carry a flag, so the opt-out is an in-prompt
-# token mirroring ``hook_router``'s ``[skill-load-ok: <reason>]``.
-# Its placement contract lives in :mod:`teatree.hooks._dispatch_quote_ok`.
-
-
-def dispatch_quote_ok_reason(text: str) -> str | None:
-    """Return the reason from a ``[quote-ok: <reason>]`` token in ``text``, else None."""
-    return _dispatch_quote_ok.reason_in(text)
-
-
-def dispatch_quote_ok_reason_for_input(tool_input: ToolInput) -> str | None:
-    """Return the dispatch opt-out reason authorised by ANY ONE dispatch field.
-
-    Per FIELD, not over the joined payload: a long ``description`` can no longer
-    consume the ``prompt``'s recognition budget. See
-    :mod:`teatree.hooks._dispatch_quote_ok` for the placement contract.
-    """
-    return _dispatch_quote_ok.reason_in_fields(_dispatch_quote_ok.field_values(tool_input))
+# ── Ledger ─────────────────────────────────────────────────────────
 
 
 def _ledger_path() -> Path:

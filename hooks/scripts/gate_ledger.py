@@ -11,7 +11,7 @@ from pathlib import Path
 from hooks.scripts.loop_registry_path import loop_registry_path
 
 _MARKER = re.compile(r"[a-z0-9_.:-]{1,64}\Z")
-_DECISIONS = frozenset({"deny", "override", "advise"})
+_DECISIONS = frozenset({"deny", "override", "escape", "advise"})
 RETENTION_DAYS = 7
 # These are literal, public markers declared by hook call sites. A token-shaped
 # prefix from a private reason is never telemetry, even if it matches _MARKER.

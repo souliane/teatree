@@ -68,14 +68,20 @@ class TestSuppressHelperUnit:
     def test_main_agent_unchanged(self) -> None:
         assert router._suppress_self_auth_hint_for_subagent(self._HINTED, {}) == self._HINTED
 
-    def test_subagent_does_not_see_the_live_quote_ok_approval(self) -> None:
-        out = router._suppress_self_auth_hint_for_subagent(self._HINTED, {"agent_id": "a-1"})
+    def test_a_never_escapable_gate_message_is_left_untouched_for_a_subagent(self) -> None:
+        out = router._suppress_self_auth_hint_for_subagent(self._HINTED, {"agent_id": "a-1"}, "dispatch_quote_scanner")
+        assert out == self._HINTED
 
-        assert "[quote-ok:" not in out
-        assert "A token placed" not in out
-        assert "cannot self-authorize" in out
-        assert out.startswith("BLOCKED: pre-dispatch quote-scanner gate (#1401).")
-        assert "ask the owner" in out
+    def test_human_only_hint_is_rewritten_for_subagent(self) -> None:
+        reason = "BLOCKED: raw review post. Use `[gate-escape:raw_review_post: <reason>]` after owner approval."
+        out = router._suppress_self_auth_hint_for_subagent(reason, {"agent_id": "a-1"}, "raw_review_post")
+        assert "[gate-escape:" not in out
+        assert "cannot grant an owner-only exception" in out
+        assert out.startswith("BLOCKED: raw review post.")
+
+    def test_audited_hint_remains_available_to_subagent(self) -> None:
+        reason = "BLOCKED: use `[gate-escape:brief_anchor: <reason>]`."
+        assert router._suppress_self_auth_hint_for_subagent(reason, {"agent_id": "a-1"}, "brief_anchor") == reason
 
     def test_a_retired_variable_form_is_not_matched(self) -> None:
         reason = (
