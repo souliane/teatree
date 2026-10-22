@@ -18,7 +18,7 @@ from teatree.core.models.checkout_proof import (
     ReleasedPrHeadAttestation,
 )
 from teatree.core.models.types import WorktreeExtra
-from teatree.core.models.worktree_occupancy import task_holder_id
+from teatree.core.models.worktree_occupancy import _task_pk_from_holder, task_holder_id
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
@@ -26,15 +26,8 @@ from teatree.utils.url_slug import pr_ref_from_url
 logger = logging.getLogger(__name__)
 
 
-def task_id_from_holder(holder: str) -> int | None:
-    pk = holder.removeprefix("task:")
-    if not holder.startswith("task:") or not pk.isdigit():
-        return None
-    return int(pk)
-
-
 def _holder_task_for_ticket(holder: str, task: Task) -> Task | None:
-    pk = task_id_from_holder(holder)
+    pk = _task_pk_from_holder(holder)
     return Task.objects.filter(pk=pk, ticket=task.ticket).first() if pk is not None else None
 
 

@@ -1,8 +1,8 @@
-import re
 from dataclasses import dataclass
 
+from teatree.git_sha import is_full_git_sha
+
 _MIN_SPEC_SEGMENTS = 3
-_FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,4 +42,4 @@ def owner_repo(spec: str) -> str:
 def pinned_commit(spec: str) -> str:
     """The lowercase 40-hex ref of *spec*, or ``""``; lowercased so the CLI gets the string the pin check read."""
     ref = spec.partition("#")[2].strip().lower()
-    return ref if _FULL_COMMIT.fullmatch(ref) else ""
+    return ref if is_full_git_sha(ref) else ""

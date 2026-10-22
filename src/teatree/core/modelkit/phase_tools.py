@@ -64,8 +64,6 @@ _READ_ONLY: Final[frozenset[str]] = frozenset({"read_file", "search_files", "rec
 _WEB: Final[frozenset[str]] = frozenset({"web_fetch", "web_search"})
 _WRITE: Final[frozenset[str]] = frozenset({"write_file", "edit_file"})
 _FULL: Final[frozenset[str]] = ALL_TOOLS
-
-
 #: The read-mostly-WITH-shell shape every verdict-producing review phase carries:
 #: read + search + web + shell, and NEVER write/edit (a review does not mutate
 #: source). Shared by :data:`VERDICT_REVIEW_PHASES` below.

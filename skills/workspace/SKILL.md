@@ -118,6 +118,8 @@ the old clean digest resolves to a reflog ancestor, and the checkout HEAD matche
 the ticket-owned GitHub pull request head and its exact live source branch ref.
 The proof reads the GitHub API with the overlay's routed token, checks the digest again,
 and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
+The pull request read needs a `gh` that returns `headRepository.nameWithOwner`
+(the worker's 2.102.1 does; the host's 2.63.2 omits it, so the proof parks there).
 An unreadable or mismatched proof parks the task for the existing owner path.
 On completion, ordinary failure, lease-expiry reap, and attested park, checkout
 settlement waits two 60-second beats for descendants and marked children, sends

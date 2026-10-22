@@ -1,12 +1,32 @@
-"""Forge readers for open PR presence and exact GitHub head proof.
+"""Open-PR probe shared by the orphan, teardown, and fast-push gates, plus the exact-head readers.
 
-``PrProbe`` distinguishes FOUND, NONE and UNKNOWN for callers with different
-fail-closed postures. ``github_open_pr_head`` reads one open PR for the exact
-branch; ``github_exact_branch_head`` reads its full remote ref. Both use the
-routed GitHub credential, and unreadable or malformed answers return ``None``.
-Without the routed credential, private-repo reads look absent and a caller can
-mistake an existing PR for a branch needing its first push.
-The GitLab presence probe uses its HTTP backend without a ``glab`` binary.
+Three gates each asked the forge the same question — "is there an OPEN PR/MR whose
+source is this branch?" — with their own hand-rolled ``gh pr list`` / ``glab mr
+list`` runner, and they DID NOT agree on the crucial ambiguity: a probe that could
+not run (missing CLI, non-zero exit, unparsable JSON) versus one that ran and found
+nothing. Collapsing the two is safe for a caller that reacts to both by creating a
+PR (fast_push), but it is a safety REGRESSION for a fail-closed reclaim gate, which
+must BLOCK on "unknown" and CLEAR on "none".
+
+:class:`PrProbe` answers the question ONCE with an explicit tri-state
+(:attr:`PrProbeOutcome.FOUND` / :attr:`~PrProbeOutcome.NONE` /
+:attr:`~PrProbeOutcome.UNKNOWN`). Each caller keeps its own posture by mapping the
+tri-state through :meth:`PrProbe.url_or_empty` (collapse none+unknown) or
+:meth:`PrProbe.url_or_none_on_unknown` (keep them apart, fail closed on unknown) —
+the probe implementation no longer forks per caller.
+
+:func:`forge_cli_env` is the second half of that unification: a forge READ
+authenticates through the same credential chain the writer path already resolves
+(souliane/teatree#4116). A probe shelled without it comes back UNKNOWN for every
+private repo, and a caller reading that as "no PR" refuses the second push to a
+branch whose PR already exists. It serves the GitHub arm only: the GitLab arm shells
+out to nothing, because the deploy IMAGE declares no ``glab`` and a probe must not
+depend on a binary only an operator's host bind mount happens to supply.
+
+:func:`github_open_pr_head` and :func:`github_exact_branch_head` serve the released-checkout
+recovery proof: one open PR for the exact branch with its source repository and head, and the
+branch's full remote ref. Both read through the routed credential and answer ``None`` for an
+unreadable, ambiguous or malformed reply, because a head proof must refuse what it cannot verify.
 """
 
 import json
@@ -25,7 +45,9 @@ from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# Each caller supplies its own limit and branch selector; the GitLab arm uses HTTP.
+# ``gh`` lists only OPEN PRs here; each caller adds its ``--json`` fields, ``--limit`` and
+# ``--head``. The GitLab arm runs no CLI at all — the image declares no ``glab``, so that side
+# reads over the token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open")
 _PROBE_TIMEOUT_SECONDS = 30
 
@@ -169,7 +191,7 @@ def forge_for_repo(repo_dir: str | Path) -> str | None:
 
 
 def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
-    """The tri-state open-PR probe for a known-GitHub repo (``gh pr list --head``)."""
+    """The tri-state open-PR probe for a known-GitHub repo (``gh pr list --head``); one row IS an open PR."""
     return _probe_open_pr([*_GH_OPEN_PR, "--json", "url", "--limit", "1", "--head", branch], repo_dir, key="url")
 
 

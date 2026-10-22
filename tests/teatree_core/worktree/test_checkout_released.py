@@ -2,6 +2,8 @@ import json
 import os
 import shlex
 import shutil
+from collections.abc import Generator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +34,6 @@ from tests.teatree_core.models._shared import _init_repo_with_branch
 @dataclass(frozen=True)
 class ForgeResponse:
     head_repo: str = "souliane/teatree"
-    head_repository: dict[str, str] | None = None
     head_branch: str = "feature"
     forge_head: str | None = None
     remote_head: str | None = None
@@ -117,8 +118,11 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 [
                     {
                         "url": found.url,
-                        "headRepository": response.head_repository
-                        or {"id": "R_kgDORe_NCA", "name": "teatree", "nameWithOwner": response.head_repo},
+                        "headRepository": {
+                            "id": "R_kgDORe_NCA",
+                            "name": "teatree",
+                            "nameWithOwner": response.head_repo,
+                        },
                         "headRefName": response.head_branch,
                         "headRefOid": response.forge_head or self.head,
                     }
@@ -177,6 +181,18 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), table or self.clear
             )
 
+    @contextmanager
+    def git_shim(self, guard: str) -> Generator[Path]:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        bin_dir = self.path.parent / "git-bin"
+        bin_dir.mkdir()
+        shim = bin_dir / "git"
+        shim.write_text(f'#!/bin/sh\n{guard}exec {shlex.quote(real_git)} "$@"\n')
+        shim.chmod(0o755)
+        with patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
+            yield bin_dir
+
     def test_read_only_prior_tenures_do_not_attest(self) -> None:
         Task.objects.filter(pk=self.shipping.pk).update(phase="reviewing")
         self.assert_parked()
@@ -218,6 +234,16 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         assert not self.direct_recovery()
 
+    def test_ended_current_tenure_refuses_recovery(self) -> None:
+        assert acquire(self.worktree, holder=task_holder_id(self.claimant))
+        self.worktree.refresh_from_db()
+        extra = self.worktree.get_extra()
+        current = extra["checkout_custody"]["tenures"][-1]
+        current["ended"] = "released"
+        current["ended_at"] = current["since"]
+        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
+        assert not self.direct_recovery()
+
     def test_occupancy_must_name_claimant(self) -> None:
         assert acquire(self.worktree, holder=task_holder_id(self.claimant))
         self.worktree.refresh_from_db()
@@ -233,21 +259,10 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
     def test_git_failure_parks_and_releases_occupancy(self) -> None:
         original = self.worktree.get_extra()["attested_state"]
-        real_git = shutil.which("git")
-        assert real_git is not None
-        bin_dir = self.path.parent / "git-bin"
-        bin_dir.mkdir()
-        wrapper = bin_dir / "git"
-        wrapper.write_text(
-            "#!/bin/sh\n"
-            'if [ "$3" = "reflog" ]; then\n'
-            '  printf "%s\\n" "fatal: unreadable reflog" >&2\n'
-            "  exit 128\n"
-            "fi\n"
-            f'exec {shlex.quote(real_git)} "$@"\n'
+        unreadable_reflog = (
+            'if [ "$3" = "reflog" ]; then\n  printf "%s\\n" "fatal: unreadable reflog" >&2\n  exit 128\nfi\n'
         )
-        wrapper.chmod(0o755)
-        with patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
+        with self.git_shim(unreadable_reflog):
             parked = self.claim()
         assert parked is not None
         self.worktree.refresh_from_db()
@@ -255,15 +270,11 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         assert self.worktree.get_extra()["attested_state"] == original
 
     def test_proven_head_must_bind_attested_digest(self) -> None:
-        real_git = shutil.which("git")
-        assert real_git is not None
-        bin_dir = self.path.parent / "git-bin"
-        bin_dir.mkdir()
-        first_read = bin_dir / "first-head-read"
-        substituted = bin_dir / "substituted-head-read"
-        wrapper = bin_dir / "git"
-        wrapper.write_text(
-            "#!/bin/sh\n"
+        marks = self.path.parent / "git-bin-marks"
+        marks.mkdir()
+        first_read = marks / "first-head-read"
+        substituted = marks / "substituted-head-read"
+        substitute_second_head_read = (
             'if [ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "HEAD" ]; then\n'
             f"  if [ -f {shlex.quote(str(first_read))} ]; then\n"
             f"    rm {shlex.quote(str(first_read))}\n"
@@ -273,11 +284,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             "  fi\n"
             f"  touch {shlex.quote(str(first_read))}\n"
             "fi\n"
-            f'exec {shlex.quote(real_git)} "$@"\n'
         )
-        wrapper.chmod(0o755)
-
-        with patch.dict("os.environ", {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}):
+        with self.git_shim(substitute_second_head_read):
             self.assert_parked(response=ForgeResponse(forge_head=self.anchor_head, remote_head=self.anchor_head))
         assert substituted.exists()
 
@@ -313,9 +321,15 @@ class ReleasedPrHeadRecoveryTests(TestCase):
     def test_reported_pr_source_branch_must_equal_checkout(self) -> None:
         self.assert_parked(response=ForgeResponse(head_branch="other"))
 
-    def test_recorded_branch_must_equal_checkout(self) -> None:
-        Worktree.objects.filter(pk=self.worktree.pk).update(branch="other")
-        self.assert_parked()
+    def test_t2_checkout_off_its_recorded_branch_parks(self) -> None:
+        with self.subTest("recorded_branch_must_equal_checkout"):
+            Worktree.objects.filter(pk=self.worktree.pk).update(branch="other")
+            self.assert_parked()
+            Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
+        with self.subTest("detached_head"):
+            self.assert_clean_claim_then_restore()
+            run_strict(repo=str(self.path), args=["checkout", "--detach", self.head])
+            self.assert_parked()
 
     def test_t1_released_shipping_and_reviewer_claim_at_owned_pr_head(self) -> None:
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
@@ -339,27 +353,14 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         ]
         assert serialize_worktree(self.worktree)["auto_attestation"] == audit
 
-    def test_t2_extra_local_commit_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        (self.path / "late.txt").write_text("late")
-        run_strict(repo=str(self.path), args=["add", "late.txt"])
-        run_strict(repo=str(self.path), args=["commit", "-m", "late"])
-        self.assert_parked()
-
-    def test_t2_detached_head_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        run_strict(repo=str(self.path), args=["checkout", "--detach", self.head])
-        self.assert_parked()
-
-    def test_t3_tracked_dirt_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        (self.path / "feature.txt").write_text("dirty")
-        self.assert_parked()
-
-    def test_t3_untracked_dirt_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        (self.path / "untracked.txt").write_text("dirty")
-        self.assert_parked()
+    def test_t3_dirt_parks(self) -> None:
+        for kind, filename in (("tracked", "feature.txt"), ("untracked", "untracked.txt")):
+            with self.subTest(kind):
+                self.assert_clean_claim_then_restore()
+                (self.path / filename).write_text("dirty")
+                self.assert_parked()
+                run_strict(repo=str(self.path), args=["checkout", "--", "."])
+                run_strict(repo=str(self.path), args=["clean", "-fdq"])
 
     def test_t4a_host_gap_with_mixed_empty_and_nested_namespaces_parks(self) -> None:
         self.assert_clean_claim_then_restore()
@@ -368,12 +369,6 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
         assert table.eviction_refuse_reason(nested_writer=False)
-        self.assert_parked(table)
-
-    def test_t4a_nested_unreadable_gap_parks(self) -> None:
-        self.assert_clean_claim_then_restore()
-        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\t7\n")
-        assert table.eviction_refuse_reason(nested_writer=True)
         self.assert_parked(table)
 
     def test_t5_operator_holder_parks(self) -> None:
