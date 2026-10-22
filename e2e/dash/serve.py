@@ -11,6 +11,7 @@ from django.conf import settings
 from django.core.management import call_command
 
 import teatree
+from teatree.visual_qa_server import DATABASE_OVERRIDES, SCRATCH_PREFIX
 
 
 def main() -> None:
@@ -23,11 +24,11 @@ def main() -> None:
     if os.environ.get("DJANGO_SETTINGS_MODULE") != "e2e.dash.settings":
         message = "visual QA requires e2e.dash.settings"
         raise SystemExit(message)
-    if any(os.environ.get(key) for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR", "DATABASE_URL")):
+    if any(os.environ.get(key) for key in DATABASE_OVERRIDES):
         message = "visual QA refuses inherited database overrides"
         raise SystemExit(message)
     scratch = os.environ.get("XDG_DATA_HOME", "")
-    if not scratch or scratch != os.environ.get("TMPDIR") or not Path(scratch).name.startswith("teatree-visual-qa-"):
+    if scratch != os.environ.get("TMPDIR") or not Path(scratch).name.startswith(SCRATCH_PREFIX):
         message = "visual QA requires an isolated scratch directory"
         raise SystemExit(message)
 

@@ -281,6 +281,7 @@ class TestRunVisualQAGate(TestCase):
         assert evidence["bypass"]["head_sha"] == "b" * 40
         assert evidence["bypass"]["at"]
         assert "owner approved" in evidence["report_markdown"]
+        assert f"Bypass head: `{'b' * 40}`; at: {evidence['bypass']['at']}" in evidence["report_markdown"]
 
     def test_refused_connection_is_did_not_run_not_a_content_finding(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
@@ -318,6 +319,24 @@ class TestRunVisualQAGate(TestCase):
         assert result is not None
         assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
         assert "ERR_CONNECTION_REFUSED" in result["visual_qa"]["unchecked_reasons"]["/"]
+
+    def test_a_server_that_died_during_the_run_is_did_not_run(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        report = visual_qa.VisualQAReport(
+            targets=["/"],
+            pages=[visual_qa.PageResult(url="http://127.0.0.1:9/")],
+            base_url="http://127.0.0.1:9",
+            server_failure="server exited 3: template crashed",
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=report),
+        ):
+            result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
+        assert "the checkout server failed (server exited 3: template crashed)" in result["error"]
 
     def test_server_hook_failure_is_did_not_run(self) -> None:
         ticket, worktree = self._ticket_and_worktree()

@@ -264,8 +264,6 @@ _VISUAL_QA_NOT_RUN_HINT = (
 
 
 def _visual_qa_verdict(report: visual_qa.VisualQAReport) -> Verdict:
-    if report.skipped_reason.startswith("--skip:"):
-        return Pass()
     if report.total_errors:
         return Refuse(f"Visual QA found {report.total_errors} blocking finding(s).")
     if report.not_run_reason:

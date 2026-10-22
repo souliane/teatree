@@ -24,33 +24,55 @@ from teatree.core.review.mr_metadata import (
     missing_required_sections,
     validate_mr_metadata,
 )
+from teatree.utils.run import CommandFailedError
 
 _GOOD_DESC = "feat(ship): add the gate (#1540)\n\n## What\nAdds the gate.\n\n## Why\nThe convention is missed often."
 
 
+_VISUAL_QA = "## Visual QA\n\nChecked 1 of 1 page(s)."
+_RECORDED = {"repo_path": "/repo/a", "head_sha": "a" * 40, "report_markdown": _VISUAL_QA + "\n"}
+
+
+def test_visual_qa_evidence_of_the_same_repo_and_head_is_appended_below_the_body() -> None:
+    with patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40):
+        rendered = append_recorded_visual_qa("feat: x\n\n## What\nX\n", _RECORDED, repo_path="/repo/a")
+
+    assert rendered == f"feat: x\n\n## What\nX\n\n{_VISUAL_QA}"
+
+
 @pytest.mark.parametrize(
-    ("recorded_repo", "recorded_head", "expected"),
+    ("evidence", "live_head"),
     [
-        ("/repo/a", "a" * 40, "append"),
-        ("/repo/b", "a" * 40, "omit"),
-        ("/repo/a", "b" * 40, "omit"),
-        ("", "", "omit"),
+        pytest.param(None, "a" * 40, id="no-evidence"),
+        pytest.param({**_RECORDED, "repo_path": "/repo/b"}, "a" * 40, id="other-repo"),
+        pytest.param(_RECORDED, "b" * 40, id="other-head"),
+        pytest.param({**_RECORDED, "head_sha": ""}, "", id="no-recorded-head"),
+        pytest.param({**_RECORDED, "report_markdown": " \n"}, "a" * 40, id="empty-report"),
+        pytest.param({**_RECORDED, "report_markdown": None}, "a" * 40, id="no-report"),
     ],
 )
-def test_visual_qa_evidence_is_appended_only_for_the_same_repo_and_head(
-    recorded_repo: str, recorded_head: str, expected: str
+def test_visual_qa_evidence_is_left_out_unless_it_is_this_repos_report_for_this_head(
+    evidence: dict[str, object] | None, live_head: str
 ) -> None:
     body = "feat: x\n\n## What\nX"
-    evidence = {
-        "repo_path": recorded_repo,
-        "head_sha": recorded_head,
-        "report_markdown": "## Visual QA\n\nChecked 1 of 1 page(s).",
-    }
+
+    with patch("teatree.core.review.mr_metadata.git.head_sha", return_value=live_head):
+        assert append_recorded_visual_qa(body, evidence, repo_path="/repo/a") == body
+
+
+def test_a_body_that_already_has_a_visual_qa_section_is_not_given_a_second() -> None:
+    body = "feat: x\n\n## Visual QA\nwritten by hand"
 
     with patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40):
-        rendered = append_recorded_visual_qa(body, evidence, repo_path="/repo/a")
+        assert append_recorded_visual_qa(body, _RECORDED, repo_path="/repo/a") == body
 
-    assert ("## Visual QA" in rendered) is (expected == "append")
+
+@pytest.mark.parametrize("failure", [CommandFailedError(["git"], 128, "", "bad"), OSError("no git")])
+def test_visual_qa_evidence_is_left_out_when_the_head_cannot_be_read(failure: Exception) -> None:
+    body = "feat: x\n\n## What\nX"
+
+    with patch("teatree.core.review.mr_metadata.git.head_sha", side_effect=failure):
+        assert append_recorded_visual_qa(body, _RECORDED, repo_path="/repo/a") == body
 
 
 class TestTitleRegex:

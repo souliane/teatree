@@ -199,9 +199,6 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     Returns one ``PageResult`` per target.  Raises
     ``VisualQAUnavailableError`` when the headless browser cannot start.
     """
-    if len(targets) > MAX_PAGES:
-        message = f"too many visual QA targets: {len(targets)} exceeds the page cap of {MAX_PAGES}"
-        raise VisualQAUnavailableError(message)
     try:
         from playwright.sync_api import (  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
             Error as PlaywrightError,
@@ -254,10 +251,10 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
     try:
         page.goto(url, timeout=PER_PAGE_TIMEOUT_MS, wait_until="networkidle")
     except PlaywrightError as exc:
-        unreached = _never_connected(str(exc))
-        if unreached:
-            unreached_reason = str(exc)
-        if not unreached:
+        if _never_connected(str(exc)):
+            unreached = True
+            unreached_reason = str(exc).splitlines()[0]
+        else:
             navigation_error = f"navigation failed: {exc}"
 
     body_text = ""
@@ -424,10 +421,7 @@ def format_report(report: VisualQAReport) -> str:
         lines.append(f"### {marker} `{path}`")
         if page.errors:
             lines.append("")
-            lines.extend(
-                f"- **{error.kind}**: {_public_text(error.message.replace(report.base_url, ''))}"
-                for error in page.errors
-            )
+            lines.extend(f"- **{error.kind}**: {_public_message(error, report.base_url)}" for error in page.errors)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -437,3 +431,8 @@ _LOCAL_PATH_RE = re.compile(r"(?<![A-Za-z0-9:/])/(?:[^\s'\"<>`]+)")
 
 def _public_text(value: str) -> str:
     return _LOCAL_PATH_RE.sub("[local path]", redact_secrets(value))
+
+
+def _public_message(error: PageError, base_url: str) -> str:
+    message = error.message.replace(base_url, "")
+    return redact_secrets(message) if error.kind == "http" else _public_text(message)

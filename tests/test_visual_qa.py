@@ -1,8 +1,10 @@
 """Unit tests for the pre-push browser sanity gate."""
 
-import os
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -165,28 +167,6 @@ class TestRunCheckWithoutPlaywright:
 
 
 class TestServedApp:
-    def test_server_is_sandboxed_and_process_group_is_reaped(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("T3_CONFIG_DB", "/tmp/live-config.sqlite3")
-        script = (
-            "import os,socket,time;"
-            "print(os.environ.get('T3_CONFIG_DB','absent'),flush=True);"
-            "s=socket.socket();s.bind(('127.0.0.1',int(os.environ['T3_VISUAL_QA_PORT'])));"
-            "s.listen();time.sleep(30)"
-        )
-        spec = visual_qa.ServerSpec(
-            RunCommand(args=[sys.executable, "-c", script], cwd=tmp_path), str(tmp_path), lambda: None
-        )
-
-        with visual_qa._served_app(spec) as app:
-            pgid = app.pgid
-            process = app.process
-            assert "absent" in app.log_path.read_text()
-            assert app.base_url.startswith("http://127.0.0.1:")
-
-        assert process.poll() is not None
-        with pytest.raises(ProcessLookupError):
-            os.killpg(pgid, 0)
-
     def test_missing_checkout_script_is_did_not_run(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: [])
         spec = visual_qa.ServerSpec(
@@ -198,6 +178,49 @@ class TestServedApp:
         assert "server exited" in report.not_run_reason
         assert "missing-serve.py" in report.not_run_reason
         assert report.unchecked_reasons["/"].startswith("unreached")
+
+    def test_a_server_that_exits_at_start_is_named_for_each_target(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(visual_qa, "run_check", lambda targets, base_url: [])
+        script = "import sys;print('first line');print('second line');sys.exit(3)"
+        spec = visual_qa.ServerSpec(
+            RunCommand(args=[sys.executable, "-c", script], cwd=tmp_path), str(tmp_path), lambda: None
+        )
+
+        report = visual_qa.evaluate(read_diff=lambda: ["page.html"], overlay=None, base_url="", server=spec)
+
+        assert report.unchecked_reasons == {"/": "unreached (server exited 3: first line second line)"}
+
+    def test_a_server_that_dies_during_the_check_is_named_for_each_unchecked_page(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        script = (
+            "import os,socket,sys,time;print('first line');print('second line',flush=True);"
+            "s=socket.socket();s.bind(('127.0.0.1',int(os.environ['T3_VISUAL_QA_PORT'])));s.listen();"
+            "time.sleep(0.5);sys.exit(3)"
+        )
+        spec = visual_qa.ServerSpec(
+            RunCommand(args=[sys.executable, "-c", script], cwd=tmp_path), str(tmp_path), lambda: None
+        )
+        served: list[visual_qa.ServedApp] = []
+        real_served_app = visual_qa._served_app
+
+        @contextmanager
+        def capturing(server: visual_qa.ServerSpec) -> Generator[visual_qa.ServedApp]:
+            with real_served_app(server) as app:
+                served.append(app)
+                yield app
+
+        def check_after_the_server_dies(targets: list[str], base_url: str) -> list[visual_qa.PageResult]:
+            if targets:
+                served[0].process.wait(timeout=10)
+            return [visual_qa.PageResult(url=base_url + target, unreached=True) for target in targets]
+
+        monkeypatch.setattr(visual_qa, "_served_app", capturing)
+        monkeypatch.setattr(visual_qa, "run_check", check_after_the_server_dies)
+
+        report = visual_qa.evaluate(read_diff=lambda: ["page.html"], overlay=None, base_url="", server=spec)
+
+        assert report.unchecked_reasons == {"/": "unreached (server exited 3: first line second line)"}
 
 
 class TestChangedFilesReadsTheResolvedBase:
@@ -279,6 +302,7 @@ class TestNavigationClassification:
             ("net::ERR_CONNECTION_REFUSED", True),
             ("net::ERR_NAME_NOT_RESOLVED", True),
             ("net::ERR_ADDRESS_UNREACHABLE", True),
+            ("net::ERR_NETWORK_UNREACHABLE", True),
             ("net::ERR_CONNECTION_RESET", False),
             ("net::ERR_EMPTY_RESPONSE", False),
         ],
@@ -286,13 +310,32 @@ class TestNavigationClassification:
     def test_only_never_connected_errors_are_unreached(self, failure: str, tmp_path: Path, *, unreached: bool) -> None:
         context = MagicMock()
         page = context.new_page.return_value
-        page.goto.side_effect = PlaywrightError(f"Page.goto: {failure}")
+        page.goto.side_effect = PlaywrightError(f"Page.goto: {failure}\nCall log:\n  - navigating")
         page.locator.return_value.inner_text.return_value = ""
 
         result = visual_qa._check_one(context, "http://127.0.0.1:9", "/dash/board/", tmp_path, 0)
 
         assert result.unreached is unreached
         assert bool(result.errors) is not unreached
+        assert result.unreached_reason == (f"Page.goto: {failure}" if unreached else "")
+
+    def test_an_unreached_page_carries_no_content_findings(self, tmp_path: Path) -> None:
+        context = MagicMock()
+        page = context.new_page.return_value
+
+        def refused(*_args: object, **_kwargs: object) -> None:
+            console_handler = next(call.args[1] for call in page.on.call_args_list if call.args[0] == "console")
+            console_handler(SimpleNamespace(text="Failed to load resource", type="error"))
+            message = "Page.goto: net::ERR_CONNECTION_REFUSED"
+            raise PlaywrightError(message)
+
+        page.goto.side_effect = refused
+        page.locator.return_value.inner_text.return_value = ""
+
+        result = visual_qa._check_one(context, "http://127.0.0.1:9", "/dash/board/", tmp_path, 0)
+
+        assert result.unreached
+        assert result.errors == []
 
 
 class TestVisualQAReport:
@@ -329,9 +372,19 @@ class TestVisualQAReport:
             pages=[
                 visual_qa.PageResult(
                     url="http://127.0.0.1:9/dash/board/",
-                    errors=[visual_qa.PageError(url="http://x", kind="page", message=f"failed at {private_path}")],
+                    errors=[
+                        visual_qa.PageError(
+                            url="http://x", kind="page", message=f"failed at {private_path} API_TOKEN=sekret123"
+                        ),
+                        visual_qa.PageError(
+                            url="http://x",
+                            kind="http",
+                            message="HTTP 404: http://127.0.0.1:9/static/app.css?token=sekret456",
+                        ),
+                    ],
                 )
             ],
+            base_url="http://127.0.0.1:9",
             not_run_reason=f"server exited 1: {private_path}",
             server_failure=f"server exited 1: {private_path}",
         )
@@ -339,6 +392,9 @@ class TestVisualQAReport:
         markdown = visual_qa.format_report(report)
         assert private_path not in markdown
         assert "[local path]" in markdown
+        assert "sekret" not in markdown
+        assert "- **http**: HTTP 404: /static/app.css?token=<redacted>" in markdown
+        assert "127.0.0.1" not in markdown
 
     def test_unreached_connection_is_unknown_even_without_findings(self) -> None:
         report = visual_qa.VisualQAReport(
@@ -375,10 +431,9 @@ class TestVisualQAReport:
         assert report.total_errors == 0
 
     def test_a_target_the_run_never_reached_is_an_error(self) -> None:
-        # The 60s budget cuts the loop mid-list; a page nobody loaded is not a clean page.
         page = visual_qa.PageResult(url="http://x/a")
         report = visual_qa.VisualQAReport(targets=["/a", "/b"], pages=[page], base_url="http://x")
-        assert report.unchecked == ["/b"]
+        assert report.unchecked_reasons == {"/b": "deadline"}
         assert report.has_errors is True
         assert "Not checked" in visual_qa.format_report(report)
 

@@ -16,6 +16,9 @@ from teatree.types import RunCommand
 from teatree.utils.run import PIPE, Popen, TimeoutExpired, redact_secrets, spawn, spawn_session_leader
 
 SERVER_START_TIMEOUT_S = 90
+STOP_GRACE_S = 5
+SCRATCH_PREFIX = "teatree-visual-qa-"
+DATABASE_OVERRIDES = ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR", "DATABASE_URL")
 
 
 class VisualQAUnavailableError(RuntimeError):
@@ -52,14 +55,12 @@ class ServedApp:
     def stop(self) -> None:
         if self.process.stdin is not None:
             self.process.stdin.close()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(self.pgid, signal.SIGTERM)
         try:
-            self.process.wait(timeout=5)
+            self.process.wait(timeout=STOP_GRACE_S)
         except TimeoutExpired:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.pgid, signal.SIGKILL)
-            self.process.wait(timeout=5)
+            self.process.wait(timeout=STOP_GRACE_S)
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.pgid, signal.SIGKILL)
 
@@ -73,13 +74,13 @@ class ServerSpec:
 
 @contextlib.contextmanager
 def served_app(server: ServerSpec) -> Generator[ServedApp]:
-    with tempfile.TemporaryDirectory(prefix="teatree-visual-qa-") as scratch:
+    with tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX) as scratch:
         server.prepare()
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
         env = dict(os.environ)
-        for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR", "T3_DATA_DIR", "DATABASE_URL", "DJANGO_SETTINGS_MODULE"):
+        for key in (*DATABASE_OVERRIDES, "T3_DATA_DIR", "DJANGO_SETTINGS_MODULE"):
             env.pop(key, None)
         env.update(server.command.env)
         env.update({"XDG_DATA_HOME": scratch, "TMPDIR": scratch, "T3_VISUAL_QA_PORT": str(port)})
