@@ -29,6 +29,7 @@ graph TD
     teatree.ci_oauth_switch --> teatree.utils
     teatree.config --> teatree.db
     teatree.config --> teatree.paths
+    teatree.config --> teatree.sqlite_snapshot
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check
@@ -326,6 +327,7 @@ graph TD
     teatree.loop --> teatree.loop.rendering
     teatree.loop --> teatree.loop.slack_answer
     teatree.loop --> teatree.loop.question_binding
+    teatree.loop --> teatree.token_report
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.session_identity --> teatree.core.session_identity
     teatree.db --> teatree.docker

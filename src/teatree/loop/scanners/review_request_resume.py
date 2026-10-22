@@ -28,8 +28,8 @@ rollup that errors each hold the request, because the reply tells colleagues the
 merge request is reviewable and an unverified one is exactly the claim this rule
 exists to keep off the channel.
 
-Unconditional. What keeps the reply off a colleague thread is the repo-exemption
-guard and the fail-closed readiness ladder above, never a flag.
+Unconditional. The repo-exemption guard, fail-closed readiness ladder and safe
+reviewer mention keep an unsafe reply off a colleague thread, never a flag.
 """
 
 import datetime as dt
@@ -47,6 +47,7 @@ from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -116,6 +117,7 @@ def _claim_and_reply(
     post: ReviewRequestPost,
     messaging: MessagingBackend,
     *,
+    mention: str,
     context: OnBehalfContext,
 ) -> ScanSignal | None:
     """Claim the one-shot, reply in the tracked thread, release the claim on any refusal.
@@ -127,10 +129,17 @@ def _claim_and_reply(
     claimed_at = timezone.now()
     if not _claim_resume(post, claimed_at):
         return None
+    if not mention:
+        _release_resume(post, claimed_at)
+        return ScanSignal(
+            kind="review_request.resume_mention_held",
+            summary=f"Resume held for {post.mr_url}: no safe reviewer mention",
+            payload={"mr_url": post.mr_url, "post_id": post.pk},
+        )
     try:
         response = OnBehalfSlackEgress(messaging).post(
             channel=post.slack_channel_id,
-            text=RESUME_REPLY_TEXT,
+            text=f"{mention} {RESUME_REPLY_TEXT}",
             target=post.mr_url,
             action=RESUME_POST_ACTION,
             thread_ts=post.slack_thread_ts,
@@ -170,6 +179,7 @@ class ReviewRequestResumeScanner:
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
     identities: tuple[str, ...] = field(default_factory=tuple)
+    requester_slack_id: str = ""
     overlay: str = ""
     name: str = "review_request_resume"
 
@@ -193,10 +203,8 @@ class ReviewRequestResumeScanner:
         host: CodeHostBackend | None,
     ) -> ScanSignal | None:
         authorship = _is_self_authored(post.mr_url, host, self.identities)
-        if authorship is not True:
-            return _authorship_skip(post, authorship=authorship)
-        if host is None:
-            return _authorship_skip(post, authorship=None)
+        if authorship is not True or host is None:
+            return _authorship_skip(post, authorship=authorship if host is not None else None)
         # The reply asks colleagues to review, so an exempt repo is skipped here too.
         if mr_url_is_review_exempt(post.mr_url, overlay_name=self.overlay):
             return None
@@ -209,9 +217,21 @@ class ReviewRequestResumeScanner:
             )
         if pause is not PauseState.PAUSED or not self._is_ready(post.mr_url, host):
             return None
+        try:
+            mention = engaged_reask_mention(
+                messaging,
+                host,
+                [post],
+                requester=RequesterIdentity(self.requester_slack_id, self.identities),
+                overlay_name=self.overlay,
+            )
+        except Exception as exc:
+            logger.exception("review_request_resume: mention lookup failed for %s", post.mr_url)
+            return _resume_failed(post, error=str(exc))
         return _claim_and_reply(
             post,
             messaging,
+            mention=mention,
             context=OnBehalfContext(overlay=self.overlay or None, own_mr=True, target=post.mr_url),
         )
 

@@ -8,6 +8,7 @@ import typer
 
 from teatree.eval.discovery import discover_catalog
 from teatree.eval.green_proof import evaluate_green_proof
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.summary_json import scenario_version
 
 
@@ -40,6 +41,9 @@ def green_proof(
     typer.echo(proof.summary)
     if proof.reds:
         raise typer.Exit(1)
+    if proof.unmeasured or (isinstance(payload, dict) and payload.get("parked") is True):
+        typer.echo("PARKED: the usage limit cut the run short; not a green proof, and nothing measured failed")
+        raise typer.Exit(MEASURED_NOTHING_EXIT_CODE)
     if proof.incomplete:
         typer.echo("coverage incomplete: one or more scenarios did not finish grading")
         raise typer.Exit(incomplete_exit_code)

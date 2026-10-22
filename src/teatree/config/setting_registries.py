@@ -172,6 +172,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # overlay (empty list = no override, credential keeps its built-in path).
     "anthropic_oauth_pass_paths": _parse_str_list,
     "anthropic_api_key_pass_paths": _parse_str_list,
+    "eval_ci_account_allowlist": _parse_str_list,
     # DB-home cutover: ``orchestrator_bash_gate_enabled``'s reader
     # (``teatree_gate._gate_key_is_enabled``) is already DB-first via ``cold_reader``
     # (toml fallback for the cold self-rescue). Its former carve-out siblings
@@ -220,8 +221,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "metered_token_ceiling": _parse_strict_int,
     # #4816 The window the metered token ceiling is measured over. Per-overlay overridable.
     "metered_spend_window_hours": _parse_strict_int,
-    # #4098 #5051 Review lane width: reviewing/critic/shipping agents admitted outside the
-    # coding ceiling, one review executor each (min 1). Per-overlay overridable.
+    # #4098 #5051 Each cheap class gets this width beside coding, sharing W+1
+    # cheap seats in total; the worker runs one executor per seat. Min 1; per-overlay overridable.
     "cheap_phase_admission_ceiling": _parse_strict_int,
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap — the measured p90 worker RSS. A non-positive value drops
@@ -381,6 +382,7 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "trusted_issue_authors",
         "independent_reviewer_identities",
         "bulk_close_threshold",
+        "eval_ci_account_allowlist",
         "agent_route_paid_fallback",
     }
 )

@@ -17,7 +17,7 @@ from teatree.eval.models import EvalSpec
 runner = CliRunner()
 
 
-def _write_shard(directory: Path, name: str, *, cost_usd: float) -> None:
+def _write_shard(directory: Path, name: str, *, cost_usd: float, passed: bool = False) -> None:
     spec = EvalSpec(
         name="alpha",
         scenario="scenario alpha",
@@ -31,8 +31,8 @@ def _write_shard(directory: Path, name: str, *, cost_usd: float) -> None:
         MatrixRow(
             scenario="alpha",
             model="claude-sonnet-5",
-            passed=False,
-            score=0.0,
+            passed=passed,
+            score=1.0 if passed else 0.0,
             trials=1,
             skipped=False,
             cost_usd=cost_usd,
@@ -44,6 +44,48 @@ def _write_shard(directory: Path, name: str, *, cost_usd: float) -> None:
 
 
 class TestVerifyBenchmarkPublish:
+    def test_malformed_matrix_exits_one(self, tmp_path: Path) -> None:
+        (tmp_path / "eval-benchmark-broken.html").write_text("<html>missing tally</html>", encoding="utf-8")
+        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path), "--expected-shards", "1"])
+        assert result.exit_code == 1
+        assert "no per-model tally table" in result.output
+
+    def test_passed_file_requires_every_recorded_cell_to_pass(self, tmp_path: Path) -> None:
+        _write_shard(tmp_path, "first", cost_usd=0.31, passed=True)
+        _write_shard(tmp_path, "second", cost_usd=0.31)
+        passed_file = tmp_path / "passed.txt"
+
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "verify-benchmark-publish",
+                str(tmp_path),
+                "--expected-shards",
+                "2",
+                "--passed-file",
+                str(passed_file),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert passed_file.read_text(encoding="utf-8") == ""
+        _write_shard(tmp_path, "second", cost_usd=0.31, passed=True)
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "verify-benchmark-publish",
+                str(tmp_path),
+                "--expected-shards",
+                "2",
+                "--passed-file",
+                str(passed_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert passed_file.read_text(encoding="utf-8") == "alpha\n"
+
     def test_metered_shards_exit_zero(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
 

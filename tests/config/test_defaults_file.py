@@ -184,6 +184,7 @@ class TestSafetyAndDarkFlagsPinned:
         "trusted_issue_authors": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
+        "eval_ci_account_allowlist": [],
         "agent_route_paid_fallback": False,
     }
 
@@ -205,6 +206,7 @@ class TestSafetyAndDarkFlagsPinned:
         "trusted_issue_authors": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
+        "eval_ci_account_allowlist": [],
         "agent_route_paid_fallback": False,
         # DARK feature-flags — each pinned to its off value.
     }

@@ -67,6 +67,7 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
             "pytest",
             "-o",
             "addopts=",
+            "--ds=tests.django_settings",
             "-p",
             "no:randomly",
             "-p",
@@ -114,11 +115,13 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
     def test_two_worktrees_provision_serve_concurrently(
         self,
         provisioning_root: tuple[Path, Callable[[Callable[[], None]], None]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         root, register_finalizer = provisioning_root
         worktrees = self.provision_all(root, register_finalizer)
         assert len(worktrees) == self.CONCURRENT_WORKTREES
 
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
         self.run_concurrently(worktrees)
 
         ports = {wt.ports["backend"] for wt in worktrees}

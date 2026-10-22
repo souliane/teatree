@@ -12,6 +12,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from teatree.eval.api_errors import is_usage_limit_skip_reason
+
 #: The triage class a row carries when the producer wrote none — gating by construction.
 UNCLASSIFIED = "unclassified"
 
@@ -36,6 +38,7 @@ class GreenProof:
     incomplete: int
     reds: tuple[RedScenario, ...]
     advisory: tuple[RedScenario, ...] = ()
+    unmeasured: tuple[RedScenario, ...] = ()
     expected: Mapping[str, str] = dataclasses.field(default_factory=dict)
     expected_sha: str = ""
     actual_sha: str = ""
@@ -72,7 +75,7 @@ class GreenProof:
         :attr:`reds` by :func:`_partition`, so they are reported here without ever
         withholding the proof.
         """
-        return self.covers_the_catalog and self.incomplete == 0 and not self.reds
+        return self.covers_the_catalog and self.incomplete == 0 and not self.reds and not self.unmeasured
 
     @property
     def summary(self) -> str:
@@ -86,6 +89,7 @@ class GreenProof:
         headline = f"GREEN PROOF: {status}" if self.is_green else f"NOT A GREEN PROOF: {status}"
         lines = [headline]
         lines.extend(f"  RED {red.name} [{red.lane}] -> {red.triage_class}" for red in self.reds)
+        lines.extend(f"  UNMEASURED {row.name} [{row.lane}] -> the usage limit skipped it" for row in self.unmeasured)
         if self.advisory:
             lines.append(f"  {len(self.advisory)} advisory (reported, non-gating):")
             lines.extend(f"    ADVISORY {row.name} [{row.lane}] -> {row.triage_class}" for row in self.advisory)
@@ -107,8 +111,11 @@ class GreenProof:
         )
 
 
-def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple[RedScenario, ...]]:
-    """Split the non-null-``triage_class`` rows into (gating reds, advisory reds).
+type _Partition = tuple[tuple[RedScenario, ...], tuple[RedScenario, ...], tuple[RedScenario, ...]]
+
+
+def _partition(scenarios: Sequence[Any]) -> _Partition:
+    """Split the non-null-``triage_class`` rows into (gating reds, advisory reds, unmeasured rows).
 
     An interactive BEHAVIOR_FAIL remains advisory because its verdict depends on
     the bundled Claude CLI's question rendering. INFRA_BLOCKED and UNVERIFIED
@@ -119,9 +126,13 @@ def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple
     always writes the key (``null`` for a pass), so its absence means the row was
     not produced by a grader this gate understands — the same fail-closed
     asymmetry ``advisory`` applies.
+
+    A row the usage limit skipped never ran: it is unmeasured, which withholds the
+    proof without being a red to fix.
     """
     reds: list[RedScenario] = []
     advisory: list[RedScenario] = []
+    unmeasured: list[RedScenario] = []
     for scenario in scenarios:
         if not isinstance(scenario, Mapping):
             reds.append(RedScenario(name="", lane="", triage_class=UNCLASSIFIED))
@@ -147,8 +158,11 @@ def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple
             lane=_str(scenario, "lane"),
             triage_class=str(triage_class),
         )
+        if is_usage_limit_skip_reason(_str(scenario, "terminal_reason")):
+            unmeasured.append(row)
+            continue
         (advisory if bool(scenario.get("advisory")) and outcome == "BEHAVIOR_FAIL" else reds).append(row)
-    return tuple(reds), tuple(advisory)
+    return tuple(reds), tuple(advisory), tuple(unmeasured)
 
 
 def _is_unclassified(scenario: Mapping[str, Any]) -> bool:
@@ -175,7 +189,7 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, s
     totals = totals if isinstance(totals, Mapping) else {}
     scenarios = payload.get("scenarios")
     scenarios = scenarios if isinstance(scenarios, list) else []
-    reds, advisory = _partition(scenarios)
+    reds, advisory, unmeasured = _partition(scenarios)
     identities = tuple((_str(row, "name"), _str(row, "version")) for row in scenarios if isinstance(row, Mapping))
     counts = Counter(_str(row, "outcome") for row in scenarios if isinstance(row, Mapping))
     verdict_counts = Counter(_str(row, "verdict") for row in scenarios if isinstance(row, Mapping))
@@ -187,6 +201,7 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, s
         incomplete=int(totals.get("incomplete", 0)),
         reds=reds,
         advisory=advisory,
+        unmeasured=unmeasured,
         expected=expected,
         expected_sha=expected_sha,
         actual_sha=str(payload.get("head_sha", "")),

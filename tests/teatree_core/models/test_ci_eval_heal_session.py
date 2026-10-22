@@ -13,6 +13,7 @@ model level:
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.gates.eval_heal_anticheat_gate import EvalHealCheatError
@@ -106,11 +107,50 @@ class TestFixLoop(TestCase):
         session.save()
         session.record_fix(changed_paths=["src/teatree/loop/tick.py"])
         session.save()
+        session.artifact_missing_since = timezone.now()
+        session.save(update_fields=["artifact_missing_since"])
         session.trigger(ci_run_id="run-2", head_sha="b" * 40)
         session.save()
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.AWAITING_CI
         assert session.ci_run_id == "run-2"
+        assert session.artifact_missing_since is None
+
+
+class TestParkOnTheSubscriptionReserve(TestCase):
+    def test_a_received_result_resets_consecutive_park_count(self) -> None:
+        session = _session(park_cycles=2)
+        session.trigger(ci_run_id="run-3", head_sha="a" * 40)
+        session.save()
+
+        session.receive_result(red_scenarios=["rules_under_load"])
+        session.save()
+        session.refresh_from_db()
+
+        assert session.state == CiEvalHealSession.State.TRIAGING
+        assert session.park_cycles == 0
+
+    def test_park_requeues_an_awaited_run_without_spending_an_attempt(self) -> None:
+        session = _session(fix_attempts=1)
+        session.trigger(ci_run_id="run-1", head_sha="a" * 40)
+        session.save()
+
+        session.park()
+        session.save()
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.PENDING
+        assert session.fix_attempts == 1
+
+    def test_park_is_refused_outside_awaiting_ci(self) -> None:
+        session = _session()
+        session.trigger(ci_run_id="run-1", head_sha="a" * 40)
+        session.save()
+        session.receive_result(red_scenarios=[])
+        session.save()
+
+        with pytest.raises(TransitionNotAllowed):
+            session.park()
 
 
 class TestHaltAndEscalate(TestCase):

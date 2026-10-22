@@ -202,7 +202,11 @@ def test_an_upload_ships_only_when_its_redaction_pass_succeeded(upload: _Upload)
     step_id = upload.redaction_pass.get("id")
 
     assert step_id, f"{upload.label}: the redaction pass has no `id`, so the upload cannot be gated on it"
-    assert upload.step.get("if") == f"always() && steps.{step_id}.outcome == 'success'", (
+    condition = str(upload.step.get("if", ""))
+    clauses = condition.split(" && ")
+    assert "||" not in condition, f"{upload.label}: an OR could bypass the redaction gate"
+    assert clauses[0] == "always()", f"{upload.label}: the upload must run on a red job"
+    assert f"steps.{step_id}.outcome == 'success'" in clauses, (
         f"{upload.label}: the upload must run on a red job, but only once its redaction pass succeeded"
     )
 

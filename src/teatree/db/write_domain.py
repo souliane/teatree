@@ -25,7 +25,7 @@ from pathlib import Path
 
 from teatree.docker.workflow import is_running_in_container
 from teatree.paths import control_db_dir
-from teatree.utils.mount_points import mount_entry_for, parse_mountinfo
+from teatree.utils.mount_points import mount_entry_for, read_mount_entries
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 _PROC = Path("/proc")
@@ -39,6 +39,7 @@ _LSOF_WRITABLE_MODES = frozenset({"u", "w"})
 #: Filesystems Docker Desktop serves a host directory over. A control DB sitting on
 #: one of these is still on the host's disk, whatever its path says.
 _HOST_SHARED_FSTYPES = frozenset({"virtiofs", "fuse.grpcfuse", "osxfs", "9p", "fakeowner"})
+_LOCAL_FSTYPES = frozenset({"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "tmpfs", "overlay"})
 
 _FDINFO_FLAGS = re.compile(r"^flags:\s*(\d+)$", re.MULTILINE)
 
@@ -91,6 +92,10 @@ class ControlDbWriteDomain:
         return control_db_dir(self.env)
 
     @property
+    def in_control_dir(self) -> bool:
+        return self.db_path.parent == self.expected_dir
+
+    @property
     def on_host_filesystem(self) -> bool:
         """True when the database is somewhere a host process can name or reach.
 
@@ -98,7 +103,22 @@ class ControlDbWriteDomain:
         entirely (the pre-move layout, a bind-mounted data dir), or living at the
         right path on a filesystem the shared-folder layer serves from the host.
         """
-        return self.db_path.parent != self.expected_dir or self._fstype() in _HOST_SHARED_FSTYPES
+        return not self.in_control_dir or self._fstype() in _HOST_SHARED_FSTYPES
+
+    @property
+    def wal_eligible(self) -> tuple[bool, str]:
+        if not self.containerized:
+            return False, "process is outside the container"
+        if not self.db_path.is_absolute() or self.db_path.resolve() != self.db_path:
+            return False, "database path is relative or symlinked"
+        if not self.in_control_dir:
+            return False, "database is outside the control-DB directory"
+        fstype = self._fstype()
+        if fstype is None:
+            return False, "mount table is unreadable or does not cover the database"
+        if fstype not in _LOCAL_FSTYPES:
+            return False, f"filesystem {fstype} is not local"
+        return True, "control-DB volume"
 
     def read_write_holders(self) -> list[FdHolder]:
         """Every PROCESS currently holding *db_path* open for writing.
@@ -118,18 +138,17 @@ class ControlDbWriteDomain:
         """
         return [] if self.containerized else self.read_write_holders()
 
-    def _fstype(self) -> str:
-        """The filesystem type carrying the DB's directory; ``""`` when unknowable.
+    def _fstype(self) -> str | None:
+        """The filesystem type carrying the DB's directory, when readable.
 
         ``/proc/self/mountinfo`` is Linux-only, which is the right scope: the check
         exists to catch a Docker-Desktop shared folder mounted INSIDE a container.
         """
-        try:
-            table = (_PROC / "self" / "mountinfo").read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        entry = mount_entry_for(self.db_path.parent, parse_mountinfo(table))
-        return entry.fstype if entry is not None else ""
+        entries = read_mount_entries()
+        if entries is None:
+            return None
+        entry = mount_entry_for(self.db_path.parent.resolve(), entries)
+        return entry.fstype if entry is not None else None
 
 
 def read_write_holders_across(paths: Sequence[Path]) -> list[tuple[Path, FdHolder]]:

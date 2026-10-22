@@ -12,7 +12,7 @@ synthetic fixtures they pin. Those definitions feed two kinds of check that shar
 one umbrella CLI (`t3 eval …`):
 
 - **evals** — running the definitions against a **live model + grader**, on a
-  **cadence** (weekly cron + manual dispatch), fail-loud via `--require-executed`
+  **cadence** (daily eligibility check, at most one sweep before the weekly reset, plus manual dispatch), fail-loud via `--require-executed`
   / judge-metered / count-floor. This is the `--backend api` AI lane, the
   `--judge` / `judge:` oracles, `benchmark`, and the advisory `skill-prose-judge`.
 - **tests** — deterministic, no live model, run **every commit** (pytest +
@@ -166,9 +166,12 @@ installed editable from a clone; the eval harness ships inside it.
   (the no-PR guard is bypassed).
 - **CI weekly.** The metered Agent-SDK scenario run lives in a STANDALONE
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
-  run neither runs nor displays a metered-eval check. It fires on a weekly cron;
-  the scheduled run skips cleanly when nothing new merged in the lookback window
-  (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI
+  run neither runs nor displays a metered-eval check. Its cron is checked daily,
+  but the sweep runs only when an OAuth account preserves the eval reserve AND
+  resets its 7-day window within 24h (`EVAL_SWEEP_WITHIN_HOURS=24`), one leg at a
+  time, so it runs about once per weekly window on quota that would otherwise
+  expire. The scheduled run also skips cleanly when nothing new merged in the
+  lookback window (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI
   and passes `--require-executed` UNCONDITIONALLY, so a missing binary/key fails
   the job loud instead of an all-skipped green. The deterministic lanes are gated
   by prek per push + pytest per PR, not re-run here. See "Triggering" below.
@@ -240,16 +243,23 @@ t3 eval label add <session-id>                # scaffold a corpus entry from an 
 t3 eval label review                          # validate every label loads + every matcher oracle is independent (non-zero on failure)
 t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
 t3 eval changed-scenarios --diff-file changed.diff < changed-files.txt  # …plus the same range's `git diff --unified=0`, so a spec pinned to `agent_sections` is selected only when ITS section moved
+t3 eval changed-scenarios --deferred-out deferred.txt < changed-files.txt  # reusable PR lane: record the over-cap tail as owed work
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly dashboard publish when any collected eval-benchmark-*.html shard records graded verdicts at $0.0000 (an exhausted OAuth window); exit 1 naming the shard + zero-cost models
-t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated)
-t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
+t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated, `parked` if any leg parked)
+t3 eval owed record --out eval-owed.json --reason limit --source pr#N@<sha> --names-file f  # CI primitive: record scenarios a lane could not run (parked | limit | deferred)
+t3 eval owed outputs eval-owed.json           # CI primitive: print parked=/owed= lines for $GITHUB_OUTPUT
+t3 eval owed collect --repo OWNER/NAME --out eval-owed-ledger.json  # nightly: previous ledger + the eval-owed artifacts of PRs merged since + weekly/heal leg eval-owed-<leg> artifacts (fails loud on a GitHub API error)
+t3 eval owed next eval-owed-ledger.json --cap 14  # nightly: the oldest owed scenarios the catalog still defines
+t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt --attempted-file attempted.txt  # nightly: clear only attempted scenarios that passed
+t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # full benchmark: clear passing scenarios
+t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); 1 on any red or an empty run, 75 when a leg parked or the usage limit skipped a scenario
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
-t3 eval ci-heal open --ref <pr-branch>        # CI heal loop (observe-only, default-OFF): open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
+t3 eval ci-heal open --ref <pr-branch>        # CI heal loop: open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
 t3 eval ci-heal list                          # CI heal loop: list recent heal sessions and their FSM state (--json)
-t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN or HALT+escalate, never a fix
+t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (reaches gh) — GREEN, reserve park, bounded fix, or HALT+escalate
 ```
 
 `changed-scenarios`, `merged-prs-since`, `merge-summaries`, and
@@ -259,7 +269,7 @@ scenario YAML **and** by changed `agent_path` skill prose, narrowed to the
 touched `agent_sections` when `--diff-file` is given, so editing the exact
 section a scenario grades can no longer select zero and pass vacuously,
 [#3944](https://github.com/souliane/teatree/issues/3944);
-`merged-prs-since` guards the weekly cron, `merge-summaries` builds the public
+`merged-prs-since` guards the scheduled sweep, `merge-summaries` builds the public
 dashboard, `verify-benchmark-publish` gates the benchmark dashboard commit on
 real metered spend) — the same logic the host's `scripts/eval/*.py`
 workflow shims and the reusable `eval-pr-reusable.yml` /
@@ -638,6 +648,30 @@ per token with no usage window — is selectable per run via `t3 eval run
 --credential api_key` (or durably via `config_setting set agent_harness_provider
 api_key`) for a lane that needs per-token cost accounting (e.g. a local
 cost-bounds audit).
+
+**The eval reserve — evals never drain the factory's window ([#5014](https://github.com/souliane/teatree/issues/5014)).**
+An eval runs on a subscription account only while that account preserves a reserve
+for the factory: 40% of the 5h window and 30% of the 7d window by default
+(`EVAL_RESERVE_5H_FREE` / `EVAL_RESERVE_7D_FREE`). A missing reading counts as
+unknown and is never eligible. With no eligible account the CI selector exits 75
+and the lane PARKS: the run is green, the `eval-gate` says `PARKED` and names the
+owed scenarios, and the nightly runs them later (`t3 eval owed`). Only the PR
+lane may fall back to the metered key (`EVAL_API_KEY_FALLBACK`). A subscription
+5h/7d limit hit mid-run is never retried or waited out: the rest of the suite is
+skipped without calling the model, no escalation trial runs, and `t3 eval run`
+exits 75 unless something it measured failed — a confirmed red still reds. On the
+box, the `eval_local` loop and dream promotion read the selected account's cached
+health and probe only that account when its row exceeds the five-minute TTL.
+Their check never changes the sticky routing pick. Heal dispatch reads its
+allowlisted CI accounts and probes stale rows until one meets the reserve.
+Unmeasured or unreachable accounts still park; a stale probe failure is visible
+in the scanner signal, dream summary, or heal note. A failed CI run with parked
+legs requeues twice, then halts and escalates on its third failed park. A retry after a
+measured red invokes nothing and stays red. The weekly publisher refuses an
+incomplete planned matrix or any leg without a complete receipt. A limit reached while judging also parks ungraded
+scenarios and stops later judge calls. A scenario the limit skipped
+is never handed to the heal fixer, and `t3 eval green-proof` parks it (exit 75)
+rather than counting it red.
 
 The eval lane and the dispatch lane now share ONE knob, so a deployment that
 pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend
@@ -1028,7 +1062,7 @@ path drives it for real.
   test_eval.py`. The deterministic, model-free layers therefore guard every PR
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
-  scenario suite once a week on a cron — not on every push, not on every PR, and
+  scenario suite at most once per weekly reset window, checked daily — not on every push, not on every PR, and
   NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`, so a PR run
   neither runs nor displays a metered-eval check. The deterministic lanes are NOT
   re-run standalone in the weekly job (prek per push + pytest per PR is the
@@ -1098,7 +1132,7 @@ This table is the single source of truth for which lanes exist, how they run, an
 | corpus-grade | **test** | model-free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
 | skill-command-validity | **test** | model-free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every bare-`t3 eval` run + on demand |
 | ai-eval transcript | **test** (replay) | $0 extra (reuses a recorded run) | host | `t3 eval run` (default backend) | — (grades a saved transcript off disk; the in-session capture that produces it is the live step) | manual / on demand |
-| ai-eval sdk | **eval** | `agent_harness_provider`-selected — DEFAULT subscription OAuth (no per-token bill); the metered `api_key` selectable | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `t3 eval run --backend api` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` secrets, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| ai-eval sdk | **eval** | `agent_harness_provider`-selected — DEFAULT subscription OAuth (no per-token bill); the metered `api_key` selectable | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `t3 eval run --backend api` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` secrets, `--docker`) | daily 06:00 UTC eligibility check, at most one sweep before the weekly reset + manual `workflow_dispatch` |
 | `--judge` / `judge:` oracle | **eval** | subscription-covered (judge) | host/docker (with the api lane) | `t3 eval run --judge` / `corpus grade --judge` | metered path only (fail-loud: judge-metered guard) | metered path + on demand |
 | benchmark | **eval** | subscription-covered (Agent SDK) | **docker** (DEFAULT; `--local` for a host check) | `t3 eval benchmark --models …` | — (manual cost/pass-rate comparison) | on demand |
 | skill-prose-judge | **eval** (advisory) | subscription-covered (judge), **advisory** | host (judge via `ClaudeJudge`) | `t3 eval skill-prose-judge` | — (advisory — never gates CI) | bare-`t3 eval` fresh-run path + on demand |
