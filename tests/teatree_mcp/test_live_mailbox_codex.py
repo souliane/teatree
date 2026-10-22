@@ -30,6 +30,7 @@ from teatree.mcp.agent_mailbox import MailboxClient
 _SERVER = """
 import json
 import sys
+import time
 
 log, mode = sys.argv[1:3]
 for line in sys.stdin:
@@ -47,6 +48,8 @@ for line in sys.stdin:
         result = {"data": [], "nextCursor": None}
     elif method == "turn/start":
         result = {"turn": {"id": "turn-1"}}
+        if mode == "delayed-start":
+            time.sleep(0.2)
     elif method == "turn/steer" and mode == "silent":
         continue
     elif method == "turn/steer":
@@ -54,6 +57,10 @@ for line in sys.stdin:
     else:
         result = {}
     sys.stdout.write(json.dumps({"id": ident, "result": result}) + "\\n")
+    if method == "turn/start" and mode == "delayed-start":
+        sys.stdout.write(json.dumps({"method": "item/completed", "params": {
+            "threadId": "thread-1", "item": {"id": "ready", "type": "agentMessage", "text": "ready"}
+        }}) + "\\n")
     if method == "turn/steer":
         sys.stdout.write(json.dumps({"method": "item/completed", "params": {
             "threadId": "thread-1", "item": {"id": "item-1", "type": "agentMessage", "text": "nonce-5417"}
@@ -167,7 +174,7 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(tmp_path:
     manager = SharedCodexAppServer(
         code_home=tmp_path / "auth",
         cache=_NoAuthCache(),
-        command=(sys.executable, str(script), str(log), "accept"),
+        command=(sys.executable, str(script), str(log), "delayed-start"),
         process_env={},
     )
     task = Task(pk=7, ticket_id=3, phase="coding")
@@ -190,7 +197,7 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(tmp_path:
             async with asyncio.timeout(5):
                 while not any(row["harness"] == "codex_app_server" for row in broker.identities()):
                     await asyncio.to_thread(time.sleep, 0.01)
-                while not (facts := registry.facts(7)) or not facts["steerable"]:
+                while not (facts := registry.facts(7)) or facts["state"] != "busy":
                     await asyncio.to_thread(time.sleep, 0.01)
             peer = next(row for row in broker.identities() if row["harness"] == "codex_app_server")
             receipt = await MailboxClient(sender.socket_path, sender.token).send(

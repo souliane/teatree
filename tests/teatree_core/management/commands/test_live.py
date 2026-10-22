@@ -23,7 +23,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents import live_mailbox
-from teatree.agents.live_client import LiveClient, LiveOfflineError, LiveRefusedError
+from teatree.agents.live_client import LiveClient, LiveDeliveryUnknownError, LiveOfflineError, LiveRefusedError
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.core.models import Task, TaskAttempt
 from tests.factories import SessionFactory, TicketFactory
@@ -95,10 +95,10 @@ def test_a_worker_restart_leaves_old_follow_ups_offline_and_replays_nothing(
     control_dir: Path, worker: subprocess.Popen[str]
 ) -> None:
     cli = _Cli(control_dir)
-    lost = cli("follow-up", "107", "--text", "start", "--command-id", "lost")
-    assert lost.returncode == 4
-    worker.wait(timeout=10)
     client = LiveClient(live_dir=control_dir / "live")
+    with pytest.raises(LiveDeliveryUnknownError):
+        client.follow_up(107, "start", command_id="lost", wait=1)
+    worker.wait(timeout=10)
     with pytest.raises(LiveOfflineError):
         client.follow_up(107, "start", command_id="lost")
 
@@ -184,24 +184,29 @@ def test_live_steer_reaches_a_codex_session_through_the_public_cli(control_dir: 
     assert json.loads(receipt.stdout)["outcome"] == "accepted_current_turn"
 
 
+@pytest.mark.parametrize(
+    ("task", "extra", "exit_code", "expected"),
+    [
+        ("102", (), 3, ("rejected", "turn_ended")),
+        ("104", (), 3, ("rejected", "not_steerable")),
+        ("999", (), 5, None),
+        ("103", ("--command-id", "c-lost"), 4, ("unknown_delivery", None)),
+    ],
+)
 @pytest.mark.usefixtures("worker")
-def test_steer_exit_codes_follow_the_receipt(control_dir: Path) -> None:
-    cli = _Cli(control_dir)
+def test_steer_exit_codes_follow_the_receipt(
+    control_dir: Path, task: str, extra: tuple[str, ...], exit_code: int, expected: tuple[str, str | None] | None
+) -> None:
+    completed = _Cli(control_dir)("steer", task, "--text", "x", *extra, "--json")
 
-    rejected = cli("steer", "102", "--text", "x", "--json")
-    not_steerable = cli("steer", "104", "--text", "x", "--json")
-    not_live = cli("steer", "999", "--text", "x")
-    lost = cli("steer", "103", "--text", "x", "--command-id", "c-lost")
-
-    assert rejected.returncode == 3
-    assert (json.loads(rejected.stdout)["outcome"], json.loads(rejected.stdout)["code"]) == ("rejected", "turn_ended")
-    assert not_steerable.returncode == 3
-    assert json.loads(not_steerable.stdout)["code"] == "not_steerable"
-    assert not_live.returncode == 5
-    assert "999" in not_live.stderr
-    assert lost.returncode == 4
-    assert "unknown_delivery" in lost.stderr
-    assert "c-lost" in lost.stderr
+    assert completed.returncode == exit_code
+    if expected is None:
+        assert task in completed.stderr
+    else:
+        receipt = json.loads(completed.stdout)
+        assert (receipt["outcome"], receipt["code"]) == expected
+        if task == "103":
+            assert "c-lost" in completed.stderr
 
 
 @pytest.mark.usefixtures("worker")
