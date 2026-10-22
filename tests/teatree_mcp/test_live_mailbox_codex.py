@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import tempfile
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -121,7 +122,7 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
     options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
     task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
 
-    async def run() -> tuple[SendReceipt, list[InboxMessage]]:
+    async def run(runtime_dir: Path) -> tuple[SendReceipt, list[InboxMessage]]:
         session = CodexAppServerSession(
             CodexAppServerOptions.from_sdk_options(options),
             resume=None,
@@ -129,7 +130,7 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
             command=(sys.executable, str(script), str(log), mode),
         )
         with (
-            LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as broker,
+            LiveMailboxBroker(runtime_dir=runtime_dir, registry=lambda: registry) as broker,
             bound_task_mailbox(options, task, broker=broker) as peer,
         ):
             assert peer is not None
@@ -148,7 +149,8 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
         assert receipt == again
         return receipt, inbox
 
-    receipt, inbox = asyncio.run(run())
+    with tempfile.TemporaryDirectory(prefix="t3l-", dir="/tmp") as runtime_dir:
+        receipt, inbox = asyncio.run(run(Path(runtime_dir)))
     return receipt, _requests(log, "turn/steer"), inbox
 
 
