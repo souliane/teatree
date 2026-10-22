@@ -42,7 +42,6 @@ from teatree.agents.live_federation import (
 )
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
-from teatree.config import AgentHarness
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +158,7 @@ class LiveMailboxBroker:
         harness: str,
         label: str,
         task: LiveTask | PushOnlyTask | None = None,
-        can_receive: bool | None = None,
+        can_receive: bool = True,
     ) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
@@ -174,7 +173,7 @@ class LiveMailboxBroker:
             harness=harness,
             label=label,
             phase=bound_task.phase if bound_task else "",
-            can_receive=(harness != AgentHarness.PYDANTIC_AI) if can_receive is None else can_receive,
+            can_receive=can_receive,
             task=bound_task,
             reads_inbox=not push_only,
         )

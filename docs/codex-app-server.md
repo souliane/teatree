@@ -50,15 +50,6 @@ overlay phase candidate list alike.
 
 ## Runtime lifecycle and concurrency
 
-### Live steering
-
-A running Codex turn accepts operator input or a peer message through the App Server's
-`turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
-only when the answer names that turn. A timeout, lost answer or turn-end race is
-`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
-In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
-mailbox recipient with no inbox copy.
-
 The harness ignores an ambient `CODEX_HOME`. It uses the stable private directory
 named by `T3_CODEX_HOME`, or Teatree's data directory under `codex-home` by
 default. The child receives a minimal allowlisted process environment and its
@@ -103,6 +94,15 @@ lease: keep this authenticated runner at one replica, or acquire a Kubernetes
 Lease/shared lock before enabling concurrent Codex runs against the same pass
 entry. A hard kill cannot run graceful persistence; the next worker hydrates the
 last verified cache from pass.
+
+### Live steering
+
+A running Codex turn accepts operator input or a peer message through the App Server's
+`turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
+only when the answer names that turn. A timeout, lost answer or turn-end race is
+`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
+In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
+mailbox recipient with no inbox copy.
 
 ## Forge credential parity
 

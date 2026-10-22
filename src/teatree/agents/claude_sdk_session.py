@@ -12,7 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from claude_agent_sdk import HookMatcher, ResultMessage
+from claude_agent_sdk import CLIConnectionError, HookMatcher, ResultMessage
 from claude_agent_sdk.types import (
     HookCallback,
     HookContext,
@@ -115,6 +115,13 @@ class ClaudeSdkSession:
 
     async def query(self, prompt: str) -> None:
         await self._client.query(prompt)
+
+    async def follow_up(self, prompt: str) -> None:
+        try:
+            await self._client.query(prompt)
+        except CLIConnectionError as exc:
+            raise SteerRejectedError(RejectCode.SESSION_CLOSED) from exc
+        self._inputs.reopen()
 
     async def receive_response(self) -> AsyncIterator[Any]:
         async for message in self._client.receive_response():

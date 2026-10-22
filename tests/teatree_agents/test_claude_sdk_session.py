@@ -2,11 +2,13 @@
 
 import asyncio
 
-from claude_agent_sdk import HookMatcher
+import pytest
+from claude_agent_sdk import CLIConnectionError, HookMatcher
 from claude_agent_sdk.types import HookEvent, HookJSONOutput, StopHookInput
 
-from teatree.agents.claude_sdk_session import LiveInputQueue
+from teatree.agents.claude_sdk_session import ClaudeSdkSession, LiveInputQueue
 from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
+from teatree.agents.live_control import RejectCode, SteerRejectedError
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 
 
@@ -54,3 +56,44 @@ def test_the_appended_stop_hook_delivers_the_waiting_input() -> None:
         "decision": "block",
         "reason": "use docs/x.md",
     }
+
+
+def test_follow_up_rearms_the_input_queue_so_a_steer_reaches_the_new_turn() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def query(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+    client = Client()
+    inputs = LiveInputQueue()
+    inputs.end(RejectCode.TURN_ENDED)
+    session = ClaudeSdkSession(client, inputs)
+
+    async def run() -> None:
+        await session.follow_up("a second turn")
+        steering = asyncio.create_task(session.steer("new turn input", input_id="c-2", wait=1))
+        await asyncio.sleep(0)
+        assert inputs._take() == "new turn input"
+        await steering
+
+    asyncio.run(run())
+    assert client.prompts == ["a second turn"]
+
+
+def test_a_closed_transport_rejects_the_follow_up_without_rearming_input() -> None:
+    class ClosedClient:
+        async def query(self, prompt: str) -> None:
+            message = "closed"
+            raise CLIConnectionError(message)
+
+    inputs = LiveInputQueue()
+    inputs.end(RejectCode.TURN_ENDED)
+    session = ClaudeSdkSession(ClosedClient(), inputs)
+
+    with pytest.raises(SteerRejectedError) as error:
+        asyncio.run(session.follow_up("again"))
+
+    assert error.value.code is RejectCode.SESSION_CLOSED
+    assert inputs._ended is RejectCode.TURN_ENDED

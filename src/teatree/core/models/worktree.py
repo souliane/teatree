@@ -11,7 +11,14 @@ from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields, vali
 from teatree.utils.postgres_secret import postgres_pass_key
 
 _CLAIM_FIELDS = ("occupied_by", "occupied_by_session", "occupied_at", "occupancy_expires_at")
-_PROOF_KEYS = ("attested_state", "checkout_custody", "auto_attestation", "deferred_exit")
+_PROOF_KEYS = (
+    "attested_state",
+    "direct_attested_state",
+    "direct_attested_at",
+    "checkout_custody",
+    "auto_attestation",
+    "deferred_exit",
+)
 
 
 class WorktreeDbNameConflictError(RuntimeError):

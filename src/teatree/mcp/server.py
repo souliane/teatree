@@ -585,7 +585,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
         + (
-            "\n\nLive agent mailbox (busy peers can receive now; idle peers read inbox/wait):\n"
+            "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
             if agent_mailbox.MailboxClient.from_env() is not None
             else ""

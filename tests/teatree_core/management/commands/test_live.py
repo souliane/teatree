@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -25,9 +26,9 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents import live_mailbox
-from teatree.agents.live_client import LiveClient, LiveRefusedError
+from teatree.agents.live_client import LiveClient, LiveDeliveryUnknownError, LiveOfflineError, LiveRefusedError
 from teatree.agents.live_mailbox import LiveMailboxBroker
-from teatree.core.models import Task
+from teatree.core.models import Task, TaskAttempt
 from tests.factories import SessionFactory, TicketFactory
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -174,6 +175,47 @@ def test_list_with_no_worker_socket_is_offline(control_dir: Path) -> None:
     assert "offline" in completed.stderr
 
 
+def test_follow_up_to_an_offline_task_names_the_durable_route(control_dir: Path) -> None:
+    completed = _Cli(control_dir)("follow-up", "999", "--text", "continue", "--command-id", "next")
+
+    assert completed.returncode == 5
+    assert "task 999 in the task list" in completed.stderr
+    assert "tasks create" in completed.stderr
+
+
+def test_a_worker_restart_leaves_old_follow_ups_offline_and_replays_nothing(
+    control_dir: Path, worker: subprocess.Popen[str]
+) -> None:
+    cli = _Cli(control_dir)
+    client = LiveClient(live_dir=control_dir / "live")
+    with pytest.raises(LiveDeliveryUnknownError):
+        client.follow_up(107, "start", command_id="lost", wait=1)
+    worker.wait(timeout=10)
+    with pytest.raises(LiveOfflineError):
+        client.follow_up(107, "start", command_id="lost")
+
+    new_env = {**_env(control_dir), "T3_HELPER_TASK_BASE": "200"}
+    with subprocess.Popen(
+        [sys.executable, str(_HELPER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=new_env,
+        start_new_session=True,
+    ) as restarted:
+        assert restarted.stdout is not None
+        assert restarted.stdout.readline().strip() == "ready"
+        with pytest.raises(LiveOfflineError):
+            client.follow_up(107, "start", command_id="lost")
+        calls_before = (control_dir / "follow-up-calls.log").read_text(encoding="utf-8").splitlines()
+        explicit = cli("follow-up", "206", "--text", "new", "--command-id", "new")
+        calls_after = (control_dir / "follow-up-calls.log").read_text(encoding="utf-8").splitlines()
+
+    assert len(calls_before) == 1
+    assert explicit.returncode == 0
+    assert len(calls_after) == 2
+
+
 @pytest.mark.usefixtures("worker")
 def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
     cli = _Cli(control_dir)
@@ -184,7 +226,7 @@ def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
 
     assert listed.returncode == 0, listed.stderr
     rows = {row["task"]: row for row in json.loads(listed.stdout)}
-    assert set(rows) == {101, 102, 103, 104, 105}
+    assert set(rows) == {101, 102, 103, 104, 105, 106, 107}
     assert (rows[101]["harness"], rows[101]["state"], rows[101]["steerable"]) == ("claude_sdk", "busy", True)
     assert rows[104]["steerable"] is False
     assert rows[105]["steerable"] is True
@@ -247,24 +289,78 @@ def test_live_steer_reaches_a_codex_session_through_the_public_cli(control_dir: 
     assert json.loads(receipt.stdout)["outcome"] == "accepted_current_turn"
 
 
+@pytest.mark.parametrize(
+    ("task", "extra", "exit_code", "expected"),
+    [
+        ("102", (), 3, ("rejected", "turn_ended")),
+        ("104", (), 3, ("rejected", "not_steerable")),
+        ("999", (), 5, None),
+        ("103", ("--command-id", "c-lost"), 4, ("unknown_delivery", None)),
+    ],
+)
 @pytest.mark.usefixtures("worker")
-def test_steer_exit_codes_follow_the_receipt(control_dir: Path) -> None:
-    cli = _Cli(control_dir)
+def test_steer_exit_codes_follow_the_receipt(
+    control_dir: Path, task: str, extra: tuple[str, ...], exit_code: int, expected: tuple[str, str | None] | None
+) -> None:
+    completed = _Cli(control_dir)("steer", task, "--text", "x", *extra, "--json")
 
-    rejected = cli("steer", "102", "--text", "x", "--json")
-    not_steerable = cli("steer", "104", "--text", "x", "--json")
-    not_live = cli("steer", "999", "--text", "x")
-    lost = cli("steer", "103", "--text", "x", "--command-id", "c-lost")
+    assert completed.returncode == exit_code
+    if expected is None:
+        assert task in completed.stderr
+    else:
+        receipt = json.loads(completed.stdout)
+        assert (receipt["outcome"], receipt["code"]) == expected
+        if task == "103":
+            assert "c-lost" in completed.stderr
+            assert "unknown_delivery" in completed.stderr
 
-    assert rejected.returncode == 3
-    assert (json.loads(rejected.stdout)["outcome"], json.loads(rejected.stdout)["code"]) == ("rejected", "turn_ended")
-    assert not_steerable.returncode == 3
-    assert json.loads(not_steerable.stdout)["code"] == "not_steerable"
-    assert not_live.returncode == 5
-    assert "999" in not_live.stderr
-    assert lost.returncode == 4
-    assert "unknown_delivery" in lost.stderr
-    assert "c-lost" in lost.stderr
+
+@pytest.mark.parametrize("code", ["session_closed", "unknown_session"])
+def test_follow_up_closed_receipts_use_the_offline_exit(code: str) -> None:
+    receipt = {
+        "command_id": "closed",
+        "task": 123,
+        "outcome": "rejected",
+        "code": code,
+        "mode": "active",
+        "accepted_at": None,
+    }
+    stderr = StringIO()
+    with (
+        patch.object(LiveClient, "follow_up", return_value=receipt),
+        patch("teatree.core.management.commands.live._task_list_status", return_value="running"),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        call_command("live", "follow-up", "123", "--text", "continue", stderr=stderr)
+
+    assert stopped.value.code == 5
+    assert "task 123 in the task list" in stderr.getvalue()
+
+
+def test_follow_up_not_idle_receipt_gives_the_current_turn_hint() -> None:
+    receipt = {
+        "command_id": "busy",
+        "task": 123,
+        "outcome": "rejected",
+        "code": "not_idle",
+        "mode": "active",
+        "accepted_at": None,
+    }
+    stderr = StringIO()
+    with patch.object(LiveClient, "follow_up", return_value=receipt), pytest.raises(SystemExit) as stopped:
+        call_command("live", "follow-up", "123", "--text", "continue", stderr=stderr)
+
+    assert stopped.value.code == 3
+    assert "use live steer for its current turn" in stderr.getvalue()
+
+
+def test_a_legacy_worker_without_fence_fields_is_offline() -> None:
+    legacy = {"task": 123, "worker": "old-worker"}
+    with (
+        patch.object(LiveClient, "sessions", return_value=[legacy]),
+        pytest.raises(LiveOfflineError, match="worker old-worker"),
+    ):
+        LiveClient().follow_up(123, "continue", command_id="new")
 
 
 @pytest.mark.usefixtures("worker")
@@ -350,3 +446,21 @@ class OfflineNamesTheDurableRouteTests(TestCase):
         # An owner question is answered in its Slack thread; `questions answer` refuses it.
         assert "Slack thread" in message
         assert "questions answer" not in message
+
+    def test_follow_up_cannot_wake_a_parked_task_or_change_its_attempts(self) -> None:
+        parked_until = datetime.now(UTC) + timedelta(hours=1)
+        self.task.status = Task.Status.PENDING
+        self.task.not_before = parked_until
+        self.task.save(update_fields=["status", "not_before"])
+        before = TaskAttempt.objects.filter(task=self.task).count()
+        err = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command("live", "follow-up", str(self.task.pk), "--text", "continue", stderr=err)
+
+        self.task.refresh_from_db()
+        assert exit_info.value.code == 5
+        assert "pending" in err.getvalue()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before == parked_until
+        assert TaskAttempt.objects.filter(task=self.task).count() == before
