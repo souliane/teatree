@@ -176,8 +176,12 @@ def read_factory_slack(*, env: Mapping[str, str] = os.environ, now: float | None
 
 
 def slack_is_live(published: FactorySlackPayload | None, overlay: str) -> bool:
-    """Whether a session in *overlay* may treat factory Slack as live: its own verdict, else the default one."""
-    return published is not None and published["by_overlay"].get(overlay, published["live"])
+    """Whether a session in *overlay* may treat factory Slack as live; one naming none, whenever any overlay's is."""
+    if published is None:
+        return False
+    if overlay:
+        return published["by_overlay"].get(overlay, published["live"])
+    return published["live"] or any(published["by_overlay"].values())
 
 
 def _replace(target: Path, directives: list[StandingDirectivePayload], *, env: Mapping[str, str]) -> bool:

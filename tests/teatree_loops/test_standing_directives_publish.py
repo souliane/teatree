@@ -198,7 +198,7 @@ class TestTheFactorySlackVerdictRidesTheSameChain(django.test.TestCase):
         assert published["by_overlay"] == {SLACK_OVERLAY: True, "t3-quiet": False}
         assert standing_directives_cache.slack_is_live(published, SLACK_OVERLAY)
         assert not standing_directives_cache.slack_is_live(published, "t3-quiet")
-        assert not standing_directives_cache.slack_is_live(published, "")
+        assert standing_directives_cache.slack_is_live(published, "")
 
     def test_a_box_without_slack_publishes_not_live_with_the_reason(self) -> None:
         with mock.patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[]):

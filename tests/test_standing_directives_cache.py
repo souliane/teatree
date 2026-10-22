@@ -250,6 +250,9 @@ class TestThePublishedFactorySlackVerdict:
         assert standing_directives_cache.slack_is_live(published, "t3-slack")
         assert not standing_directives_cache.slack_is_live(published, "t3-quiet")
         assert not standing_directives_cache.slack_is_live(published, "t3-unlisted")
+        assert standing_directives_cache.slack_is_live(published, "")
+        quiet = _verdict(checked_at=1000.0, live=False, by_overlay={"t3-slack": False, "t3-quiet": False})
+        assert not standing_directives_cache.slack_is_live(quiet, "")
         assert standing_directives_cache.slack_is_live(_verdict(checked_at=1000.0, live=True), "t3-unlisted")
         assert not standing_directives_cache.slack_is_live(None, "t3-slack")
 

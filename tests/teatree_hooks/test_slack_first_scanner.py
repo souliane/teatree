@@ -119,8 +119,8 @@ class TestTwoCredentialedOverlaysGateEachSessionOnItsOwn:
 
     @pytest.mark.parametrize(
         ("overlay_name", "blocked"),
-        [("t3-slack", True), ("t3-quiet", False), ("", False)],
-        ids=["overlay-whose-slack-is-live", "overlay-whose-slack-is-quiet", "no-overlay-named"],
+        [("t3-slack", True), ("t3-quiet", False), ("", True)],
+        ids=["overlay-whose-slack-is-live", "overlay-whose-slack-is-quiet", "no-overlay-named-while-one-is-live"],
     )
     def test_the_gate_reads_the_verdict_for_the_sessions_own_overlay(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlay_name: str, *, blocked: bool
@@ -129,6 +129,15 @@ class TestTwoCredentialedOverlaysGateEachSessionOnItsOwn:
         transcript = _transcript(tmp_path, _user(_PROMPT), _assistant(_ANSWER))
 
         assert handle_slack_first_gate(_stop(transcript)) is (True if blocked else None)
+
+    def test_a_session_naming_no_overlay_is_not_gated_while_every_overlay_is_quiet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _publish(live=False, by_overlay={"t3-slack": False, "t3-quiet": False})
+        monkeypatch.setenv("T3_OVERLAY_NAME", "")
+        transcript = _transcript(tmp_path, _user(_PROMPT), _assistant(_ANSWER))
+
+        assert handle_slack_first_gate(_stop(transcript)) is None
 
 
 def test_terminal_answer_allowed_when_slack_not_live(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
