@@ -31,7 +31,7 @@ never a deny:
 
 Scope: ONLY the live t3-master session (the session holding the ``t3-master``
 ``LoopLease``); a non-owner interactive session and every sub-agent pass
-untouched. A per-call ``[orchestration-ok: <reason>]`` token suppresses the
+untouched. The old per-call advisory marker no longer suppresses the
 nudge for a genuine orchestration read.
 
 ``call_is_from_subagent`` / ``PYTEST_VERB_FINDER`` come from the shared
@@ -75,12 +75,6 @@ _ORCHESTRATOR_INVESTIGATION_BASH_RE = re.compile(
     r"(?:gh|glab)\s+\S+\s+(?:diff|logs?)\b"
     r")"
 )
-
-# ``[orchestration-ok: <non-empty-reason>]`` anywhere in the command / edit
-# suppresses the nudge for the rare genuine orchestration read (e.g. a one-off
-# ``git show`` to route a dispatch). An empty reason does not suppress. Mirrors
-# the heavy-Bash gate's ``[fg-ok:]`` token.
-_ORCHESTRATION_OK_RE = re.compile(r"\[orchestration-ok:\s*\S[^\]]*?\s*\]")
 
 _INVESTIGATION_EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 
@@ -131,25 +125,6 @@ def _investigation_signal(data: dict) -> str | None:
     return None
 
 
-def _orchestration_ok_haystack(data: dict) -> str:
-    """The text scanned for an ``[orchestration-ok: <reason>]`` opt-out token.
-
-    Bash reads ``command``; Edit/Write reads the file path and edited content
-    (first 512 chars each) so the orchestrator can mark a sanctioned inline edit.
-    Mirrors the skill-loading gate's per-call escape surface.
-    """
-    tool_input = data.get("tool_input", {})
-    if data.get("tool_name") == "Bash":
-        command = tool_input.get("command")
-        return command if isinstance(command, str) else ""
-    parts: list[str] = []
-    for key in ("file_path", "new_string", "content"):
-        value = tool_input.get(key)
-        if isinstance(value, str):
-            parts.append(value[:512])
-    return " ".join(parts)
-
-
 def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
     """NUDGE the t3-master away from foreground investigation/diagnosis/fix work.
 
@@ -162,14 +137,12 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
     returns ``False`` (the call proceeds). A warn is the only never-lockout-safe
     enforcement for a boundary this broad. Off-ramps that suppress the nudge: it
     fires ONLY for the live t3-master session (not sub-agents, not a non-owner
-    interactive session); a per-call ``[orchestration-ok: <reason>]`` token.
+    interactive session).
     """
     if call_is_from_subagent(data):
         return False
     signal = _investigation_signal(data)
     if signal is None:
-        return False
-    if _ORCHESTRATION_OK_RE.search(_orchestration_ok_haystack(data)):
         return False
     if not _session_is_loop_owner(data.get("session_id", "")):
         return False
@@ -181,6 +154,6 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
         "archaeology, and test runs belong in a sub-agent in a worktree "
         "(background if >~30s). Dispatch one (Task/Agent, run_in_background) "
         "instead of doing the work inline. If this IS genuine orchestration, add "
-        "`[orchestration-ok: <reason>]` to suppress this nudge.\n"
+        "Ignore this advisory if the read is genuinely for orchestration.\n"
     )
     return False

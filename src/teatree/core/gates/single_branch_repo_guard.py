@@ -218,7 +218,7 @@ def deny_reason(finding: SingleBranchFinding, *, pinned_branch: str, repo: str =
         "entry from the `single_branch_repos` setting — not by working around the "
         "gate:\n"
         "  t3 <overlay> config_setting set single_branch_repos '<remaining entries>'\n"
-        "Vetted one-off: append `[single-branch-ok: <reason>]` to the command."
+        "Vetted one-off: append `[gate-escape:single_branch_repo: <reason>]` to the command."
     )
 
 
