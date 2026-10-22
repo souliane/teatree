@@ -19,6 +19,7 @@ from hooks.scripts.loop_prompt_shape import LOOP_PROMPT
 from hooks.scripts.slack_first_gate import handle_slack_first_gate
 from teatree import standing_directives_cache
 from teatree.hooks.slack_first_scanner import RELAY_RECEIPT_MARKER, RELAY_REFUSED_MARKER
+from tests._gate_escape_audit import audited_escape
 from tests._skill_load_transcript import skill_load_entries
 
 _SESSION: Final = "sess-1"
@@ -107,7 +108,7 @@ def test_any_genuine_owner_prompt_without_relay_receipt_blocks_when_slack_live(
     assert "pending_chat relay" in decision["reason"]
     assert f"--session-id {_SESSION}" in decision["reason"]
     assert f"session_id={_SESSION}" in decision["reason"]
-    assert "[skip-slack-first: <reason>]" in decision["reason"]
+    assert "[gate-escape:slack_first: <reason>]" in decision["reason"]
 
 
 class TestTwoCredentialedOverlaysGateEachSessionOnItsOwn:
@@ -288,18 +289,36 @@ class TestNeverLockout:
     def test_the_stop_hook_active_refire_is_never_blocked(self, tmp_path: Path) -> None:
         assert handle_slack_first_gate(_stop(self._blocking_transcript(tmp_path), stop_hook_active=True)) is None
 
-    def test_a_skip_token_with_a_reason_clears_one_stop(
+    def test_an_audited_escape_with_a_reason_clears_one_stop_and_is_recorded(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        transcript = self._blocking_transcript(tmp_path, f"{_ANSWER}\n[skip-slack-first: the owner said answer here]")
+        reason = "the owner said answer here"
+        data = _stop(self._blocking_transcript(tmp_path, f"{_ANSWER}\n[gate-escape:slack_first: {reason}]"))
 
-        assert handle_slack_first_gate(_stop(transcript)) is None
-        assert "the owner said answer here" in capsys.readouterr().err
+        with audited_escape(data, event="Stop") as requests:
+            result = handle_slack_first_gate(data)
 
-    def test_a_skip_token_without_a_reason_does_not_count(self, tmp_path: Path) -> None:
-        transcript = self._blocking_transcript(tmp_path, f"{_ANSWER}\n[skip-slack-first: ]")
+        assert result is None
+        assert capsys.readouterr().out == ""
+        assert [(request["gate"], request["reason"]) for request in requests] == [("slack_first", reason)]
 
-        assert handle_slack_first_gate(_stop(transcript)) is True
+    @pytest.mark.parametrize(
+        ("token", "recorded"),
+        [
+            ("[skip-slack-first: the owner said answer here]", True),
+            ("[gate-escape:slack_first: ]", True),
+            ("[gate-escape:answer_first: the owner said answer here]", True),
+            ("[gate-escape:slack_first: the owner said answer here]", False),
+        ],
+        ids=["retired-token", "blank-reason", "another-gates-token", "audit-refused"],
+    )
+    def test_anything_but_a_recorded_slack_first_escape_keeps_the_stop_blocked(
+        self, tmp_path: Path, token: str, *, recorded: bool
+    ) -> None:
+        data = _stop(self._blocking_transcript(tmp_path, f"{_ANSWER}\n{token}"))
+
+        with audited_escape(data, recorded=recorded, event="Stop"):
+            assert handle_slack_first_gate(data) is True
 
     def test_the_factory_lane_an_unattended_session_and_an_unengaged_one_are_never_gated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

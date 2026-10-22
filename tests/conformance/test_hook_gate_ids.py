@@ -269,7 +269,14 @@ def test_the_check_sees_a_deny_however_the_route_is_reached(source: str, expecte
 
 
 def test_every_declared_gate_has_one_escape_policy() -> None:
-    stop_gates = {"answer_first", "completion_claim", "owner-question-decision", "standing_goal_stop", "unbacked_claim"}
+    stop_gates = {
+        "answer_first",
+        "completion_claim",
+        "owner-question-decision",
+        "slack_first",
+        "standing_goal_stop",
+        "unbacked_claim",
+    }
     assert DECLARED_GATES | stop_gates == KNOWN_GATES
 
 
@@ -299,6 +306,7 @@ _RETIRED_MARKERS = (
     "skip-completion-gate",
     "skip-evidence-gate",
     "skip-plan-gate",
+    "skip-slack-first",
     "slack-mcp-ok",
     "standing-goal-hold",
     "visible-plan-ok",
@@ -377,6 +385,7 @@ def test_gate_id_literals_at_escape_call_sites_are_declared() -> None:
         "answer_first",
         "completion_claim",
         "owner-question-decision",
+        "slack_first",
         "standing_goal_stop",
         "unbacked_claim",
     }

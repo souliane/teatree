@@ -62,6 +62,8 @@ _AUDITED = frozenset(
         "raw_pid_kill",
         "single_branch_repo",
         "skill-loading-enforcement",
+        "slack_first",
+        "slack_first_question",
         "unapprovable_author_create",
         "unbounded_wait",
         "unknown_repo_push",

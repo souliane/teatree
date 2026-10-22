@@ -56,5 +56,5 @@ def format_block_message(verdict: SlackFirstVerdict, session_id: str) -> str:
         f"permalink from its {RELAY_RECEIPT_MARKER} line. Exit 3 or 4, or a {RELAY_REFUSED_MARKER} line, "
         "means answer in the terminal with a one-line reason. Not a prompt for the factory (a harness "
         "command, an attachment, or the owner said to answer here)? End the turn with "
-        "[skip-slack-first: <reason>]."
+        "[gate-escape:slack_first: <reason>]."
     )

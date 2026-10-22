@@ -30,6 +30,11 @@ def test_policy_preserves_owner_boundaries() -> None:
     assert policy_for("unknown_gate") is EscapePolicy.NEVER
 
 
+@pytest.mark.parametrize("gate", ["slack_first", "slack_first_question"])
+def test_the_slack_first_gates_take_an_audited_escape(gate: str) -> None:
+    assert policy_for(gate) is EscapePolicy.AUDITED
+
+
 def test_description_metadata_does_not_authorize_an_escape() -> None:
     value = {"command": "git push origin HEAD", "description": "[gate-escape:headless_authoring: fixture]"}
     assert find_escape(value, "headless_authoring") is None

@@ -29,7 +29,7 @@ def test_the_interactive_skill_carries_the_slack_first_contract() -> None:
         "Exit 3 or 4",
         "t3 <overlay> live steer",
         "notify post --thread-ts",
-        "[skip-slack-first: <reason>]",
+        "[gate-escape:slack_first: <reason>]",
         "Codex has no deterministic backstop",
     ):
         assert needle in section, needle

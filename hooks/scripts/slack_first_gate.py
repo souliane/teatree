@@ -8,29 +8,24 @@ refusal among the final turn's TOOL results — a marker typed into the agent's 
 Django-free: liveness is the verdict the worker publishes (:mod:`teatree.standing_directives_cache`), so a
 missing or stale verdict reads as not live and the terminal answer stands.
 
-Never-lockout: ``stop_hook_active`` short-circuits the re-fire, the per-call ``[skip-slack-first: <reason>]``
-token in the turn text clears one stop, the SDK lane, an unattended or child session and a session that is
-not engaged are never gated, liveness is the off switch, and any internal error allows the stop.
+Never-lockout: ``stop_hook_active`` short-circuits the re-fire, the per-call ``[gate-escape:slack_first: <reason>]``
+token in the turn text clears one stop once its audit row is written, the SDK lane, an unattended or child
+session and a session that is not engaged are never gated, liveness is the off switch, and any internal error
+allows the stop.
 """
 
 import contextlib
 import json
 import os
-import re
 import sys
 from pathlib import Path
+
+from hooks.scripts.gate_escape import escape_allows
 
 # Alias both identities so the live hook's bare import and a test's
 # ``hooks.scripts.slack_first_gate`` import resolve ONE module object.
 sys.modules.setdefault("slack_first_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.slack_first_gate", sys.modules[__name__])
-
-_SKIP_TOKEN_RE = re.compile(r"\[skip-slack-first:\s*(\S[^\]]*?)\s*\]")
-
-
-def _skip_token(text: str) -> str | None:
-    match = _SKIP_TOKEN_RE.search(text)
-    return match.group(1).strip() if match and match.group(1).strip() else None
 
 
 def _unattended() -> bool:
@@ -80,14 +75,14 @@ def _run(data: dict) -> bool | None:
     owner_words = user_words_only(turn.prompt)
     if not owner_words:
         return None
-    if reason := _skip_token((last_assistant_turn(transcript_path) or ("", False))[0]):
-        sys.stderr.write(f"NOTE: slack-first gate skipped via [skip-slack-first: {reason}].\n")
-        return None
     slack_live = standing_directives_cache.slack_is_live(
         standing_directives_cache.read_factory_slack(), os.environ.get("T3_OVERLAY_NAME", "")
     )
     verdict = slack_first_scanner.find_unrelayed_prompt(owner_words, turn.tool_results, slack_live=slack_live)
     if verdict is None:
+        return None
+    agent_text = (last_assistant_turn(transcript_path) or ("", False))[0]
+    if escape_allows(data, "slack_first", turn_text=agent_text):
         return None
     reason = slack_first_scanner.format_block_message(verdict, session_id)
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
