@@ -1197,6 +1197,24 @@ def test_a_pydantic_participant_with_a_binding_is_receivable(broker: LiveMailbox
     assert invoke(recipient_client, "inbox")["messages"][0]["text"] == "hello"
 
 
+@pytest.mark.parametrize("phase", ["short_describe", ""])
+def test_a_pydantic_task_without_mailbox_tools_refuses_peer_delivery(broker: LiveMailboxBroker, phase: str) -> None:
+    options = ClaudeAgentOptions()
+    task = LiveTask(pk=8, ticket=3, phase=phase, harness="pydantic_ai", model="m")
+    sender = broker.register(room="3", harness="claude_sdk", label="sender")
+    with bound_task_mailbox(options, task, broker=broker) as recipient:
+        assert recipient is not None
+        client = MailboxClient(sender.socket_path, sender.token)
+        peer = next(peer for peer in invoke(client, "peers") if peer["address"] == recipient.address)
+        assert peer["can_receive"] is False
+        receipt = invoke(client, "send", to=recipient.address, text="hello", key="one", timeout_seconds=0.01)
+        assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == (
+            "rejected",
+            "recipient_cannot_receive",
+            False,
+        )
+
+
 class _PydanticHttpScenario:
     def __init__(self, tmp_path: Path, mode: str) -> None:
         self.tmp_path = tmp_path
