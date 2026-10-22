@@ -25,10 +25,10 @@
     run_in_background: true
   expect: allow
 
-- name: agent_fg_ok_token
+- name: agent_audited_escape
   tool_name: Agent
   tool_input:
-    prompt: "[fg-ok: attended debug session] implement the export endpoint"
+    prompt: "[gate-escape:orchestrator_foreground_dispatch: attended debug session] implement the export endpoint"
     run_in_background: false
   expect: allow
 

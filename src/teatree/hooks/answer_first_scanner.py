@@ -227,5 +227,5 @@ def format_block_message(verdict: AnswerVerdict) -> str:
         "a why question ('it was blocked by <X>, here is the line'). If you do not "
         "know yet, say so plainly ('I have not read the logs yet') — that is an answer. "
         "Then keep the dispatch. Escape for a genuine false fire: end the turn with "
-        "[skip-answer-gate: <reason>]."
+        "[gate-escape:answer_first: <reason>]."
     )

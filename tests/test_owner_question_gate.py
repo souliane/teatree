@@ -9,15 +9,22 @@ import sys
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.owner_question_gate as owner_gate
+from tests._gate_escape_audit import audited_escape
 
 _ROUTER = Path(__file__).resolve().parents[1] / "hooks/scripts/hook_router.py"
 _ADAPTER = _ROUTER.with_name("codex_hook_adapter.py")
 _DISPATCHED = {"T3_DISPATCHED_AGENT": "1"}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_hook_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(router, "STATE_DIR", tmp_path / "state")
 
 
 def _transcript(tmp_path: Path, *, final: str = "") -> Path:
@@ -449,7 +456,7 @@ def test_classifier_denial_explanation_passes(tmp_path: Path) -> None:
     assert not result.stdout
 
 
-def test_escape_token_lets_the_final_reply_end(tmp_path: Path) -> None:
+def test_legacy_token_does_not_let_the_final_reply_end(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     text = _DECISION_LIST + "\n[owner-question-ok: the owner asked for this list in text]"
     result = _run_hook(
@@ -459,22 +466,6 @@ def test_escape_token_lets_the_final_reply_end(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert not result.stdout
-    assert "owner-question-ok" in result.stderr
-
-
-def test_empty_escape_reason_still_blocks(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    result = _run_hook(
-        tmp_path,
-        "Stop",
-        {
-            "session_id": "owner-turn",
-            "transcript_path": str(transcript),
-            "last_assistant_message": _DECISION_LIST + "\n[owner-question-ok: ]",
-        },
-    )
-
     assert json.loads(result.stdout)["decision"] == "block"
 
 
@@ -496,7 +487,7 @@ def test_kill_switch_lets_both_arms_through(tmp_path: Path) -> None:
     assert ask.stderr == ""
 
 
-def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
+def test_legacy_token_does_not_let_a_question_through(tmp_path: Path) -> None:
     transcript = _transcript(tmp_path)
     question = "Merge ticket 42 now? [owner-question-ok: the owner asked for the number]"
     result = _run_hook(
@@ -510,58 +501,8 @@ def test_escape_token_lets_a_question_through(tmp_path: Path) -> None:
         },
     )
 
-    assert result.returncode == 0
-    assert "OWNER QUESTION GATE" not in result.stdout
-    assert "owner-question-ok" in result.stderr
-
-
-def test_escape_token_beyond_first_512_question_characters_does_not_bypass(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    question = "Merge ticket 42 now?" + " " * 512 + "[owner-question-ok: the owner asked for the number]"
-    result = _run_hook(
-        tmp_path,
-        "PreToolUse",
-        {
-            "session_id": "owner-turn",
-            "transcript_path": str(transcript),
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [_ask(question)]},
-        },
-    )
-
     assert result.returncode == 2
     assert "OWNER QUESTION GATE" in result.stdout
-
-
-def test_stop_escape_token_only_bypasses_within_last_512_characters(tmp_path: Path) -> None:
-    transcript = _transcript(tmp_path)
-    token = "[owner-question-ok: the owner asked for this list in text]"
-    payload = {"session_id": "owner-turn", "transcript_path": str(transcript)}
-    early = _run_hook(
-        tmp_path,
-        "Stop",
-        payload | {"last_assistant_message": token + "\n" + "x" * 512 + "\n" + _DECISION_LIST},
-    )
-    late = _run_hook(
-        tmp_path,
-        "Stop",
-        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token},
-    )
-    at_boundary = _run_hook(
-        tmp_path,
-        "Stop",
-        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token + "x" * (512 - len(token))},
-    )
-    beyond_boundary = _run_hook(
-        tmp_path,
-        "Stop",
-        payload | {"last_assistant_message": _DECISION_LIST + "\n" + token + "x" * (513 - len(token))},
-    )
-
-    assert json.loads(early.stdout)["decision"] == "block"
-    assert not late.stdout
-    assert not at_boundary.stdout
-    assert json.loads(beyond_boundary.stdout)["decision"] == "block"
 
 
 @pytest.mark.parametrize("dispatched", [False, True])
@@ -825,3 +766,45 @@ def test_pretooluse_attended_check_is_read_once_per_call(monkeypatch: pytest.Mon
     router.handle_mirror_question_to_slack(data)
 
     assert reads == 1
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_question_escape_requires_an_audit(*, recorded: bool, capsys: pytest.CaptureFixture[str]) -> None:
+    data = {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [_ask("Merge ticket 42 now? [gate-escape:owner-question-fit: fixture]")]},
+    }
+    with (
+        patch.object(owner_gate, "_dispatched_agent", return_value=False),
+        patch.object(owner_gate, "_gate_enabled", return_value=True),
+        patch.object(owner_gate, "_owner_reads_this_turn", return_value=True),
+        patch.object(owner_gate, "_fit_problems", return_value=["question too specific"]),
+        audited_escape(data, recorded=recorded) as requests,
+    ):
+        blocked = owner_gate.handle_block_unfit_question(data)
+
+    assert blocked is not recorded
+    assert [request["gate"] for request in requests] == ["owner-question-fit"]
+    if recorded:
+        assert "recorded for this action" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_final_reply_escape_requires_an_audit(*, recorded: bool, capsys: pytest.CaptureFixture[str]) -> None:
+    data = {
+        "last_assistant_message": "Needs you: merge this now?\n[gate-escape:owner-question-decision: fixture]",
+    }
+    with (
+        patch.object(owner_gate, "_dispatched_agent", return_value=False),
+        patch.object(owner_gate, "_gate_enabled", return_value=True),
+        patch.object(owner_gate, "_owner_reads_this_turn", return_value=True),
+        patch.object(owner_gate, "_sanctioned_prose", return_value=False),
+        patch.object(owner_gate, "find_decision_prose", return_value="merge this now?"),
+        audited_escape(data, recorded=recorded, event="Stop") as requests,
+    ):
+        blocked = owner_gate.handle_block_decision_prose(data)
+
+    assert (blocked is True) is not recorded
+    assert [request["gate"] for request in requests] == ["owner-question-decision"]
+    if recorded:
+        assert "recorded for this action" in capsys.readouterr().err

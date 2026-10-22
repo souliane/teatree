@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from tests._gate_escape_audit import audited_escape
 
 
 def _bash_event(command: str) -> dict:
@@ -114,7 +115,7 @@ class TestWholeTreeStageIsDenied:
         reason = deny_reason()
         assert "git add <path>" in reason
         assert "scratch" in reason.lower()
-        assert "[add-all-ok:" in reason
+        assert "[gate-escape:git_add_all:" in reason
 
 
 class TestNarrowlyScoped:
@@ -187,14 +188,13 @@ class TestNarrowlyScoped:
 
 
 class TestNeverLockout:
-    def test_a_token_inside_the_wrapped_script_allows(self) -> None:
-        blocked, _payload = _run("bash -c 'git add -A # [add-all-ok: first commit of a scaffold]'")
-        assert blocked is False
-
-    def test_per_call_token_allows(self) -> None:
-        blocked, payload = _run("git add -A  # [add-all-ok: first commit on a scaffolded dir]")
+    def test_an_audited_token_allows_once_recorded(self) -> None:
+        command = "git add -A # [gate-escape:git_add_all: scaffold]"
+        with audited_escape(_bash_event(command)) as requests:
+            blocked, payload = _run(command)
         assert blocked is False
         assert payload is None
+        assert [request["gate"] for request in requests] == ["git_add_all"]
 
     def test_kill_switch_disables_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -205,3 +205,9 @@ class TestNeverLockout:
         blocked, payload = _run("git add -A")
         assert blocked is False
         assert payload is None
+
+
+def test_legacy_add_all_marker_does_not_allow() -> None:
+    blocked, payload = _run("git add -A # [add-all-ok: legacy]")
+    assert blocked is True
+    assert payload is not None

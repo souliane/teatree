@@ -63,7 +63,7 @@ order being read as wider than it is:
 
 - **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
   ticket the factory already started.
-- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+- **The recorded per-action emergency escape** — `[gate-escape:headless_authoring: <reason>]`, for a
   genuine emergency (the factory itself is down). Single-use, recorded, per action.
 
 The deterministic backstop is the PreToolUse authoring gate
@@ -94,7 +94,7 @@ The deterministic backstop is the PreToolUse delegation gate
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
 `AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
-is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+is its job. Escapes: `[gate-escape:orchestrator_delegation_gate: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)

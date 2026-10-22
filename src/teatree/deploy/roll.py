@@ -23,7 +23,8 @@ from django.db.migrations.recorder import MigrationRecorder
 
 from teatree.core.models import WorkerGeneration
 from teatree.core.process_freshness import FreshnessVerdict, read_process_freshness
-from teatree.generation import generation_image, is_generation_sha, short_sha
+from teatree.generation import generation_image, short_sha
+from teatree.git_sha import is_full_git_sha
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, DrainPacing, drain_worker, set_worker_quiescing
 
 logger = logging.getLogger(__name__)
@@ -268,7 +269,7 @@ class Roller:
                 raise RollError(msg) from exc
 
     def _preflight(self, to: str) -> None:
-        if not is_generation_sha(to):
+        if not is_full_git_sha(to):
             msg = f"--to takes a full 40-hex commit sha, got {to!r}"
             raise RollError(msg)
         image = generation_image(to)

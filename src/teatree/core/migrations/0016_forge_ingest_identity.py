@@ -15,7 +15,7 @@ def trim_settled_forge_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEd
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0014_review_verdict_identity_and_verdict_key"),
+        ("core", "0015_gate_escape"),
     ]
 
     operations = [

@@ -92,23 +92,16 @@ class TestLeakGateNeverGranted:
         assert "foreign_branch_push_force_delete" in dcb.NON_GRANTABLE_GATE_IDS
         assert "foreign_branch_push" not in dcb.NON_GRANTABLE_GATE_IDS
 
-    def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        self._ctx(monkeypatch, tmp_path, "uv run pytest --no-cov -q [fp-confirmed: known quick]")
-        decision = dcb.apply_deny_circuit_breaker("BLOCKED: the orchestrator ran a heavy command.")
-        assert decision.allow is True, "a confirmed non-leak FP is suppressed"
-
 
 class TestCallSignatureDiscrimination:
     """#3252 — the call signature distinguishes commands and folds out escape tokens."""
 
-    def test_bash_signature_strips_fp_confirmed_token(self) -> None:
+    def test_bash_signature_keeps_legacy_token(self) -> None:
         tokened = dcb._call_signature(
             {"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q [fp-confirmed: known]"}}
         )
         plain = dcb._call_signature({"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}})
-        assert tokened == plain, "an escape token must not split a command's signature"
+        assert tokened != plain
 
     def test_bash_signature_strips_allow_banned_term_prefix(self) -> None:
         prefixed = dcb._call_signature(
@@ -138,20 +131,9 @@ class TestCallSignatureDiscrimination:
             return dcb._call_signature({"tool_name": tool_name, "tool_input": {"questions": [{"question": question}]}})
 
         assert signature("Merge ticket 42 now?") != signature("Merge ticket 43 today?")
-        assert signature("Merge ticket 42 now? [owner-question-ok: asked]") == signature("Merge ticket 42 now?")
-
-
-class TestFpConfirmedTokenSurfaces:
-    """#3252 — the ``[fp-confirmed:]`` token is honoured across the token fields."""
-
-    def test_token_in_edit_new_string_is_confirmed(self) -> None:
-        assert dcb._fp_confirmed({"tool_name": "Edit", "tool_input": {"new_string": "x [fp-confirmed: fine]"}}) is True
-
-    def test_empty_reason_token_does_not_confirm(self) -> None:
-        assert dcb._fp_confirmed({"tool_name": "Bash", "tool_input": {"command": "x [fp-confirmed: ]"}}) is False
-
-    def test_no_token_is_not_confirmed(self) -> None:
-        assert dcb._fp_confirmed({"tool_name": "Bash", "tool_input": {"command": "git status"}}) is False
+        assert signature("Merge ticket 42 now? [gate-escape:owner-question-fit: asked]") == signature(
+            "Merge ticket 42 now?"
+        )
 
 
 class TestGrantStoreEdgeCases:
