@@ -15,6 +15,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents import codex_app_server_events
 from teatree.agents.codex_app_server_env import codex_command, codex_process_env
 from teatree.agents.codex_app_server_errors import (
+    METHOD_NOT_FOUND,
     auth_persist_error,
     managed_auth_error,
     request_error,
@@ -72,8 +73,6 @@ CODEX_APP_SERVER_CAPABILITIES = HarnessCapabilities(
     managed_lane=True,
 )
 
-_METHOD_NOT_FOUND = -32601
-
 
 def codex_capabilities() -> HarnessCapabilities:
     return replace(CODEX_APP_SERVER_CAPABILITIES, mcp=not container_is_the_sandbox())
@@ -84,7 +83,7 @@ class _StreamFailure:
     error: CodexAppServerError | HarnessFallbackError
 
 
-class CodexAppServerSession(CodexTurnSteering):
+class CodexAppServerSession:
     def __init__(
         self,
         options: CodexAppServerOptions,
@@ -115,6 +114,21 @@ class CodexAppServerSession(CodexTurnSteering):
         self.translator = CodexEventTranslator()
         self._tool_events = CodexToolEvents()
         self._server_request_tasks: set[asyncio.Task[None]] = set()
+        self._steering = CodexTurnSteering()
+
+    def _turn_opened(self, turn_id: str) -> None:
+        self._steering.turn_opened(turn_id)
+
+    def _turn_closed(self, *, session: bool = False) -> None:
+        self._steering.turn_closed(session=session)
+
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+        await self._steering.steer(
+            text, input_id=input_id, wait=wait, thread_id=self.thread_id, send_request=self._request
+        )
+
+    async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
+        await self._steering.steer_refusal(thread_id, turn_id, reason, self._request)
 
     async def start(self, *, open_thread: bool = True) -> None:
         if self.options.executor is not None and self.options.executor.container_id not in (self.command or ()):
@@ -370,7 +384,7 @@ class CodexAppServerSession(CodexTurnSteering):
     async def _refuse_server_request(self, message: dict[str, Any]) -> None:
         if not self._closing:
             await self._write(
-                {"id": message["id"], "error": {"code": _METHOD_NOT_FOUND, "message": "Unsupported server request."}}
+                {"id": message["id"], "error": {"code": METHOD_NOT_FOUND, "message": "Unsupported server request."}}
             )
 
     async def _respond_approval(self, message: dict[str, Any]) -> None:

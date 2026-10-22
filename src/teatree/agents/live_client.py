@@ -130,6 +130,9 @@ class LiveClient:
 
     def _operator_command(self, command: _OperatorInput) -> ReceiptPayload:
         row = self._owner_row(command.task)
+        if not isinstance(row.get("attempt"), str) or not row["attempt"] or not isinstance(row.get("generation"), str):
+            msg = f"worker {row['worker']} is too old for fenced live commands; retry after it restarts"
+            raise LiveOfflineError(msg)
         worker = (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
         fence = command.fence or FenceOverride()
         request: LiveRequest = {

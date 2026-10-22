@@ -19,7 +19,7 @@ from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.managers_task_claim import drain_block_reason
 from teatree.core.models import LeaseLostError, Task
-from teatree.core.models.task_claim import claim_generation, describe_lease_loss
+from teatree.core.models.task_claim import describe_lease_loss
 from teatree.core.worktree.occupancy import WorktreeOccupancyLostError, renew_ticket_checkout, task_holder_id
 from teatree.generation import current_generation
 from teatree.utils.thread_db import close_thread_db_connections
@@ -86,7 +86,7 @@ def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> Liv
         phase=task.phase,
         harness=harness.name if isinstance(harness, GuardedHarness) else type(harness).__name__,
         model=options.model or "",
-        fence=LiveFence(claim_generation(task) or minted.attempt, task.claimed_generation or current_generation()),
+        fence=LiveFence(minted.attempt, task.claimed_generation or current_generation()),
     )
 
 
@@ -201,6 +201,9 @@ async def drive_with_heartbeat(
     live_task = _live_task(task, options, harness)
     claim_lost: str | None = None
 
+    def compaction_stopped() -> bool:
+        return isinstance(harness, GuardedHarness) and harness.guard.stopped_run
+
     async def claim_live() -> bool:
         def check() -> bool:
             nonlocal claim_lost
@@ -209,8 +212,6 @@ async def drive_with_heartbeat(
             except LeaseLostError as exc:
                 claim_lost = str(exc)
                 return False
-            if not task.claimed_at:
-                return True
             try:
                 holds = Task.objects.filter(pk=task.pk, claimed_generation=task.claimed_generation).exists()
                 if not holds:
@@ -234,9 +235,7 @@ async def drive_with_heartbeat(
             try:
                 timeout = runtime.watchdog.max_runtime_seconds or None
                 outcome = await asyncio.wait_for(_collect(session, prompt, capture), timeout=timeout)
-                if runtime.idle_window_seconds > 0 and not (
-                    isinstance(harness, GuardedHarness) and harness.guard.stopped_run
-                ):
+                if runtime.idle_window_seconds > 0 and not compaction_stopped():
                     deadline = started_at + timeout if timeout is not None else None
                     outcome = await hold_idle_window(
                         session,
@@ -246,7 +245,7 @@ async def drive_with_heartbeat(
                         budget=IdleWindowBudget(
                             runtime.idle_window_seconds,
                             deadline,
-                            lambda: isinstance(harness, GuardedHarness) and harness.guard.stopped_run,
+                            compaction_stopped,
                         ),
                     )
             except TimeoutError:

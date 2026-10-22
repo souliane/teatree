@@ -70,6 +70,7 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
 agent_max_turns = 250 # int — turn ceiling for one agent run
+agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
 dogfood_smoke_skill = "dogfooding" # str — skill the dogfood smoke loop runs
@@ -258,7 +259,7 @@ task_result_retention_days = 1 # int — days a task result row is kept
 [teatree.Infrastructure.Provisioning]
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
 admission_write_concurrency_per_core = 0.5 # float — agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane
-cheap_phase_admission_ceiling = 2 # int — review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling, one review executor each (min 1)
+cheap_phase_admission_ceiling = 2 # int — per-class width (min 1): reviews and shipping/review requests are each capped at this width inside a cheap lane one seat wider; machine brakes spare both classes
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle

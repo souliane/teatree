@@ -222,7 +222,7 @@ so the repetition is automated rather than remembered.
 |---|---|---|---|
 | `standing-golden-rule` | 300s | every attended session | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
 | `standing-todo-consolidate` | 1800s | every attended session | Every user request is captured as a task, and every OPEN task is drained — closed when durable state already satisfies it; reconcile from durable state first, rescan the transcript only if unaccounted for; then implement the outstanding requests, oldest first. |
-| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact; open PRs are listed with age and pending task, started PRs first, oldest first, and a stalled one gets its cause fixed at once. |
 
 Every slot arrives as context on a turn that is already happening: all three when the
 session starts, resumes, clears or compacts, and each again on the first tool call after
@@ -267,7 +267,7 @@ Commands carry the selected session's attempt and worker generation. `stale_comm
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 
-Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
+Read the receipt, not the hope. `accepted_current_turn` and `accepted_new_turn` (exit 0) mean the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_idle` (use current-turn steer), `stale_command` (inspect the new attempt), `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task or its session has closed: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. An idle session lists `steerable: false`; use `live follow-up` while its idle window is open. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
 Factory agents use the five `agent_mailbox_*` tools in their own TeaTree-managed
 MCP child to reach live peers across tickets and same-host workers. `self` and

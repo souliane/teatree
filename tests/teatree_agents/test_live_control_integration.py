@@ -138,7 +138,7 @@ class LiveControlIntegrationTests(TestCase):
         return int(self.live.inspect(self.task.pk)["pending_inputs"])
 
     def test_idle_follow_up_starts_one_new_cli_turn_and_duplicate_replays_receipt(self) -> None:
-        run = _FakeCliRun(self.root, follow_up_final_text=json.dumps({"summary": "second"}))
+        run = _FakeCliRun(self.root, follow_up_final_text=json.dumps({"summary": "second"}), follow_up_wait_seconds=3)
 
         def operator() -> tuple[dict[str, object], dict[str, object], ReceiptPayload, ReceiptPayload]:
             _until(
@@ -150,17 +150,25 @@ class LiveControlIntegrationTests(TestCase):
             receipts = []
             for _ in range(2):
                 out = StringIO()
-                call_command(
-                    "live",
-                    "follow-up",
-                    str(self.task.pk),
-                    "--text",
-                    "second prompt",
-                    "--command-id",
-                    "same",
-                    "--json",
-                    stdout=out,
-                )
+                try:
+                    call_command(
+                        "live",
+                        "follow-up",
+                        str(self.task.pk),
+                        "--text",
+                        "second prompt",
+                        "--command-id",
+                        "same",
+                        "--wait",
+                        "2",
+                        "--json",
+                        stdout=out,
+                    )
+                finally:
+                    deadline = time.monotonic() + 2
+                    while run.user_turns() < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    assert run.user_turns() == 2
                 receipts.append(json.loads(out.getvalue()))
             reused_by_steer = self.live.steer(self.task.pk, "second prompt", command_id="same", wait=1)
             return receipts[0], receipts[1], idle_steer, reused_by_steer

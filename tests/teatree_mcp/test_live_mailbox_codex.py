@@ -3,9 +3,10 @@
 import asyncio
 import json
 import sys
+import tempfile
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -16,9 +17,10 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents.codex_app_server import CodexAppServerHarness, CodexAppServerSession
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer
+from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_binding import bound_task_mailbox
-from teatree.agents.live_control import LiveFence, LiveTask
+from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_delivery import InboxMessage, SendReceipt
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -47,9 +49,8 @@ for line in sys.stdin:
     elif method == "mcpServerStatus/list":
         result = {"data": [], "nextCursor": None}
     elif method == "turn/start":
+        time.sleep(0.5 if mode == "slow-start" else 0)
         result = {"turn": {"id": "turn-1"}}
-        if mode == "delayed-start":
-            time.sleep(0.2)
     elif method == "turn/steer" and mode == "silent":
         continue
     elif method == "turn/steer":
@@ -57,10 +58,6 @@ for line in sys.stdin:
     else:
         result = {}
     sys.stdout.write(json.dumps({"id": ident, "result": result}) + "\\n")
-    if method == "turn/start" and mode == "delayed-start":
-        sys.stdout.write(json.dumps({"method": "item/completed", "params": {
-            "threadId": "thread-1", "item": {"id": "ready", "type": "agentMessage", "text": "ready"}
-        }}) + "\\n")
     if method == "turn/steer":
         sys.stdout.write(json.dumps({"method": "item/completed", "params": {
             "threadId": "thread-1", "item": {"id": "item-1", "type": "agentMessage", "text": "nonce-5417"}
@@ -101,6 +98,17 @@ def _fake_server(tmp_path: Path) -> tuple[Path, Path]:
     return script, tmp_path / "requests.jsonl"
 
 
+async def _send_into_the_open_turn(client: MailboxClient, address: str) -> tuple[SendReceipt, list[SendReceipt]]:
+    refused: list[SendReceipt] = []
+    async with asyncio.timeout(5):
+        while True:
+            receipt = await client.send(address, "nonce-5417", f"message-{len(refused)}", timeout_seconds=1)
+            if receipt["code"] != RejectCode.TURN_ENDED.value:
+                return receipt, refused
+            refused.append(receipt)
+            await asyncio.sleep(0.01)
+
+
 def _requests(log: Path, method: str) -> list[dict[str, Any]]:
     return [
         row
@@ -115,7 +123,7 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
     options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
     task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
 
-    async def run() -> tuple[SendReceipt, list[InboxMessage]]:
+    async def run(runtime_dir: Path) -> tuple[SendReceipt, list[InboxMessage]]:
         session = CodexAppServerSession(
             CodexAppServerOptions.from_sdk_options(options),
             resume=None,
@@ -123,7 +131,7 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
             command=(sys.executable, str(script), str(log), mode),
         )
         with (
-            LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as broker,
+            LiveMailboxBroker(runtime_dir=runtime_dir, registry=lambda: registry) as broker,
             bound_task_mailbox(options, task, broker=broker) as peer,
         ):
             assert peer is not None
@@ -132,17 +140,22 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
             await session.start()
             try:
                 await session.query("wait for a peer")
-                async with registry.attach(task, _Capture()) as controller:
-                    controller.bind(_UnsteerableSession() if mode == "no-steer" else session)
-                    receipt = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
-                    again = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
-                    inbox = list(broker._by_token[peer.token].inbox)
+                refusal = patch.object(
+                    CodexTurnSteering, "steer", side_effect=SteerRejectedError(RejectCode.NOT_STEERABLE)
+                )
+                with refusal if mode == "no-steer" else nullcontext():
+                    async with registry.attach(task, _Capture()) as controller:
+                        controller.bind(session)
+                        receipt = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
+                        again = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
+                        inbox = list(broker._by_token[peer.token].inbox)
             finally:
                 await session.close()
         assert receipt == again
         return receipt, inbox
 
-    receipt, inbox = asyncio.run(run())
+    with tempfile.TemporaryDirectory(prefix="t3l-", dir="/tmp") as runtime_dir:
+        receipt, inbox = asyncio.run(run(Path(runtime_dir)))
     return receipt, _requests(log, "turn/steer"), inbox
 
 
@@ -168,13 +181,18 @@ def test_claude_to_codex_send_is_admitted_through_broker_registry_and_codex_sess
     assert inbox == []
 
 
-def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("mode", "min_refusals"), [("accept", 0), ("slow-start", 1)], ids=["turn-opens-at-once", "turn-opens-late"]
+)
+def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(
+    tmp_path: Path, mode: str, min_refusals: int
+) -> None:
     registry = LiveSessionRegistry()
     script, log = _fake_server(tmp_path)
     manager = SharedCodexAppServer(
         code_home=tmp_path / "auth",
         cache=_NoAuthCache(),
-        command=(sys.executable, str(script), str(log), "delayed-start"),
+        command=(sys.executable, str(script), str(log), mode),
         process_env={},
     )
     task = Task(pk=7, ticket_id=3, phase="coding")
@@ -190,23 +208,23 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(tmp_path:
         drain_reason=lambda: "",
     )
 
-    async def run(broker: LiveMailboxBroker) -> SendReceipt:
+    async def run(broker: LiveMailboxBroker) -> tuple[SendReceipt, list[SendReceipt]]:
         sender = broker.register(room="3", harness="claude_sdk", label="sender")
         drive = asyncio.create_task(drive_with_heartbeat(task, "wait for a peer", options, harness, runtime=runtime))
         try:
             async with asyncio.timeout(5):
                 while not any(row["harness"] == "codex_app_server" for row in broker.identities()):
                     await asyncio.to_thread(time.sleep, 0.01)
-                while not (facts := registry.facts(7)) or facts["state"] != "busy":
+                while not (facts := registry.facts(7)) or not facts["steerable"]:
                     await asyncio.to_thread(time.sleep, 0.01)
             peer = next(row for row in broker.identities() if row["harness"] == "codex_app_server")
-            receipt = await MailboxClient(sender.socket_path, sender.token).send(
-                peer["address"], "nonce-5417", "message-1", timeout_seconds=1
+            receipt, refused = await _send_into_the_open_turn(
+                MailboxClient(sender.socket_path, sender.token), peer["address"]
             )
             outcome = await asyncio.wait_for(drive, 5)
             assert outcome.result_message is not None
             assert "nonce-5417" in outcome.agent_text
-            return receipt
+            return receipt, refused
         finally:
             if not drive.done():
                 drive.cancel()
@@ -218,10 +236,11 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(tmp_path:
             patch("teatree.agents.runner_heartbeat.shared_registry", return_value=registry),
             patch("teatree.agents.codex_shared_app_server.shared_codex_app_server", return_value=manager),
         ):
-            receipt = asyncio.run(run(broker))
+            receipt, refused = asyncio.run(run(broker))
     finally:
         manager.close()
     assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
+    assert len(refused) >= min_refusals
     steers = _requests(log, "turn/steer")
     assert len(steers) == 1
     assert "nonce-5417" in steers[0]["params"]["input"][0]["text"]
@@ -240,24 +259,35 @@ def test_the_delivery_scenario_fails_when_steering_or_routing_is_disabled(tmp_pa
     assert steers == []
     assert inbox == []
 
-    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+    options = ClaudeAgentOptions(mcp_servers={})
+    non_codex = LiveTask(pk=8, ticket=3, phase="coding", harness="pydantic_ai", model="test")
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as broker,
+        bound_task_mailbox(options, non_codex, broker=broker) as peer,
+    ):
+        assert peer is None
         sender = broker.register(room="3", harness="claude_sdk", label="sender")
-        client = MailboxClient(sender.socket_path, sender.token)
-        assert asyncio.run(client.peers()) == []
-        absent = asyncio.run(client.send("missing-recipient", "nonce-5417", "message-2", timeout_seconds=0.2))
-        assert (absent["outcome"], absent["code"]) == ("rejected", "session_closed")
+        assert asyncio.run(MailboxClient(sender.socket_path, sender.token).peers()) == []
+        with pytest.raises(ValueError, match="recipient is not active"):
+            broker.enqueue_from(broker.identities()[0], "missing-recipient", "nonce-5417")
 
 
-@pytest.mark.parametrize(
-    ("mode", "outcome"),
-    [("accept", "accepted_current_turn"), ("silent", "unknown_delivery"), ("no-steer", "rejected")],
-)
-def test_a_push_only_peer_never_claims_an_inbox_copy(tmp_path: Path, mode: str, outcome: str) -> None:
-    receipt, _, inbox = _exchange(tmp_path, mode=mode)
-
-    assert receipt["outcome"] == outcome
-    assert receipt["queued_in_inbox"] is False
-    assert inbox == []
+def test_a_push_only_peer_never_claims_an_inbox_copy() -> None:
+    task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
+    with tempfile.TemporaryDirectory(prefix="t3p-", dir="/tmp") as runtime_dir:
+        with LiveMailboxBroker(runtime_dir=Path(runtime_dir)) as broker:
+            recipient = broker.register(
+                room="3", harness="codex_app_server", label="recipient", task=PushOnlyTask(task)
+            )
+            sender = broker.register(room="3", harness="claude_sdk", label="sender")
+            receipt = asyncio.run(
+                MailboxClient(sender.socket_path, sender.token).send(
+                    recipient.address, "nonce-5417", "message-1", timeout_seconds=0.1
+                )
+            )
+            inbox = list(broker._by_token[recipient.token].inbox)
+        assert receipt["queued_in_inbox"] is False
+        assert inbox == []
 
 
 def test_a_push_queued_for_an_old_participant_is_stale_in_the_new_attempt(tmp_path: Path) -> None:

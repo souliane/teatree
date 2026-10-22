@@ -33,7 +33,9 @@ class TestParkDoesNotReEnqueue(TestCase):
     def setUp(self) -> None:
         self.admit = mock.patch(
             "teatree.core.agent_admission.agent_admission_verdict",
-            return_value=AgentAdmission(expensive_denied=None, cheap_denied=None),
+            return_value=AgentAdmission(
+                expensive_denied=None, cheap_denied=None, review_denied=None, retiring_denied=None
+            ),
         )
         self.admit.start()
         self.addCleanup(self.admit.stop)

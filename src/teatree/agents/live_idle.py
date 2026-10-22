@@ -57,8 +57,12 @@ async def hold_idle_window(
                 break
             if not await _start_follow_up(session, follow_up, live, budget):
                 break
+            previous_result = capture.result_message
             capture.result_message = None
             outcome = await _drain_follow_up(session, capture, live, budget)
+            if outcome.result_message is None:
+                capture.result_message = previous_result
+                outcome = replace(outcome, result_message=previous_result)
             if outcome.stuck_reason is not None or outcome.compaction_stopped:
                 break
         return outcome

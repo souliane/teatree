@@ -110,9 +110,9 @@ _STEER = {
     "task": 7,
     "text": "use docs/x.md",
     "command_id": "c-1",
+    "attempt": "attempt-1",
+    "generation": "generation-1",
     "wait_seconds": 5,
-    "attempt": "claim",
-    "generation": "",
 }
 
 
@@ -128,6 +128,8 @@ _STEER = {
         pytest.param("live.steer", {**_STEER, "text": 5}, "non-empty text", id="text-not-a-string"),
         pytest.param("live.steer", {**_STEER, "command_id": ""}, "1-128 byte command_id", id="empty-command-id"),
         pytest.param("live.steer", {**_STEER, "command_id": "é" * 65}, "1-128 byte command_id", id="over-128-bytes"),
+        pytest.param("live.steer", {**_STEER, "attempt": None}, "attempt and generation fence", id="no-attempt"),
+        pytest.param("live.steer", {**_STEER, "generation": None}, "attempt and generation fence", id="no-generation"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": 0}, "wait must be within", id="no-wait"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": 900.5}, "wait must be within", id="wait-over-cap"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": True}, "wait must be within", id="wait-bool"),

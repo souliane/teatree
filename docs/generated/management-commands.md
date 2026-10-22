@@ -566,7 +566,7 @@ Audit the shipped loop/preset/schedule seed set, and delete from it with a typed
 
 ## `signals`
 
-Print the five factory signals over the trailing window vs its baseline.
+Print the factory signals over the trailing window vs its baseline.
 
 ## `snapshot_settings_defaults`
 

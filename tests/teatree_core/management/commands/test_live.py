@@ -162,6 +162,19 @@ def test_steer_with_an_old_attempt_exits_3_stale_command(control_dir: Path) -> N
 
 
 @pytest.mark.usefixtures("worker")
+def test_steer_with_an_old_generation_exits_3_stale_command(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+    listed = json.loads(cli("list", "--json").stdout)
+    current = next(row for row in listed if row["task"] == 101)
+    stale = cli(
+        "steer", "101", "--text", "old", "--attempt", current["attempt"], "--generation", "old-generation", "--json"
+    )
+
+    assert stale.returncode == 3
+    assert (json.loads(stale.stdout)["outcome"], json.loads(stale.stdout)["code"]) == ("rejected", "stale_command")
+
+
+@pytest.mark.usefixtures("worker")
 def test_live_steer_without_a_fence_is_refused(control_dir: Path) -> None:
     worker = next((control_dir / "live").glob("*.sock"))
     with pytest.raises(LiveRefusedError, match="needs an attempt and generation fence"):
@@ -207,6 +220,55 @@ def test_steer_exit_codes_follow_the_receipt(
         assert (receipt["outcome"], receipt["code"]) == expected
         if task == "103":
             assert "c-lost" in completed.stderr
+            assert "unknown_delivery" in completed.stderr
+
+
+@pytest.mark.parametrize("code", ["session_closed", "unknown_session"])
+def test_follow_up_closed_receipts_use_the_offline_exit(code: str) -> None:
+    receipt = {
+        "command_id": "closed",
+        "task": 123,
+        "outcome": "rejected",
+        "code": code,
+        "mode": "active",
+        "accepted_at": None,
+    }
+    stderr = StringIO()
+    with (
+        patch.object(LiveClient, "follow_up", return_value=receipt),
+        patch("teatree.core.management.commands.live._task_list_status", return_value="running"),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        call_command("live", "follow-up", "123", "--text", "continue", stderr=stderr)
+
+    assert stopped.value.code == 5
+    assert "task 123 in the task list" in stderr.getvalue()
+
+
+def test_follow_up_not_idle_receipt_gives_the_current_turn_hint() -> None:
+    receipt = {
+        "command_id": "busy",
+        "task": 123,
+        "outcome": "rejected",
+        "code": "not_idle",
+        "mode": "active",
+        "accepted_at": None,
+    }
+    stderr = StringIO()
+    with patch.object(LiveClient, "follow_up", return_value=receipt), pytest.raises(SystemExit) as stopped:
+        call_command("live", "follow-up", "123", "--text", "continue", stderr=stderr)
+
+    assert stopped.value.code == 3
+    assert "use live steer for its current turn" in stderr.getvalue()
+
+
+def test_a_legacy_worker_without_fence_fields_is_offline() -> None:
+    legacy = {"task": 123, "worker": "old-worker"}
+    with (
+        patch.object(LiveClient, "sessions", return_value=[legacy]),
+        pytest.raises(LiveOfflineError, match="worker old-worker"),
+    ):
+        LiveClient().follow_up(123, "continue", command_id="new")
 
 
 @pytest.mark.usefixtures("worker")

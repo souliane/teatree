@@ -371,8 +371,8 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
-    Returns the five signals (first-try-green, defect-escape, review-catch,
-    merge-latency, repair-burn) with fail-loud statuses (``ok`` /
+    Returns the signals (first-try-green, defect-escape, review-catch,
+    merge-latency, PR start-to-merged, repair-burn) with fail-loud statuses (``ok`` /
     ``insufficient_data`` / ``instrumentation_gap``), each signal's red-floor
     trip, and the top-level verdict (``ok`` / ``regressing`` / ``red``). Scope to
     an overlay with ``overlay``; widen the window with ``window_days``.
@@ -544,7 +544,7 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
     _ReadTool(
         "factory_signals",
         _factory_signals,
-        "- factory_signals(overlay, window_days): the five factory quality/velocity "
+        "- factory_signals(overlay, window_days): the factory quality/velocity "
         "signals with fail-loud statuses and the verdict.",
     ),
 )

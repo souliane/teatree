@@ -119,7 +119,7 @@ class PeerDelivery:
 
     def receipt(self) -> SendReceipt:
         if not self.settled.done():
-            if self.unknown_reported and not self.queued_in_inbox:
+            if self.unknown_reported:
                 return self.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
             return self.as_receipt(ControlOutcome.REJECTED, RejectCode.NOT_ACCEPTED_IN_TIME)
         outcome, code = self.settled.result()

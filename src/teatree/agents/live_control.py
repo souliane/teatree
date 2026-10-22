@@ -243,6 +243,7 @@ class LiveSessionController:
 
     def close(self) -> None:
         self._closed = True
+        self._claim_live = None
         if self._idle is not None and not self._idle.done():
             self._idle.set_result(None)
         self._idle = None
@@ -273,7 +274,7 @@ class LiveSessionController:
 
     @property
     def steerable(self) -> bool:
-        return not self._closed and isinstance(self._session, SteerableSession)
+        return not self._closed and not self.idle and isinstance(self._session, SteerableSession)
 
     @property
     def state(self) -> str:
@@ -359,11 +360,7 @@ class LiveSessionController:
         return follow_up
 
     async def _started_receipt(self, follow_up: FollowUp, command_id: str) -> ControlReceipt:
-        try:
-            error = await asyncio.shield(follow_up.started)
-        except asyncio.CancelledError:
-            self.close()
-            raise
+        error = await asyncio.shield(follow_up.started)
         if self._starting is follow_up:
             self._starting = None
         if isinstance(error, SteerRejectedError):
@@ -398,12 +395,14 @@ class LiveSessionController:
                 receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
             elif self._closed:
                 receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+            elif not self.idle:
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
             else:
                 follow_up = self._start_turn(frame_follow_up(text, command_id), wait)
                 receipt = (
                     await self._started_receipt(follow_up, command_id)
                     if follow_up is not None
-                    else ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+                    else ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
                 )
         except asyncio.CancelledError:
             settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
@@ -453,10 +452,14 @@ class LiveSessionController:
             if not claim_holds:
                 self.close()
                 return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
+        if self._closed:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+        if not self.idle:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
         prompt = f"{framed}\nFinish with your complete result envelope as the last plain JSON object."
         follow_up = self._start_turn(prompt, wait)
         if follow_up is None:
-            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
         return await self._started_receipt(follow_up, command_id)
 
     def _session_refusal(self) -> RejectCode | None:

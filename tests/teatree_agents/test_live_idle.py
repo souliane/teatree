@@ -7,6 +7,7 @@ from time import monotonic
 from typing import cast
 
 import pytest
+from claude_agent_sdk import ResultMessage
 
 from teatree.agents.claude_sdk_session import ClaudeSdkSession
 from teatree.agents.codex_app_server import CodexAppServerSession
@@ -50,6 +51,7 @@ def test_an_error_result_or_round_handoff_cannot_enter_idle() -> None:
     live = _controller(capture)
 
     assert not can_idle(_CapableSession(), capture.outcome(), live)
+    capture.observe(result_message(is_error=False))
     assert not can_idle(_CapableSession(), replace(capture.outcome(), round_handoff="next"), live)
 
 
@@ -213,6 +215,39 @@ def test_a_failed_follow_up_drain_is_recorded_as_failed() -> None:
         return (await held).stuck_reason
 
     assert asyncio.run(run()) is not None
+
+
+@pytest.mark.parametrize("failure", ["exception", "no_result"])
+def test_failed_follow_up_retains_the_first_result_metadata(failure: str) -> None:
+    class FailedTurn(_CapableSession):
+        async def receive_response(self) -> AsyncIterator[object]:
+            yield assistant_text("partial second turn")
+            if failure == "exception":
+                message = "broken stream"
+                raise RuntimeError(message)
+
+    async def run() -> tuple[ResultMessage | None, str | None]:
+        capture = StreamCapture()
+        first = result_message(result="first", num_turns=3, total_cost_usd=1.25, usage={"input_tokens": 100})
+        capture.observe(first)
+        session = FailedTurn()
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(session, capture, live, capture.outcome(), budget=IdleWindowBudget(0.1, None))
+        )
+        await asyncio.sleep(0)
+        receipt = await live.follow_up("next", command_id="one", wait=1)
+        assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+        outcome = await held
+        return outcome.result_message, outcome.stuck_reason
+
+    result, reason = asyncio.run(run())
+    assert reason is not None
+    assert result is not None
+    assert result.num_turns == 3
+    assert result.total_cost_usd == pytest.approx(1.25)
+    assert result.usage == {"input_tokens": 100}
 
 
 def test_compaction_stop_in_a_follow_up_prevents_another_idle_window() -> None:

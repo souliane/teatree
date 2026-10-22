@@ -410,23 +410,25 @@ class LiveMailboxBroker:
         if delivery.unknown_reported and not delivery.queued_in_inbox:
             return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
         if not delivery.settled.done():
-            if recipient is not None and recipient.task is not None and delivery.push is None:
-                delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
-            if delivery.push is not None and not delivery.unknown_reported:
-                await asyncio.wait({delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
-                if delivery.push.done() and delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY:
-                    delivery.unknown_reported = True
-                    return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())
-                )
-            except TimeoutError:
-                if delivery.push is not None and not delivery.push.done():
-                    await asyncio.wait({delivery.push})
-        if delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY and not delivery.settled.done():
-            delivery.unknown_reported = True
-            return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
+            was_unknown = delivery.unknown_reported
+            if not was_unknown:
+                if recipient is not None and recipient.task is not None and delivery.push is None:
+                    delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
+                if delivery.push is not None:
+                    await asyncio.wait(
+                        {delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                    )
+            if delivery.push_outcome is not ControlOutcome.UNKNOWN_DELIVERY or (
+                was_unknown and delivery.queued_in_inbox
+            ):
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())
+                    )
+                except TimeoutError:
+                    if delivery.push is not None and not delivery.push.done():
+                        await asyncio.wait({delivery.push})
+            delivery.unknown_reported = delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY
         return delivery.receipt()
 
     async def _push_into_turn(self, delivery: PeerDelivery, task: LiveTask, wait: float) -> None:

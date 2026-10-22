@@ -11,6 +11,7 @@ waits on just before its first Stop boundary / after its final one, before the r
 
 import json
 import os
+import select
 import sys
 import time
 import uuid
@@ -49,6 +50,13 @@ class FakeClaudeCli:
         if message.get("type") == "control_request":
             self.answer_control(message)
         return message
+
+    def read_follow_up(self) -> dict[str, Any] | None:
+        if (seconds := self.script.get("follow_up_wait_seconds")) is not None:
+            ready, _, _ = select.select([sys.stdin], [], [], float(seconds))
+            if not ready:
+                return None
+        return self.read()
 
     def answer_control(self, message: dict[str, Any]) -> None:
         request = message["request"]
@@ -223,7 +231,7 @@ class FakeClaudeCli:
             }
         )
         self.record("result_emitted")
-        while (message := self.read()) is not None:
+        while (message := self.read_follow_up()) is not None:
             if message.get("type") != "user":
                 continue
             self.record("follow_up_turn", message=message)

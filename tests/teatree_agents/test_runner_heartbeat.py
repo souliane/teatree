@@ -14,6 +14,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
+from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_control import (
     DEFAULT_IDLE_WINDOW_SECONDS,
     MAX_FOLLOW_UP_TURNS,
@@ -186,6 +188,34 @@ def test_an_idle_follow_up_keeps_the_claim_and_records_the_second_turn() -> None
     assert len(renewals) > 1
 
 
+def test_each_drive_gets_a_fresh_live_attempt_under_one_task_claim() -> None:
+    task = Task(pk=_TASK_PK, phase="coding", claimed_at=datetime.now(UTC), claimed_generation="worker-one")
+    attempts: list[str] = []
+
+    for _ in range(2):
+        with ThreadPoolExecutor(1) as worker:
+            driven = worker.submit(
+                _drive,
+                _TwoTurnSession(),
+                drain_reason=lambda: "",
+                task=task,
+                ceilings=_Ceilings(idle_window_seconds=0.1),
+            )
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                row["state"] == "idle" for row in shared_registry().sessions()
+            ):
+                time.sleep(0.005)
+            facts = shared_registry().facts(_TASK_PK)
+            assert facts is not None
+            assert facts["state"] == "idle"
+            assert facts["generation"] == "worker-one"
+            attempts.append(facts["attempt"])
+            driven.result(timeout=2)
+
+    assert attempts[0] != attempts[1]
+
+
 def test_a_wedged_follow_up_obeys_the_original_runtime_deadline() -> None:
     released = asyncio.Event()
 
@@ -235,7 +265,6 @@ def test_a_wedged_follow_up_obeys_the_original_runtime_deadline() -> None:
 
 def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
     session = _TwoTurnSession()
-    assert MAX_FOLLOW_UP_TURNS == 4
 
     with ThreadPoolExecutor(1) as worker:
         driven = worker.submit(
@@ -262,15 +291,28 @@ def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
                     shared_registry().follow_up(_TASK_PK, "continue", command_id=str(index), wait=0.1, fence=fence)
                 )
             )
+        facts = None
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            facts = shared_registry().facts(_TASK_PK)
+            if facts is None or facts["state"] != "busy":
+                break
+            time.sleep(0.005)
+        assert facts is None or facts["state"] != "busy"
+        assert fence is not None
+        fifth = asyncio.run(
+            shared_registry().follow_up(_TASK_PK, "fifth", command_id="past-cap", wait=0.1, fence=fence)
+        )
+        assert (fifth.outcome, fifth.code) == (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+        assert len(session.prompts) == 4
         driven.result(timeout=3)
 
-    assert fence is not None
     past_cap = [
-        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="past-cap", wait=0.1, fence=fence)),
+        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="later", wait=0.1, fence=fence)),
         asyncio.run(shared_registry().push(_TASK_PK, "peer note", command_id="peer-past-cap", wait=0.1, fence=fence)),
     ]
     assert all(receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN for receipt in receipts), receipts
-    assert len(session.prompts) == MAX_FOLLOW_UP_TURNS
+    assert len(session.prompts) == 4
     assert [(late.outcome, late.code) for late in past_cap] == [
         (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
     ] * 2
@@ -501,8 +543,20 @@ def test_one_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None
 
     session = _PeerSession()
     task = Task(pk=_TASK_PK, ticket_id=3, phase="coding")
+    harness = GuardedHarness(OneSessionHarness(session), CompactionGuard(), "codex_app_server")
+    runtime = HeartbeatRuntime(
+        watchdog=_NO_BREACH.watchdog,
+        heartbeat_interval=_NO_BREACH.heartbeat_interval,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=lambda: "",
+    )
+
+    def drive_codex() -> HarnessOutcome:
+        return asyncio.run(drive_with_heartbeat(task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+
     with ThreadPoolExecutor(max_workers=1) as pool:
-        drive = pool.submit(_drive, session, drain_reason=lambda: "", task=task)
+        drive = pool.submit(drive_codex)
         broker = shared_broker()
         deadline = time.monotonic() + 5
         while not (facts := shared_registry().facts(_TASK_PK)) or not broker.identities():
