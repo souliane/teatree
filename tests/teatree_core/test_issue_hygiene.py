@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import IssueResolutionSpec
 from teatree.core.issue_hygiene import (
     MAX_APPEND_ATTEMPTS,
     CreateDecision,
@@ -83,12 +84,32 @@ class _FakeHost:
             self.issues.setdefault(issue_url, {})["description"] = body
         return {"web_url": issue_url}
 
-    def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
-        self.creates.append({"repo": repo, "title": title, "body": body, "labels": labels})
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.creates.append(
+            {
+                "repo": repo,
+                "title": title,
+                "body": body,
+                "labels": labels,
+            }
+        )
         url = f"https://gitlab.com/{repo}/-/issues/{self.next_iid}"
         self.next_iid += 1
         self.issues[url] = _issue(url, body=body, title=title)
         return {"web_url": url, "iid": self.next_iid - 1}
+
+    def create_issue_resolving_threads(self, spec: IssueResolutionSpec) -> dict[str, Any]:
+        created = self.create_issue(repo=spec.repo, title=spec.title, body=spec.body, labels=list(spec.labels))
+        self.creates[-1]["merge_request_to_resolve_discussions_of"] = spec.merge_request_iid
+        self.creates[-1]["discussion_to_resolve"] = spec.thread_id
+        return created
 
     def repo_for_issue_url(self, issue_url: str) -> str:
         return _REPO
@@ -350,7 +371,7 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert host.creates == [], "a fitting ticket means no new ticket"
         assert "it flaked twice today" in host.issues[fits]["description"]
 
-    def test_all_candidates_rejected_creates_once_and_records_every_rejection(self) -> None:
+    def test_all_candidates_rejected_creates_once_without_publishing_rejections(self) -> None:
         host = self._landscape()
         outcome = create_or_extend(
             host=host,
@@ -363,19 +384,35 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert outcome.kind == "created_new"
         assert len(host.creates) == 1
         filed = host.creates[0]["body"]
-        assert "## Dedupe check" in filed
-        assert "issues/1" in filed
-        assert "different probe" in filed
-        assert "issues/2" in filed
-        assert "unrelated lane" in filed
+        assert filed == "body text"
 
-    def test_an_empty_backlog_records_that_no_candidates_existed(self) -> None:
+    def test_an_empty_backlog_does_not_publish_an_audit(self) -> None:
         host = _FakeHost({})
         outcome = create_or_extend(
             host=host, draft=IssueDraft(repo=_REPO, title="first ticket", body="body"), decisions=[]
         )
         assert outcome.kind == "created_new"
-        assert "no open candidates" in host.creates[0]["body"].casefold()
+        assert host.creates[0]["body"] == "body"
+
+    def test_a_gitlab_nit_issue_forwards_discussion_resolution_fields(self) -> None:
+        host = _FakeHost({})
+
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(
+                repo=_REPO,
+                title="NIT follow-up",
+                body="Review the inline points.",
+                labels=("nit", "t3-auto"),
+                merge_request_to_resolve_discussions_of=42,
+                discussion_to_resolve="discussion-7",
+            ),
+            decisions=[],
+        )
+
+        assert outcome.kind == "created_new"
+        assert host.creates[0]["merge_request_to_resolve_discussions_of"] == 42
+        assert host.creates[0]["discussion_to_resolve"] == "discussion-7"
 
     def test_an_unjudged_open_candidate_refuses_the_create(self) -> None:
         """Skipping the landscape pass is the failure mode; silence is not a rejection."""
@@ -536,24 +573,26 @@ class TestMarkerJudgedCreate(TestCase):
         assert outcome.issue_url == marked
         assert host.creates == []
 
-    def test_an_unmarked_backlog_files_once_and_records_every_rejection(self) -> None:
+    def test_an_unmarked_backlog_files_once_and_logs_every_rejection(self) -> None:
         other = "https://gitlab.com/acme/widgets/-/issues/9"
         host = _FakeHost({other: _issue(other, body="unrelated")})
-        with _no_scrub():
+        with _no_scrub(), patch("teatree.core.issue_hygiene.logger.info") as audit:
             outcome = create_or_extend_by_marker(
                 host=host, draft=IssueDraft(repo=_REPO, title="t", body="b"), marker="<!-- fp: abc -->"
             )
         assert outcome.kind == "created_new"
         assert len(host.creates) == 1
-        assert other in host.creates[0]["body"]
+        assert host.creates[0]["body"] == "b"
+        assert other in audit.call_args.args[2]
 
-    def test_an_empty_backlog_says_so_rather_than_reading_as_unchecked(self) -> None:
+    def test_an_empty_backlog_logs_the_check_without_publishing_it(self) -> None:
         host = _FakeHost()
-        with _no_scrub():
+        with _no_scrub(), patch("teatree.core.issue_hygiene.logger.info") as audit:
             create_or_extend_by_marker(
                 host=host, draft=IssueDraft(repo=_REPO, title="t", body="b"), marker="<!-- fp: abc -->"
             )
-        assert "No open candidates" in host.creates[0]["body"]
+        assert host.creates[0]["body"] == "b"
+        assert "No open candidates" in audit.call_args.args[2]
 
     def test_a_closed_marked_ticket_is_not_reused(self) -> None:
         closed = "https://gitlab.com/acme/widgets/-/issues/9"

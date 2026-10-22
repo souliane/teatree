@@ -32,15 +32,25 @@ Rollback safety
 import logging
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.attachment_manifest import AttachmentManifest
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
-from teatree.core.models.critic_verdict import CriticVerdict, CriticVerdictError
+from teatree.core.models.critic_verdict import (
+    CRITIC_EVIDENCE_UNAVAILABLE_PREFIX,
+    CriticEvidenceUnavailableError,
+    CriticVerdict,
+    CriticVerdictError,
+)
 from teatree.core.models.errors import CriticGateError
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.review.critic_rubric import deterministic_items, item_for, llm_items
+from teatree.core.review.finding_standard import FINDING_STANDARD
+from teatree.core.review.nit_lane import NitLaneError
+from teatree.core.review.nit_publish import critic_nits, pr_url_for_nits, publish_nits
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -164,10 +174,14 @@ def build_critic_contract(ticket: "Ticket", head_sha: str) -> str:
         f"You are the autonomous user-proxy CRITIC judging the DELIVERY of ticket {ticket.pk}. Read the "
         f"delivered artifacts — the merged PR diff at head {head_sha[:8] or '<unknown>'}, the plan below, and the "
         f"intake attachments below — and answer each semantic question. Judge against the ARTIFACTS, never a "
-        f"self-declared claim.\n\nPlan:\n{plan_text}\n\nUser-provided inputs (must be addressed or explicitly "
+        f"self-declared claim. This phase has no shell: use github_pr_diff, read_file, or search_files to inspect "
+        f"the change. If the diff cannot be read, return unverified with verified=false for each ungraded item.\n\n"
+        f"Finding standard: {FINDING_STANDARD}\n\n"
+        f"Plan:\n{plan_text}\n\nUser-provided inputs (must be addressed or explicitly "
         f"declined):\n{inputs_block}\n\nQuestions:\n{questions}\n\nRETURN your judgment in the result envelope "
         f'(the phase has no shell — the orchestrator records it): `"critic_verdict": {{"grader_identity": '
-        f'"<your-critic-id>", "items": [{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail", "citation": '
+        f'"<your-critic-id>", "items": [{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail"|"unverified", '
+        f'"verified": true|false, "citation": '
         f'"<file:line or artifact naming WHY — an uncited pass is recorded as a FAIL>"}}]}}`. One item per '
         f"question. A concern is `fail`; a clean item is `pass` WITH a citation of the artifact you inspected."
     )
@@ -189,6 +203,17 @@ def enqueue_llm_critic(ticket: "Ticket") -> None:
         logger.warning("critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
+def _publish_critic_nits(ticket: "Ticket", verdict: CriticVerdict, transition: str, head_sha: str) -> None:
+    points = critic_nits(verdict.item_verdicts()) if transition == "merge" else ()
+    if not points:
+        return
+    pr_url = pr_url_for_nits(ticket, head_sha)
+    if not pr_url:
+        message = "merge critic NIT has no attributable pull request URL"
+        raise NitLaneError(message)
+    publish_nits(ticket, pr_url, head_sha, points)
+
+
 def record_returned_critic_verdict(task: object, result: dict) -> str:
     """Record a headless critic task's returned ``critic_verdict`` envelope (corr-11).
 
@@ -204,20 +229,46 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
     """
     dispatch = getattr(task, "critic_dispatches", None)
     dispatch_row = dispatch.first() if dispatch is not None else None
-    if dispatch_row is None:
-        return ""
     raw_envelope = result.get("critic_verdict")
-    if not isinstance(raw_envelope, dict):
+    if dispatch_row is None or not isinstance(raw_envelope, dict):
         return ""
+    summary = str(result.get("summary") or "").casefold()
+    if any(
+        phrase in summary
+        for phrase in (
+            "could not read the diff",
+            "cannot read the diff",
+            "unable to read the diff",
+            "could not grade the change",
+        )
+    ):
+        return f"{CRITIC_EVIDENCE_UNAVAILABLE_PREFIX} critic reported that it could not inspect the change"
+    if dispatch_row.transition == "merge":
+        expected = {item.slug for item in llm_items("merge")}
+        raw_items = raw_envelope.get("items")
+        received = (
+            [str(item.get("slug") or "") for item in raw_items if isinstance(item, dict)]
+            if isinstance(raw_items, list)
+            else []
+        )
+        if len(received) != len(expected) or set(received) != expected:
+            return (
+                f"{CRITIC_EVIDENCE_UNAVAILABLE_PREFIX} merge critic must grade each item exactly once: "
+                f"{', '.join(sorted(expected))}"
+            )
     ticket = dispatch_row.ticket
     try:
-        CriticVerdict.record_from_envelope(
-            ticket=ticket,
-            transition=dispatch_row.transition,
-            head_sha=dispatch_row.head_sha,
-            envelope=raw_envelope,
-        )
-    except CriticVerdictError as exc:
+        with transaction.atomic():
+            verdict = CriticVerdict.record_from_envelope(
+                ticket=ticket,
+                transition=dispatch_row.transition,
+                head_sha=dispatch_row.head_sha,
+                envelope=raw_envelope,
+            )
+            _publish_critic_nits(ticket, verdict, dispatch_row.transition, dispatch_row.head_sha)
+    except CriticEvidenceUnavailableError as exc:
+        return f"{CRITIC_EVIDENCE_UNAVAILABLE_PREFIX} {exc}"
+    except (CriticVerdictError, NitLaneError) as exc:
         return f"critic verdict recording refused: {exc}"
     if dispatch_row.transition == _TRANSITION:
         record_critic_findings(ticket, run_critic(ticket))

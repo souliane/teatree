@@ -4,6 +4,8 @@ import json
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 from teatree.backends.github import pr_reads
 from teatree.core.backend_protocols import PrOpenState
 from teatree.utils.run import CommandFailedError
@@ -88,6 +90,52 @@ class TestCountUnresolvedReviewThreads:
     def test_read_failure_is_none(self) -> None:
         with patch.object(pr_reads, "_run_gh", side_effect=CommandFailedError(["gh"], 1, "", "boom")):
             assert pr_reads.count_unresolved_review_threads(repo="o/r", pr_iid=9, token="t") is None
+
+
+class TestListReviewThreads:
+    def test_reads_thread_ids_and_inline_comment_permalinks(self) -> None:
+        payload = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "thread-7",
+                                    "isResolved": False,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "body": "Nit: rename helper",
+                                                "url": "https://github.com/o/r/pull/9#discussion_r7",
+                                                "path": "x.py",
+                                                "line": 2,
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        with patch.object(pr_reads, "_run_gh", return_value=_completed(json.dumps(payload))) as run:
+            threads = pr_reads.list_review_threads(repo="o/r", pr_iid=9, token="t")
+
+        assert threads[0]["id"] == "thread-7"
+        notes = threads[0]["notes"]
+        assert isinstance(notes, list)
+        assert isinstance(notes[0], dict)
+        assert notes[0]["url"] == "https://github.com/o/r/pull/9#discussion_r7"
+        assert "comments(first: 1)" in str(run.call_args.args)
+
+    def test_unreadable_thread_list_raises(self) -> None:
+        with (
+            patch.object(pr_reads, "_run_gh", side_effect=CommandFailedError(["gh"], 1, "", "boom")),
+            pytest.raises(RuntimeError, match="review threads"),
+        ):
+            pr_reads.list_review_threads(repo="o/r", pr_iid=9, token="t")
 
 
 class TestApprovalState:

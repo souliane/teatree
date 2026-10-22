@@ -12,15 +12,19 @@ non-zero git exit (empty stdout), and the whole resolve is guarded.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import Rubric
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.worktree.branch_currency import fetch_target_head, predict_merge_conflicts
 from teatree.core.worktree.target_branch import resolve_target_branch
+from teatree.quality.review_evidence import ReviewEvidenceError, read_review_evidence
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -89,6 +93,46 @@ def head_state_brief_lines(task: "Task") -> tuple[str, ...]:
         f"  branch: {state.branch or '(detached)'}",
         f'  HEAD: {state.short_sha} "{state.subject}" (committed {committed})',
         f"  {_trigger_line(state, getattr(task, 'created_at', None))}",
+    )
+
+
+def round_brief_lines(task: "Task") -> tuple[str, ...]:
+    previous = (
+        CriticVerdict.objects.filter(ticket=task.ticket, transition="merge").order_by("-recorded_at", "-pk").first()
+    )
+    findings = (
+        tuple(
+            f"  - {item.slug}: {item.status}; {item.citation}; "
+            + "; ".join(f"{point.kind} {point.file}:{point.line} {point.summary}" for point in item.points)
+            for item in previous.item_verdicts()
+        )
+        if previous is not None
+        else ("  - none recorded; inspect every merge-quality class on the first pass",)
+    )
+    state = resolve_head_state(task)
+    worktree = dispatch_worktree_path(task.ticket)
+    try:
+        evidence = read_review_evidence(Path(worktree), state.sha) if state is not None and worktree else None
+        measured = evidence.render() if evidence is not None else "UNAVAILABLE: no head-bound review evidence receipt."
+    except ReviewEvidenceError as exc:
+        measured = f"UNAVAILABLE: {exc}"
+    command = (
+        f"t3 tool review-evidence --expect-sha {state.sha}"
+        if state is not None
+        else "t3 tool review-evidence --expect-sha <committed-head>"
+    )
+    return (
+        "",
+        f"Finding standard: {FINDING_STANDARD}",
+        (
+            "Fix BLOCKING points in this round. A NIT is fixed only when it is a one-line edit on a line "
+            "already changed for a BLOCKING point."
+        ),
+        "Prior merge critic findings:",
+        *findings,
+        measured,
+        f"Run `{command}` on a clean committed head before the report and critic dispatch.",
+        "The coder report must show the matrix result for each new or changed test.",
     )
 
 

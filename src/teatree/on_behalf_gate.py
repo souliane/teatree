@@ -145,7 +145,9 @@ _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 # ``own_mr=True`` (an approve/unapprove/live comment on one's own MR is
 # NOT covered), and an action inside it stays gated whenever authorship
 # is unproven. The after-receipt DM still runs.
-_AUTHOR_SIDE_ACTIONS: frozenset[str] = frozenset({"reply_to_discussion"})
+_AUTHOR_SIDE_ACTIONS: frozenset[str] = frozenset(
+    {"reply_to_discussion", "post_review_nit", "resolve_review_nit", "nit_follow_up_labels", "nit_follow_up_update"}
+)
 
 
 # The agent-driven review-request post action (mirrors ``_ACTION`` in

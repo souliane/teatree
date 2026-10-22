@@ -24,13 +24,15 @@ verdict is ADVISORY (the gate records findings from it, never blocks on it), so 
 deterministic prechecks.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.critic_dispatch import CriticDispatch
+from teatree.core.models.critic_points import CriticPoint, PriorFindingResolution
+from teatree.core.models.finding_standard import FindingKind
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 
 if TYPE_CHECKING:
@@ -39,6 +41,13 @@ if TYPE_CHECKING:
 
 class CriticVerdictError(ValueError):
     """A ``CriticVerdict`` was rejected at record time — the maker≠checker contract failed."""
+
+
+class CriticEvidenceUnavailableError(CriticVerdictError):
+    pass
+
+
+CRITIC_EVIDENCE_UNAVAILABLE_PREFIX = "critic evidence unavailable:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,27 +63,75 @@ class CriticItemVerdict:
     slug: str
     status: str
     citation: str = ""
+    verified: bool = True
+    points: tuple[CriticPoint, ...] = ()
+    resolutions: tuple[PriorFindingResolution, ...] = ()
 
     OK: ClassVar[str] = "pass"  # the clean status VALUE the LLM returns; named OK to avoid the S105 name heuristic
     FAIL: ClassVar[str] = "fail"
     INSTRUMENTATION_GAP: ClassVar[str] = "instrumentation_gap"
+    UNVERIFIED: ClassVar[str] = "unverified"
 
     @classmethod
-    def coerce(cls, raw: dict) -> "CriticItemVerdict":
+    def coerce(cls, raw: dict, *, nit_follow_up: bool = False) -> "CriticItemVerdict":
         slug = str(raw.get("slug") or "").strip()
         status = str(raw.get("status") or "").strip().lower()
         citation = str(raw.get("citation") or "").strip()
+        verified = raw.get("verified", True) is True
+        raw_points = raw.get("points")
+        points = (
+            tuple(
+                CriticPoint.coerce(point)
+                if isinstance(point, dict)
+                else CriticPoint(FindingKind.BLOCKING, "malformed point")
+                for point in raw_points
+            )
+            if isinstance(raw_points, list)
+            else ()
+        )
+        raw_resolutions = raw.get("resolutions")
+        resolutions = (
+            tuple(
+                PriorFindingResolution.coerce(resolution)
+                for resolution in raw_resolutions
+                if isinstance(resolution, dict)
+            )
+            if isinstance(raw_resolutions, list)
+            else ()
+        )
+        if nit_follow_up:
+            points = tuple(replace(point, kind=FindingKind.BLOCKING) for point in points)
+        if not verified or status == cls.UNVERIFIED:
+            return cls(
+                slug=slug,
+                status=cls.UNVERIFIED,
+                citation=citation,
+                verified=False,
+                points=points,
+                resolutions=resolutions,
+            )
         if status not in {cls.OK, cls.FAIL, cls.INSTRUMENTATION_GAP}:
             status = cls.INSTRUMENTATION_GAP  # an unknown/blank status is inconclusive, never a silent pass
         if status == cls.OK and not citation:
             status = cls.INSTRUMENTATION_GAP  # a pass must cite the artifact it inspected
-        return cls(slug=slug, status=status, citation=citation)
+        if any(point.kind == FindingKind.BLOCKING for point in points):
+            status = cls.FAIL
+        elif points and status == cls.FAIL:
+            status = cls.OK if citation else cls.INSTRUMENTATION_GAP
+        return cls(slug=slug, status=status, citation=citation, verified=True, points=points, resolutions=resolutions)
 
     def is_fail(self) -> bool:
         return self.status in {self.FAIL, self.INSTRUMENTATION_GAP}
 
     def as_dict(self) -> dict:
-        return {"slug": self.slug, "status": self.status, "citation": self.citation}
+        return {
+            "slug": self.slug,
+            "status": self.status,
+            "citation": self.citation,
+            "verified": self.verified,
+            "points": [point.as_dict() for point in self.points],
+            "resolutions": [resolution.as_dict() for resolution in self.resolutions],
+        }
 
 
 class CriticVerdictManager(models.Manager["CriticVerdict"]):
@@ -124,6 +181,39 @@ class CriticVerdict(models.Model):
         return [item for item in self.item_verdicts() if item.is_fail()]
 
     @classmethod
+    def _require_previous_resolutions(
+        cls, *, ticket: "Ticket", transition: str, head_sha: str, items: list[CriticItemVerdict]
+    ) -> None:
+        if transition != "merge":
+            return
+        previous = (
+            cls.objects.filter(ticket=ticket, transition=transition)
+            .exclude(head_sha=head_sha)
+            .order_by("-recorded_at", "-pk")
+            .first()
+        )
+        if previous is None:
+            return
+        current_items = {item.slug: item for item in items}
+        for old in previous.item_verdicts():
+            findings = tuple(point.summary for point in old.points)
+            if not findings and old.is_fail():
+                findings = (old.slug,)
+            current = current_items.get(old.slug)
+            resolutions = {item.finding: item for item in current.resolutions} if current is not None else {}
+            for finding in findings:
+                resolution = resolutions.get(finding)
+                if resolution is None or resolution.status not in {"fixed", "not_fixed"} or not resolution.citation:
+                    msg = f"previous findings need a cited fixed/not_fixed resolution: {old.slug}/{finding}"
+                    raise CriticEvidenceUnavailableError(msg)
+                was_blocking = any(
+                    point.summary == finding and point.kind == FindingKind.BLOCKING for point in old.points
+                )
+                if resolution.status == "not_fixed" and was_blocking and current is not None and not current.is_fail():
+                    msg = f"unfixed blocking previous finding must fail its item: {old.slug}/{finding}"
+                    raise CriticEvidenceUnavailableError(msg)
+
+    @classmethod
     def record(
         cls,
         *,
@@ -159,8 +249,16 @@ class CriticVerdict(models.Model):
                 "head and spend its dispatch claim, leaving the gate unsatisfiable at that tree"
             )
             raise CriticVerdictError(msg)
+        if isinstance(ticket.extra, dict) and ticket.extra.get("nit_follow_up") is True:
+            items = [CriticItemVerdict.coerce(item.as_dict(), nit_follow_up=True) for item in items]
+        if any(item.status == CriticItemVerdict.UNVERIFIED or not item.verified for item in items):
+            msg = "one or more critic items were not graded from the change; retry the critic with diff-reading tools"
+            raise CriticEvidenceUnavailableError(msg)
         normalized_head = head_sha.strip().lower()
         with transaction.atomic():
+            cls._require_previous_resolutions(
+                ticket=ticket, transition=transition, head_sha=normalized_head, items=items
+            )
             recorded = cls.objects.create(
                 ticket=ticket,
                 transition=transition,

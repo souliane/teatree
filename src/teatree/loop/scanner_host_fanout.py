@@ -21,7 +21,7 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
-from teatree.loop.scanners.pr_findings import RecordedVerdictReader
+from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.tick_resolvers import (
     _allowed_url_prefixes_for_host,
     _identity_alias_groups_for_overlay,
@@ -68,6 +68,7 @@ def _jobs_for_backend_hosts(
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
                         verdict_reader=RecordedVerdictReader(),
+                        critic_reader=RecordedCriticFindingReader(),
                     ),
                     overlay=tag,
                 ),

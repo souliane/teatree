@@ -91,6 +91,12 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     def test_the_reviewing_brief_keeps_the_findings_rule(self) -> None:
         assert ENVELOPE_FINDINGS_RULE in phase_specific_lines(_task("reviewing"), [])
 
+    def test_the_reviewing_brief_names_the_blocking_standard_and_kind(self) -> None:
+        brief = self._reviewing_brief()
+        assert '"kind": "blocking"|"nit"' in brief
+        assert "vacuous test" in brief
+        assert "NIT" in brief
+
     def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
         assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
 

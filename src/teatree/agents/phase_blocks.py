@@ -18,6 +18,7 @@ from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
+    round_brief_lines,
     rubric_brief_lines,
 )
 from teatree.agents.skill_injection import _explicit_load_name
@@ -31,6 +32,7 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
+from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.live_head import live_head_at
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -75,7 +77,9 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
         '                     "blast_class": "substrate"|"logic"|"docs",',
-        '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
+        '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
+        '                                   "summary": "...", "file": "...", "line": 0}]}',
+        f"Finding standard: {FINDING_STANDARD}",
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
         (
@@ -517,11 +521,14 @@ def phase_specific_lines(
             "",
             "PHASE: coding — builder dispatch contract",
             *head_state_brief_lines(task),
+            *round_brief_lines(task),
             *_coding_phase_directive(skills, stage_exclude=stage_exclude),
         )
     else:
         builder = (read_only_venue and _READ_ONLY_PHASE_BLOCK_BUILDERS.get(phase)) or _PHASE_BLOCK_BUILDERS.get(phase)
         block = builder(task) if builder is not None else ()
+        if phase == "debugging":
+            block = (*block, *round_brief_lines(task))
     if fanout := _phase_fanout_directive(task):
         block = (*block, fanout) if phase == "reviewing" else (*block, "", f"PHASE: {phase}", fanout)
     return (*block, *_fix_record_lines(task, phase))

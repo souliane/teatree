@@ -38,7 +38,11 @@ from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.directive import Directive
+from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
+from teatree.core.review.finding_standard import FINDING_STANDARD
+from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, review_nits
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 if TYPE_CHECKING:
@@ -126,11 +130,20 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
     questions = "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_MERGE_TRANSITION))
     item_slugs = ", ".join(item.slug for item in llm_items(_MERGE_TRANSITION))
     strategy = ratified_test_strategy(ticket)
+    continuity = merge_critic_continuity(ticket, head_sha)
+    evidence = review_evidence_contract(ticket, head_sha)
     return (
         f"You are the merge-quality CRITIC deciding whether the shipped change on ticket {ticket.pk} at head "
         f"{head_sha[:8] or '<unknown>'} is not merely green but WELL-ENGINEERED — clean and tested-enough WITHOUT "
-        f"bloat. Read the diff and the touched modules, then answer each item against the ARTIFACTS.\n\n"
-        f"Anchor for `test_value` — {strategy}\n\n"
+        f"bloat. This phase has no shell: use github_pr_diff for the PR diff and read_file or search_files for "
+        f"touched modules. Answer each item against the ARTIFACTS. If the diff cannot be read, return "
+        f"unverified with verified=false for each ungraded item; do not call it fail.\n\n"
+        f"Finding standard: {FINDING_STANDARD} Every point carries kind: "
+        f'"kind": "blocking"|"nit". A NIT alone cannot fail an item.\n\n'
+        f"{continuity}\n\n{evidence}\n\nAnchor for `test_value` — {strategy}\n\n"
+        f"On a later head, each item's resolutions array must name every prior finding under that item, "
+        f"state fixed or not_fixed, and cite the current artifact. "
+        f"A not_fixed BLOCKING point keeps its item failed.\n\n"
         f"`test_value` is BOTH directions: a VACUOUS test (asserts nothing that could fail — a tautology, the "
         f"framework, a mock talking to a mock) FAILS, AND a BLOATED test set (redundant permutations beyond the "
         f"ratified strategy, same behavior/same failure mode in different dressing) FAILS; the coverage-that-matters "
@@ -139,8 +152,13 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f"no parallel mechanism where a substrate convention exists, docs/BLUEPRINT left consistent.\n\n"
         f"Questions:\n{questions}\n\nRETURN your judgment in the result envelope (the phase has no shell — the "
         f'orchestrator records it): `"critic_verdict": {{"grader_identity": "<your-critic-id>", "items": '
-        f'[{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail", "citation": "<test node id or file:line '
-        f'naming WHY — an uncited pass records as a FAIL>"}}]}}`. One item per question — judge BOTH.'
+        f'[{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail"|"unverified", "verified": true|false, '
+        f'"citation": "<test node id or file:line naming WHY — an uncited pass records as a FAIL>", '
+        f'"points": [{{"kind": "blocking"|"nit", "summary": "<specific finding>", '
+        f'"citation": "<file:line>", "file": "<changed path>", "line": <line>}}], '
+        f'"resolutions": [{{"finding": "<prior point summary or failed item slug>", '
+        f'"status": "fixed"|"not_fixed", "citation": "<current file:line>"}}]}}]}}`. '
+        f"One item per question — judge BOTH."
     )
 
 
@@ -157,7 +175,7 @@ def unmet_items(verdict: "CriticVerdict") -> list[str]:
     A FAIL, an uncited pass, OR an OMITTED item is unmet — a critic cannot wave a
     merge through by staying silent on an item.
     """
-    passed = {item.slug for item in verdict.item_verdicts() if not item.is_fail()}
+    passed = {item.slug for item in verdict.item_verdicts() if item.status == item.OK and item.verified}
     return [item.slug for item in llm_items(_MERGE_TRANSITION) if item.slug not in passed]
 
 
@@ -252,6 +270,25 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
             f"at the shipped head."
         )
         raise MergeQualityVerdictError(msg)
+    _assert_nit_receipts(ticket, head, verdict)
+
+
+def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdict") -> None:
+    review_points = tuple(
+        point
+        for review in ReviewVerdict.objects.filter(ticket=ticket, reviewed_sha=head_sha)
+        for point in review_nits(review.structured_findings)
+    )
+    points = tuple(dict.fromkeys((*critic_nits(verdict.item_verdicts()), *review_points)))
+    if not points:
+        return
+    pr_url = pr_url_for_nits(ticket, head_sha)
+    if not pr_url or not has_nit_receipts(ticket, pr_url, head_sha, points):
+        message = (
+            f"NIT publication receipt is missing for {ticket.pk} at head {head_sha}; "
+            "publish each inline point, read back the follow-up issue and resolved threads, then retry"
+        )
+        raise MergeQualityVerdictError(message)
 
 
 def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> None:

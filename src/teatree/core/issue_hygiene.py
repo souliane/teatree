@@ -9,8 +9,8 @@ goes.
 Five rules, each enforced here rather than in an agent-authored skill:
 
 1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until every
-    OPEN ticket in the repo has been judged. A fitting ticket is extended; a new
-    one records every rejected candidate and why, in its own body.
+    OPEN ticket in the repo has been judged. A fitting ticket is extended; rejected
+    candidates stay in the internal log.
 2.  **No requirement comments.** :func:`record_issue_note` takes a closed
     :class:`NotePurpose`. The four normative purposes append a dated description
     section; only ``status`` and ``evidence`` remain comments. There is no untyped
@@ -52,7 +52,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
@@ -145,6 +145,8 @@ class IssueDraft:
     labels: tuple[str, ...] = ()
     action: str = "issue_create"
     forge: str = ""
+    merge_request_to_resolve_discussions_of: int | None = None
+    discussion_to_resolve: str = ""
 
 
 @dataclass(frozen=True)
@@ -167,8 +169,7 @@ class CreateDecision:
     """One judgment about one open candidate.
 
     ``fits`` marks the candidate the request should be folded into; otherwise
-    *reason* must say why it was rejected, and that reason is written into the
-    new ticket's body so the next reader can see the search actually happened.
+    *reason* must say why it was rejected; it stays in the internal audit log.
     """
 
     candidate_url: str
@@ -396,8 +397,7 @@ def create_or_extend(
 
     *decisions* must cover every currently-open ticket: one marked ``fits`` folds
     the request into that ticket's description instead of filing; otherwise every
-    candidate needs a rejection *reason*, and those reasons are written into the
-    new ticket so the dedupe is auditable rather than asserted.
+    candidate needs a rejection *reason*, kept in the internal log.
 
     *snapshot_urls*, when given, is the backlog the decisions were made against.
     A ticket filed since then makes the judgment set incomplete, so the outcome is
@@ -502,35 +502,38 @@ def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_
 def _create(
     *, host: CodeHostBackend, draft: IssueDraft, decisions: Sequence[CreateDecision], sweep_run_id: str
 ) -> CreateOutcome:
-    """File the new ticket with the dedupe audit appended to its body.
-
-    A label rides the leak scrub too — a forge auto-creates a missing one, so a
-    customer codename in a label reaches a public forge exactly like a body would.
-    """
+    """Scrub all published fields, including labels a forge may create."""
     repo, action = draft.repo, draft.action
     clean_title = _scrub(draft.title, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_body = _scrub(draft.body, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_labels = [_scrub(label, target=repo, repo=repo, action=action, forge=draft.forge) for label in draft.labels]
-    clean_dedupe_audit = _scrub(_dedupe_audit(decisions), target=repo, repo=repo, action=action, forge=draft.forge)
-    raw = _raise_on_transport_error(
-        host.create_issue(
+    logger.info("issue-hygiene: dedupe for %s: %s", repo, _dedupe_audit(decisions))
+    if draft.merge_request_to_resolve_discussions_of is not None or draft.discussion_to_resolve:
+        created = host.create_issue_resolving_threads(
+            IssueResolutionSpec(
+                repo=repo,
+                title=clean_title,
+                body=clean_body,
+                labels=tuple(clean_labels),
+                merge_request_iid=draft.merge_request_to_resolve_discussions_of,
+                thread_id=draft.discussion_to_resolve,
+            )
+        )
+    else:
+        created = host.create_issue(
             repo=repo,
             title=clean_title,
-            body=f"{clean_body}\n\n{clean_dedupe_audit}",
+            body=clean_body,
             labels=clean_labels or None,
         )
-    )
+    raw = _raise_on_transport_error(created)
     issue_url = _issue_url_of(raw)
     _record_sweep_change(sweep_run_id, issue_url)
     return CreateOutcome(kind="created_new", issue_url=issue_url)
 
 
 def _dedupe_audit(decisions: Sequence[CreateDecision]) -> str:
-    """The searched-and-rejected record that goes into a newly filed ticket's body.
-
-    An empty backlog says so explicitly. "No candidates" and "nobody looked" read
-    identically otherwise, and the second is the one worth catching.
-    """
+    """The searched-and-rejected record for the internal log."""
     if not decisions:
         return f"## {_DEDUPE_HEADING} ({_today()})\n\nNo open candidates existed on this repo."
     lines = [f"- {d.candidate_url} — {d.reason.strip()}" for d in decisions if not d.fits]

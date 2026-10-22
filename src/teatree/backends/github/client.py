@@ -30,6 +30,7 @@ from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
     ForgeMergeResult,
+    IssueResolutionSpec,
     PrMergeState,
     PrMessage,
     PrOpenState,
@@ -234,20 +235,15 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
         return self._notes.submit_review(repo=repo, pr_iid=pr_iid, review=review)
 
-    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
-        """No STALE-BOT-thread filtering surface on GitHub (#3340).
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.list_review_threads(repo=repo, pr_iid=pr_iid, token=self._token)
 
-        This method backs GitLab's stale-bot-thread exclusion
-        (:func:`thread_opened_solely_by`), which keys on the per-note authorship
-        the GitLab discussions endpoint exposes. GitHub's aggregate unresolved
-        count is read directly in :meth:`get_mr_approvals` via
-        ``reviewThreads(isResolved:false)`` (GitHub DOES enforce conversation
-        resolution as a merge gate), so no per-note thread list is assembled
-        here. Returns ``[]`` — a caller iterating it for the stale-bot filter
-        selects nothing.
-        """
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> RawAPIDict:
         _ = (repo, pr_iid)
-        return []
+        return self._notes.resolve_thread(thread_id=thread_id)
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return self._notes.list_discussions(repo=repo, pr_iid=pr_iid)
 
     def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
         """Open issues assigned to *assignee*, scoped to *repo_slugs* when supplied."""
@@ -291,6 +287,11 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             payload["labels"] = labels
         data = _gh_api_post(f"repos/{repo}/issues", payload, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    @staticmethod
+    def create_issue_resolving_threads(spec: "IssueResolutionSpec") -> RawAPIDict:
+        _ = spec
+        return {"error": "GitHub cannot resolve review threads through issue creation"}
 
     def create_sub_issue(
         self,
@@ -356,6 +357,16 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         repo, number = ref
         data = _gh_api_patch(f"repos/{repo}/issues/{number}", {"body": body}, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> RawAPIDict:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, number = ref
+        data = _gh_api_post(f"repos/{repo}/issues/{number}/labels", {"labels": list(labels)}, token=self._token)
+        if isinstance(data, dict):
+            return cast("RawAPIDict", data)
+        return {"labels": data} if isinstance(data, list) else {"error": "GitHub issue labels were not returned"}
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"

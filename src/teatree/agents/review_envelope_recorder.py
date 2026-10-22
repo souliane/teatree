@@ -17,6 +17,7 @@ from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
+from teatree.agents.review_nit_policy import normalize_review_envelope
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -50,6 +51,8 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.nit_lane import NitLaneError
+from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
 
@@ -138,6 +141,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
         return refusal
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
+    envelope = normalize_review_envelope(envelope, ticket)
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
@@ -271,6 +275,17 @@ def _merge_safe_over_fail_error(
     )
 
 
+def _publish_review_nits(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> None:
+    points = review_nits(findings)
+    if not points:
+        return
+    pr_url = pr_url_for_nits(ticket, target.head_sha)
+    if not pr_url:
+        message = "review NIT has no attributable pull request URL"
+        raise NitLaneError(message)
+    publish_nits(ticket, pr_url, target.head_sha, points)
+
+
 def _record_verdict_and_grades(
     task: Task,
     result: AgentResultBlob,
@@ -332,6 +347,7 @@ def _record_verdict_and_grades(
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
+            _publish_review_nits(ticket or task.ticket, target, findings)
             if (
                 ticket is not None
                 and len(distinct_repos(ticket)) >= _MIN_INTEGRATION_REPOS
@@ -347,7 +363,7 @@ def _record_verdict_and_grades(
                 )
             if rubric is not None:
                 rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
-    except ReviewVerdictError as exc:
+    except (ReviewVerdictError, NitLaneError) as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;
         # every other one names something the next reviewer could get right, so it keeps
         # the ordinary retry. The discrimination is the EXCEPTION TYPE — the raise site

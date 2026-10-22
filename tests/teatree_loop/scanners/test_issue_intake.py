@@ -772,6 +772,40 @@ class IssueIntakeAgeOrderingTests(_PublicRepoTestCase):
     NEW = "https://github.com/souliane/teatree/issues/4234"
     NEWEST = "https://github.com/souliane/teatree/issues/4239"
 
+    def test_an_older_nit_waits_behind_a_real_issue_for_the_last_slot(self) -> None:
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit", "t3-auto"]),
+                    _issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"),
+                ]
+            }
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.NEW]
+
+    def test_a_nit_is_admitted_when_no_real_issue_waits(self) -> None:
+        host = _Host(
+            authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit"])]}
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.OLD]
+
+    def test_an_in_flight_nit_does_not_consume_a_real_issues_start_slot(self) -> None:
+        host = _Host(
+            authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit"])]}
+        )
+        assert [signal.payload["url"] for signal in self._scanner(host, max_concurrent=1).scan()] == [self.OLD]
+        host.authored[OWNER].append(_issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"))
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.NEW]
+
     def test_the_oldest_issue_wins_the_slot_across_the_merged_queries(self) -> None:
         """The single free slot goes to the oldest, though its query ran LAST.
 

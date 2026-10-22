@@ -36,8 +36,149 @@ class TestCriticItemVerdictCoerce(TestCase):
         item = CriticItemVerdict.coerce({"slug": "coherence", "status": "maybe", "citation": "x"})
         assert item.status == CriticItemVerdict.INSTRUMENTATION_GAP
 
+    def test_explicitly_unverified_failure_is_not_a_failed_item(self) -> None:
+        item = CriticItemVerdict.coerce(
+            {"slug": "cleanliness", "status": "fail", "citation": "diff unavailable", "verified": False}
+        )
+        assert item.status == CriticItemVerdict.UNVERIFIED
+        assert not item.is_fail()
+
+    def test_nit_only_failure_passes_the_item_and_preserves_its_point(self) -> None:
+        item = CriticItemVerdict.coerce(
+            {
+                "slug": "cleanliness",
+                "status": "fail",
+                "citation": "x.py:2",
+                "points": [{"kind": "nit", "summary": "rename helper", "citation": "x.py:2"}],
+            }
+        )
+
+        assert item.status == CriticItemVerdict.OK
+        assert not item.is_fail()
+        assert item.as_dict()["points"][0]["kind"] == "nit"
+
+    def test_blocking_point_overrides_a_pass(self) -> None:
+        item = CriticItemVerdict.coerce(
+            {
+                "slug": "test_value",
+                "status": "pass",
+                "citation": "tests/x.py:4",
+                "points": [{"kind": "blocking", "summary": "vacuous test", "citation": "tests/x.py:4"}],
+            }
+        )
+
+        assert item.status == CriticItemVerdict.FAIL
+        assert item.is_fail()
+
 
 class TestCriticVerdictRecord(TestCase):
+    def test_new_head_records_every_prior_finding_resolution(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.DELIVERED)
+        CriticVerdict.record_from_envelope(
+            ticket=ticket,
+            transition="merge",
+            head_sha="b" * 40,
+            envelope={
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {
+                        "slug": "cleanliness",
+                        "status": "fail",
+                        "citation": "src/x.py:4",
+                        "points": [
+                            {"kind": "blocking", "summary": "duplicate function", "citation": "src/x.py:4"},
+                        ],
+                    }
+                ],
+            },
+        )
+        with pytest.raises(CriticVerdictError, match="previous findings"):
+            CriticVerdict.record_from_envelope(
+                ticket=ticket,
+                transition="merge",
+                head_sha=_FORTY_HEX,
+                envelope={
+                    "grader_identity": "critic-agent-8",
+                    "items": [
+                        {"slug": "cleanliness", "status": "pass", "citation": "src/x.py:4"},
+                    ],
+                },
+            )
+        assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
+        verdict = CriticVerdict.record_from_envelope(
+            ticket=ticket,
+            transition="merge",
+            head_sha=_FORTY_HEX,
+            envelope={
+                "grader_identity": "critic-agent-8",
+                "items": [
+                    {
+                        "slug": "cleanliness",
+                        "status": "pass",
+                        "citation": "src/x.py:4",
+                        "resolutions": [
+                            {"finding": "duplicate function", "status": "fixed", "citation": "src/x.py:4"},
+                        ],
+                    },
+                ],
+            },
+        )
+        assert verdict.item_verdicts()[0].as_dict()["resolutions"] == [
+            {"finding": "duplicate function", "status": "fixed", "citation": "src/x.py:4"}
+        ]
+
+    def test_prior_failed_item_without_points_also_requires_resolution(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.DELIVERED)
+        CriticVerdict.record_from_envelope(
+            ticket=ticket,
+            transition="merge",
+            head_sha="b" * 40,
+            envelope={
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": "test_value", "status": "fail", "citation": "tests/x.py:3"},
+                ],
+            },
+        )
+        with pytest.raises(CriticVerdictError, match="previous findings"):
+            CriticVerdict.record_from_envelope(
+                ticket=ticket,
+                transition="merge",
+                head_sha=_FORTY_HEX,
+                envelope={
+                    "grader_identity": "critic-agent-8",
+                    "items": [
+                        {"slug": "test_value", "status": "pass", "citation": "tests/x.py:3"},
+                    ],
+                },
+            )
+
+    def test_a_nit_follow_up_cannot_defer_its_critic_nits_again(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree", state=Ticket.State.DELIVERED, extra={"nit_follow_up": True}
+        )
+
+        row = CriticVerdict.record_from_envelope(
+            ticket=ticket,
+            transition="merge",
+            head_sha=_FORTY_HEX,
+            envelope={
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {
+                        "slug": "cleanliness",
+                        "status": "fail",
+                        "citation": "x.py:2",
+                        "points": [{"kind": "nit", "summary": "rename helper", "citation": "x.py:2"}],
+                    }
+                ],
+            },
+        )
+
+        assert [item.slug for item in row.failed_items()] == ["cleanliness"]
+        assert row.item_verdicts()[0].points[0].kind == "blocking"
+
     def test_records_an_independent_verdict(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.DELIVERED)
         row = CriticVerdict.record(
@@ -117,6 +258,22 @@ class TestItemlessVerdictRefused(TestCase):
 
         dispatch = CriticDispatch.objects.get(ticket=self.ticket, transition="merge", head_sha=_FORTY_HEX)
         assert dispatch.state == CriticDispatch.State.DISPATCHED
+
+    def test_unverified_item_refuses_the_whole_verdict(self) -> None:
+        with pytest.raises(CriticVerdictError, match="not graded"):
+            CriticVerdict.record_from_envelope(
+                ticket=self.ticket,
+                transition="merge",
+                head_sha=_FORTY_HEX,
+                envelope={
+                    "grader_identity": "critic-agent-7",
+                    "items": [
+                        {"slug": "test_value", "status": "pass", "citation": "tests/x.py:1"},
+                        {"slug": "cleanliness", "status": "fail", "citation": "diff unavailable", "verified": False},
+                    ],
+                },
+            )
+        assert CriticVerdict.objects.latest_for(ticket=self.ticket, transition="merge") is None
 
 
 class TestLatestFor(TestCase):

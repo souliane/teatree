@@ -124,6 +124,7 @@
     - teatree.core.answering.work_item_filing
     - teatree.core.issue_hygiene
     - teatree.core.reply_transport
+    - teatree.core.review.nit_lane
     - teatree.core.review.verdict_findings_publish
     - teatree.core.management.commands.pr
     - teatree.core.management.commands.ticket

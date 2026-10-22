@@ -33,6 +33,7 @@ from teatree.core.models import (
     MergeAudit,
     MergeClear,
     PlanArtifact,
+    PullRequest,
     Rubric,
     Session,
     Task,
@@ -41,6 +42,8 @@ from teatree.core.models import (
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.review import critic_rubric
 from teatree.core.review.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, RubricKind
+from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
+from teatree.core.review.nit_publish import has_nit_receipts
 from teatree.core.runners.base import RunnerResult
 
 _FORTY_HEX = "a" * 40
@@ -342,6 +345,85 @@ class TestProductionRecordingPath(TestCase):
         assert CriticVerdict.objects.filter(ticket=ticket).exists()
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
 
+    def test_unreadable_diff_rearms_without_recording_failed_items(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="grade")
+        assert dispatch is not None
+        first_task = dispatch.task
+        assert first_task is not None
+        result = {
+            "summary": "Could not read the diff with the available tools",
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": "test_value", "status": "unverified", "citation": "diff read unavailable"},
+                    {"slug": "cleanliness", "status": "unverified", "citation": "diff read unavailable"},
+                ],
+            },
+        }
+
+        with self.captureOnCommitCallbacks(execute=False):
+            attempt = record_result_envelope(first_task, result)
+
+        dispatch.refresh_from_db()
+        first_task.refresh_from_db()
+        assert attempt.error
+        assert first_task.status == Task.Status.FAILED
+        assert dispatch.state == CriticDispatch.State.DISPATCHED
+        assert not CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, transition="merge").exists()
+        assert dispatch.attempts == 2
+        assert dispatch.task_id != first_task.pk
+        assert CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="grade") is None
+
+    def test_missing_merge_item_rearms_without_covering_the_head(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="grade")
+        assert dispatch is not None
+        assert dispatch.task is not None
+        result = {
+            "summary": "Only test value was graded",
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [{"slug": "test_value", "status": "pass", "citation": "tests/x.py:1"}],
+            },
+        }
+
+        with self.captureOnCommitCallbacks(execute=False):
+            attempt = record_result_envelope(dispatch.task, result)
+
+        dispatch.refresh_from_db()
+        assert attempt.error
+        assert dispatch.state == CriticDispatch.State.DISPATCHED
+        assert dispatch.attempts == 2
+        assert not CriticVerdict.objects.filter(ticket=ticket, transition="merge", head_sha=_FORTY_HEX).exists()
+
+    def test_critic_who_calls_unreadable_diff_a_failure_still_retries(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="grade")
+        assert dispatch is not None
+        first_task = dispatch.task
+        assert first_task is not None
+        result = {
+            "summary": "Could not grade the change: I could not read the diff with the available tools",
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": "test_value", "status": "fail", "citation": "unverified: diff unavailable"},
+                    {"slug": "cleanliness", "status": "fail", "citation": "unverified: diff unavailable"},
+                ],
+            },
+        }
+
+        with self.captureOnCommitCallbacks(execute=False):
+            attempt = record_result_envelope(first_task, result)
+
+        dispatch.refresh_from_db()
+        assert attempt.error
+        assert dispatch.attempts == 2
+        assert not CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, transition="merge").exists()
+
     def test_red_before_the_reviewing_phase_wiring_records_nothing(self) -> None:
         # Prove the dedicated phase is load-bearing: on the OLD wiring (phase="reviewing")
         # the same critic result fails check_evidence("reviewing") -> _record_failure -> the
@@ -390,6 +472,73 @@ class TestMergeVerdictBeforeTheMerge(TestCase):
         assert result["ok"] is True
         assert ticket.state == Ticket.State.DELIVERED
         assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+
+class TestMergeNitPublication(TestCase):
+    def test_critic_verdict_stamps_inline_nit_receipt(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        pr_url = "https://github.com/souliane/teatree/pull/4040"
+        PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=pr_url, repo="souliane/teatree", iid="4040")
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        point = NitPoint("src/example.py", 8, "Rename helper")
+        result = {
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": "test_value", "status": "pass", "citation": "tests/test_example.py::test_behavior"},
+                    {
+                        "slug": "cleanliness",
+                        "status": "fail",
+                        "citation": "src/example.py:8",
+                        "points": [{"kind": "nit", "summary": point.summary, "file": point.file, "line": point.line}],
+                    },
+                ],
+            }
+        }
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _FORTY_HEX),
+            ) as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            assert record_returned_critic_verdict(dispatch.task, result) == ""
+        track.assert_called_once()
+        ticket.refresh_from_db()
+        assert has_nit_receipts(ticket, pr_url, _FORTY_HEX, (point,))
+
+    def test_failed_nit_publication_rolls_back_verdict_and_claim(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        pr_url = "https://github.com/souliane/teatree/pull/4040"
+        PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=pr_url, repo="souliane/teatree", iid="4040")
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        result = {
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {
+                        "slug": "cleanliness",
+                        "status": "pass",
+                        "citation": "src/example.py:8",
+                        "points": [{"kind": "nit", "summary": "Rename helper", "file": "src/example.py", "line": 8}],
+                    }
+                ],
+            }
+        }
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch("teatree.core.review.nit_publish.track_nits", side_effect=NitLaneError("forge readback failed")),
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            assert "forge readback failed" in record_returned_critic_verdict(dispatch.task, result)
+        dispatch.refresh_from_db()
+        assert dispatch.state != CriticDispatch.State.RESOLVED
+        assert not CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
 
 
 class TestTransitionScoping(TestCase):

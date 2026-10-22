@@ -3492,6 +3492,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      whose leader is gone.                                   │
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
+│ review-evidence                                                              │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -4094,6 +4095,19 @@ Usage: t3 tool ratchet-prune [OPTIONS]
 │ --write          Delete the stale pins (the only auto-repairable direction). │
 │ --json           Emit machine-readable JSON.                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool review-evidence`
+
+```
+Usage: t3 tool review-evidence [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha        TEXT  Full committed head SHA to measure. [required]  │
+│    --base              TEXT  Target branch ref for the changed set.          │
+│                              [default: origin/main]                          │
+│    --help                    Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
