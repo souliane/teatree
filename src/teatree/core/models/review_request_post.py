@@ -18,6 +18,8 @@ from django.utils import timezone
 
 class ReviewRequestPostQuerySet(models.QuerySet["ReviewRequestPost"]):
     def open_thread(self, post: "ReviewRequestPost") -> "ReviewRequestPostQuerySet":
+        if not post.slack_channel_id or not post.slack_thread_ts:
+            return self.filter(pk=post.pk, done_at__isnull=True)
         return self.filter(
             overlay=post.overlay,
             slack_channel_id=post.slack_channel_id,

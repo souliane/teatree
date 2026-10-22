@@ -214,12 +214,12 @@ class TestReviewRequestResumeScanner(TestCase):
 
     def test_engaged_thread_reviewer_gets_direct_resume_mention(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "")
-        slack = _Slack(thread_replies=[{"ts": "1780473409.000001", "user": "UPEER"}], active_user_ids={"UPEER"})
+        slack = _Slack(thread_replies=[{"ts": "1780473409.000001", "user": "UPEER001"}], active_user_ids={"UPEER001"})
 
         signals = self._scan(slack, _Host())
 
         assert _kinds(signals) == ["review_request.resumed"]
-        assert slack.posted == [(_CHANNEL, f"<@UPEER> {RESUME_REPLY_TEXT}", _THREAD_TS)]
+        assert slack.posted == [(_CHANNEL, f"<@UPEER001> {RESUME_REPLY_TEXT}", _THREAD_TS)]
 
     def test_no_safe_mention_holds_resume_without_consuming_the_claim(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "")
@@ -228,6 +228,19 @@ class TestReviewRequestResumeScanner(TestCase):
         signals = self._scan(slack, _Host())
 
         assert _kinds(signals) == ["review_request.resume_mention_held"]
+        assert slack.posted == []
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
+    def test_unexpected_mention_error_surfaces_without_claiming_resume(self) -> None:
+        slack = _Slack()
+        with mock.patch(
+            "teatree.loop.scanners.review_request_resume.engaged_reask_mention",
+            side_effect=RuntimeError("lookup failed"),
+        ):
+            signals = self._scan(slack, _Host())
+
+        assert _kinds(signals) == ["review_request.resume_failed"]
         assert slack.posted == []
         self.post.refresh_from_db()
         assert self.post.resumed_at is None

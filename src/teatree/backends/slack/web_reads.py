@@ -20,7 +20,7 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
-SLACK_USER_ID_RE = re.compile(r"[UW][A-Z0-9]+")
+SLACK_USER_ID_RE = re.compile(r"[UW][A-Z0-9]{6,}")
 
 
 def is_slack_user_id(value: object) -> TypeGuard[str]:

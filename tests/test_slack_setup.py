@@ -311,21 +311,21 @@ class TestPatterns:
 
     @pytest.mark.parametrize(
         "value",
-        ["U01ABCD1234", "W0012345", "U123"],
+        ["U01ABCD1234", "W0012345"],
     )
     def test_user_id_accepts_valid(self, value: str) -> None:
         assert _USER_ID_RE.fullmatch(value)
 
     @pytest.mark.parametrize(
         "value",
-        ["alice", "u01abcd", "U-1234567", "U01ABCD1234!"],
+        ["alice", "u01abcd", "U123", "U-1234567", "U01ABCD1234!"],
     )
     def test_user_id_rejects_invalid(self, value: str) -> None:
         assert _USER_ID_RE.fullmatch(value) is None
 
     def test_prompt_rejects_a_trailing_invalid_character(self) -> None:
-        with patch("teatree.cli.slack.setup.typer.prompt", side_effect=["U123!", "U123"]) as prompt:
-            assert _prompt_user_id() == "U123"
+        with patch("teatree.cli.slack.setup.typer.prompt", side_effect=["U123!", "U1234567"]) as prompt:
+            assert _prompt_user_id() == "U1234567"
 
         assert prompt.call_count == 2
 

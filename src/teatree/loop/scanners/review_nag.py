@@ -53,7 +53,6 @@ import datetime as dt
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import cast
 
 from django.utils import timezone
 
@@ -81,6 +80,9 @@ _BACKOFF_EXHAUSTED_OPTIONS = (
     "Ping the group again anyway",
     "It is waiting on me — stop asking",
     "Close it",
+)
+_BATCH_ATTEMPT_SIGNALS = frozenset(
+    {"review_nag.ping", "review_nag.gated", "review_nag.post_failed", "review_nag.mention_held"}
 )
 
 
@@ -151,12 +153,7 @@ class ReviewNagScanner:
             signal = self._process_one(post, messaging, right_now, thresholds)
             if signal is not None:
                 signals.append(signal)
-                if signal.kind in {
-                    "review_nag.ping",
-                    "review_nag.gated",
-                    "review_nag.post_failed",
-                    "review_nag.mention_held",
-                }:
+                if signal.kind in _BATCH_ATTEMPT_SIGNALS:
                     attempted_threads.add(thread)
         return signals
 
@@ -177,12 +174,17 @@ class ReviewNagScanner:
         if window is None:
             return None
         interval, peers, visible_root = window
-        blocked = self._mr_not_naggable(post, messaging, right_now, visible_root=visible_root)
-        if blocked is not None:
-            return blocked
+        host = self.host
+        blocked = (
+            self._mr_not_naggable(post, messaging, host, right_now, visible_root=visible_root)
+            if host is not None
+            else None
+        )
+        if host is None or blocked is not None:
+            return blocked or _unreadable_state_skip(post, "no code-host backend is configured")
         if any(thresholds.nag_backoff_at_cap(owner, peer.nag_count) for peer, owner in peers):
             return _ask_owner_for_state(post, interval)
-        return self._post_reask(post, messaging, right_now, interval)
+        return self._post_reask(post, messaging, host, right_now, interval)
 
     def _thread_due_window(
         self,
@@ -230,6 +232,7 @@ class ReviewNagScanner:
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
+        host: CodeHostBackend,
         right_now: dt.datetime,
         *,
         visible_root: RawAPIDict | None,
@@ -247,9 +250,6 @@ class ReviewNagScanner:
         open-state lookup and an ``UNKNOWN`` open state each
         skip rather than proceed.
         """
-        host = self.host
-        if host is None:
-            return _unreadable_state_skip(post, "no code-host backend is configured")
         settled = self._open_state_skip(post, messaging, right_now, host)
         if settled is not None:
             return settled
@@ -293,6 +293,7 @@ class ReviewNagScanner:
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
+        host: CodeHostBackend,
         right_now: dt.datetime,
         interval: dt.timedelta,
     ) -> ScanSignal | None:
@@ -307,7 +308,7 @@ class ReviewNagScanner:
         try:
             mention = engaged_reask_mention(
                 messaging,
-                cast("CodeHostBackend", self.host),
+                host,
                 claim.posts,
                 requester=RequesterIdentity(self.requester_slack_id, self.identities),
                 overlay_name=self.overlay_name,

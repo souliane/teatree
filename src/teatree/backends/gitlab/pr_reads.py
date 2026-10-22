@@ -4,8 +4,9 @@ Free functions the :class:`~teatree.backends.gitlab.GitLabCodeHost` delegates th
 wave-2 ``CodeHostBackend`` reads to, keeping the host class focused on the
 Protocol surface and under the module-health LOC cap — the same split shape as
 :mod:`teatree.backends.gitlab.uploads` / :mod:`teatree.backends.gitlab.subissues`.
-An unresolvable project degrades to an empty list (list reads) or a structured
-``{"error": ...}`` (``repo_metadata``) so an unknown repo never crashes the caller.
+Most unresolvable projects degrade to an empty list (list reads) or a structured
+``{"error": ...}`` (``repo_metadata``). Reads used to decide whether to alert or
+mention people raise instead, so an unknown repo is never mistaken for no activity.
 """
 
 import logging

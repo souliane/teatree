@@ -338,7 +338,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     if _colleague_egress_selected(backend):
         try:
             requester_slack_id = _user_slack_id_for_overlay(tag)
-        except IDENTITY_LOOKUP_ERRORS as exc:
+        except (*IDENTITY_LOOKUP_ERRORS, TypeError) as exc:
             logger.warning("Review nag requester id unreadable for %r: %s", tag, exc)
             requester_slack_id = ""
         jobs.extend(

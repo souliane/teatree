@@ -46,6 +46,18 @@ def test_held_review_reask_is_visible_as_action_needed() -> None:
     assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
 
 
+def test_held_resume_mention_is_visible_as_action_needed() -> None:
+    signal = ScanSignal(
+        kind="review_request.resume_mention_held",
+        summary="Resume held: no safe reviewer mention",
+        payload={"mr_url": "https://gitlab.example/x/-/merge_requests/1"},
+    )
+
+    actions = dispatch([signal])
+
+    assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
+
 @pytest.fixture(autouse=True)
 def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the two ambient review-request gates so routing tests are deterministic.

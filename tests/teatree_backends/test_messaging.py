@@ -36,6 +36,7 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.post_routed(channel="C", text="hi") == {}
     assert backend.react_routed(channel="C", ts="123", emoji="eyes") == {}
     assert backend.resolve_user_id("alice") == ""
+    assert backend.resolve_unique_active_user_id("alice") == ""
     assert backend.resolve_usergroup_id("reviewers") == ""
     assert backend.post_audio_dm(channel="C", filepath="/tmp/x.m4a", text="hi", title="t") == {}
 
@@ -54,7 +55,7 @@ def test_slack_backend_resolves_unique_active_user_from_directory(monkeypatch: p
             "ok": True,
             "members": [
                 {
-                    "id": "UPEER",
+                    "id": "UPEER00",
                     "name": "peer",
                     "deleted": False,
                     "is_bot": False,
@@ -66,7 +67,7 @@ def test_slack_backend_resolves_unique_active_user_from_directory(monkeypatch: p
 
     monkeypatch.setattr(backend, "get", get)
 
-    assert backend.resolve_unique_active_user_id("peer") == "UPEER"
+    assert backend.resolve_unique_active_user_id("peer") == "UPEER00"
     assert calls == [("users.list", {"limit": 200})]
 
 

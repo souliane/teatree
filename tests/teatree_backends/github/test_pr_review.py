@@ -115,6 +115,18 @@ def test_dismissed_reviewer_remains_engaged() -> None:
         assert GitHubCodeHost(token="t").get_pr_engaged_reviewers(repo="o/r", pr_iid=5) == ["peer"]
 
 
+@pytest.mark.parametrize("state", ["COMMENTED", "CHANGES_REQUESTED"])
+def test_submitted_review_state_engages_author(state: str) -> None:
+    with (
+        patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
+        patch(
+            "teatree.backends.github.client._gh_api_get_paginated",
+            return_value=[{"state": state, "user": {"login": "peer"}}],
+        ),
+    ):
+        assert GitHubCodeHost(token="t").get_pr_engaged_reviewers(repo="o/r", pr_iid=5) == ["peer"]
+
+
 def test_pending_review_does_not_engage_its_author() -> None:
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),

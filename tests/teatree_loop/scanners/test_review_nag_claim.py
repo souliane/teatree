@@ -19,6 +19,14 @@ def _request(number: int, *, thread: str = "1000", done: bool = False) -> Review
 
 
 class TestNagClaim(TestCase):
+    def test_placeholder_posts_with_no_thread_coordinates_are_separate(self) -> None:
+        first = _request(1)
+        second = _request(2)
+        ReviewRequestPost.objects.filter(pk__in=[first.pk, second.pk]).update(slack_channel_id="", slack_thread_ts="")
+        first.refresh_from_db()
+
+        assert list(ReviewRequestPost.objects.open_thread(first).values_list("pk", flat=True)) == [first.pk]
+
     def test_failed_post_releases_each_previous_step(self) -> None:
         first = _request(1)
         second = _request(2)

@@ -7,6 +7,7 @@ from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.pr_reads import (
     list_project_pr_commits,
     list_project_prs,
+    project_engaged_reviewers,
     project_pr_diff,
     repo_metadata,
     state_filter,
@@ -71,6 +72,14 @@ def test_approved_and_requested_reviewers_are_both_engaged() -> None:
     )
 
     assert GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5) == ["peer", "approver"]
+
+
+def test_unresolvable_project_cannot_be_read_as_no_engaged_reviewers() -> None:
+    client = MagicMock(spec=GitLabAPI)
+
+    with pytest.raises(ValueError, match="Could not resolve project"):
+        project_engaged_reviewers(client, None, repo="org/missing", pr_iid=5)
+    client.get_json.assert_not_called()
 
 
 def test_get_pr_diff_hits_diffs_endpoint() -> None:

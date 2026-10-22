@@ -4,16 +4,22 @@ import logging
 from hashlib import sha256
 from unittest.mock import patch
 
+import pytest
 from django.core.cache import cache as django_cache
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, ReviewRequestPost
 from teatree.loop.scanners import review_nag_mention
-from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention, reask_mention
-from tests.teatree_loop.test_review_nag_scanner import FakeHost, FakeSlack, active_member
+from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
+from tests._review_nag_members import active_member
+from tests.teatree_loop.test_review_nag_scanner import FakeHost, FakeSlack
 
 
 class TestReaskMention(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        django_cache.clear()
+
     def _mention(
         self,
         slack: FakeSlack,
@@ -36,6 +42,13 @@ class TestReaskMention(TestCase):
         host = FakeHost(comments=[{"system": True, "author": {"username": "peer"}}])
 
         assert self._mention(slack, host) == "<!subteam^S0REVIEWERS>"
+
+    def test_github_comment_user_login_is_an_engager(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        slack = FakeSlack(members=[active_member("UPEER001", "peer")])
+        host = FakeHost(comments=[{"user": {"login": "peer"}}])
+
+        assert self._mention(slack, host) == "<@UPEER001>"
 
     def test_configured_fallback_does_not_cache_an_unmapped_reviewer(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
@@ -69,22 +82,29 @@ class TestReaskMention(TestCase):
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         slack = FakeSlack(
             thread_replies=[
-                {"ts": "1001", "bot_id": "B1", "user": "UPEER"},
-                {"ts": "1002", "subtype": "bot_message", "user": "UPEER"},
-            ]
+                {"ts": "1001", "bot_id": "B1", "user": "UPEER001"},
+                {"ts": "1002", "subtype": "bot_message", "user": "UPEER001"},
+            ],
+            members=[active_member("UPEER001", "peer")],
         )
 
         assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
 
     def test_slackbot_reply_is_not_an_engager(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
-        slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "USLACKBOT"}])
+        slack = FakeSlack(
+            thread_replies=[{"ts": "1001", "user": "USLACKBOT"}],
+            members=[active_member("USLACKBOT", "slackbot")],
+        )
 
         assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
 
     def test_malformed_slack_id_is_not_mentioned(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
-        slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "peer!"}])
+        slack = FakeSlack(
+            thread_replies=[{"ts": "1001", "user": "peer!"}],
+            members=[active_member("UPEER001", "peer!")],
+        )
 
         assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
 
@@ -99,6 +119,14 @@ class TestReaskMention(TestCase):
         )
 
         assert self._mention(slack, FakeHost()) == "<@UACTIVE>"
+
+    def test_unmapped_reply_id_uses_one_directory_lookup_across_ticks(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "UPEER001"}])
+
+        assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
+        assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
+        assert slack.lookups.count("users.list") == 1
 
     def test_requester_alias_is_removed_before_directory_lookup(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
@@ -121,11 +149,20 @@ class TestReaskMention(TestCase):
         with patch.object(host, "list_pr_comments", side_effect=RuntimeError("forge down")):
             assert self._mention(FakeSlack(), host) == "<!subteam^S0REVIEWERS>"
 
+    def test_internal_type_error_is_not_reported_as_a_lookup_failure(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+
+        with (
+            patch.object(review_nag_mention, "_forge_engagers", side_effect=TypeError("unexpected parser bug")),
+            pytest.raises(TypeError, match="unexpected parser bug"),
+        ):
+            self._mention(FakeSlack(), FakeHost())
+
     def test_a_handle_matching_only_a_user_renders_a_user_mention(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         slack = FakeSlack(members=[{"id": "U0REVIEWER", "name": "reviewers-team"}])
 
-        mention = reask_mention(slack, overlay_name="")
+        mention = self._mention(slack, FakeHost())
 
         assert mention == "<@U0REVIEWER>"
         assert "subteam" not in mention
@@ -135,7 +172,7 @@ class TestReaskMention(TestCase):
         slack = FakeSlack()
 
         with self.assertLogs(review_nag_mention.logger, level=logging.WARNING) as logs:
-            mentions = [reask_mention(slack, overlay_name="") for _ in range(2)]
+            mentions = [self._mention(slack, FakeHost()) for _ in range(2)]
 
         assert mentions == ["", ""]
         assert len([line for line in logs.output if "reviewers-team" in line]) == 1
@@ -144,4 +181,4 @@ class TestReaskMention(TestCase):
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         slack = FakeSlack(raise_on_resolve=RuntimeError("api down"))
 
-        assert reask_mention(slack, overlay_name="") == ""
+        assert self._mention(slack, FakeHost()) == ""

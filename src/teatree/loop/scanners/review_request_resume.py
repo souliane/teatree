@@ -217,13 +217,17 @@ class ReviewRequestResumeScanner:
             )
         if pause is not PauseState.PAUSED or not self._is_ready(post.mr_url, host):
             return None
-        mention = engaged_reask_mention(
-            messaging,
-            host,
-            [post],
-            requester=RequesterIdentity(self.requester_slack_id, self.identities),
-            overlay_name=self.overlay,
-        )
+        try:
+            mention = engaged_reask_mention(
+                messaging,
+                host,
+                [post],
+                requester=RequesterIdentity(self.requester_slack_id, self.identities),
+                overlay_name=self.overlay,
+            )
+        except Exception as exc:
+            logger.exception("review_request_resume: mention lookup failed for %s", post.mr_url)
+            return _resume_failed(post, error=str(exc))
         return _claim_and_reply(
             post,
             messaging,

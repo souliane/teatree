@@ -50,7 +50,7 @@ class ReviewNagClaim:
                 pk__in=[post_id for post_id, _, _ in self.previous],
                 last_nag_at=self.claimed_at,
                 nag_count=self.nag_count,
-            ).update(last_nag_at=self.claimed_at, nag_count=self.nag_count, last_nag_reply_ts=reply_ts)
+            ).update(last_nag_reply_ts=reply_ts)
             if updated != len(self.previous):
                 msg = "review nag claim could not persist every reply timestamp"
                 raise ReviewNagPostReconciliationError(msg)
