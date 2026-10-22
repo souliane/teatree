@@ -12,6 +12,7 @@ from teatree.core.management.commands._e2e_resolvers import resolve_visual_qa_ba
 from teatree.core.management.commands.pr import _assert_commits_ahead_of_base, _check_shipping_gate, _run_visual_qa_gate
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import OverlayRuntime
+from teatree.types import RunCommand
 
 from ._shared import _MOCK_OVERLAY
 
@@ -163,6 +164,27 @@ class TestRunVisualQAGate(TestCase):
         ticket.refresh_from_db()
         assert "Executable doesn't exist" in ticket.extra["visual_qa"]["not_run_reason"]
 
+    def test_checkout_preparation_failure_refuses_before_server_start(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        overlay = _PageTargetOverlay()
+        overlay.runtime = OverlayRuntime()
+        overlay.runtime.visual_qa_server = MagicMock(return_value=RunCommand(args=["missing-server"]))
+        with (
+            patch("teatree.core.management.commands._ship.gates.get_overlay", return_value=overlay),
+            patch.object(visual_qa, "changed_files", return_value=["page.html"]),
+            patch.object(visual_qa, "run_check", return_value=[]),
+            patch(
+                "teatree.core.management.commands._ship.gates.ServiceLauncher.prepare",
+                side_effect=RuntimeError("sync failed"),
+            ) as prepare,
+        ):
+            result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
+        assert "sync failed" in result["error"]
+        prepare.assert_called_once_with(strict=True)
+
     def test_a_budget_that_ran_out_refuses_as_did_not_run(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
         report = visual_qa.VisualQAReport(
@@ -295,7 +317,7 @@ class TestRunVisualQAGate(TestCase):
 
         assert result is not None
         assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
-        assert result["visual_qa"]["unchecked_reasons"]["/"] == "unreached"
+        assert "ERR_CONNECTION_REFUSED" in result["visual_qa"]["unchecked_reasons"]["/"]
 
     def test_server_hook_failure_is_did_not_run(self) -> None:
         ticket, worktree = self._ticket_and_worktree()

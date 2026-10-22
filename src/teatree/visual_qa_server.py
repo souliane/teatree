@@ -4,14 +4,16 @@ import contextlib
 import os
 import signal
 import socket
+import sys
 import tempfile
+import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.types import RunCommand
-from teatree.utils.run import Popen, TimeoutExpired, redact_secrets, spawn_session_leader
+from teatree.utils.run import PIPE, Popen, TimeoutExpired, redact_secrets, spawn, spawn_session_leader
 
 SERVER_START_TIMEOUT_S = 90
 
@@ -48,6 +50,8 @@ class ServedApp:
         raise VisualQAUnavailableError(message)
 
     def stop(self) -> None:
+        if self.process.stdin is not None:
+            self.process.stdin.close()
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.pgid, signal.SIGTERM)
         try:
@@ -68,7 +72,7 @@ class ServerSpec:
 
 
 @contextlib.contextmanager
-def served_app(server: ServerSpec) -> Iterator[ServedApp]:
+def served_app(server: ServerSpec) -> Generator[ServedApp]:
     with tempfile.TemporaryDirectory(prefix="teatree-visual-qa-") as scratch:
         server.prepare()
         with socket.socket() as reservation:
@@ -83,11 +87,10 @@ def served_app(server: ServerSpec) -> Iterator[ServedApp]:
         with log_path.open("w+") as log:
             try:
                 process = spawn_session_leader(
-                    server.command.args,
+                    [sys.executable, "-m", "teatree.visual_qa_server", *server.command.args],
                     cwd=server.command.cwd or server.repo_path,
                     env=env,
-                    stdout=log,
-                    stderr=log,
+                    stdio=(PIPE, log, log),
                 )
             except OSError as exc:
                 message = f"checkout server could not start: {exc}"
@@ -98,3 +101,24 @@ def served_app(server: ServerSpec) -> Iterator[ServedApp]:
                 yield served
             finally:
                 served.stop()
+
+
+def _watch_parent_stdin(fd: int) -> None:
+    with os.fdopen(fd, "rb") as stream:
+        stream.read(1)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+
+
+def _serve_until_exit(command: list[str]) -> int:
+    parent_input = os.dup(0)
+    with Path(os.devnull).open("rb") as devnull:
+        os.dup2(devnull.fileno(), 0)
+    child = spawn(command)
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
+    threading.Thread(target=_watch_parent_stdin, args=(parent_input,), daemon=True).start()
+    return child.wait()
+
+
+if __name__ == "__main__":
+    raise SystemExit(_serve_until_exit(sys.argv[1:]))

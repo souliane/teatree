@@ -89,17 +89,25 @@ class TestEvaluate:
         assert report.skipped_reason == "--skip: reviewed"
         assert "FileNotFoundError" in report.not_run_reason
 
-    def test_over_cap_targets_fail_before_browser_start(self, monkeypatch) -> None:
+    def test_over_cap_targets_check_first_twelve_and_name_the_rest(self, monkeypatch) -> None:
         overlay = MagicMock()
         overlay.review.visual_qa_targets.return_value = [f"/p{i}/" for i in range(visual_qa.MAX_PAGES + 1)]
-        checked = MagicMock()
-        monkeypatch.setattr(visual_qa, "run_check", checked)
+        checked: list[str] = []
+        monkeypatch.setattr(
+            visual_qa,
+            "run_check",
+            lambda targets, base_url: (
+                checked.extend(targets) or [visual_qa.PageResult(url=base_url + target) for target in targets]
+            ),
+        )
 
         report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=overlay, base_url="http://x")
 
-        assert "too many visual QA targets" in report.not_run_reason
+        assert report.not_run_reason == ""
         assert len(report.targets) == visual_qa.MAX_PAGES + 1
-        checked.assert_not_called()
+        assert checked == report.targets[: visual_qa.MAX_PAGES]
+        assert report.pages_checked == visual_qa.MAX_PAGES
+        assert report.unchecked_reasons == {f"/p{visual_qa.MAX_PAGES}/": "page cap"}
 
     def test_skip_reason_still_checks_pages(self, monkeypatch) -> None:
         checked: list[str] = []
@@ -311,8 +319,26 @@ class TestVisualQAReport:
             targets=["/a", "/b"], not_run_reason="browser missing\ninstall banner\nmore detail"
         )
 
-        assert report.unchecked_reasons == {"/a": "unreached", "/b": "unreached"}
+        assert report.unchecked_reasons == {"/a": "unreached (browser missing)", "/b": "unreached (browser missing)"}
         assert visual_qa.format_report(report).count("install banner") == 1
+
+    def test_public_report_scrubs_local_paths_from_server_and_browser_errors(self) -> None:
+        private_path = "/tmp/private-checkout/e2e/dash/serve.py"
+        report = visual_qa.VisualQAReport(
+            targets=["/dash/board/"],
+            pages=[
+                visual_qa.PageResult(
+                    url="http://127.0.0.1:9/dash/board/",
+                    errors=[visual_qa.PageError(url="http://x", kind="page", message=f"failed at {private_path}")],
+                )
+            ],
+            not_run_reason=f"server exited 1: {private_path}",
+            server_failure=f"server exited 1: {private_path}",
+        )
+
+        markdown = visual_qa.format_report(report)
+        assert private_path not in markdown
+        assert "[local path]" in markdown
 
     def test_unreached_connection_is_unknown_even_without_findings(self) -> None:
         report = visual_qa.VisualQAReport(
@@ -323,6 +349,15 @@ class TestVisualQAReport:
         assert report.unchecked_reasons["/dash/board/"] == "unreached"
         assert report.total_errors == 0
         assert report.pages_checked == 0
+
+    def test_server_exit_reason_includes_log_tail_for_each_unchecked_page(self) -> None:
+        report = visual_qa.VisualQAReport(
+            targets=["/dash/board/", "/dash/live/"],
+            pages=[visual_qa.PageResult(url="http://127.0.0.1:9/dash/board/", unreached=True)],
+            server_failure="server exited 7: template crashed",
+        )
+
+        assert all("template crashed" in reason for reason in report.unchecked_reasons.values())
 
     def test_page_cap_is_named_for_every_later_target(self) -> None:
         targets = [f"/p{i}" for i in range(visual_qa.MAX_PAGES + 2)]

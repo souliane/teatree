@@ -36,7 +36,12 @@ def test_live_config_database_is_byte_identical_after_refusal(
     monkeypatch.setenv("DJANGO_SETTINGS_MODULE", settings_module)
     monkeypatch.setenv("T3_CONFIG_DB", str(live_db))
 
-    with pytest.raises(SystemExit):
+    expected_error = (
+        "visual QA refuses inherited database overrides"
+        if settings_module == "e2e.dash.settings"
+        else "visual QA requires e2e.dash.settings"
+    )
+    with pytest.raises(SystemExit, match=expected_error):
         serve.main()
 
     assert live_db.read_bytes() == before

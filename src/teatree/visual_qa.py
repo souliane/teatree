@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError, TimeoutExpired
+from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
 from teatree.visual_qa_server import ServedApp, ServerSpec, VisualQAUnavailableError
 from teatree.visual_qa_server import served_app as _served_app
 
@@ -77,6 +77,7 @@ class PageResult:
     screenshot_path: str = ""
     errors: list[PageError] = field(default_factory=list)
     unreached: bool = False
+    unreached_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,10 +95,16 @@ class VisualQAReport:
 
     @property
     def unchecked_reasons(self) -> dict[str, str]:
-        server_note = self.server_failure.split(":", 1)[0].splitlines()[0] if self.server_failure else ""
-        unreached_reason = f"unreached ({server_note})" if server_note else "unreached"
+        note = self.server_failure.replace("\n", " ")
+        if not note and self.not_run_reason:
+            note = self.not_run_reason.splitlines()[0]
+        unreached_reason = f"unreached ({note})" if note else "unreached"
         reasons = {
-            target: unreached_reason for target, page in zip(self.targets, self.pages, strict=False) if page.unreached
+            target: f"unreached ({page.unreached_reason})"
+            if page.unreached_reason and not self.server_failure
+            else unreached_reason
+            for target, page in zip(self.targets, self.pages, strict=False)
+            if page.unreached
         }
         reasons.update(
             {
@@ -243,10 +250,13 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
 
     navigation_error = ""
     unreached = False
+    unreached_reason = ""
     try:
         page.goto(url, timeout=PER_PAGE_TIMEOUT_MS, wait_until="networkidle")
     except PlaywrightError as exc:
         unreached = _never_connected(str(exc))
+        if unreached:
+            unreached_reason = str(exc)
         if not unreached:
             navigation_error = f"navigation failed: {exc}"
 
@@ -271,7 +281,13 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
         PageError(url=url, kind="translation", message=f"raw key in DOM: {match}")
         for match in _TRANSLATION_KEY_RE.findall(body_text)
     )
-    return PageResult(url=url, screenshot_path=screenshot_path, errors=errors, unreached=unreached)
+    return PageResult(
+        url=url,
+        screenshot_path=screenshot_path,
+        errors=errors,
+        unreached=unreached,
+        unreached_reason=unreached_reason,
+    )
 
 
 def _never_connected(message: str) -> bool:
@@ -330,13 +346,6 @@ def evaluate(
         )
     if not targets:
         return VisualQAReport(targets=[], skipped_reason="no frontend changes")
-    if len(targets) > MAX_PAGES:
-        return VisualQAReport(
-            targets=targets,
-            not_run_reason=f"too many visual QA targets: {len(targets)} exceeds the page cap of {MAX_PAGES}",
-            skipped_reason=f"--skip: {skip_reason}" if skip_reason else "",
-        )
-
     resolved_url = ""
     server_failure = ""
     server_attempted = False
@@ -354,7 +363,7 @@ def evaluate(
                 resolved_url = base_url
             else:
                 resolved_url = base_url()
-            pages = run_check(targets, resolved_url)
+            pages = run_check(targets[:MAX_PAGES], resolved_url)
             if served is not None:
                 server_failure = served.failure()
     except (OSError, RuntimeError, TimeoutExpired, ValueError, TypeError, AttributeError) as exc:
@@ -383,12 +392,12 @@ def _report_header(report: VisualQAReport) -> list[str]:
     if report.skipped_reason == "no frontend changes":
         lines.append(f"_skipped: {report.skipped_reason}_")
     elif report.skipped_reason:
-        lines.extend((f"_explicit bypass: {report.skipped_reason}_", ""))
+        lines.extend((f"_explicit bypass: {_public_text(report.skipped_reason)}_", ""))
     if report.not_run_reason:
         first, *rest = report.not_run_reason.splitlines()
-        lines.append(f"did not run: {first}")
+        lines.append(f"did not run: {_public_text(first)}")
         if rest:
-            lines.extend(("```text", *rest, "```"))
+            lines.extend(("```text", *(_public_text(line) for line in rest), "```"))
     if not report.targets and not report.skipped_reason and not report.not_run_reason:
         lines.append("_no frontend changes detected_")
     return lines
@@ -408,13 +417,23 @@ def format_report(report: VisualQAReport) -> str:
     )
     if report.unchecked:
         lines.append("**Not checked**")
-        lines.extend(f"- `{path}`: {reason}" for path, reason in report.unchecked_reasons.items())
+        lines.extend(f"- `{path}`: {_public_text(reason)}" for path, reason in report.unchecked_reasons.items())
         lines.append("")
     for path, page in zip(report.targets, report.pages, strict=False):
         marker = ":x:" if page.errors else ":warning:" if page.unreached else ":white_check_mark:"
         lines.append(f"### {marker} `{path}`")
         if page.errors:
             lines.append("")
-            lines.extend(f"- **{error.kind}**: {error.message.replace(report.base_url, '')}" for error in page.errors)
+            lines.extend(
+                f"- **{error.kind}**: {_public_text(error.message.replace(report.base_url, ''))}"
+                for error in page.errors
+            )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+_LOCAL_PATH_RE = re.compile(r"(?<![A-Za-z0-9:/])/(?:[^\s'\"<>`]+)")
+
+
+def _public_text(value: str) -> str:
+    return _LOCAL_PATH_RE.sub("[local path]", redact_secrets(value))
