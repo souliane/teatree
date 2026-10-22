@@ -46,3 +46,6 @@ class TestForgeIngestIdentityMigration(TransactionTestCase):
         assert after.objects.get(idempotency_key="gitlab:dead").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="github:False").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="slack:True").body == "private"
+        for row in after.objects.all():
+            assert row.occurred_at == row.received_at
+            assert row.occurred_at_unknown is True

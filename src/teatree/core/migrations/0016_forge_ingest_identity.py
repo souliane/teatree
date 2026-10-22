@@ -3,10 +3,14 @@
 from django.db import migrations, models
 from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 from django.db.migrations.state import StateApps
+from django.db.models import F
 
 
-def trim_settled_forge_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
+def backfill_event_time_and_trim_forge_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
     incoming_event = apps.get_model("core", "IncomingEvent")
+    incoming_event.objects.using(schema_editor.connection.alias).filter(occurred_at__isnull=True).update(
+        occurred_at=F("received_at"), occurred_at_unknown=True
+    )
     # Mirrors IncomingEventQuerySet.forge_identity_rows with historical models.
     incoming_event.objects.using(schema_editor.connection.alias).filter(
         source__in=["github", "gitlab"], processed_at__isnull=False, dead_lettered_at__isnull=True
@@ -58,5 +62,5 @@ class Migration(migrations.Migration):
                 name="teatree_inc_source_08a214_idx",
             ),
         ),
-        migrations.RunPython(trim_settled_forge_rows, migrations.RunPython.noop),
+        migrations.RunPython(backfill_event_time_and_trim_forge_rows, migrations.RunPython.noop),
     ]
