@@ -300,7 +300,7 @@ def _check_control_db_journal() -> bool:
     mode = "wal" if header[_JOURNAL_HEADER_OFFSET] == _WAL_HEADER_VALUE else "truncate"
     if mode != expected_mode:
         typer.secho(
-            f"FAIL  Control DB journal: {mode} ({reason}); expected {expected_mode}. "
+            f"FAIL  Control DB journal: {mode}; expected {expected_mode} ({reason}). "
             "Stop all database users before switching journal modes.",
             fg=typer.colors.RED,
         )

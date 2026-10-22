@@ -119,6 +119,26 @@ class TestVacuumSqlite:
         assert not outcome.file_caught_up
         assert "next checkpoint" in outcome.summary
 
+    def test_idle_wal_connection_allows_vacuum_to_reclaim_the_file(self, tmp_path: Path) -> None:
+        db = tmp_path / "control.sqlite3"
+        _wal_journalled(db)
+        _bloated_db(db)
+        _delete_most_rows(db)
+        before = db.stat().st_size
+        assert _free_pages(db) > 0
+        idle = sqlite3.connect(db)
+        try:
+            assert idle.execute("SELECT COUNT(*) FROM attempt").fetchone() == (10,)
+            outcome = vacuum_sqlite(db)
+            assert outcome.ran
+            assert outcome.file_caught_up
+            assert db.stat().st_size < before
+            wal = Path(f"{db}-wal")
+            assert not wal.exists() or wal.stat().st_size == 0
+            assert db.read_bytes()[18] == 2
+        finally:
+            idle.close()
+
     def test_the_reported_counts_match_an_independent_read_of_the_pragmas(self, tmp_path: Path) -> None:
         db = tmp_path / "control.sqlite3"
         _bloated_db(db)

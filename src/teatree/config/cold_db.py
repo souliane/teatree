@@ -1,25 +1,7 @@
-"""Django-free stdlib sqlite plumbing for the canonical DB-home store.
+"""Django-free read-only access to the primary control DB.
 
-The raw read layer split out of :mod:`teatree.config.cold_reader` (the
-module-health function-count bar): resolving the PRIMARY config DB path, opening
-it read-only with the WAL-aware fallback, the shared single-row fetch, and the
-two non-config-setting reads built straight on that plumbing — the loop-state
-status and the generic existence probe. :mod:`teatree.config.cold_reader` layers
-the typed `ConfigSetting` value readers on top of this module.
-
-Imports only the standard library; in particular it does NOT import
-`teatree.paths`, whose module-level `resolve_data_dir` would auto-isolate a
-worktree onto a sibling DB. The deliberate inverse of that resolver:
-`canonical_config_db` always targets the PRIMARY control DB — the named
-volume `control_db_dir(env)/db.sqlite3` for the machine's canonical data dir, and
-the data dir's own file for every private copy — even from inside a git worktree
-(a `.git` *file*): config lives in one place, the installed `t3`'s DB. The ~5-line path
-computation is duplicated here rather than imported;
-`tests/config/test_cold_reader.py` pins it equal to
-`teatree.paths.TRUE_CANONICAL_DB` so the two can never drift.
-
-Every read fails OPEN to `None` / the caller's default — a missing file, a fresh
-install with no table, a locked DB, or a corrupt value never raises.
+The public cold probes convert SQLite failures to caller defaults; confirmed
+probes also report whether the query ran.
 """
 
 import os
@@ -133,7 +115,7 @@ def read_readonly[T](
         connection = _open_readonly(db, "mode=ro", busy_timeout_ms)
         return read(connection)
     except sqlite3.OperationalError as exc:
-        if exc.sqlite_errorcode not in _QUIESCENT_WAL_READ_ERRORS:
+        if getattr(exc, "sqlite_errorcode", None) not in _QUIESCENT_WAL_READ_ERRORS:
             raise
         if wal := uncheckpointed_wal(db):
             message = f"Cannot use immutable fallback while {wal} is nonempty"

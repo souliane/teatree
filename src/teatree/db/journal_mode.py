@@ -9,7 +9,16 @@ from django.core.exceptions import ImproperlyConfigured
 from teatree.db.write_domain import ControlDbWriteDomain
 
 JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
-_JOURNAL_COMMAND = re.compile(r"^\s*PRAGMA\s+(?:[A-Za-z_]\w*\.)?journal_mode\s*(?:=|\()", re.IGNORECASE)
+_SQLITE_NAME = r'(?:[A-Za-z_]\w*|"[^"]+"|\'[^\']+\'|`[^`]+`|\[[^]]+\])'
+
+
+def _pragma_command(name: str) -> re.Pattern[str]:
+    identifier = rf'(?:{name}|"{name}"|\'{name}\'|`{name}`|\[{name}\])'
+    return re.compile(rf"^\s*PRAGMA\s+(?:{_SQLITE_NAME}\s*\.\s*)?{identifier}\s*(?:=|\()", re.IGNORECASE)
+
+
+_JOURNAL_COMMAND = _pragma_command("journal_mode")
+_SYNCHRONOUS_COMMAND = _pragma_command("synchronous")
 
 
 class ControlDbJournal:
@@ -61,8 +70,7 @@ class ControlDbJournal:
         if mode == "wal":
             for command in ("PRAGMA synchronous=NORMAL", f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}"):
                 if command.startswith("PRAGMA synchronous") and any(
-                    re.match(r"^\s*PRAGMA\s+(?:[A-Za-z_]\w*\.)?synchronous\s*(?:=|\()", item, re.IGNORECASE)
-                    for item in commands
+                    _SYNCHRONOUS_COMMAND.match(item) for item in commands
                 ):
                     continue
                 if command not in commands:

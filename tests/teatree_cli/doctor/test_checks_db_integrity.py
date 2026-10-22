@@ -121,6 +121,7 @@ def test_doctor_accepts_truncate_header_and_reports_invalid_override(
 ) -> None:
     db = _sound_db(tmp_path / "db.sqlite3")
     monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
     monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
     with closing(sqlite3.connect(db)) as connection:
         assert connection.execute("PRAGMA journal_mode=TRUNCATE").fetchone() == ("truncate",)
@@ -137,6 +138,20 @@ def test_doctor_accepts_truncate_header_and_reports_invalid_override(
     monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: None)
     assert not checks_db_integrity._check_control_db_journal()
     assert "mount table" in capsys.readouterr().out
+
+
+def test_doctor_fails_when_header_disagrees_with_selected_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _sound_db(tmp_path / "db.sqlite3")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+
+    assert checks_db_integrity._check_control_db_journal() is False
+    assert "wal; expected truncate (operator override)" in capsys.readouterr().out
 
 
 def _sound_db(path: Path) -> Path:
