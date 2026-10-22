@@ -65,6 +65,64 @@ def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
     assert refused.value.assurance["status"] == "injection_gap"
 
 
+_REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI = (
+    "### Quality Gate Verification (Verify-Fix-Repeat)",
+    "### Receiving Code Review",
+    "### Recording a GIVE-review approval — `t3 review approve` (Mandatory)",
+    "### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)",
+    "## Commands",
+)
+
+
+_SLACK_SECTIONS_THAT_ONLY_POST = (
+    "## Tables — use the formatter, never a hand-rolled pipe table",
+    "## mrkdwn gotchas",
+    "## Line length — wrapped at 90, at the transport",
+    "## CLI tables",
+)
+
+
+def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = Path(__file__).resolve().parents[2] / "skills"
+    raw = (skills / "review" / "SKILL.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
+
+    rendered = read_only_venue_skill_contents(["review"], {"review"})
+
+    assert all(f"\n{heading}\n" in raw for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
+    assert not any(heading in rendered for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
+    assert "### Giving Code Review" in rendered
+    assert len(raw) - len(rendered) > 8_000
+
+
+def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = Path(__file__).resolve().parents[2] / "skills"
+    raw = (skills / "slack-formatting" / "SKILL.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
+
+    rendered = read_only_venue_skill_contents(["slack-formatting"], {"slack-formatting"})
+
+    assert "--- SKILL: slack-formatting ---" in rendered
+    assert "## Be concise" in rendered
+    assert all(f"\n{heading}\n" in raw for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
+    assert not any(heading in rendered for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
+
+
+def test_read_only_venue_section_drop_ends_at_the_next_heading_of_the_same_or_higher_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = ("## Keep", "kept", "### Receiving Code Review", "dropped", "#### Nested", "nested dropped")
+    body = "\n".join((*lines, "### After", "kept after", "## Commands", "dropped", ""))
+    _write_skill(tmp_path, "review", body)
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["review"], {"review"})
+
+    assert "kept\n" in rendered
+    assert "kept after" in rendered
+    assert "dropped" not in rendered
+
+
 def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
     result = _read_skill_contents(["nonexistent"], skills_dir=tmp_path)
     assert result == ""

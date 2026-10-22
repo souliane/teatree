@@ -70,6 +70,7 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
 agent_max_turns = 250 # int — turn ceiling for one agent run
+agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
 dogfood_smoke_skill = "dogfooding" # str — skill the dogfood smoke loop runs
