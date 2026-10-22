@@ -75,7 +75,7 @@ def test_follow_up_rearms_the_input_queue_so_a_steer_reaches_the_new_turn() -> N
         await session.follow_up("a second turn")
         steering = asyncio.create_task(session.steer("new turn input", input_id="c-2", wait=1))
         await asyncio.sleep(0)
-        assert inputs._take() == "new turn input"
+        assert inputs.take() == "new turn input"
         await steering
 
     asyncio.run(run())

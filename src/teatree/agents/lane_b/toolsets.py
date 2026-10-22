@@ -17,6 +17,7 @@ from pydantic_ai.toolsets.combined import CombinedToolset
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.filesystem import build_filesystem_toolset, build_skill_file_toolset
 from teatree.agents.lane_b.gating import DEFAULT_SOFT_GATED, HardDenyToolset, make_soft_gate_predicate
+from teatree.agents.lane_b.mailbox import build_mailbox_toolset
 from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.agents.lane_b.tool_names import lane_b_tool_name
@@ -93,4 +94,6 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
         else build_mcp_toolsets(serve_flags=serve_flags_for_phase(config.phase) if config.phase else [])
     )
     toolsets: list[AbstractToolset[None]] = [gated, *mcp_toolsets]
+    if config.mailbox is not None and config.phase and allowed:
+        toolsets.append(build_mailbox_toolset(config.mailbox, config.phase))
     return LaneBToolsets(toolsets=toolsets, needs_deferred_output=bool(soft_gated))
