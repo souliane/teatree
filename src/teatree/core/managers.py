@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
+from teatree.core.admission.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.claim_liveness import current_owner
 from teatree.core.intake.ticket_findability import unfindable_tickets
 from teatree.core.loop_lease_liveness import OwnershipStatus
@@ -366,7 +367,9 @@ class TaskQuerySet(models.QuerySet):
         if claim_admission_block_reason():
             return None
         now = timezone.now()
-        candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
+        candidates = self.filter(status=task_model.Status.PENDING).filter(
+            _claimable_now_q(now), new_pr_start_allowed_q()
+        )
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
         if ordering is not None:
@@ -381,19 +384,23 @@ class TaskQuerySet(models.QuerySet):
             # Compare-and-swap on status: only the writer that still sees
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
-            # predicate is the status CAS token and stays untouched by it.
+            # predicate keeps the status CAS, park deadline and new-PR cap aligned.
             owner_pid, owner_pid_namespace = current_owner()
-            claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
-                status=task_model.Status.CLAIMED,
-                claimed_by=claimed_by,
-                claimed_by_session=claimed_by_session,
-                claimed_generation=current_generation(),
-                claimed_at=now,
-                heartbeat_at=now,
-                lease_expires_at=now + timedelta(seconds=lease_seconds),
-                owner_pid=owner_pid,
-                owner_pid_namespace=owner_pid_namespace,
-                owner_driving_since=None,
+            claimed_count = (
+                self.filter(pk=oldest_pk, status=task_model.Status.PENDING)
+                .filter(_claimable_now_q(now), new_pr_start_allowed_q())
+                .update(
+                    status=task_model.Status.CLAIMED,
+                    claimed_by=claimed_by,
+                    claimed_by_session=claimed_by_session,
+                    claimed_generation=current_generation(),
+                    claimed_at=now,
+                    heartbeat_at=now,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    owner_pid=owner_pid,
+                    owner_pid_namespace=owner_pid_namespace,
+                    owner_driving_since=None,
+                )
             )
             if claimed_count != 1:
                 return None
@@ -512,13 +519,14 @@ class TaskQuerySet(models.QuerySet):
         lifts that bound.
 
         A row still holding a live seat is refused too: a second booking is a duplicate dispatch.
+        The same write refuses a new PR starter while the live PR cap is full.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save`` auto-enqueue is
         itself a ``post_save`` receiver, so saving the instance from inside it would re-enter the
         receiver, and the stamp must not be able to re-arm the dispatch it is recording.
         """
         now = timezone.now()
-        seat = self.filter(_unseated_q(now), pk=task_pk)
+        seat = self.filter(_unseated_q(now), new_pr_start_allowed_q(), pk=task_pk)
         if lane_ceiling is not None:
             lane = PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))

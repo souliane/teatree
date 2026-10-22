@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-from teatree.generation import current_generation, is_generation_sha
+from teatree.generation import current_generation
+from teatree.git_sha import is_full_git_sha
 from teatree.mount_identity import physical_location
 from teatree.sqlite_snapshot import _exclusive_lock, _sqlite_snapshot
 
@@ -544,7 +545,7 @@ class PathHelpers:
         except OSError:
             return False
         running = current_generation()
-        return is_generation_sha(stamped) and (not running or stamped == running)
+        return is_full_git_sha(stamped) and (not running or stamped == running)
 
     @staticmethod
     def core_repo_root(*, root: Path | None = None) -> Path | None:

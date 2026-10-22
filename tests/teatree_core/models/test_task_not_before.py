@@ -6,11 +6,15 @@ re-dispatched into the same 429 in a tight loop.
 """
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import django.test
+import pytest
+from django.db.models import QuerySet
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 
 
 def _pending_task(not_before: datetime | None = None) -> Task:
@@ -30,10 +34,48 @@ def _pending_task(not_before: datetime | None = None) -> Task:
 
 
 class TestClaimHonoursNotBefore(django.test.TestCase):
+    def test_loop_claim_rechecks_park_after_candidate_selection(self) -> None:
+        task = _pending_task()
+        deadline = timezone.now() + timedelta(hours=1)
+        original_first = QuerySet.first
+        changed = False
+
+        def park_after_selection(queryset: QuerySet) -> object:
+            nonlocal changed
+            selected = original_first(queryset)
+            if not changed and queryset.model is Task and selected == task.pk:
+                changed = True
+                Task.objects.filter(pk=task.pk).update(not_before=deadline)
+            return selected
+
+        with patch.object(QuerySet, "first", new=park_after_selection):
+            claimed = Task.objects.claim_next_pending(claimed_by="worker")
+
+        assert changed
+        assert claimed is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == deadline
+
     def test_future_not_before_is_not_claimable(self) -> None:
         now = timezone.now()
-        _pending_task(not_before=now + timedelta(hours=5))
+        deadline = now + timedelta(hours=5)
+        task = _pending_task(not_before=deadline)
         assert Task.objects.claim_next_pending(claimed_by="worker") is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == deadline
+
+    def test_a_held_task_keeps_its_deadline_after_direct_claim_refusal(self) -> None:
+        deadline = timezone.now() + timedelta(hours=5)
+        task = _pending_task(not_before=deadline)
+
+        with pytest.raises(InvalidTransitionError, match="Task parked until"):
+            task.claim(claimed_by="worker")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == deadline
 
     def test_elapsed_not_before_is_claimable(self) -> None:
         now = timezone.now()

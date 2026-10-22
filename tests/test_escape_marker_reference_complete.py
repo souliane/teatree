@@ -56,7 +56,7 @@ def _implemented_markers(roots: tuple[str, ...] = _GATE_ROOTS) -> set[str]:
 
 def _stripped_tokens() -> set[str]:
     """The `[<token>: …]` names the circuit breaker folds out of a call signature."""
-    alternation = re.search(r"\\\[\(\?:([^)]+)\)", dcb._SIGNATURE_STRIP_RE.pattern)
+    alternation = re.search(r"\\\[(?:\(\?:)?([a-z0-9|-]+)\)?:", dcb._SIGNATURE_STRIP_RE.pattern)
     assert alternation is not None, "could not parse _SIGNATURE_STRIP_RE bracket alternation"
     return set(alternation.group(1).split("|"))
 
@@ -82,7 +82,7 @@ class TestEscapeMarkerReferenceComplete:
     def test_every_implemented_marker_is_documented(self) -> None:
         section = _canonical_section()
         markers = _implemented_markers()
-        assert len(markers) > 15, "a shrunken walk would make the assertion below trivially true"
+        assert markers == {"gate-escape"}, "each gate must use the one canonical escape token"
         missing = sorted(t for t in markers if f"[{t}:" not in section)
         assert not missing, (
             "The canonical escape-marker reference in hooks/CLAUDE.md is missing "
