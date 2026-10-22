@@ -207,6 +207,43 @@ class TestCheckRequeueAllowed(TestCase):
         assert task.phase_iteration_count() == 0
         task.check_requeue_allowed()
 
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_five_non_work_rows_leave_the_cap_available(self) -> None:
+        cancelled = self._phase_task(Ticket.objects.create())
+        lease_reaped = self._phase_task(Ticket.objects.create())
+        route = self._phase_task(Ticket.objects.create())
+        for index in range(5):
+            _failed_attempt(cancelled, error=f"{CANCELLED_PREFIX}operator {index}")
+            _failed_attempt(lease_reaped, error=f"{LEASE_EXPIRED_PREFIX}worker {index}")
+        previous = None
+        for index in range(5):
+            previous = TaskAttempt.objects.create(
+                task=route,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=f"route refusal {index}",
+                fallback_from_attempt=previous,
+            )
+        TaskAttempt.objects.create(
+            task=route,
+            ended_at=timezone.now(),
+            exit_code=0,
+            fallback_from_attempt=previous,
+        )
+
+        for task, expected in ((cancelled, 0), (lease_reaped, 0), (route, 1)):
+            assert task.phase_iteration_count() == expected
+            task.check_requeue_allowed()
+
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_five_genuine_failures_exhaust_the_cap(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for error in ("alpha", "bravo", "charlie", "delta", "echo"):
+            _failed_attempt(task, error=error)
+
+        with pytest.raises(MaxIterationsExceeded):
+            task.check_requeue_allowed()
+
     def test_at_cap_raises_max_iterations_exceeded(self) -> None:
         ticket = Ticket.objects.create()
         task = self._phase_task(ticket)
