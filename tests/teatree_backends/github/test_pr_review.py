@@ -77,7 +77,7 @@ def test_requested_reviewers_are_read_from_the_pull_request() -> None:
     payload = {"requested_reviewers": [{"login": "peer"}, {"login": "other"}]}
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value=payload) as get,
-        patch("teatree.backends.github.client._gh_api_get_paginated", return_value=[]),
+        patch.object(GitHubCodeHost, "list_pr_reviews", return_value=[]),
     ):
         reviewers = GitHubCodeHost(token="t").get_pr_engaged_reviewers(repo="o/r", pr_iid=5)
 
@@ -96,8 +96,9 @@ def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
 def test_submitted_approver_is_engaged_while_more_approvals_are_needed() -> None:
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
-        patch(
-            "teatree.backends.github.client._gh_api_get_paginated",
+        patch.object(
+            GitHubCodeHost,
+            "list_pr_reviews",
             return_value=[{"state": "APPROVED", "user": {"login": "peer"}}],
         ),
     ):
@@ -107,8 +108,9 @@ def test_submitted_approver_is_engaged_while_more_approvals_are_needed() -> None
 def test_dismissed_reviewer_remains_engaged() -> None:
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
-        patch(
-            "teatree.backends.github.client._gh_api_get_paginated",
+        patch.object(
+            GitHubCodeHost,
+            "list_pr_reviews",
             return_value=[{"state": "DISMISSED", "user": {"login": "peer"}}],
         ),
     ):
@@ -119,8 +121,9 @@ def test_dismissed_reviewer_remains_engaged() -> None:
 def test_submitted_review_state_engages_author(state: str) -> None:
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
-        patch(
-            "teatree.backends.github.client._gh_api_get_paginated",
+        patch.object(
+            GitHubCodeHost,
+            "list_pr_reviews",
             return_value=[{"state": state, "user": {"login": "peer"}}],
         ),
     ):
@@ -130,8 +133,9 @@ def test_submitted_review_state_engages_author(state: str) -> None:
 def test_pending_review_does_not_engage_its_author() -> None:
     with (
         patch("teatree.backends.github.client._gh_api_get", return_value={"requested_reviewers": []}),
-        patch(
-            "teatree.backends.github.client._gh_api_get_paginated",
+        patch.object(
+            GitHubCodeHost,
+            "list_pr_reviews",
             return_value=[{"state": "PENDING", "user": {"login": "peer"}}],
         ),
     ):
