@@ -34,6 +34,7 @@ src/teatree/config/trusted_authors.py
 src/teatree/config/value_coercion.py
 src/teatree/forge_credentials.py
 src/teatree/generation.py
+src/teatree/git_sha.py
 src/teatree/harness_skills.py
 src/teatree/hooks/__init__.py
 src/teatree/hooks/_diff_lines.py
