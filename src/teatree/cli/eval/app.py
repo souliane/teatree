@@ -302,7 +302,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--benchmark",
         help=(
             "Run every (filtered) scenario against ALL three tier models "
-            "(frontier, balanced, cheap — resolved through the single TIER_MODELS "
+            "(frontier, balanced, cheap — resolved through the single tier_models() "
             "constant) and render a comparison matrix + a self-contained HTML "
             "dashboard. The canonical CI benchmark entry — adopting a new model "
             "needs no flag edit. Routes through the metered matrix lane (--backend api)."

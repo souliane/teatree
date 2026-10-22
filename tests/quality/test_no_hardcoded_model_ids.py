@@ -14,7 +14,7 @@ not a code edit. A concrete dated model-id string (``claude-haiku-4-5``,
     yesterday's recorded ids).
 
 Everywhere else — production dispatch, the eval lane, CLI help, docs, workflows —
-must reference an abstract TIER / family alias, or DERIVE from ``TIER_MODELS``.
+must reference an abstract TIER / family alias, or DERIVE from ``tier_models()``.
 
 The check scans BOTH directions: a model id in a non-allowlisted file is red (a new
 pin), and an allowlist entry that no longer carries one is red (a stale exemption).
@@ -110,7 +110,7 @@ def test_no_hardcoded_model_id_outside_the_allowlist() -> None:
     offenders = {rel: ids for rel, ids in _files_with_model_ids().items() if rel not in _ALLOWLIST}
     assert offenders == {}, (
         "Concrete Claude model-id(s) pinned outside the allowlist — reference an abstract tier, a "
-        "family alias (opus/sonnet/haiku), or derive from agents.model_tiering.TIER_MODELS "
+        "family alias (opus/sonnet/haiku), or derive from agents.model_tiering.tier_models() "
         f"instead: {offenders}"
     )
 

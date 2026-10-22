@@ -15,7 +15,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.cli import app
 from teatree.cli.eval import set_baseline
 from teatree.cli.eval.app import eval_app
@@ -24,14 +24,14 @@ from teatree.cli.eval.ladder import _docker_passthrough, _LadderFlags, ladder
 from teatree.eval.models import EvalRun, EvalSpec
 
 _HAIKU = "claude-haiku-4-5"
-_SONNET = TIER_MODELS["balanced"]
-_OPUS = TIER_MODELS["frontier"]
+_SONNET = tier_models()["balanced"]
+_OPUS = tier_models()["frontier"]
 
 
 @pytest.fixture(autouse=True)
 def _three_distinct_tier_models() -> Iterator[None]:
     with (
-        patch.dict(TIER_MODELS, {"cheap": _HAIKU}),
+        patch.dict(tier_models(), {"cheap": _HAIKU}),
         patch.dict(set_baseline._TIER_BY_MODEL, {_HAIKU: "cheap", _SONNET: "balanced"}),
     ):
         yield

@@ -11,23 +11,23 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents._runner_options import _build_options
-from teatree.agents.model_tiering import TIER_MODELS, resolve_fallback_model, resolve_tier
+from teatree.agents.model_tiering import resolve_fallback_model, resolve_tier, tier_models
 from teatree.core.models import Session, Task, Ticket
 
 
 class TestResolveFallbackModel:
     def test_frontier_degrades_to_balanced(self) -> None:
-        assert resolve_fallback_model(TIER_MODELS["frontier"]) == resolve_tier("balanced")
+        assert resolve_fallback_model(tier_models()["frontier"]) == resolve_tier("balanced")
 
     def test_balanced_degrades_to_a_distinct_cheap_model(self) -> None:
-        with patch.dict(TIER_MODELS, {"cheap": "claude-haiku-4-5"}):
-            assert resolve_fallback_model(TIER_MODELS["balanced"]) == "claude-haiku-4-5"
+        with patch.dict(tier_models(), {"cheap": "claude-haiku-4-5"}):
+            assert resolve_fallback_model(tier_models()["balanced"]) == "claude-haiku-4-5"
 
     def test_balanced_has_no_fallback_while_cheap_shares_its_model(self) -> None:
-        assert resolve_fallback_model(TIER_MODELS["balanced"]) is None
+        assert resolve_fallback_model(tier_models()["balanced"]) is None
 
     def test_cheapest_rung_has_no_fallback(self) -> None:
-        assert resolve_fallback_model(TIER_MODELS["cheap"]) is None
+        assert resolve_fallback_model(tier_models()["cheap"]) is None
 
     def test_family_short_name_is_recognised(self) -> None:
         # A bare family short-name (not the dated id) still resolves its tier.

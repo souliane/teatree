@@ -101,7 +101,7 @@ class _WorkspaceCoreSettings:
 #: defaults to 4096, which truncates a long result envelope mid-JSON.
 #:
 #: The value is bounded ABOVE by the smallest per-model output limit in
-#: :data:`teatree.agents.model_tiering.TIER_MODELS`, NOT by the frontier model's: this is ONE
+#: :data:`teatree.agents.model_tiering.tier_models()`, NOT by the frontier model's: this is ONE
 #: global ceiling merged into every request (:func:`teatree.agents.pydantic_ai_config.build_model_settings`)
 #: whatever tier the dispatched phase resolved to, and the Anthropic Messages API rejects a
 #: ``max_tokens`` above the addressed model's own limit with a 400 rather than clamping. The

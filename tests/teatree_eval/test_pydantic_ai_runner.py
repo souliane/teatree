@@ -31,7 +31,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
 from teatree.agents.model_aliases import family_alias_models
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
 from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
@@ -588,11 +588,11 @@ class TestEffortIsGatedOnTheModelsCapability:
 
     def test_the_cheap_haiku_tier_is_sent_no_effort(self) -> None:
         # Cheap now defaults to Sonnet; probe Haiku directly to keep this capability guard honest.
-        assert TIER_MODELS["cheap"] == "claude-sonnet-5-5"
+        assert tier_models()["cheap"] == "claude-sonnet-5-5"
         assert "anthropic_effort" not in self._recorded_settings("claude-haiku-4-5", effort="high")
 
     def test_a_reasoning_tier_still_carries_the_lane_effort(self) -> None:
-        settings = self._recorded_settings(TIER_MODELS["balanced"], effort="high")
+        settings = self._recorded_settings(tier_models()["balanced"], effort="high")
         assert settings.get("anthropic_effort") == "high"
 
     def test_the_output_ceiling_rides_even_with_the_effort_dropped(self) -> None:
@@ -612,7 +612,7 @@ class TestEveryScenarioResolvesToAConcreteModelId:
     Both now declare ``tier: cheap`` instead. Naming the concrete id would satisfy this
     assertion and trip the sibling ratchet in ``tests/quality/test_no_hardcoded_model_ids``:
     an abstract tier is the one spelling that satisfies both, because it resolves through
-    ``TIER_MODELS`` at run time and carries a model bump with it.
+    ``tier_models()`` at run time and carries a model bump with it.
     """
 
     def test_no_discovered_spec_pins_a_family_alias(self) -> None:
@@ -623,5 +623,5 @@ class TestEveryScenarioResolvesToAConcreteModelId:
         }
         assert not offenders, (
             f"these scenarios pin a family alias the Messages API cannot resolve: {offenders}. "
-            "Name the concrete catalog id (TIER_MODELS) or declare an abstract tier instead."
+            "Name the concrete catalog id (tier_models()) or declare an abstract tier instead."
         )

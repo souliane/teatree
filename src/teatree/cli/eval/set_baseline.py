@@ -19,7 +19,7 @@ The input matrix comes from either producer, both emitting the same JSON shape:
     every cell should be measured.
 
 A matrix produced BEFORE a tier bump names a model the shipped
-:data:`~teatree.agents.model_tiering.TIER_MODELS` no longer contains. Such a
+:data:`~teatree.agents.model_tiering.tier_models()` no longer contains. Such a
 column is dropped with a loud warning rather than aborting the regeneration: it
 is evidence about a model nothing resolves to today, and dropping a candidate
 from the cheapest-passing choice can only raise the derived tier or leave the
@@ -34,7 +34,7 @@ from pathlib import Path
 import typer
 import yaml
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.core.cost import tier_rank
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matrix_payload import MatrixCell, MatrixPayloadError, load_matrix_payload
@@ -43,7 +43,7 @@ from teatree.utils.django_bootstrap import ensure_django
 
 #: Model id -> strongest matching abstract tier, so shared ids never imply a cheaper pass.
 _TIER_BY_MODEL: dict[str, str] = {
-    model: tier for tier, model in sorted(TIER_MODELS.items(), key=lambda entry: tier_rank(entry[0]))
+    model: tier for tier, model in sorted(tier_models().items(), key=lambda entry: tier_rank(entry[0]))
 }
 
 _FRONTIER_TIER = "frontier"
@@ -130,7 +130,7 @@ def set_baseline(
     for column, affected in sorted(stale_columns.items()):
         typer.echo(
             f"WARNING matrix column {column!r} is not one of the shipped tier models "
-            f"({sorted(TIER_MODELS.values())}) — its passing cells are ignored on {affected} scenario(s). "
+            f"({sorted(tier_models().values())}) — its passing cells are ignored on {affected} scenario(s). "
             f"{_REGENERATE_HINT}",
             err=True,
         )

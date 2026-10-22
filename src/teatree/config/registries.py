@@ -185,6 +185,18 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
 COLD_SETTING_KEYS: tuple[str, ...] = tuple(COLD_SETTINGS)
 
 
+def tier_models() -> dict[str, str]:
+    return cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+
+
+def tier_effort() -> dict[str, str]:
+    return cast("dict[str, str]", COLD_SETTINGS["agent_tier_effort"].default)
+
+
+def phase_models() -> dict[str, str]:
+    return cast("dict[str, str]", COLD_SETTINGS["agent_phase_models"].default)
+
+
 # Disjoint from ``OVERLAY_OVERRIDABLE_SETTINGS`` and from every ``UserSettings``
 # field. These keys are read cold from the canonical config DB (via ``cold_reader``)
 # by the pre-Django hook leaves; ``config_setting`` get/set/clear handle them as

@@ -13,7 +13,7 @@ its own YAML resolution rather than being silently cheapened.
 :func:`resolve_preset_model` is applied at the ``run_dispatch.py`` per-scenario
 seam, a layer ABOVE :func:`~teatree.eval.model_resolution.resolve_eval_model` —
 it is never called from inside that function, and
-``resolve_eval_model``/``resolve_tier``/``TIER_MODELS`` are untouched by this
+``resolve_eval_model``/``resolve_tier``/``tier_models()`` are untouched by this
 module. Precedence with a preset active, highest first:
 
 1.  ``spec.model`` (non-empty) — an explicit scenario pin always wins.
@@ -36,7 +36,7 @@ from pathlib import Path
 
 import yaml
 
-from teatree.agents.model_tiering import TIER_MODELS, resolve_tier
+from teatree.agents.model_tiering import resolve_tier, tier_models
 from teatree.core.cost import tier_rank
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalSpec
@@ -70,7 +70,7 @@ BASELINE_HEADER = """\
 # never resolve below the author's asserted minimum. A scenario absent from
 # `scenarios` falls through to its own YAML tier — it is NEVER silently
 # cheapened. `frontier_ok` lists the scenarios permitted to pin the frontier
-# tier (`--allow-frontier`); every other value is a known `TIER_MODELS` key.
+# tier (`--allow-frontier`); every other value is a known `tier_models()` key.
 """
 
 #: The preset names :func:`resolve_preset` recognises for a UNIFORM tier pin.
@@ -170,7 +170,7 @@ def load_baseline_file(path: Path | None = None) -> BaselineFile:
     CALL time (never bound as a function default) so a test's
     ``patch("teatree.eval.presets.BASELINE_PRESET_PATH", ...)`` is honoured.
 
-    Every ``scenarios`` value must be a known :data:`~teatree.agents.model_tiering.TIER_MODELS`
+    Every ``scenarios`` value must be a known :data:`~teatree.agents.model_tiering.tier_models()`
     key (a typo'd tier is a hard error, not a silent pass-through), and a
     ``frontier``-valued entry must be listed under ``frontier_ok`` — the same
     hygiene :mod:`tests.eval_replay` pins against the checked-in file.
@@ -197,8 +197,8 @@ def load_baseline_file(path: Path | None = None) -> BaselineFile:
         if not isinstance(name, str) or not isinstance(tier, str):
             msg = f"{path}: scenario entry {name!r}: {tier!r} must be a str -> str pair"
             raise PresetError(msg)
-        if tier not in TIER_MODELS:
-            msg = f"{path}: scenario {name!r} declares unknown tier {tier!r}; known tiers: {sorted(TIER_MODELS)}"
+        if tier not in tier_models():
+            msg = f"{path}: scenario {name!r} declares unknown tier {tier!r}; known tiers: {sorted(tier_models())}"
             raise PresetError(msg)
         if tier == _FRONTIER_TIER and name not in frontier_ok:
             msg = f"{path}: scenario {name!r} pins the frontier tier but is not listed under 'frontier_ok'"

@@ -2697,7 +2697,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     three tier models        │
 │                                                     (frontier, balanced,     │
 │                                                     cheap — resolved through │
-│                                                     the single TIER_MODELS   │
+│                                                     the single tier_models() │
 │                                                     constant) and render a   │
 │                                                     comparison matrix + a    │
 │                                                     self-contained HTML      │

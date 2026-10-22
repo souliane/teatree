@@ -26,7 +26,7 @@ from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.live_client import LiveClient, LiveOfflineError
 from teatree.agents.live_delivery import PeerDelivery, SendReceipt
 from teatree.agents.live_mailbox import _Participant, shared_broker
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import Session, Task
@@ -112,7 +112,7 @@ class LiveCodexNonceTests(TestCase):
             model="gpt-5.6-sol", permission_mode="bypassPermissions", cwd=cwd, setting_sources=[], mcp_servers={}
         )
         claude_options = ClaudeAgentOptions(
-            model=TIER_MODELS["cheap"],
+            model=tier_models()["cheap"],
             permission_mode="bypassPermissions",
             cwd=cwd,
             setting_sources=[],

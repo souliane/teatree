@@ -22,7 +22,7 @@ import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_env import system_child_env
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
-from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.model_tiering import tier_effort, tier_models
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.agents.runner import (
     LoopWatchdog,
@@ -1548,24 +1548,24 @@ class TestBuildOptions(TestCase):
 
     def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_reviewing_runs_on_frontier(self) -> None:
         options = self._options_for_phase("reviewing")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_coding_runs_on_frontier(self) -> None:
         # The redesign maps coding to the frontier tier (was inherit/None before).
         options = self._options_for_phase("coding")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_requesting_review_runs_on_cheap(self) -> None:
         options = self._options_for_phase("requesting_review")
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_testing_runs_on_balanced(self) -> None:
         options = self._options_for_phase("testing")
-        assert options.model == TIER_MODELS["balanced"]
+        assert options.model == tier_models()["balanced"]
 
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
@@ -1594,17 +1594,17 @@ class TestBuildOptions(TestCase):
         # adaptive thinking explicitly AND the frontier-tier effort (xhigh).
         options = self._options_for_phase("coding")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["frontier"]
+        assert options.effort == tier_effort()["frontier"]
 
     def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
         # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
         # effort (xhigh).
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["balanced"]
+        assert options.effort == tier_effort()["balanced"]
 
     def test_cheap_phase_pins_no_effort(self) -> None:
-        # The cheap tier has no TIER_EFFORT entry, so the SDK default effort applies.
+        # The cheap tier has no tier_effort() entry, so the SDK default effort applies.
         options = self._options_for_phase("requesting_review")
         assert options.thinking == {"type": "adaptive"}
         assert options.effort is None
@@ -1679,7 +1679,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
             config={"agent_skill_models": {"code-review": []}},
         )
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_session_effort_does_not_leak_into_headless(self) -> None:
         # A headless SDK run's effort comes from the per-TIER map, never from the

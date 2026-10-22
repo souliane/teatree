@@ -24,7 +24,7 @@ from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.live_client import LiveClient, LiveOfflineError
 from teatree.agents.live_mailbox import shared_broker
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import Session, Task
@@ -85,7 +85,7 @@ class LiveFollowUpSmokeTests(TestCase):
         client = LiveClient()
         seen: dict[str, object] = {}
         options = ClaudeAgentOptions(
-            model=TIER_MODELS["cheap"],
+            model=tier_models()["cheap"],
             permission_mode="bypassPermissions",
             cwd=tempfile.mkdtemp(prefix="t3-follow-up-smoke-"),
             setting_sources=[],

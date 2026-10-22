@@ -15,7 +15,7 @@ disjunction (``any_of`` — at least one positive branch holds). ``op`` is
 import dataclasses
 import json
 
-from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS
+from teatree.agents.model_tiering import phase_models
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
 from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
 
@@ -261,7 +261,7 @@ def infer_tier_or_phase(agent_path: str) -> str:
         phase = "shipping"
     elif "/retro/" in p:
         phase = "retrospecting"
-    if phase is not None and DEFAULT_PHASE_MODELS.get(phase) != "frontier":
+    if phase is not None and phase_models().get(phase) != "frontier":
         return f"  phase: {phase}"
     return "  tier: balanced"
 
