@@ -100,7 +100,7 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         raise CheckoutFenceError(message) from exc
     worktree = rows[0]
     # Another step's owner Accept never covers a step the owner declined for this same folder state.
-    declined = task.pk in declined_attest_tasks(worktree, state.digest)
+    declined = task.pk in declined_attest_tasks(worktree, state.digest, task_id=task.pk)
     attested = None if declined else worktree.get_extra().get("attested_state")
     owner_attested = f"owner:{state.digest}"
     if not table.usable and attested != owner_attested:

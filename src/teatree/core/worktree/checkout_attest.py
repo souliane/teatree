@@ -140,7 +140,7 @@ def attest_checkout(worktree: Worktree) -> CheckoutAttestation:
     return attestation
 
 
-def declined_attest_tasks(worktree: Worktree, digest: str) -> set[int]:
+def declined_attest_tasks(worktree: Worktree, digest: str, *, task_id: int | None = None) -> set[int]:
     extra = worktree.get_extra()
     direct_at = None
     if extra.get("direct_attested_state") == digest and isinstance(extra.get("direct_attested_at"), str):
@@ -150,12 +150,17 @@ def declined_attest_tasks(worktree: Worktree, digest: str) -> set[int]:
         except ValueError:
             pass
     answered = DeferredQuestion.objects.filter(
-        parked_task__ticket=worktree.ticket,
         answered_at__isnull=False,
         evidence__action__kind=OwnerActionKind.ATTEST,
         evidence__action__target=str(worktree.pk),
         evidence__action__binding=digest,
-    ).order_by("answered_at", "pk")
+    )
+    answered = (
+        answered.filter(parked_task__ticket=worktree.ticket)
+        if task_id is None
+        else answered.filter(parked_task_id=task_id)
+    )
+    answered = answered.order_by("answered_at", "pk")
     latest = {card.parked_task_id: card for card in answered}
     return {
         task_id
