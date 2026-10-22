@@ -13,7 +13,6 @@ from teatree.utils.run import run_allowed_to_fail
 #: ``TEATREE_HOST_GNUPG_DIR`` of its own, which is itself the pre-fix image's signature.
 HOST_GNUPG_MOUNT = "/home/teatree/.gnupg"
 
-#: The stack's compose project, matching ``deploy/t3``'s own resolution.
 _PROJECT_ENV = "COMPOSE_PROJECT_NAME"
 _PROJECT_DEFAULT = "teatree"
 _HOST_GNUPG_DIR_ENV = "TEATREE_HOST_GNUPG_DIR"

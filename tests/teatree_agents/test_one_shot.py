@@ -10,7 +10,7 @@ pydantic_ai test double (zero tokens), plus the clean-room + failure contract.
 
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,7 +39,7 @@ class _RaisingHarness:
     """A ``Harness`` double whose ``open`` fails — exercises the degrade-to-None contract."""
 
     @asynccontextmanager
-    async def open(self, _options: ClaudeAgentOptions) -> AsyncIterator[object]:
+    async def open(self, _options: ClaudeAgentOptions) -> AsyncGenerator[object]:
         msg = "backend unavailable"
         raise RuntimeError(msg)
         yield  # pragma: no cover — unreachable, marks this an async generator

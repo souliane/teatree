@@ -12,6 +12,7 @@ from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
+from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -23,10 +24,11 @@ from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
-from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
+from teatree.core.worktree.occupancy import recording_task_checkout
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +153,7 @@ class Command(TyperCommand):
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=cancel_reason,
-                result={"cancel_reason": cancel_reason},
+                result={"cancel_reason": cancel_reason, "cancel_source": "owner" if direct_owner_action() else "agent"},
             )
             task.fail(reason=cancel_reason, by_holder=False)
         self.stdout.write(f"Task {task_id} cancelled.")
@@ -340,8 +342,14 @@ class Command(TyperCommand):
         # souliane/teatree#657: an in-session sub-agent runs inside the user's
         # own Claude Code session — always the Max subscription seat, never
         # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
-        usage = AttemptUsage(agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION)
-        attempt = record_result_envelope(task, result, usage=usage)
+        # A task holding its checkout as ``task:<pk>`` was claimed by claim-next; any other record is by hand.
+        with recording_task_checkout(task) as factory_owned, drive_claim(task):
+            usage = AttemptUsage(
+                agent_session_id=agent_session_id,
+                lane=TaskAttempt.Lane.SUBSCRIPTION,
+                recording_source="loop" if factory_owned else "hand",
+            )
+            attempt = record_result_envelope(task, result, usage=usage)
         task.refresh_from_db()
         self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")
 
@@ -542,14 +550,14 @@ class Command(TyperCommand):
 def _task_row(task: Task) -> TaskRow:
     return TaskRow(
         task_id=task.pk,
-        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_id=task.ticket_id,
         ticket_title=task.ticket.short_description,
         status=task.status,
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
         admission_score=getattr(task, ADMISSION_SCORE_ALIAS),
-        parent_task_id=task.parent_task_id,  # ty: ignore[unresolved-attribute]
+        parent_task_id=task.parent_task_id,
         failure_kind=task.failure_kind,
         failure_reason=task.failure_reason,
         failure_environmental=is_environmental(task.failure_kind),

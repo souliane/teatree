@@ -11,7 +11,7 @@ from pathlib import Path
 from hooks.scripts.loop_registry_path import loop_registry_path
 
 _MARKER = re.compile(r"[a-z0-9_.:-]{1,64}\Z")
-_DECISIONS = frozenset({"deny", "override", "advise"})
+_DECISIONS = frozenset({"deny", "override", "escape", "advise"})
 RETENTION_DAYS = 7
 # These are literal, public markers declared by hook call sites. A token-shaped
 # prefix from a private reason is never telemetry, even if it matches _MARKER.
@@ -42,6 +42,7 @@ DECLARED_GATES = frozenset(
         "orchestrator_bash",
         "orchestrator_delegation_gate",
         "orchestrator_foreground_dispatch",
+        "owner-question-fit",
         "out_of_band_merge",
         "plan_gate",
         "protect_default_branch",
@@ -59,6 +60,7 @@ DECLARED_GATES = frozenset(
         "verbatim_operator_paste",
         "void_merge",
         "visible_plan_gate",
+        "worktree_containment",
     }
 )
 _PUBLIC_REASON_MARKERS = frozenset({"blocked", "skill-loading-enforcement"})

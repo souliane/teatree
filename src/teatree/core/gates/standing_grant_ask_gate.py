@@ -44,9 +44,6 @@ _NOT_COVERED_RE = re.compile(
     re.IGNORECASE,
 )
 
-_OK_TOKEN_RE = re.compile(r"\[grant-ask-ok:\s*([^\s\]][^\]]*?)\s*\]")
-_TOKEN_SCAN_CHARS = 512
-
 _FORGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
 _OWNER_REPO_REF_RE = re.compile(r"(?<![\w/.-])([\w.-]+/[\w.-]+)[#!]\d+\b")
 
@@ -79,14 +76,6 @@ def repo_refs(text: str) -> tuple[str, ...]:
     return tuple(ref for _, ref in sorted(found))
 
 
-def grant_ask_ok_reason(text: str) -> str | None:
-    """The reason from a ``[grant-ask-ok: <reason>]`` escape token in *text*, else None."""
-    if not text:
-        return None
-    match = _OK_TOKEN_RE.search(text[:_TOKEN_SCAN_CHARS])
-    return match.group(1).strip() or None if match else None
-
-
 def deny_reason(finding: StandingGrantAsk, *, overlay: str, delegated_by: str) -> str:
     """The refusal: which grant already holds the sign-off, and how to merge without asking.
 
@@ -113,7 +102,7 @@ def deny_reason(finding: StandingGrantAsk, *, overlay: str, delegated_by: str) -
         "to be asked per PR. Decide it yourself against the bar: an independent cold review MERGE_SAFE on "
         f"the live head and CI green, then {clear}, then {merge} — the keystone re-checks "
         "the grant and every floor gate. If the question is about something the grant does not cover, add "
-        "a `[grant-ask-ok: <reason>]` token to it, or disable the gate with "
+        "a `[gate-escape:block-standing-grant-ask: <reason>]` token to it, or disable the gate with "
         "`t3 <overlay> gate standing-grant-ask disable`."
     )
 
@@ -122,6 +111,5 @@ __all__ = [
     "StandingGrantAsk",
     "deny_reason",
     "find_standing_grant_ask",
-    "grant_ask_ok_reason",
     "repo_refs",
 ]

@@ -27,6 +27,7 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.utils.run import CommandFailedError
@@ -55,18 +56,23 @@ class _Host:
     ) -> None:
         self.issue = {"body": _BODY} if issue is None else issue
         self.comments = [] if comments is None else comments
+        self.diffs: object = {"src/example.py": "@@ -1 +1 @@\n-old\n+new"}
 
     def get_issue(self, issue_url: str) -> dict[str, object]:
-        assert issue_url.startswith(_ISSUE_URL.rsplit("/", 1)[0])
+        assert issue_url.startswith("https://github.com/example-org/example-repo/")
         if isinstance(self.issue, Exception):
             raise self.issue
         return self.issue
 
     def list_issue_comments(self, *, issue_url: str) -> list[dict[str, object]]:
-        assert issue_url.startswith(_ISSUE_URL.rsplit("/", 1)[0])
+        assert issue_url.startswith("https://github.com/example-org/example-repo/")
         if isinstance(self.comments, Exception):
             raise self.comments
         return self.comments
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> object:
+        assert (repo, pr_iid) == ("example-org/example-repo", 5)
+        return self.diffs
 
 
 def _provider(host: _Host) -> SimpleNamespace:
@@ -81,6 +87,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
     def setUp(self) -> None:
         self.skills: list[str] = []
+        skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        self.enterContext(patch.object(skill_index, "DEFAULT_SKILLS_DIR", skills_dir))
 
     def _task(self, ticket: Ticket | None = None) -> Task:
         ticket = ticket or self.ticket
@@ -109,7 +117,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
             patch("teatree.agents.read_only_venue_brief.fetch_branch", side_effect=fetch_error) as self.fetch,
         ):
             return runner_mod._prepare_run(
-                task, preflight, phase="planning", handoff=handoff, credential=DispatchCredential()
+                task, preflight, phase=task.phase, handoff=handoff, credential=DispatchCredential()
             )
 
     @staticmethod
@@ -124,12 +132,12 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert (refused.value.kind, refused.value.side_effects_started) == (HarnessFallbackKind.ACCESS, False)
         return refused.value
 
-    def _planner_bundle(self) -> list[str]:
+    def _phase_bundle(self, phase: str) -> list[str]:
         selection = SkillLoadingPolicy().select_for_runtime_phase(
             cwd=Path(self.enterContext(TemporaryDirectory())),
-            phase="planning",
+            phase=phase,
             overlay_skill_metadata={},
-            agent_declared_skills=declared_skills_for_phase("planning"),
+            agent_declared_skills=declared_skills_for_phase(phase),
         )
         return selection.skills
 
@@ -143,7 +151,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
         self.skills = ["fastapi", "rules", "architecture-design"]
 
     def test_the_real_planner_brief_names_no_teatree_command_and_no_skill_path(self) -> None:
-        skills = self._planner_bundle()
+        skills = self._phase_bundle("planning")
         rules = resolve_skill_md("rules", harness_skills_dirs())
         assert rules is not None
         assert _T3_INVOCATION.search(rules.read_text(encoding="utf-8"))
@@ -154,7 +162,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         assert {"rules", "architecture-design"} <= set(skills)
         assert "--- SKILL: rules ---" in context
+        assert rules.with_name("RULES.md").read_text(encoding="utf-8") in context
         assert "--- SKILL: architecture-design ---" in context
+        assert len(context.encode()) <= MAX_APPEND_BYTES
         assert ABSENT_TOOL in context
         assert not _T3_INVOCATION.search(context), _T3_INVOCATION.findall(context)
         assert "mcp__teatree__" not in context
@@ -258,6 +268,147 @@ class TestTheReadOnlyVenueBrief(TestCase):
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
 
         assert "no intake landscape survey" in str(self._refusal(self._task(ticket)))
+
+    def test_review_brief_needs_no_planning_survey(self) -> None:
+        self.skills = self._phase_bundle("reviewing")
+        assert "review" in self.skills, self.skills
+        ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+
+        prepared = self._prepare(task)
+
+        assert "Issue body (read from the forge for you):" in prepared.prompt
+        assert "PHASE: reviewing" in self._system_context(prepared)
+        assert "INTAKE LANDSCAPE SURVEY" not in prepared.prompt
+        assert "--- SKILL: review ---" in self._system_context(prepared)
+        assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+
+    def test_pre_pr_self_review_can_judge_the_branch_without_a_ci_claim(self) -> None:
+        self.skills = self._phase_bundle("reviewing")
+        task = self._task(Ticket.objects.create(issue_url=f"{_ISSUE_URL}0"))
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+
+        prepared = self._prepare(task)
+        context = self._system_context(prepared)
+
+        assert "Use `git rev-parse HEAD` in the mounted checkout" in context
+        assert "Pre-PR self-review may return merge_safe with gh_verify_result pending" in context
+        assert "otherwise set pending or failed and return hold" not in context
+
+    def test_critic_brief_needs_no_planning_survey(self) -> None:
+        self.skills = self._phase_bundle("critic_reviewing")
+        ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
+        task = self._task(ticket)
+        task.phase = "critic_reviewing"
+        task.save(update_fields=["phase"])
+
+        prepared = self._prepare(task)
+
+        assert "INTAKE LANDSCAPE SURVEY" not in prepared.prompt
+        assert "critic_reviewing" in self._system_context(prepared)
+        assert "--- SKILL: review ---" in self._system_context(prepared)
+        assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+
+    def test_remote_review_gets_the_dispatched_head_and_full_diff_from_the_worker(self) -> None:
+        head = "a" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="2 workflow runs green"),
+            ),
+        ):
+            prepared = self._prepare(task)
+
+        assert head in prepared.prompt
+        assert "src/example.py" in prepared.prompt
+        assert "+new" in prepared.prompt
+        assert f"WORKER CI at dispatched head {head}: green" in prepared.prompt
+        assert "2 workflow runs green" in prepared.prompt
+        context = self._system_context(prepared)
+        assert "Use the dispatched head in the DIFF UNDER REVIEW block" in context
+        assert "Set gh_verify_result green only when WORKER CI says green" in context
+        assert "git rev-parse HEAD" not in context
+
+    def test_remote_review_cannot_claim_green_when_ci_is_unreadable(self) -> None:
+        head = "a" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="unreadable", detail="no workflow runs"),
+            ),
+        ):
+            prepared = self._prepare(task)
+
+        assert f"WORKER CI at dispatched head {head}: unreadable" in prepared.prompt
+        assert "otherwise set pending or failed and return hold" in self._system_context(prepared)
+
+    def test_remote_review_refuses_a_head_that_moves_during_the_diff_read(self) -> None:
+        head = "a" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        reads = [SimpleNamespace(sha=head, unreadable=False), SimpleNamespace(sha="b" * 40, unreadable=False)]
+
+        with patch("teatree.agents.read_only_venue_brief.live_head_at", side_effect=reads):
+            assert "head moved while its diff was read" in str(self._refusal(task))
+
+    def test_remote_review_refuses_an_unreadable_file_patch(self) -> None:
+        head = "a" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        host = _Host()
+        host.diffs = {"assets/logo.png": None}
+
+        with patch(
+            "teatree.agents.read_only_venue_brief.live_head_at",
+            return_value=SimpleNamespace(sha=head, unreadable=False),
+        ):
+            assert "unreadable file" in str(self._refusal(task, host))
+
+        host.diffs = ["not a mapping"]
+        with patch(
+            "teatree.agents.read_only_venue_brief.live_head_at",
+            return_value=SimpleNamespace(sha=head, unreadable=False),
+        ):
+            assert "unreadable file" in str(self._refusal(task, host))
 
     def test_a_22kb_issue_body_fits(self) -> None:
         body = "y" * (22 * 1024)

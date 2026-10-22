@@ -47,7 +47,12 @@ def record_pr_url(ticket: "Ticket", url: str, branch: str, *, pop_keys: Sequence
     ticket.merge_extra(
         append_to_lists=append_lists,
         merge_into_dicts=merge_dicts,
-        pop_keys=list(pop_keys),
+        pop_keys=[*pop_keys, ("unverified_pr_by_branch", branch)] if url and branch else list(pop_keys),
     )
     if url:
         apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
+
+
+def record_unverified_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
+    """Index *url* for *branch*'s retry only — no ``pr_urls`` entry, no arbiter row — until a re-read confirms it."""
+    ticket.merge_extra(merge_into_dicts={"unverified_pr_by_branch": {branch: url}})

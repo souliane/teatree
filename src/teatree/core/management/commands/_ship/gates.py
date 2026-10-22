@@ -373,9 +373,8 @@ class PrBudgetGateFailure(TypedDict):
     """Pre-ship per-(repo, ticket) open-PR budget refusal (north-star PR-2).
 
     Returned when the overlay set ``max_open_prs_per_repo_per_ticket`` and this
-    ticket already has that many open PRs in the ship repo. Inert (never
-    returned) at the neutral default ``0``. ``error`` names the offending count
-    and the operator escape verbatim.
+    ticket already has that many other open PRs in the ship repo. ``0`` disables
+    the budget. ``error`` names the offending count and the operator escape.
     """
 
     allowed: bool
@@ -388,7 +387,7 @@ def run_pr_budget_gate(ticket: Ticket, worktree: Worktree) -> PrBudgetGateFailur
     Resolves the ship repo's slug from the worktree's git remote and delegates to
     the core :func:`check_pr_budget` policy (constraint-as-data). Returns a typed
     failure (the ship-gate chain's return style) rather than letting the raise
-    escape. Inert unless the overlay opted into a positive cap; a repo whose slug
+    escape. Inert when the cap is ``0``; a repo whose slug
     cannot be resolved is a no-op (nothing to budget against).
     """
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
@@ -399,7 +398,7 @@ def run_pr_budget_gate(ticket: Ticket, worktree: Worktree) -> PrBudgetGateFailur
     if not slug:
         return None
     try:
-        check_pr_budget(ticket, slug, host=_resolve_host_for_repo(repo_path))
+        check_pr_budget(ticket, slug, host=_resolve_host_for_repo(repo_path), shipping_branch=worktree.branch)
     except PrBudgetExceededError as exc:
         return PrBudgetGateFailure(allowed=False, error=str(exc))
     return None

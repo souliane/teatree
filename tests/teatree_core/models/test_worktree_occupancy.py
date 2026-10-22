@@ -15,13 +15,20 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Task, Worktree
-from teatree.core.models.worktree_occupancy import release_task_occupancy, terminal_task_pk
+from teatree.core.models.worktree_occupancy import _task_pk_from_holder, release_task_occupancy, terminal_task_pk
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TaskFactory, TicketFactory, WorktreeFactory
+
+
+@pytest.mark.parametrize(("holder", "pk"), [("task:12", 12), ("12", None), ("task:²", None)])
+def test_task_pk_from_holder_reads_only_task_prefixed_ascii_digits(holder: str, pk: int | None) -> None:
+    assert _task_pk_from_holder(holder) == pk
 
 
 class TerminalTaskPkTests(TestCase):
@@ -113,3 +120,10 @@ class ReleaseTaskOccupancyTests(TestCase):
     def test_a_ticket_with_no_materialised_checkout_releases_nothing(self) -> None:
         bare_task = Task.objects.create(ticket=TicketFactory(), session=SessionFactory())
         assert release_task_occupancy(bare_task) is False
+
+    def test_confirmed_dead_holder_releases_despite_stale_drive_marker(self) -> None:
+        acquire(self.worktree, holder=task_holder_id(self.task), holder_session="sess-1")
+        Task.objects.filter(pk=self.task.pk).update(owner_driving_since=timezone.now())
+        with mock.patch("teatree.core.models.task_claim.holder_confirmed_dead", return_value=True):
+            self.task.fail(reason="cancelled: owner stopped task", by_holder=False)
+        assert occupancy_holder(self.fresh()) is None

@@ -73,6 +73,7 @@ _OWN_PROC_ROOT = Path("/proc")
 #: Present iff this process runs inside a container, so ``/proc`` shows a
 #: namespace that is not the host's.
 _CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
+_NON_DUMPABLE_AGENTS = frozenset({"gpg-agent", "sshd-session", "ssh-agent", "scdaemon", "keyboxd", "dirmngr"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,8 @@ class ProcessTable:
     paths: frozenset[Path]
     source: str
     gaps: tuple[str, ...] = ()
+    eviction_gaps: tuple[str, ...] = ()
+    host_namespace_gaps: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -97,6 +100,12 @@ class ProcessTable:
         if self.usable:
             return ""
         return "; ".join(self.gaps) or "the process table could not be read"
+
+    def eviction_refuse_reason(self, *, nested_writer: bool = False) -> str:
+        gaps = self.eviction_gaps
+        if nested_writer:
+            gaps = tuple(gap for gap in gaps if gap not in self.host_namespace_gaps)
+        return self.refuse_reason() or "; ".join(gaps)
 
     def holds(self, directory: Path) -> bool:
         """True iff a live process is working in *directory* or running from inside it."""
@@ -139,6 +148,34 @@ def venue_proc_root() -> Path | None:
     return _OWN_PROC_ROOT if _pid_dirs(_OWN_PROC_ROOT) else None
 
 
+def current_pid_namespace() -> str:
+    root = venue_proc_root()
+    if root is None:
+        return ""
+    try:
+        return str((root / "self" / "ns" / "pid").readlink())
+    except OSError:
+        return ""
+
+
+def pid_namespace_depth(pid_dir: Path) -> int:
+    try:
+        status = (pid_dir / "status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in status.splitlines():
+        if line.startswith("NSpid:"):
+            return len(line.split()) - 1
+    return 0
+
+
+def nested_pid_namespace() -> str:
+    root, _ = host_proc_root()
+    if root is None or pid_namespace_depth(root / "self") <= 1:
+        return ""
+    return current_pid_namespace()
+
+
 def _host_os_refusal() -> str:
     """Why the mounted table cannot be the host's, or ``""`` when the host is provably Linux."""
     declared = os.environ.get("TEATREE_HOST_OS", "").strip()
@@ -173,7 +210,7 @@ def host_proc_root() -> tuple[Path | None, str]:
     return None, f"no readable process table at {_OWN_PROC_ROOT}"
 
 
-def read_process_table() -> ProcessTable:
+def read_process_table(*, exclude_ancestors: bool = False) -> ProcessTable:
     """Read the host-covering process table, or report why there is none."""
     root, refusal = host_proc_root()
     if root is None:
@@ -181,14 +218,28 @@ def read_process_table() -> ProcessTable:
     own_pid = _own_pid_in(root)
     if own_pid is None:
         return ProcessTable(frozenset(), "", (f"{root} would not say which process this is",))
-    view = held_paths(root, exclude_pid=own_pid)
+    ancestors = _ancestor_pids(root, own_pid) if exclude_ancestors else frozenset()
+    view = held_paths(root, exclude_pid=own_pid, exclude_pids=ancestors)
     if not view.answered_pids:
         return ProcessTable(frozenset(), "", (view.unknowable_reason,))
     paths = {Path(normalized_spelling(path)) for path in view.held}
-    executables, executable_gaps = _executables([pid for pid in _pid_dirs(root) if pid.name != own_pid])
+    executables, executable_gaps, unreadable_executables = _executables(
+        [pid for pid in _pid_dirs(root) if pid.name != own_pid and pid.name not in ancestors]
+    )
     paths.update(executables)
     partial_gaps = (view.unknowable_reason,) if view.unknowable_reason else ()
-    return ProcessTable(frozenset(paths), str(root), (*partial_gaps, *executable_gaps))
+    unreadable_pids = {pid for pid, _cause in view.unknowable_details} | set(unreadable_executables)
+    eviction_gaps: list[str] = []
+    host_namespace_gaps: list[str] = []
+    for pid in sorted(unreadable_pids):
+        if _same_user_untolerated(root / pid):
+            gap = f"pid {pid} ({_process_name(root / pid)}) is unreadable by this uid"
+            eviction_gaps.append(gap)
+            if pid_namespace_depth(root / pid) == 1:
+                host_namespace_gaps.append(gap)
+    return ProcessTable(
+        frozenset(paths), str(root), (*partial_gaps, *executable_gaps), tuple(eviction_gaps), tuple(host_namespace_gaps)
+    )
 
 
 def _own_pid_in(root: Path) -> str | None:
@@ -199,9 +250,48 @@ def _own_pid_in(root: Path) -> str | None:
         return None
 
 
-def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...]]:
+def _same_user_untolerated(pid: Path) -> bool:
+    try:
+        if pid.stat().st_uid != os.geteuid():
+            return False
+        name = (pid / "comm").read_text(encoding="utf-8").strip()
+        if name in _NON_DUMPABLE_AGENTS:
+            return False
+        status = (pid / "status").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return pid.exists()
+    except OSError:
+        return True
+    lines = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    return not (lines.get("State", "").strip().startswith("Z") and lines.get("Threads", "").strip() == "1")
+
+
+def _process_name(pid: Path) -> str:
+    try:
+        return (pid / "comm").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _ancestor_pids(root: Path, own_pid: str) -> frozenset[str]:
+    ancestors: set[str] = set()
+    current = own_pid
+    while True:
+        try:
+            parent = (root / current / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[1]
+        except (OSError, IndexError):
+            break
+        if parent == "0" or parent in ancestors or parent == own_pid:
+            break
+        ancestors.add(parent)
+        current = parent
+    return frozenset(ancestors)
+
+
+def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...], tuple[str, ...]]:
     executables: set[Path] = set()
     gaps: list[str] = []
+    unreadable: list[str] = []
     for pid in pids:
         try:
             executable = (pid / "exe").readlink()
@@ -209,14 +299,18 @@ def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...]]:
             continue
         except OSError as exc:
             gaps.append(f"pid {pid.name} executable could not be read ({exc.strerror or exc})")
+            unreadable.append(pid.name)
             continue
         executables.add(Path(normalized_spelling(str(executable))))
-    return executables, tuple(gaps)
+    return executables, tuple(gaps), tuple(unreadable)
 
 
 __all__ = [
     "ProcessTable",
+    "current_pid_namespace",
     "host_proc_root",
+    "nested_pid_namespace",
+    "pid_namespace_depth",
     "read_process_table",
     "running_in_a_container",
     "venue_proc_root",

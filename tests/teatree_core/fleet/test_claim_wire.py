@@ -15,7 +15,7 @@ import itertools
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -31,6 +31,7 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.instance_id import instance_id
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core.conftest import CommandOverlay
 
 from ._git_origin import (
     as_other_instance,
@@ -773,12 +774,16 @@ class TestExecuteShipFence(TestCase):
                 fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=1e12)
             return _LANDED
 
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.is_assignable.return_value = False
         executor = ShipExecutor(ticket)
         with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"acme": CommandOverlay()}),
             patch.object(ShipExecutor, "_check_branch_currency", return_value=None),
             patch("teatree.core.runners.ship.push_branch", side_effect=_steal_during_push),
         ):
-            result = executor._push_and_open(ticket, {}, cast("object", None), str(holder), "feat")
+            result = executor._push_and_open(ticket, {}, host, str(holder), "feat")
 
         assert result.ok is False
         assert "another instance now holds the fleet claim ref" in result.detail

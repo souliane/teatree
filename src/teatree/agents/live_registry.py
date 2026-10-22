@@ -4,7 +4,7 @@ import asyncio
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -35,7 +35,7 @@ class LiveSessionRegistry:
         self._closed: OrderedDict[int, LiveSessionController] = OrderedDict()
 
     @asynccontextmanager
-    async def attach(self, task: LiveTask, capture: StreamFacts) -> AsyncIterator[LiveSessionController]:
+    async def attach(self, task: LiveTask, capture: StreamFacts) -> AsyncGenerator[LiveSessionController]:
         """Publish *task* for the life of the block; its controller closes and settles on exit."""
         entry = _LiveEntry(LiveSessionController(task, capture), asyncio.get_running_loop())
         with self._lock:
@@ -74,6 +74,24 @@ class LiveSessionRegistry:
             known = tombstone.known_receipt(command_id, text)
             return known or ControlReceipt.rejected(command_id, task_pk, RejectCode.SESSION_CLOSED)
         command = entry.controller.steer(text, command_id=command_id, wait=wait)
+        return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
+
+    async def push(self, task_pk: int, framed: str, *, command_id: str, wait: float) -> ControlReceipt:
+        """A peer message into the session's current turn; a closed session keeps no peer receipt."""
+        with self._lock:
+            entry = self._live.get(task_pk)
+            closed = task_pk in self._closed
+        if entry is None:
+            code = RejectCode.SESSION_CLOSED if closed else RejectCode.UNKNOWN_SESSION
+            return ControlReceipt.rejected(command_id, task_pk, code)
+        command = entry.controller.push(framed, command_id=command_id, wait=wait)
+        return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
+
+    @staticmethod
+    async def _on_owner_loop(
+        entry: _LiveEntry, command: Coroutine[object, object, ControlReceipt], *, command_id: str, wait: float
+    ) -> ControlReceipt:
+        task_pk = entry.controller.task.pk
         try:
             handed = asyncio.run_coroutine_threadsafe(command, entry.loop)
         except RuntimeError:

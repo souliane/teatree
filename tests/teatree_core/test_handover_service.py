@@ -9,10 +9,11 @@ import contextlib
 import datetime as dt
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.core import handover
@@ -33,7 +34,7 @@ from teatree.core.session_handover_manager import SessionHandoverQuerySet
 
 
 @contextlib.contextmanager
-def _tmp_env(var: str) -> Iterator[str]:
+def _tmp_env(var: str) -> Generator[str]:
     """Set ``var`` to a fresh temp dir for the duration, restoring the prior value."""
     prior = os.environ.get(var)
     with tempfile.TemporaryDirectory() as directory:
@@ -76,6 +77,14 @@ class TestSnapshotPayloadReuse(TestCase):
 
 
 class TestResolveTargetSession(TestCase):
+    def test_park_bypasses_a_live_owner(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        assert handover.resolve_target_session("", park=True) == ""
+
+    def test_park_rejects_an_explicit_target(self) -> None:
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            handover.resolve_target_session("explicit-id", park=True)
+
     def test_explicit_target_wins(self) -> None:
         assert handover.resolve_target_session("explicit-id") == "explicit-id"
 

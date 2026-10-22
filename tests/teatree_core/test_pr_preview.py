@@ -191,7 +191,7 @@ class TestShipPreviewUsesOverlayGeneratedTitle(TestCase):
 class TestShipPreviewHonorsTitleOverride(TestCase):
     """``ship_preview`` must use the pinned title, not the regenerated subject.
 
-    Parity with ``ShipExecutor._build_pr_spec`` (``runners/ship.py``): a title
+    Parity with ``ShipExecutor.build_pr_spec`` (``runners/ship.py``): a title
     pinned via ``ticket.extra['pr_title_override']`` (or an explicit ``--title``)
     is the title that will actually ship, so the preview — and therefore the
     preflight validation built on it — must reflect it. Regenerating the title
@@ -423,7 +423,7 @@ class TestVisualQAInPrBody(TestCase):
 class TestPreviewAndShipReadTheSameCommit(TestCase):
     """#4103: the preflight must validate the title the ship will actually use.
 
-    ``ShipExecutor._build_pr_spec`` skips merge commits when deriving the subject;
+    ``ShipExecutor.build_pr_spec`` skips merge commits when deriving the subject;
     a preview that still read the raw ``HEAD`` would validate a merge subject the
     ship never ships — the two drifting again, which is what
     ``resolve_pr_title`` exists to prevent.

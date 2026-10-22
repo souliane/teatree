@@ -1,9 +1,8 @@
-"""Pull request helpers: gate-validate then enqueue ship transition.
+"""Pull request helpers: validate gates and start an async or inline ship.
 
-The actual push + PR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
-inside the ``execute_ship`` task. This command is a deterministic CLI wrapper:
-it runs the deterministic gates, calls ``ticket.ship()`` to enter PR_OPENED, and
-returns the PR URL once the worker completes.
+Push and PR creation live in ``ShipExecutor`` (BLUEPRINT §4). The default path
+enqueues ``execute_ship`` after ``ticket.ship()``; ``--sync`` runs the executor
+before the FSM advances and returns the PR URL inline.
 """
 
 import os
@@ -179,9 +178,8 @@ def _run_ship_gates(
     gates, then the expensive diff-rendering gates (visual-QA, mandatory-E2E)
     so all of them see the post-branch-currency tree.
 
-    ``title`` is the explicit ``--title`` override: it has not yet been
-    persisted to ``extra['pr_title_override']`` (that happens at ship time,
-    after the gates pass), so it is threaded into ``validate_pr_metadata``
+    ``title`` is the explicit ``--title`` override: it reaches the ship only
+    after the gates pass, so it is threaded into ``validate_pr_metadata``
     here — otherwise the preflight would validate the regenerated commit
     subject rather than the title that will actually ship.
     """
@@ -343,8 +341,8 @@ class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
         queue. The result carries an explicit ``warning`` so a no-worker
         context does not look like a completed ship (#708).
 
-        ``--sync``: run ``execute_ship`` inline in this process so the push
-        and PR happen before the command returns — no worker required. Use
+        ``--sync``: push and open the PR inline before advancing the FSM, so
+        both finish before the command returns — no worker required. Use
         this for interactive / ``uv run`` invocations where nothing is
         draining the queue.
 
@@ -352,7 +350,7 @@ class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
         bare issue number (resolved against ``Ticket.issue_url``).
 
         ``--title`` overrides the PR title (default: last commit subject).
-        Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+        ``--sync`` hands it to the ship; the queued ship reads ``ticket.extra['pr_title_override']``.
 
         ``--skip-validation`` skips the heavy ship gates (visual QA, branch
         currency, FSM phase check) but STILL runs the cheap MR

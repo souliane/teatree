@@ -3,7 +3,7 @@
 A cold review re-derives the same merge-safe/hold judgment from scratch on
 every session, which is wasteful and risks two sessions reaching inconsistent
 verdicts for the same tree. ``ReviewVerdict`` persists the outcome keyed by
-``(slug, pr_id, reviewed_sha)`` so a cheap lookup (``t3 <overlay> review
+``(slug, pr_id, reviewed_sha, reviewer, verdict)`` so a cheap lookup (``t3 <overlay> review
 status``) can answer "is this PR safe to approve at its current head?" without
 re-running a full cold review.
 
@@ -37,7 +37,7 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
+from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
@@ -51,16 +51,7 @@ if TYPE_CHECKING:
 
 
 class HeadVerdictState(enum.Enum):
-    """The effective (newest-wins) verdict state among a PR's non-stale verdicts at a head.
-
-    The merge gate's three outcomes (#2829): ``NO_MERGE_SAFE`` fails closed
-    (requirement a — no recorded independent merge_safe vouches for the live
-    head); ``HOLD`` re-blocks (requirement b — the most-recent non-stale
-    verdict is a HOLD not superseded by a later merge_safe); ``MERGE_SAFE``
-    allows (the latest verdict at the head is merge_safe). The "newest-wins"
-    rule is the user-chosen semantic: a later PASS overrides an earlier HOLD,
-    an even-later HOLD re-blocks.
-    """
+    """No pass, a standing hold beside a pass, or an unheld pass at one head."""
 
     NO_MERGE_SAFE = "no_merge_safe"
     HOLD = "hold"
@@ -204,129 +195,85 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         """
         return self.filter(slug__iexact=slug.strip(), pr_id=pr_id)
 
-    def slug_spelling_for(self, slug: str, pr_id: int, *, reviewed_sha: str, reviewer_identity_normalized: str) -> str:
+    def slug_spelling_for(
+        self, slug: str, pr_id: int, *, reviewed_sha: str, reviewer_identity_normalized: str, verdict: str
+    ) -> str:
         """The slug an existing row for this idempotency key already stores, else *slug*.
 
-        The case-insensitive half of the ``(slug, pr_id, reviewed_sha, reviewer)``
+        The case-insensitive half of the ``(slug, pr_id, reviewed_sha, reviewer, verdict)``
         uniqueness: the DB constraint is byte-exact, so re-recording under a
         differently-cased slug would stack a second row for one forge repo.
         """
         stored = (
             self.for_pr(slug, pr_id)
-            .filter(reviewed_sha=reviewed_sha, reviewer_identity_normalized=reviewer_identity_normalized)
+            .filter(
+                reviewed_sha=reviewed_sha,
+                reviewer_identity_normalized=reviewer_identity_normalized,
+                verdict=verdict,
+            )
             .values_list("slug", flat=True)
             .first()
         )
         return stored or slug.strip()
 
     def latest_for_pr(self, slug: str, pr_id: int) -> "ReviewVerdict | None":
-        """The most recently recorded verdict for a PR, regardless of SHA.
+        """The speaking verdict at the newest recorded head, regardless of live SHA."""
+        newest = self.for_pr(slug, pr_id).first()
+        if newest is None:
+            return None
+        return self.speaking_verdict_at(slug=slug, pr_id=pr_id, head_sha=newest.reviewed_sha)
 
-        Ordered by ``recorded_at`` descending (the model's default ordering),
-        so the first row is the freshest judgment — the one ``review status``
-        reports against the PR's live head.
-        """
-        return self.for_pr(slug, pr_id).first()
+    def verdicts_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+        head = head_sha.strip().lower()
+        return [verdict for verdict in self.for_pr(slug, pr_id) if not verdict.is_stale_at(head)]
+
+    def speaking_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
+        """Prefer the newest standing hold, then the newest pass at this head."""
+        return next(iter(self.speaking_verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)), None)
+
+    def speaking_verdicts_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+        """Every standing hold, or the newest pass when no hold stands."""
+        at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
+        return holds or at_head[:1]
 
     def effective_state_at(self, *, slug: str, pr_id: int, head_sha: str) -> "HeadVerdictState":
-        """The newest-wins verdict state among the NON-STALE verdicts at *head_sha* (#2829).
-
-        The effective verdict is the most-recent non-stale verdict by its
-        recorded timestamp: ALLOW iff a non-stale ``merge_safe`` exists whose
-        timestamp is STRICTLY greater than every non-stale ``hold``'s (a later
-        PASS overrides an earlier HOLD; an even-later HOLD re-blocks). A
-        same-timestamp tie resolves to HOLD — the safe direction: a HOLD recorded
-        in the same instant as a PASS must not be silently overridden. *head_sha*
-        is normalised the way :meth:`ReviewVerdict.is_stale_at` stores it.
-
-        Returns :attr:`HeadVerdictState.NO_MERGE_SAFE` when no non-stale
-        merge_safe exists (fail closed), :attr:`HeadVerdictState.HOLD` when the
-        latest non-stale verdict is a HOLD, else
-        :attr:`HeadVerdictState.MERGE_SAFE`. Shared by the merge-time gate
-        (:func:`teatree.core.merge.authorization.assert_review_verdict_gate`)
-        and the solo-sweep predicate
-        (:func:`teatree.loop.scanners.pr_sweep_decision.has_independent_cold_review`)
-        so the two cannot drift.
-        """
-        head = head_sha.strip().lower()
-        non_stale = [verdict for verdict in self.for_pr(slug, pr_id) if not verdict.is_stale_at(head)]
-        merge_safe_times = [verdict.recorded_at for verdict in non_stale if verdict.is_merge_safe()]
-        if not merge_safe_times:
-            return HeadVerdictState.NO_MERGE_SAFE
-        hold_times = [verdict.recorded_at for verdict in non_stale if not verdict.is_merge_safe()]
-        if hold_times and max(hold_times) >= max(merge_safe_times):
+        """A pass authorizes only when no hold stands at the same head."""
+        at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        if any(verdict.stands_as_hold() for verdict in at_head):
             return HeadVerdictState.HOLD
-        return HeadVerdictState.MERGE_SAFE
-
-    def standing_merge_safe_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
-        """The newest non-stale ``merge_safe`` at *head_sha*, whatever newest-wins says.
-
-        Answers "does a PASS stand beside the hold" — a different question from
-        :meth:`authorizing_verdict_at`'s "what may a merge rest on", and deliberately NOT
-        gated on :meth:`effective_state_at`. That method resolves a disagreement by
-        timestamp for the merge keystone, so gating on it made the WORDING of a held
-        refusal depend on which reviewer happened to record last: a third of contested
-        heads recorded the HOLD second and were reported as an ordinary lone hold.
-
-        No ``try``/``except``, matching :meth:`unreconciled_holds_at` — degrading to
-        ``None`` here would report a genuine two-reviewer disagreement as a lone hold.
-        """
-        head = head_sha.strip().lower()
-        passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
-        if not passes:
-            return None
-        return max(passes, key=lambda verdict: verdict.recorded_at)
-
-    def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
-        """The non-stale ``merge_safe`` row the newest-wins verdict rests on, else ``None``.
-
-        Answers "WHICH verdict authorised this merge" — the record #4380 asks the
-        solo-overlay merge path to name, since ``reason=solo_overlay_no_clear`` states
-        that no CLEAR existed but not what was relied on instead.
-
-        Gated on :meth:`effective_state_at` rather than re-deriving newest-wins, because
-        that method is shared with the merge keystone's ``assert_review_verdict_gate``
-        and a second copy of the tie-breaking rules would drift from it. Past the gate it
-        delegates the selection to :meth:`standing_merge_safe_at` so the newest-non-stale
-        rule exists once.
-        """
-        if self.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha) is not HeadVerdictState.MERGE_SAFE:
-            return None
-        return self.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        if any(verdict.is_merge_safe() for verdict in at_head):
+            return HeadVerdictState.MERGE_SAFE
+        return HeadVerdictState.NO_MERGE_SAFE
 
     def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
-        """Every non-stale HOLD standing at *head_sha*, IGNORING newest-wins supersession (#4380).
-
-        Deliberately not :meth:`effective_state_at`. That method answers "what is
-        the verdict" and resolves a disagreement by timestamp; this one answers
-        "did anyone say no and never take it back", which a later PASS from a
-        DIFFERENT reviewer does not settle. Two reviewers ran concurrently on one
-        unchanged tree, disagreed, and the autonomous no-CLEAR merge took the
-        newer row — so a hold nobody reconciled read as consent.
-
-        A same-identity re-record is NOT a leftover hold: :meth:`ReviewVerdict.record`
-        is an ``update_or_create`` on
-        ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``, so a reviewer
-        correcting their own judgment at the same head overwrites their own row and
-        leaves nothing here. That is the escape hatch, and it costs no new machinery.
-
-        Matched through :meth:`for_pr` (``slug__iexact``) on purpose — a hand-rolled
-        exact-match filter is what once made a verdict invisible to the merge gate,
-        and re-introducing it here would hide a hold from the guard that exists to
-        honour it.
-        """
-        head = head_sha.strip().lower()
+        """Every standing hold at this head, including one followed by a pass."""
         return [
             verdict
-            for verdict in self.for_pr(slug, pr_id)
-            if not verdict.is_merge_safe() and not verdict.is_stale_at(head)
+            for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+            if verdict.stands_as_hold()
         ]
+
+    def standing_hold_remedy_at(self, *, slug: str, pr_id: int, head_sha: str) -> str:
+        """The refusal for active holds at this head, or an empty string."""
+        holds = self.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        return standing_hold_remedy(holds) if holds else ""
+
+    def assert_no_standing_hold_at(self, *, slug: str, pr_id: int, head_sha: str) -> None:
+        refusal = self.standing_hold_remedy_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        if refusal:
+            raise ClearIssuanceError(refusal)
+
+
+def standing_hold_remedy(holds: list["ReviewVerdict"]) -> str:
+    ids = ", ".join(f"#{hold.pk}" for hold in holds)
+    return f"standing HOLD verdict(s) {ids}; push a fix and get the new head reviewed"
 
 
 class ReviewVerdict(models.Model):
     """One recorded cold-review judgment for a PR at an exact reviewed tree.
 
-    Keyed by ``(slug, pr_id, reviewed_sha)``: a fresh review at a moved head
+    Keyed by ``(slug, pr_id, reviewed_sha, reviewer, verdict)``: a fresh review at a moved head
     records a new row rather than mutating the old one, so the head-drift
     detection (:meth:`is_stale_at`) can compare the recorded ``reviewed_sha``
     against the forge's live head. ``verdict`` is the merge-safe/hold judgment;
@@ -364,8 +311,8 @@ class ReviewVerdict(models.Model):
     reviewer_identity = models.CharField(max_length=255)
     #: The idempotency key for "who reviewed this sha" (F8). The free-text
     #: ``reviewer_identity`` normalised via :func:`normalize_reviewer_identity`;
-    #: a UniqueConstraint on ``(slug, pr_id, reviewed_sha, this)`` makes a
-    #: same-identity re-review of one head a single row, not the 66%-duplicate pile.
+    #: a UniqueConstraint on ``(slug, pr_id, reviewed_sha, this, verdict)`` keeps
+    #: same-verdict re-records idempotent without overwriting a HOLD with a PASS.
     reviewer_identity_normalized = models.CharField(max_length=255, blank=True, default="", db_index=True)
     blast_class = models.CharField(max_length=16, choices=MergeClear.BlastClass.choices)
     gh_verify_result = models.CharField(max_length=32, choices=MergeClear.VerifyResult.choices)
@@ -380,8 +327,8 @@ class ReviewVerdict(models.Model):
         indexes: ClassVar = [models.Index(fields=["slug", "pr_id", "reviewed_sha"])]
         constraints: ClassVar = [
             models.UniqueConstraint(
-                fields=["slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized"],
-                name="uniq_review_verdict_slug_pr_sha_reviewer",
+                fields=["slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized", "verdict"],
+                name="uniq_review_verdict_slug_pr_sha_reviewer_verdict",
             ),
         ]
 
@@ -458,25 +405,20 @@ class ReviewVerdict(models.Model):
         normalized_sha = reviewed_sha.strip().lower()
         normalized_reviewer = normalize_reviewer_identity(reviewer)
         with transaction.atomic():
-            # Idempotent on the normalized-identity key (F8): a re-review of the
-            # SAME head by the SAME identity UPDATES its one row (newest verdict
-            # wins) instead of stacking a duplicate — the 66%-duplicate-verdict
-            # pile the free-text identity produced. A different identity, or a
-            # moved head, is a distinct key and records a fresh row, so the
-            # cross-reviewer / cross-head newest-wins aggregation is preserved.
-            # The upsert reuses an existing row's slug spelling so a differently-
-            # cased slug for the same forge repo updates that row rather than
-            # stacking a second, invisible-to-the-other-spelling one.
-            recorded, _ = cls.objects.update_or_create(
+            recorded, created = cls.objects.get_or_create(
                 slug=cls.objects.slug_spelling_for(
-                    slug, pr_id, reviewed_sha=normalized_sha, reviewer_identity_normalized=normalized_reviewer
+                    slug,
+                    pr_id,
+                    reviewed_sha=normalized_sha,
+                    reviewer_identity_normalized=normalized_reviewer,
+                    verdict=normalized_verdict,
                 ),
                 pr_id=pr_id,
                 reviewed_sha=normalized_sha,
                 reviewer_identity_normalized=normalized_reviewer,
+                verdict=normalized_verdict,
                 defaults={
                     "ticket": ticket,
-                    "verdict": normalized_verdict,
                     "reviewer_identity": reviewer,
                     "blast_class": normalized_blast,
                     "gh_verify_result": normalized_verify,
@@ -484,6 +426,16 @@ class ReviewVerdict(models.Model):
                     "recorded_at": timezone.now(),
                 },
             )
+            if not created:
+                recorded = cls.objects.select_for_update().get(pk=recorded.pk)
+                if not isinstance(recorded.findings, list):
+                    msg = f"verdict {recorded.pk} findings is not a list"
+                    raise ReviewVerdictError(msg)
+                additions = [finding.as_dict() for finding in (findings or [])]
+                merged = [*recorded.findings, *(finding for finding in additions if finding not in recorded.findings)]
+                if merged != recorded.findings:
+                    recorded.findings = merged
+                    recorded.save(update_fields=["findings"])
             # Every claim this verdict concludes, retired in the same transaction
             # that records it. The per-HEAD dispatch claims are spent outright — a
             # verdict covers this exact tree, so re-arming either would be churn;
@@ -533,6 +485,9 @@ class ReviewVerdict(models.Model):
 
     def is_merge_safe(self) -> bool:
         return self.verdict == self.Verdict.MERGE_SAFE
+
+    def stands_as_hold(self) -> bool:
+        return not self.is_merge_safe()
 
     @staticmethod
     def is_head_unreadable(current_head_sha: str) -> bool:

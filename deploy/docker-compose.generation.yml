@@ -94,6 +94,15 @@ services:
     build: !reset null
     environment:
       TEATREE_CLONE_DIR: !reset null
+  teatree-webhooks:
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    pull_policy: never
+    build: !reset null
+    entrypoint: *generation-entrypoint
+    volumes: !override
+      - teatree_control_db:/var/lib/teatree/control-db
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg:/home/teatree/.gnupg  # privacy-scan:allow — the box's public, documented deploy home
   teatree-watchdog:
     image: ${TEATREE_IMAGE:-teatree-headless:latest}
     pull_policy: never

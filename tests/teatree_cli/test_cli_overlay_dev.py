@@ -10,6 +10,7 @@ no sibling to make and the main clone is the sanctioned edit target.
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -290,6 +291,11 @@ class TestResolveOverlaySource:
 
 
 class TestEnsureSiblingWorktree:
+    @pytest.fixture(autouse=True)
+    def _allowed_home(self, tmp_path: Path) -> Iterator[None]:
+        with patch.object(Path, "home", return_value=tmp_path / "home"):
+            yield
+
     def test_returns_existing_sibling(self, tmp_path: Path) -> None:
         ticket_dir = tmp_path / "ac-teatree-120-xyz"
         workspace = _resolve_teatree_workspace(_make_standalone_worktree(ticket_dir / "teatree"))
@@ -301,7 +307,7 @@ class TestEnsureSiblingWorktree:
         assert _ensure_sibling_worktree(workspace, main_clone, branch="any") == sibling
 
     def test_creates_sibling_via_git_worktree_add(self, tmp_path: Path) -> None:
-        ticket_dir = tmp_path / "ac-teatree-120-xyz"
+        ticket_dir = tmp_path / "home" / "workspace" / "t3-workspaces" / "ac-teatree-120-xyz"
         workspace = _resolve_teatree_workspace(_make_standalone_worktree(ticket_dir / "teatree"))
         main_clone = tmp_path / "main" / "example-overlay"
         main_clone.mkdir(parents=True)
@@ -316,7 +322,7 @@ class TestEnsureSiblingWorktree:
         assert str(ticket_dir / "example-overlay") in add_cmd
 
     def test_falls_back_to_default_branch_when_branch_missing(self, tmp_path: Path) -> None:
-        ticket_dir = tmp_path / "ac-teatree-120-xyz"
+        ticket_dir = tmp_path / "home" / "workspace" / "t3-workspaces" / "ac-teatree-120-xyz"
         workspace = _resolve_teatree_workspace(_make_standalone_worktree(ticket_dir / "teatree"))
         main_clone = tmp_path / "main" / "example-overlay"
         main_clone.mkdir(parents=True)
@@ -337,6 +343,21 @@ class TestEnsureSiblingWorktree:
         add_cmd = next(c for c in calls if "add" in c)
         assert "missing-branch" not in add_cmd
         assert "development" in add_cmd
+
+    def test_refuses_disallowed_new_sibling_before_git(self, tmp_path: Path) -> None:
+        ticket_dir = tmp_path / "outside"
+        workspace = _resolve_teatree_workspace(_make_standalone_worktree(ticket_dir / "teatree"))
+        main_clone = tmp_path / "main" / "example-overlay"
+        main_clone.mkdir(parents=True)
+
+        with (
+            patch("teatree.cli.overlay_dev.run_checked") as run,
+            pytest.raises(OverlayDevError, match="outside allowed worktree roots"),
+        ):
+            _ensure_sibling_worktree(workspace, main_clone, branch="main")
+
+        run.assert_not_called()
+        assert not (ticket_dir / "example-overlay").exists()
 
     def test_refuses_to_create_a_sibling_beside_a_main_clone(self, tmp_path: Path) -> None:
         # The hazard the standalone refusal always guarded, now enforced at its
@@ -372,7 +393,7 @@ class TestInstallCommand:
     def test_standalone_layout_installs_a_sibling_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        ticket_dir = tmp_path / "ac-teatree-120-xyz"
+        ticket_dir = tmp_path / "home" / "workspace" / "t3-workspaces" / "ac-teatree-120-xyz"
         teatree_wt = _make_standalone_worktree(ticket_dir / "teatree")
         main_clone = tmp_path / "workspace" / "example-overlay"
         main_clone.mkdir(parents=True)
@@ -388,7 +409,10 @@ class TestInstallCommand:
             captured.append(cmd)
             return MagicMock(returncode=0, stdout="main\n", stderr="")
 
-        with patch("teatree.utils.run.subprocess.run", side_effect=fake_run):
+        with (
+            patch("teatree.utils.run.subprocess.run", side_effect=fake_run),
+            patch.object(Path, "home", return_value=tmp_path / "home"),
+        ):
             result = CliRunner().invoke(overlay_dev_app, ["install", "example-overlay"])
 
         assert result.exit_code == 0, result.output

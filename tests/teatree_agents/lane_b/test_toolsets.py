@@ -144,7 +144,18 @@ class TestMcpHonoursEmptyPhaseAllowance:
 
     def test_the_mounted_server_matches_the_phase_grant(self) -> None:
         for phase, serve_flags in (
-            ("reviewing", ["--read-only"]),
+            (
+                "reviewing",
+                [
+                    "--read-only",
+                    "--allow-write",
+                    "agent_mailbox_inbox",
+                    "--allow-write",
+                    "agent_mailbox_send",
+                    "--allow-write",
+                    "agent_mailbox_wait",
+                ],
+            ),
             ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),
             ("shipping", []),
             ("coding", []),
@@ -183,7 +194,7 @@ class TestMaxDenialsThreadedFromConfig:
         assert gated.max_denials == 3
 
 
-_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|references/[A-Za-z0-9_.-]+\.md)")
+_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|RULES\.md|references/[A-Za-z0-9_.-]+\.md)")
 _QUARANTINED_PHASES = ("short_describe",)
 
 
@@ -276,6 +287,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
     def test_every_named_skill_file_reads_back_with_and_without_a_worktree(self) -> None:
         phases = self._reading_phases()
         assert phases, "no phase names a skill file — the path extraction went blind"
+        assert "skills/rules/RULES.md" in phases["coding"]
         worktree = self.scratch / "not-a-teatree-checkout"
         worktree.mkdir()
         unreadable: list[str] = []

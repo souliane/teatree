@@ -643,7 +643,7 @@ class SelfUpdateScannerWiringTests(TestCase):
         from teatree.loop.scanners.self_update_ci import (  # noqa: PLC0415 — test-local
             ForgeMainCiStatus,
             GhMainCiStatus,
-            GlabMainCiStatus,
+            GitLabMainCiStatus,
         )
 
         settings = UserSettings(auto_update_require_green_main=False)
@@ -660,7 +660,7 @@ class SelfUpdateScannerWiringTests(TestCase):
         # reach a real verdict source, not the fail-closed UNKNOWN an unwired arm returns.
         assert isinstance(scanner.ci_status, ForgeMainCiStatus)
         assert isinstance(scanner.ci_status.github, GhMainCiStatus)
-        assert isinstance(scanner.ci_status.gitlab, GlabMainCiStatus)
+        assert isinstance(scanner.ci_status.gitlab, GitLabMainCiStatus)
         assert scanner.require_green_main is False
 
     def test_wiring_builds_scanner_when_repos_available(self) -> None:

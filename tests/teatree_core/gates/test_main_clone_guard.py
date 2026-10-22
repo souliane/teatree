@@ -123,7 +123,8 @@ class TestDenyReason:
         assert "MAIN CLONE" in reason
         assert "worktree" in reason
         assert "origin/main" in reason
-        assert "[main-clone-ok:" in reason
+        assert "~/workspace/t3-workspaces/" in reason
+        assert "[gate-escape:main_clone: <reason>]" in reason
 
     def test_edit_reason_names_the_path(self) -> None:
         reason = deny_reason(edit_finding("/clones/teatree/src/app.py"))

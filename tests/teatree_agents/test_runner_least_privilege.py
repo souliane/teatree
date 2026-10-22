@@ -81,11 +81,19 @@ class TestBuildOptionsHarnessPin(TestCase):
         assert "Edit" in options.disallowed_tools
 
     def test_review_dispatch_reaches_the_teatree_mcp_reads_but_not_its_writes(self) -> None:
-        # A reviewer records its verdict through the envelope or the shell, so its
-        # teatree server is the read-only one; the reads are never name-denied.
         options = self._options_for("reviewing")
         assert options.setting_sources is None
-        assert list(options.mcp_servers["teatree"]["args"]) == ["mcp", "serve", "--read-only"]
+        assert list(options.mcp_servers["teatree"]["args"]) == [
+            "mcp",
+            "serve",
+            "--read-only",
+            "--allow-write",
+            "agent_mailbox_inbox",
+            "--allow-write",
+            "agent_mailbox_send",
+            "--allow-write",
+            "agent_mailbox_wait",
+        ]
         assert "mcp__teatree__github_pr_diff" not in options.disallowed_tools
 
     def test_every_verdict_review_dispatch_comes_up_with_a_shell(self) -> None:
@@ -139,12 +147,9 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
         "triage_assessing",
         "answering",
         "directive_interpreting",
-        "critic_reviewing",
-        "reviewing",
         "codex_reviewing",
         "codex_adversarial_reviewing",
         "e2e_reviewing",
-        "planning",
         "scoping",
         "bughunt",
         "dogfood_smoke",
@@ -153,6 +158,7 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
         "retro",
         "no-such-phase",
     )
+    MAILBOX_PHASES = ("planning", "reviewing", "critic_reviewing")
     GRANTED_PHASES = ("coding", "testing", "e2e", "debugging", "shipping", "architectural_review")
 
     @classmethod
@@ -170,6 +176,22 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
                 options = self._options_for(phase)
                 assert list(options.mcp_servers["teatree"]["args"]) == ["mcp", "serve", "--read-only"]
 
+    def test_the_peer_mailbox_phases_launch_the_read_only_server_plus_the_messaging_grant(self) -> None:
+        expected = [
+            "mcp",
+            "serve",
+            "--read-only",
+            "--allow-write",
+            "agent_mailbox_inbox",
+            "--allow-write",
+            "agent_mailbox_send",
+            "--allow-write",
+            "agent_mailbox_wait",
+        ]
+        for phase in self.MAILBOX_PHASES:
+            with self.subTest(phase=phase):
+                assert list(self._options_for(phase).mcp_servers["teatree"]["args"]) == expected
+
     def test_requesting_review_launches_the_read_only_server_plus_its_post_tool(self) -> None:
         args = list(self._options_for("requesting_review").mcp_servers["teatree"]["args"])
         assert args == ["mcp", "serve", "--read-only", "--allow-write", "review_request_post"]
@@ -180,7 +202,7 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
                 assert list(self._options_for(phase).mcp_servers["teatree"]["args"]) == ["mcp", "serve"]
 
     def test_every_headless_spawn_loads_only_the_injected_server(self) -> None:
-        for phase in (*self.READ_ONLY_PHASES, "requesting_review", *self.GRANTED_PHASES):
+        for phase in (*self.READ_ONLY_PHASES, *self.MAILBOX_PHASES, "requesting_review", *self.GRANTED_PHASES):
             with self.subTest(phase=phase):
                 assert self._options_for(phase).strict_mcp_config is True
 

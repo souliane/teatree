@@ -1,6 +1,6 @@
 """Assignable-identity resolution for PR creation (#3100).
 
-Both PR-creation chokepoints (``ShipExecutor._build_pr_spec`` and the
+Both PR-creation chokepoints (``ShipExecutor.build_pr_spec`` and the
 orphan-branch ``create_or_defer_pr``) resolved the assignee as the raw
 host-token login, unvalidated. A pull-only PAT resolves to a login that is
 NOT assignable on the target repo, and ``gh pr create --assignee <login>``

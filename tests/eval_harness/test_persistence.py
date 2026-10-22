@@ -5,6 +5,7 @@ an ``any_of`` matcher result must persist as a valid ``MatcherDetail`` rather
 than crashing on attributes ``AnyOf`` does not carry.
 """
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,17 @@ def _run(  # noqa: PLR0913 — test-data builder mirroring the EvalRun dataclass
 
 
 class TestPersistAnyOf(TestCase):
+    def test_cached_pass_is_included_in_a_partly_cached_run_history(self) -> None:
+        fresh = _spec(())
+        cached = dataclasses.replace(fresh, name="cached", model="claude-sonnet-4-6")
+        record = persist_run([evaluate(fresh, _run((), text_blocks=("done",)))], model="mixed", cached_specs=[cached])
+        rows = {row.scenario_name: row for row in record.scenario_results.all()}
+        assert set(rows) == {fresh.name, cached.name}
+        assert rows[cached.name].verdict == "pass"
+        assert rows[cached.name].model == cached.model
+        assert rows[cached.name].terminal_reason == "cached"
+        assert rows[cached.name].cost_usd == 0
+
     def test_persists_passing_any_of_result(self) -> None:
         spec = _spec((AnyOf(alternatives=(_TASK_BRANCH, _BG_BASH_BRANCH)),))
         run = _run((EvalToolCall(name="Bash", input={"command": "uv run pytest", "run_in_background": True}, turn=1),))

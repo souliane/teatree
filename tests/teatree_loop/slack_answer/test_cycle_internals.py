@@ -61,10 +61,6 @@ class RecordingBackend:
         _ = since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         _ = (channel, ts)
         return {}

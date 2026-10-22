@@ -46,6 +46,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from functools import cached_property
 from pathlib import Path
@@ -205,9 +206,22 @@ def redact_artifact(text: str) -> str:
     return Redactor.from_environment().redact(text)
 
 
-def write_artifact(path: Path, text: str, *, append: bool = False) -> None:
+def write_artifact(path: Path, text: str, *, append: bool = False, atomic: bool = False) -> None:
     """The one writer for every eval artifact: redact against the live credential set, then write."""
-    Redactor.from_environment().write(path, text, append=append)
+    if atomic and append:
+        message = "append"
+        raise ValueError(message)
+    redactor = Redactor.from_environment()
+    if not atomic:
+        redactor.write(path, text, append=append)
+        return
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        staged = Path(handle.name)
+    try:
+        redactor.write(staged, text)
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def tee_main(argv: Sequence[str] | None = None) -> int:

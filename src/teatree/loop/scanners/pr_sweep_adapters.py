@@ -10,14 +10,12 @@ module focused on logic and under the module-health LOC cap.
 
 import json
 import logging
-import os
-import shutil
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
-from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (
     build_compare_query,
     chunk_heads,
@@ -32,7 +30,6 @@ from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASO
 from teatree.loop.scanners.pr_sweep_types import NO_OWNING_TICKET_REASON as _NO_OWNING_TICKET_REASON
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
-from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -41,6 +38,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
+#: More open PRs than this is refused, never read as a partial listing.
+OPEN_PR_CEILING = 500
 
 
 class GhPrJson(TypedDict, total=False):
@@ -160,6 +159,21 @@ def _has_changes_requested(reviews: list[object]) -> bool:
     return False
 
 
+def _open_pr_rows(out: str, *, slug: str) -> list[object]:
+    """The listing's rows, or a refusal: an unreadable or over-ceiling listing is not "no open PRs"."""
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, list):
+        detail = f"gh pr list {slug!r} printed no readable JSON list: {out.strip()[:200]!r}"
+        raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+    if len(data) > OPEN_PR_CEILING:
+        detail = f"{slug} has more than {OPEN_PR_CEILING} open PRs; a sweep over part of them would misread the rest"
+        raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+    return data
+
+
 @dataclass(slots=True)
 class GhPrApiClient:
     """``gh``-backed :class:`teatree.loop.scanners.pr_sweep.PrApiClient`.
@@ -177,7 +191,7 @@ class GhPrApiClient:
             "--state",
             "open",
             "--limit",
-            "100",
+            str(OPEN_PR_CEILING + 1),
             "--json",
             (
                 "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
@@ -199,14 +213,7 @@ class GhPrApiClient:
                 error_class=error_class,
                 detail=detail,
             )
-        if not out.strip():
-            return []
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(data, list):
-            return []
+        data = _open_pr_rows(out, slug=slug)
         decoded = [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
         return self._resolve_behind_base(slug=slug, prs=decoded)
 
@@ -321,16 +328,7 @@ class GhPrApiClient:
     @staticmethod
     def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
         resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
-        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
-            detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
-            return 4, "", f"{detail}; refusing ambient gh authentication"
-        gh = shutil.which("gh") or "gh"
-        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
-        env.pop("GITHUB_TOKEN", None)
-        try:
-            result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
-        except FileNotFoundError:
-            return 127, "", "gh not installed"
+        result = run_gh(argv, resolution=resolution)
         return result.returncode, result.stdout, result.stderr
 
 
@@ -390,10 +388,7 @@ OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
     }
 )
 
-_HELD_REMEDY = (
-    "the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at that SHA, "
-    "or a new commit moves the head"
-)
+_HELD_REMEDY = "the auto-merge is refused; push a fix and get the new head reviewed"
 
 _FLAG_TEXTS: dict[str, str] = {
     _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
@@ -401,10 +396,10 @@ _FLAG_TEXTS: dict[str, str] = {
         "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
     ),
     _CONTESTED_HOLD_REASON: (
-        f"two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, so {_HELD_REMEDY}"
+        f"two cold reviews disagree at this PR's live head — a HOLD remains active at this head, so {_HELD_REMEDY}"
     ),
     _HOLD_AT_HEAD_REASON: (
-        f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
+        f"a cold review returned HOLD at this PR's live head and it remains active at this head, so {_HELD_REMEDY}"
     ),
     _NO_OWNING_TICKET_REASON: (
         "no ticket owns this PR, so no merge gate binds: `worktree adopt <checkout>` or `ticket clear`"

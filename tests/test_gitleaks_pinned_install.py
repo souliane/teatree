@@ -9,7 +9,7 @@ that gate into `exit 0` and nothing downstream would notice.
 import hashlib
 import io
 import tarfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -33,7 +33,7 @@ def _archive(body: bytes) -> bytes:
 
 
 @contextmanager
-def _pinned_to(pinned: PinnedGitleaks, body: bytes) -> Iterator[None]:
+def _pinned_to(pinned: PinnedGitleaks, body: bytes) -> Generator[None]:
     """Aim the pin this platform's slug resolves against at *body*."""
     with patch.dict(gitleaks.BINARY_SHA256, {pinned.platform_slug: hashlib.sha256(body).hexdigest()}):
         yield

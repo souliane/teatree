@@ -42,7 +42,7 @@ def honesty_subject(task: Task) -> EscalationSubject | None:
 
 
 def _lineage_subjects(task: Task) -> list[EscalationSubject]:
-    own = task.session.agent_id if task.session_id else ""  # ty: ignore[unresolved-attribute]
+    own = task.session.agent_id if task.session_id else ""
     subjects = [EscalationSubject(own, int(task.pk))]
     current = task.parent_task
     while current is not None:
@@ -60,5 +60,5 @@ def _session_uuids(task: Task, *, harness: str = "") -> list[str]:
     # ``Session.agent_id`` predates the open harness registry and belongs to the
     # Claude SDK lineage. New harnesses record their typed session exclusively on
     # TaskAttempt; forwarding this legacy UUID would resume the wrong provider.
-    agent_id = task.session.agent_id if task.session_id and harness in {"", "claude_sdk"} else ""  # ty: ignore[unresolved-attribute]
+    agent_id = task.session.agent_id if task.session_id and harness in {"", "claude_sdk"} else ""
     return [session_id for session_id in (attempt_session, agent_id) if SERVER_SESSION_ID_RE.match(session_id)]

@@ -8,7 +8,7 @@ no network, no the OpenAI-compatible backend credential, and zero tokens.
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -106,7 +106,7 @@ class _RecordingOpenAIModel(OpenAIChatModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[None] | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse]:
         self.recorded.append(model_settings)
         async with self._offline.request_stream(
             messages, model_settings, model_request_parameters, run_context
@@ -290,7 +290,9 @@ class TestOutputCeilingOnTheRouterLane:
         assert self._recorded_settings().get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_the_anthropic_cache_key_never_reaches_the_router(self) -> None:
-        assert "anthropic_cache_instructions" not in self._recorded_settings(effort="high")
+        settings = self._recorded_settings(effort="high")
+        assert "cache" not in settings
+        assert not [key for key in settings if key.startswith("anthropic_")]
 
     def test_the_ceiling_rides_alongside_the_openai_effort(self) -> None:
         settings = self._recorded_settings(effort="high")
@@ -554,7 +556,7 @@ class _RecordingAnthropicModel(AnthropicModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[None] | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse]:
         self.recorded.append(model_settings)
         async with self._offline.request_stream(
             messages, model_settings, model_request_parameters, run_context

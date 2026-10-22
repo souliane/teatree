@@ -32,7 +32,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.eval.api_runner import load_agent_definition
+from teatree.eval.agent_prompt import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.context_budget import HEADING_RE, MissingSectionError, extract_sections
 from teatree.eval.discovery import discover_core_specs, discover_specs, fixture_dir_for

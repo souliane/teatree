@@ -11,7 +11,7 @@ A bind mount cannot be created without root, so the table is synthetic while eve
 path in it is real — which is what makes the ``st_dev`` assertion meaningful.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
@@ -34,7 +34,7 @@ _SAMPLE = (
 
 
 @contextmanager
-def _pinned_table(table_dir: Path, *mount_points: Path) -> Iterator[None]:
+def _pinned_table(table_dir: Path, *mount_points: Path) -> Generator[None]:
     """Run the real reader against a synthetic table declaring *mount_points* as mounts."""
     rows = [f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/vg-root rw" for point in mount_points]
     mountinfo = table_dir / "mountinfo"

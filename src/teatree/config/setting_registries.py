@@ -95,6 +95,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
     "expected_required_contexts": _parse_str_list,
+    "forced_repro_gate_enabled": _parse_strict_bool,
     "send_proxy_allowlist": _parse_str_list,
     "bulk_close_threshold": _parse_strict_int,
     "scanning_news_skill": _parse_strict_str,

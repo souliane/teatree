@@ -32,6 +32,13 @@ class TestFailedCandidates(TestCase):
 
         assert self.task.attempts.failed_route_candidates("code") == {0: refusal.pk, 1: crash.pk}
 
+    def test_a_refused_resume_counts_against_its_route_candidate(self) -> None:
+        refusal = self._attempt(
+            "result_error: context_exhausted - the resumed conversation ended without taking a turn"
+        )
+
+        assert self.task.attempts.failed_route_candidates("code") == {0: refusal.pk}
+
     def test_the_latest_failure_of_a_candidate_names_the_attempt(self) -> None:
         self._attempt(_LANDING)
         latest = self._attempt(_LANDING)

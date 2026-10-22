@@ -64,7 +64,6 @@ from teatree.loop.scanners import (
     ReviewRequestResumeScanner,
     ReviewRequestSendScanner,
     ScanSignal,
-    SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
     StaleTicketsScanner,
@@ -76,6 +75,7 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
+from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -100,6 +100,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
+        _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(
@@ -374,7 +375,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Inbound Slack scanners (mentions/DM/review-intent/red-card), sans review-nag."""
+    """Inbound Slack scanners (mentions/review-intent/red-card), sans review-nag."""
     if backend.messaging is None:
         return []
     return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
@@ -463,10 +464,9 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
 
 
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
-    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag."""
+    """The inbound-messaging scanner jobs (mentions / ask-reply / review-intent / red-card), sans nag."""
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1174 applies each Slack reply to its live DeferredQuestion — the
         # scanner the two single-overlay builders had silently dropped (#23).
         _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),

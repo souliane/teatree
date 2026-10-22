@@ -43,10 +43,10 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED
-#   rather than passing green with zero coverage (mirrors eval.yml). ZERO-IS-RED
+#   rather than passing green with zero coverage (mirrors eval.yml). A validated
+#   cached pass is coverage even when zero scenarios run fresh. ZERO-IS-RED
 #   closes the last vacuous gap: when `detect` promised scenarios (`run=true`)
-#   the eval job asserts it executed >=1 — a run that was SUPPOSED to execute
-#   scenarios but executed ZERO fails, never passes green.
+#   the eval job asserts it invoked >=1 scenario — an empty selection fails.
 #
 # SCENARIO-REACHABILITY (advisory, F12 / #3566)
 #   The `detect` job runs `t3 eval reachability` on every PR: it walks every
@@ -105,7 +105,7 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -177,7 +177,7 @@ jobs:
         with:
           # The agent under test runs in this job: leave no token on disk for it to read.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -199,7 +199,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.286
+          npm install -g @anthropic-ai/claude-code@2.1.294
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -229,6 +229,30 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
         run: uv run python scripts/eval/select_oauth.py
+      - name: Restore latest main eval verdicts
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-main-
+      - name: Keep main verdicts for merge
+        continue-on-error: true
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
+            cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
+            rm "$RUNNER_TEMP/eval-verdicts.json"
+          fi
+      - name: Restore PR eval verdicts
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
+      - name: Combine PR and main verdicts
+        continue-on-error: true
+        run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
       # same cheapest-passing per-scenario tier the weekly run pins
       # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
@@ -283,7 +307,9 @@ jobs:
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" \
+                --summary-json "$RUNNER_TEMP/eval-verdict-rows-$name.json" \
+                --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 \
                 | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
               if [ "$scenario_rc" -ne 0 ]; then
@@ -312,6 +338,13 @@ jobs:
               } >> "$RUNNER_TEMP/eval-summary.md"
             fi
             exit "$rc"
+      - name: Record and save eval verdicts
+        continue-on-error: true
+        if: success()
+        uses: ./.github/actions/eval-verdict-cache
+        with:
+          cache-key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
       # summary is the publish-safe dashboard; the transcript stays private. It runs
@@ -349,7 +382,7 @@ jobs:
       # per scenario (`eval-transcripts-<name>.html`), never an un-suffixed file.
       - name: Upload the per-trial transcript report (private)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-pr-transcripts
           path: ${{ runner.temp }}/eval-transcripts-*.html

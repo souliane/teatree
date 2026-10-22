@@ -424,3 +424,16 @@ class GhMergeRpc:
                 merged = {}
             merged_sha = str(merged.get("sha") or "") if isinstance(merged, dict) else ""
         return ForgeMergeResult(returncode=rc, stdout=out, stderr=err, merged_sha=merged_sha)
+
+
+def gh_merge_rpc(token: str) -> GhMergeRpc:
+    return GhMergeRpc(gh_runner(token))
+
+
+# Module functions let the reads module bind the two check reads without naming the write-capable GhMergeRpc.
+def fetch_required_checks_rollup(*, slug: str, pr_id: int, token: str) -> list[RawAPIDict]:
+    return gh_merge_rpc(token).fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+
+
+def fetch_workflow_runs_at_head(*, slug: str, head_sha: str, token: str) -> list[RawAPIDict]:
+    return gh_merge_rpc(token).fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)

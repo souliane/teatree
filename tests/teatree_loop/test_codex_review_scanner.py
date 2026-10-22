@@ -290,7 +290,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout=payload, stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         # The adapter also stamps each head's required-checks standing; stub it so the
         # decode assertions below never depend on a live forge read.
         monkeypatch.setattr("teatree.loop.scanners.codex_review.head_checks_unsettled", lambda **_: False)
@@ -310,7 +310,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=127, stdout="", stderr="gh: command not found")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
@@ -320,7 +320,7 @@ class TestGhCodexPrApi:
             msg = "gh"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
@@ -333,7 +333,7 @@ class TestGhCodexPrApi:
                 stderr="gh auth login required",
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
@@ -348,7 +348,7 @@ class TestGhCodexPrApi:
                 stderr="API rate limit exceeded for user.",
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
@@ -363,7 +363,7 @@ class TestGhCodexPrApi:
                 stderr="dial tcp: no such host",
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
@@ -374,7 +374,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=1, stdout="", stderr="some other failure")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
@@ -385,7 +385,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout="   \n", stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
@@ -394,7 +394,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout="not json", stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
@@ -403,7 +403,7 @@ class TestGhCodexPrApi:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout='{"oops": "object not array"}', stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
@@ -415,7 +415,7 @@ class TestGhCodexPrApi:
             captured["env"] = kwargs.get("env")
             return _FakeCompleted(returncode=0, stdout="[]", stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhCodexPrApi()
         api.list_open_self_prs(slug=SLUG)
         env = captured["env"]
@@ -428,7 +428,7 @@ class TestGhCodexPrApi:
         empty = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="route unset")
         with (
             patch("teatree.forge_credentials.resolve_slug_token", return_value=empty),
-            patch("teatree.loop.scanners.codex_review.run_allowed_to_fail") as run,
+            patch("teatree.backends.github.api.run_allowed_to_fail") as run,
             pytest.raises(ScannerError, match="refusing ambient gh authentication"),
         ):
             api.list_open_self_prs(slug=SLUG)

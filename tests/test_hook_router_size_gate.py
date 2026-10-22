@@ -57,7 +57,8 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # Lowered to the measured LOC by #4961, which deleted the Stop-hook self-pump and its
 # per-agent consolidation registry.
 # Lowered by #5116: the SessionStart MCP notice retired, the self-DM gate and the src bootstrap moved out.
-_CEILING_LOC = 2758
+# Lowered by #5240: the MR-metadata handler and its verdict moved into the mr_validator sibling.
+_CEILING_LOC = 2597
 
 
 def _count_loc(text: str) -> int:

@@ -29,7 +29,6 @@ from teatree.core.models.review_verdict import ReviewVerdict, Severity
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -449,7 +448,7 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     """
     attempts = (
         TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .excluding_parks()
         .select_related("task")
     )
     if overlay:

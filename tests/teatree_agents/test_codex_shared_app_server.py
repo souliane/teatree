@@ -7,7 +7,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -92,7 +92,7 @@ class FakeCache:
         self._persist_counter_lock = threading.Lock()
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self) -> AsyncGenerator[Path]:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         try:
@@ -187,7 +187,7 @@ def test_a_thread_start_reply_past_the_asyncio_default_limit_opens_the_thread(tm
 def test_a_failure_after_the_shared_server_started_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     class ReleaseFailingCache(FakeCache):
         @asynccontextmanager
-        async def session(self) -> AsyncIterator[Path]:
+        async def session(self) -> AsyncGenerator[Path]:
             async with super().session() as path:
                 yield path
             msg = "credential-release-sentinel"
@@ -250,8 +250,9 @@ def test_live_codex_threads_keep_distinct_mailbox_config_and_can_exchange(tmp_pa
             await asyncio.gather(*(session.start() for session in sessions))
             first = MailboxClient(identities[0].socket_path, identities[0].token)
             second = MailboxClient(identities[1].socket_path, identities[1].token)
-            await first.send(identities[1].address, "please review", "review-once")
-            inbox = await second.inbox()
+            sending = asyncio.create_task(first.send(identities[1].address, "please review", "review-once"))
+            inbox = await second.wait(timeout_seconds=2)
+            await sending
             assert inbox["messages"][0]["text"] == "please review"
             await asyncio.gather(*(session.close() for session in sessions))
             return sessions[0].model, sessions[1].model
@@ -267,7 +268,7 @@ def test_live_codex_threads_keep_distinct_mailbox_config_and_can_exchange(tmp_pa
 def test_failed_auth_startup_can_be_closed_without_touching_a_closed_loop(tmp_path: Path) -> None:
     class FailingCache:
         @asynccontextmanager
-        async def session(self) -> AsyncIterator[Path]:
+        async def session(self) -> AsyncGenerator[Path]:
             msg = "auth unavailable"
             raise RuntimeError(msg)
             yield Path("/unused/auth.json")
@@ -445,7 +446,7 @@ def test_a_read_the_owner_loop_cancelled_at_shutdown_is_still_delivered(tmp_path
 
     class ExitBlockingCache(FakeCache):
         @asynccontextmanager
-        async def session(self) -> AsyncIterator[Path]:
+        async def session(self) -> AsyncGenerator[Path]:
             async with super().session() as path:
                 yield path
             exiting.set()

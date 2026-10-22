@@ -38,6 +38,7 @@ class _FakeHandle:
     def __init__(self) -> None:
         self.joined = False
         self._alive = True
+        self.degraded = False
 
     def is_alive(self) -> bool:
         return self._alive

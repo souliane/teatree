@@ -1,22 +1,14 @@
 """A command whose delivery the owner loop never confirmed stays ``unknown_delivery`` and is never replayed."""
 
 import asyncio
-import threading
 from unittest.mock import patch
 
 from teatree.agents import live_registry
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask
+from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask, RejectCode
 from teatree.agents.live_registry import LiveSessionRegistry
+from tests.teatree_agents._live_owner import OwnerLoop
 
 _TASK = LiveTask(pk=7, ticket=3, phase="coding", harness="claude_sdk", model="m")
-
-
-class _Capture:
-    tool_calls = 0
-    context_tokens = None
-    last_event_at = None
-    open_tool = None
-    result_message = None
 
 
 class _SilentSession:
@@ -44,35 +36,6 @@ class _FailingSession(_SilentSession):
         raise RuntimeError(msg)
 
 
-class _OwnerLoop(threading.Thread):
-    """The session's own event loop, holding it live in the registry until ``end``."""
-
-    def __init__(self, registry: LiveSessionRegistry, session: _SilentSession) -> None:
-        super().__init__(daemon=True)
-        self._registry = registry
-        self._session = session
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._finish: asyncio.Event | None = None
-        self.attached = threading.Event()
-
-    def run(self) -> None:
-        asyncio.run(self._own())
-
-    async def _own(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._finish = asyncio.Event()
-        async with self._registry.attach(_TASK, _Capture()) as controller:
-            controller.bind(self._session)
-            self.attached.set()
-            await self._finish.wait()
-
-    def end(self) -> None:
-        assert self._loop is not None
-        assert self._finish is not None
-        self._loop.call_soon_threadsafe(self._finish.set)
-        self.join(timeout=10)
-
-
 def _steer(registry: LiveSessionRegistry) -> ControlReceipt:
     return asyncio.run(registry.steer(_TASK.pk, "use the attached page", command_id="c-1", wait=0.05))
 
@@ -80,7 +43,7 @@ def _steer(registry: LiveSessionRegistry) -> ControlReceipt:
 def test_an_unconfirmed_command_stays_unknown_for_every_retry_and_is_delivered_once() -> None:
     registry = LiveSessionRegistry()
     session = _SilentSession()
-    owner = _OwnerLoop(registry, session)
+    owner = OwnerLoop(registry, _TASK, session)
     owner.start()
     assert owner.attached.wait(timeout=10)
 
@@ -99,7 +62,7 @@ def test_an_unconfirmed_command_stays_unknown_for_every_retry_and_is_delivered_o
 def test_a_delivery_that_fails_mid_flight_stays_unknown_for_every_retry_and_is_delivered_once() -> None:
     registry = LiveSessionRegistry()
     session = _FailingSession()
-    owner = _OwnerLoop(registry, session)
+    owner = OwnerLoop(registry, _TASK, session)
     owner.start()
     assert owner.attached.wait(timeout=10)
 
@@ -111,3 +74,35 @@ def test_a_delivery_that_fails_mid_flight_stays_unknown_for_every_retry_and_is_d
     outcomes = [first.outcome, retried_while_live.outcome, retried_after_close.outcome]
     assert outcomes == [ControlOutcome.UNKNOWN_DELIVERY] * 3
     assert session.steered == ["c-1"]
+
+
+class _AcceptingSession(_SilentSession):
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+        del text, wait
+        self.steered.append(input_id)
+
+
+def _push(registry: LiveSessionRegistry) -> ControlReceipt:
+    return asyncio.run(registry.push(_TASK.pk, "framed peer words", command_id="peer-1", wait=1))
+
+
+def test_a_peer_push_runs_on_the_owner_loop_and_keeps_no_receipt_after_close() -> None:
+    registry = LiveSessionRegistry()
+    session = _AcceptingSession()
+    owner = OwnerLoop(registry, _TASK, session)
+    owner.start()
+    assert owner.attached.wait(timeout=10)
+
+    pushed = _push(registry)
+    owner.end()
+    after_close = _push(registry)
+
+    assert pushed.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert (after_close.outcome, after_close.code) == (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+    assert session.steered == ["peer-1"]
+
+
+def test_a_peer_push_to_a_task_with_no_live_session_is_unknown_session() -> None:
+    receipt = _push(LiveSessionRegistry())
+
+    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.UNKNOWN_SESSION)

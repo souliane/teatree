@@ -24,7 +24,7 @@ import re
 import shlex
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -46,6 +46,7 @@ from hooks.scripts.hook_budget import HOOK_CEILING_S
 from teatree.hooks import _repo_visibility, foreign_mr_cli
 from teatree.hooks._repo_visibility import ForgeProbe
 from teatree.utils.run import CommandFailedError, TimeoutExpired
+from tests._gate_escape_audit import audited_escape
 from tests._hook_clock import HookClock
 
 OUR_EMAIL = "us@example.com"
@@ -301,7 +302,7 @@ def _glab_answer(payload: object) -> CompletedProcess[str]:
 @contextmanager
 def _asking_through_the_real_probe(
     glab: Mock, declared: frozenset[str] = frozenset(), kind: str = "gitlab"
-) -> Iterator[SimpleNamespace]:
+) -> Generator[SimpleNamespace]:
     """The routing fake, with every forge question asked through the real :func:`run_forge_tool` of *glab*."""
     forge = _forge(mr_rows=None, declared=declared, kind=kind)
     forge.run_forge_tool = _repo_visibility.run_forge_tool
@@ -330,7 +331,7 @@ def _spending(clock: HookClock, *outcomes: object) -> Callable[..., object]:
 @contextmanager
 def _git_answering_at_its_timeout(
     clock: HookClock, verbs: frozenset[str] = frozenset({"ls-remote", "fetch"})
-) -> Iterator[list[float]]:
+) -> Generator[list[float]]:
     """Every git probe running one of *verbs* still answers, but only once its whole timeout has passed."""
     real_run = subprocess.run
     granted: list[float] = []
@@ -449,6 +450,29 @@ class TestABranchThatIsOursIsAllowed:
 
 
 class TestABranchThatIsNotOursIsRefused:
+    def test_missing_token_scrubber_keeps_both_refusals(self, work: Path) -> None:
+        _branch_pushed_by(work, "feature", email=THEIR_EMAIL, author="Colleague")
+        _git(work, "checkout", "-q", "-b", "feature", "origin/feature")
+        commands = ("git push origin feature", "git push --force origin feature")
+        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=[])):
+            expected = [_run(command, work) for command in commands]
+            with (
+                patch.dict("sys.modules", {"teatree.forge_credentials": None}),
+                patch.dict("os.environ", {"GH_TOKEN": "sentinel-task-token"}),
+            ):
+                actual = [_run(command, work) for command in commands]
+                assert git_probes.bounded("clean text") == "clean text"
+                assert git_probes._one_line("clean text") == "clean text"
+                assert git_probes.bounded("probe says sentinel-task-token") == "probe says <redacted>"
+                assert git_probes._one_line("probe says sentinel-task-token") == "probe says <redacted>"
+
+        assert actual == expected
+        for blocked, payload in actual:
+            assert blocked is True
+            assert payload is not None
+            assert payload["permissionDecision"] == "deny"
+            assert payload["permissionDecisionReason"].startswith("REFUSED:")
+
     def test_an_open_mr_authored_by_a_colleague_refuses(self, work: Path) -> None:
         _branch_pushed_by(work, "1234-feat-search", email=THEIR_EMAIL, author="colleague-login")
         _git(work, "checkout", "-q", "-b", "1234-feat-search", "origin/1234-feat-search")
@@ -548,48 +572,56 @@ class TestAForcePushHasNoEscape:
         assert payload is not None
         assert "--force" in payload["permissionDecisionReason"]
 
-    def test_neither_a_sibling_escape_marker_nor_the_master_fail_open_releases_it(self, work: Path) -> None:
-        """A force push past the shared allowlist + master fail-open switch."""
+    def test_neither_an_escape_token_nor_the_master_fail_open_releases_it(self, work: Path) -> None:
+        """A force push past every escape token and the master fail-open switch: the audit is never reached."""
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
         _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
-        command = "git push --force origin theirs  # [scope-push-ok: vetted] [fp-confirmed: seen it] [add-all-ok: x]"
+        command = (
+            "git push --force origin theirs  # [gate-escape:foreign_branch_push_force_delete: seen it]"
+            " [gate-escape:foreign_branch_push: vetted] [gate-escape:git_add_all: x]"
+        )
         with (
             patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))),
             patch.object(router, "_danger_gate_fail_open_enabled", return_value=True),
+            audited_escape(_event(command, work)) as requests,
         ):
             blocked, payload = _run(command, work)
         assert blocked is True
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
+        assert requests == []
 
-    def test_an_fp_confirmed_token_cannot_grant_it_through_the_live_breaker(
+    def test_an_escape_token_cannot_release_it_through_the_live_breaker(
         self, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
         _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
-        command = "git push --force origin HEAD:theirs  # [fp-confirmed: seen it]"
+        command = "git push --force origin HEAD:theirs  # [gate-escape:foreign_branch_push_force_delete: seen it]"
         monkeypatch.setattr(router, "STATE_DIR", tmp_path / "hook-state")
-        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
-        monkeypatch.setattr(router, "_CURRENT_DATA", _event(command, work))
-        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
+        with (
+            patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))),
+            audited_escape(_event(command, work)),
+        ):
             blocked, payload = _run(command, work)
         assert blocked is True
         assert payload is not None
         assert payload["hookSpecificOutput"]["gate_id"] == gate.FORCE_DELETE_GATE_ID
 
-    def test_a_non_force_fp_confirmed_token_releases_the_live_breaker(
-        self, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("recorded", [False, True])
+    def test_a_non_force_push_is_released_only_by_a_recorded_escape(
+        self, *, recorded: bool, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
         _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
-        command = "git push origin HEAD:theirs  # [fp-confirmed: forge lookup was stale]"
+        command = "git push origin HEAD:theirs  # [gate-escape:foreign_branch_push: forge lookup was stale]"
         monkeypatch.setattr(router, "STATE_DIR", tmp_path / "hook-state")
-        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
-        monkeypatch.setattr(router, "_CURRENT_DATA", _event(command, work))
-        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
-            blocked, payload = _run(command, work)
-        assert blocked is False
-        assert payload is None
+        with (
+            patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))),
+            audited_escape(_event(command, work), recorded=recorded) as requests,
+        ):
+            blocked, _payload = _run(command, work)
+        assert blocked is not recorded
+        assert [request["gate"] for request in requests] == ["foreign_branch_push"]
 
     def test_a_non_force_push_still_routes_through_the_shared_fail_open_chain(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
@@ -2327,19 +2359,6 @@ class TestTheDiagnosticDidNotWeakenTheGuard:
             unguarded, unguarded_payload = _run("git push origin 1234-feat-search", work)
         assert unguarded is False, "the refusal above came from the fixture, not the gate"
         assert unguarded_payload is None
-
-    def test_a_colleagues_branch_still_has_no_force_push_escape(self, work: Path) -> None:
-        _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
-        _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
-        command = "git push --force origin theirs  # [scope-push-ok: vetted] [fp-confirmed: seen it]"
-        with (
-            patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))),
-            patch.object(router, "_danger_gate_fail_open_enabled", return_value=True),
-        ):
-            blocked, payload = _run(command, work)
-        assert blocked is True
-        assert payload is not None
-        assert payload["permissionDecision"] == "deny"
 
     def test_an_unpinnable_work_dir_is_still_refused_and_only_the_gate_refuses_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

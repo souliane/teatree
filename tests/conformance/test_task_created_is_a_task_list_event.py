@@ -49,7 +49,7 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from itertools import product
 from pathlib import Path
@@ -133,7 +133,7 @@ _DEAD_NAME_LEDGERS: Final[frozenset[str]] = frozenset({"tests/quality/test_no_de
 #: carrying the retired premise, which is how the previous walk shipped blind.
 _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
     {
-        "BLUEPRINT.md",
+        "docs/blueprint/admission-governor.md",
         "docs/blueprint/configuration.md",
         "docs/blueprint/factory-architecture.md",
         "docs/claude-code-internals.md",
@@ -455,7 +455,7 @@ _DENY_DRIVERS: Final[dict[str, DenyDriver]] = {
 #: moves. Unlike the prose ledger it needs no literal anchor in the file that renders
 #: the text, which is why it reaches the shared renderer the ledger is blind to.
 _DENY_TEXT_PEGS: Final[dict[str, str]] = {
-    "handle_dispatch_prompt_quote_scanner_on_task_create": "73efb1cbf1e95d45",
+    "handle_dispatch_prompt_quote_scanner_on_task_create": "aa281f7bc01d70fc",
 }
 
 #: Phrases asserting the premise this event's correction retired. The peg above is the
@@ -470,7 +470,7 @@ _RETIRED_PREMISE_PHRASES: Final[tuple[str, ...]] = (
 
 
 @contextlib.contextmanager
-def _gate_live(driver: DenyDriver, tmp_path: Path) -> Iterator[None]:
+def _gate_live(driver: DenyDriver, tmp_path: Path) -> Generator[None]:
     """Use a hermetic config store, with the ledger pinned under *tmp_path*."""
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))

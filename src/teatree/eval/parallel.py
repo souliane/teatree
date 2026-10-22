@@ -26,7 +26,7 @@ import concurrent.futures
 import threading
 import time
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
 from teatree.eval.backends import EvalRunner
@@ -92,7 +92,7 @@ class ConcurrencyGovernor:
             return self._limit
 
     @contextmanager
-    def slot(self) -> Iterator[None]:
+    def slot(self) -> Generator[None]:
         with self._cond:
             while self._active >= self._limit:
                 self._cond.wait()

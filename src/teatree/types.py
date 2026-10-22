@@ -161,8 +161,8 @@ class ChannelReadRefusedError(RuntimeError):
     """A messaging backend was refused a CHANNEL-scoped read (never "the channel is empty").
 
     The single-channel counterpart to the empty-return convention :class:`ScannerError`
-    protects for scanners. A bot token reads only channels the bot was invited to, and
-    Slack reports that as ``not_in_channel`` / ``channel_not_found`` — swallowing it into
+    protects for scanners. Bot reads require membership; user reads follow Slack
+    permissions. Slack reports ``not_in_channel`` / ``channel_not_found`` — swallowing that into
     ``[]`` tells an interactive caller "this channel is quiet", the opposite of the truth.
     Poll loops keep the swallowing read; anyone asking about ONE channel gets this.
 
@@ -171,10 +171,10 @@ class ChannelReadRefusedError(RuntimeError):
     """
 
     def __init__(self, channel: str, error_code: str) -> None:
+        advice = "" if channel.startswith("D") else f"If the bot was not invited, use `/invite @<bot>` in {channel}. "
         super().__init__(
-            f"Cannot read channel {channel!r}: {error_code}. A bot token reads only channels the bot has been "
-            f"invited to — invite it (`/invite @<bot>` in {channel}) or pass a channel id it is a member of. "
-            f"This is NOT an empty channel.",
+            f"Cannot read channel {channel!r}: {error_code}. The selected token cannot read it. "
+            f"{advice}A user token may read channels its owner can access. This is NOT an empty channel.",
         )
         self.channel = channel
         self.error_code = error_code

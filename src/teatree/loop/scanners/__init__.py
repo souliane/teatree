@@ -62,9 +62,8 @@ from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 from teatree.loop.scanners.self_update import SelfUpdateScanner
-from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher, SlackBroadcastsScanner
-from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.snapshot_warmer import SnapshotWarmerScanner
@@ -93,12 +92,12 @@ __all__ = [
     "DbBackupScanner",
     "DeferredQuestionPosterScanner",
     "EvalLocalScanner",
+    "ForgeMrStateClassifier",
     "ForgePrApiClient",
     "GhCodexPrApi",
     "GhPrApiClient",
     "GitLabApprovalsScanner",
     "GitLabEventsScanner",
-    "GlabGhMrStateClassifier",
     "GlabPrApiClient",
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
@@ -134,7 +133,6 @@ __all__ = [
     "ScanningNewsScanner",
     "SelfUpdateScanner",
     "SlackBroadcastsScanner",
-    "SlackDmInboundScanner",
     "SlackMentionsScanner",
     "SlackMergeNotifier",
     "SlackReviewIntentScanner",

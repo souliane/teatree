@@ -405,6 +405,7 @@ Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan 
 | `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
 | `sweep` | List all open PRs/MRs authored by the current user across the forge |
 | `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
+| `request-void` | Ask the owner on Slack to approve a merge correction |
 | `void-merge` | Void a merge the forge records but whose content never reached the default branch |
 | `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
@@ -631,6 +632,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `return-gaps` | Return guarded legacy gap members to the dream umbrella |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
@@ -716,6 +718,7 @@ Per-worktree FSM operations.
 | Subcommand | Description |
 | --- | --- |
 | `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `attest` | Record the present checkout state after the owner has inspected it |
 | `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |

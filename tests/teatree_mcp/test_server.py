@@ -299,17 +299,41 @@ class TestReadOnlySurface(TestCase):
         tools, _, _ = _surface(read_only=True)
         assert [name for name, tool in tools.items() if not _is_read_only(tool)] == []
 
+    def test_instructions_name_exactly_the_registered_mailbox_tools(self) -> None:
+        for read_only, allowed in (
+            (False, frozenset()),
+            (True, frozenset()),
+            (True, mcp_write_tools_for_phase("planning")),
+        ):
+            with self.subTest(read_only=read_only, allowed=allowed):
+                tools, instructions, _ = _surface(read_only=read_only, allowed_writes=allowed)
+                registered = {name for name in tools if name.startswith("agent_mailbox_")}
+                advertised = {
+                    line.split("(")[0].removeprefix("- ")
+                    for line in instructions.splitlines()
+                    if line.startswith("- agent_mailbox_")
+                }
+                assert advertised == registered
+
     def test_a_read_only_server_keeps_every_read_tool_of_the_full_surface(self) -> None:
         full, _, _ = _surface(read_only=False)
         read_only, _, _ = _surface(read_only=True)
         assert set(read_only) == {name for name, tool in full.items() if _is_read_only(tool)}
-        assert {"ticket_get", "github_pr_diff", "overlay_peek", "agent_mailbox_inbox"} <= set(read_only)
+        assert {"ticket_get", "github_pr_diff", "overlay_peek"} <= set(read_only)
 
     def test_the_withheld_tools_include_every_seamed_write(self) -> None:
         full, _, seams = _surface(read_only=False)
         writes = {name for name, tool in full.items() if not _is_read_only(tool)}
         assert set(seams) <= writes
-        assert {"pr_merge", "question_answer", "github_issue_create", "agent_mailbox_send", "overlay_stamp"} <= writes
+        assert {
+            "pr_merge",
+            "question_answer",
+            "github_issue_create",
+            "agent_mailbox_send",
+            "agent_mailbox_inbox",
+            "agent_mailbox_wait",
+            "overlay_stamp",
+        } <= writes
 
     def test_the_read_only_instructions_advertise_no_withheld_tool(self) -> None:
         tools, instructions, seams = _surface(read_only=True)
@@ -344,6 +368,25 @@ class TestPhaseWriteAllowance(TestCase):
                 tools, instructions, seams = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase(phase))
                 assert {name for name, tool in tools.items() if not _is_read_only(tool)} == allowed
                 assert {name for name in seams if f"- {name}(" in instructions} == allowed
+
+    def test_the_peer_mailbox_phases_reach_exactly_the_messaging_writes(self) -> None:
+        expected = {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+        forbidden = {
+            "pr_merge",
+            "pr_create",
+            "question_answer",
+            "notify_user",
+            "task_complete",
+            "github_issue_create",
+            "overlay_stamp",
+        }
+        for phase in ("planning", "reviewing", "critic_reviewing"):
+            with self.subTest(phase=phase):
+                tools, _, _ = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase(phase))
+                assert {name for name, tool in tools.items() if not _is_read_only(tool)} == expected
+                assert forbidden.isdisjoint(tools)
+        tools, _, _ = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase("requesting_review"))
+        assert {name for name, tool in tools.items() if not _is_read_only(tool)} == {"review_request_post"}
 
     def test_requesting_review_posts_its_request_and_reaches_no_other_write(self) -> None:
         allowed = mcp_write_tools_for_phase("requesting_review")

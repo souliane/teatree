@@ -23,7 +23,7 @@ from tests._git_repo import make_git_repo, run_git
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "hooks" / "scripts"
-_BLUEPRINT = _REPO_ROOT / "BLUEPRINT.md"
+_BLUEPRINT_CORPUS = [_REPO_ROOT / "BLUEPRINT.md", *sorted((_REPO_ROOT / "docs" / "blueprint").glob("*.md"))]
 
 #: How the state file is written in prose. Anchoring on this rather than on the bare
 #: ``.agents`` suffix keeps the walk off ``~/.agents/skills`` and the ``"agents"``
@@ -50,6 +50,11 @@ def _windows(text: str, anchor: str, radius: int) -> list[str]:
         found.append(low[max(0, i - radius) : i + len(anchor) + radius])
         start = i + 1
     return found
+
+
+def _blueprint_windows() -> list[str]:
+    """The anchor windows across BLUEPRINT.md and its appendices, where the depth lives."""
+    return [w for path in _BLUEPRINT_CORPUS for w in _windows(path.read_text(encoding="utf-8"), _ANCHOR, _RADIUS)]
 
 
 def _tracked_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
@@ -149,10 +154,10 @@ class TestHooksDescribeTheLedgerAsALedger:
 
 class TestBlueprintAgreesWithHooks:
     def test_blueprint_calls_it_a_dispatch_ledger(self) -> None:
-        windows = _windows(_BLUEPRINT.read_text(encoding="utf-8"), _ANCHOR, _RADIUS)
+        windows = _blueprint_windows()
         assert windows, f"BLUEPRINT no longer describes {_ANCHOR}"
         assert any("dispatch ledger" in w for w in windows)
 
     def test_blueprint_never_calls_it_a_roster(self) -> None:
-        offenders = [w for w in _windows(_BLUEPRINT.read_text(encoding="utf-8"), _ANCHOR, _RADIUS) if "roster" in w]
+        offenders = [w for w in _blueprint_windows() if "roster" in w]
         assert offenders == [], f"BLUEPRINT calls {_ANCHOR} a roster: …{offenders[0]}…"

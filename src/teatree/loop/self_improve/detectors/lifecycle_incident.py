@@ -245,6 +245,7 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
+            .without_newer_phase_sibling()
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)

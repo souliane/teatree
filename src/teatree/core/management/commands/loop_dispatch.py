@@ -14,6 +14,7 @@ from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.task_handoff import dispatch_reason
+from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park
 from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
@@ -159,7 +160,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]] | Task
     skill_bundle = _resolve_skill_bundle(task)
     if isinstance(skill_bundle, TaskAttempt):
         return skill_bundle
-    session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
+    session_id = task.session.agent_id if task.session_id else None
     model = resolve_spawn_model(
         normalize_phase(task.phase),
         skills=skill_bundle,
@@ -281,6 +282,10 @@ class Command(TyperCommand):
                 ordering=admission_claim_order(),
             )
         entry = _task_to_dict(task) if task is not None else None
+        if task is not None and isinstance(entry, dict):
+            parked = claim_task_checkout_or_park(task, lease_seconds=_interactive_claim_lease_seconds())
+            if parked is not None:
+                entry = parked
         payload: list[dict[str, Any]] = [entry] if isinstance(entry, dict) else []
 
         if task is not None and isinstance(entry, TaskAttempt):

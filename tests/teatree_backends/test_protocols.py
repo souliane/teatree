@@ -282,10 +282,6 @@ class _FakeMessaging:
         _ = since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[dict[str, object]]:
-        _ = since
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[dict[str, object]]:
         _ = since
         return []

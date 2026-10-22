@@ -11,7 +11,7 @@ neutralised the same evidence-less transition advances to MERGED.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -298,7 +298,7 @@ class TestVoidedMergeEvidence(TestCase):
 
     @staticmethod
     @contextlib.contextmanager
-    def _live(sha: str = MERGED_SHA) -> Iterator[MagicMock]:
+    def _live(sha: str = MERGED_SHA) -> Generator[MagicMock]:
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
             return_value=PrMergeState(state="MERGED", merge_commit_oid=sha),

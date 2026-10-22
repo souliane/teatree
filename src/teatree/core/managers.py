@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
@@ -25,6 +25,8 @@ from teatree.core.managers_admission import (
     _lane_occupancy_q,
     _lane_under_ceiling,
     _unseated_q,
+    rearm_parked_behind_rows,
+    waiting_for_admission_rows,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
@@ -37,6 +39,7 @@ from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
 
@@ -201,6 +204,13 @@ class WorktreeQuerySet(models.QuerySet):
 
 
 class TaskQuerySet(models.QuerySet):
+    def without_newer_phase_sibling(self) -> models.QuerySet:
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        newer = task_model.objects.filter(
+            ticket_id=OuterRef("ticket_id"), phase=OuterRef("phase"), pk__gt=OuterRef("pk")
+        ).exclude(status=task_model.Status.FAILED, failure_kind__in=NON_REPAIR_KINDS)
+        return self.alias(newer_phase_sibling=Exists(newer)).filter(newer_phase_sibling=False)
+
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         """Tasks scoped to an overlay through the ticket OR the session.
 
@@ -485,10 +495,12 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        now = timezone.now()
         return self.filter(
             _cheap_phase_q(),
+            _claimable_now_q(now),
             status=task_model.Status.PENDING,
-            admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
+            admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW,
         ).count()
 
     def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
@@ -517,16 +529,14 @@ class TaskQuerySet(models.QuerySet):
         return bool(seat.update(admitted_at=now))
 
     def waiting_for_admission(self) -> models.QuerySet:
-        """PENDING rows due now and holding no seat — what both headless chokepoints may admit or fail.
+        """PENDING rows due now, holding no seat, behind no held checkout — what both headless chokepoints may admit.
 
         ``_claimable_now_q`` keeps a usage-window-parked row out until its window re-arms.
         """
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        return waiting_for_admission_rows(self, timezone.now())
 
-        now = timezone.now()
-        return self.filter(_claimable_now_q(now), _unseated_q(now), status=task_model.Status.PENDING).select_related(
-            "ticket"
-        )
+    def rearm_parked_behind(self, *, holder: str, holder_session: str) -> int:
+        return rearm_parked_behind_rows(self, timezone.now(), holder=holder, holder_session=holder_session)
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

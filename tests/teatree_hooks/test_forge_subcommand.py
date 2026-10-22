@@ -159,6 +159,17 @@ class TestTraversalPrimitives:
     def test_a_wrapper_s_own_options_and_their_values_are_consumed(self) -> None:
         assert program_words(["env", "-u", "HOME", "-i", "time", "-p", "gh", "repo"]) == ["gh", "repo"]
 
+    def test_sudo_value_options_are_consumed_before_the_program(self) -> None:
+        words = ["sudo", "-D", "/srv", "-C", "4", "-r", "r", "-t", "t", "-T", "5", "-U", "u", "-R", "/", "gh", "pr"]
+        assert program_words(words) == ["gh", "pr"]
+
+    def test_long_sudo_value_options_are_consumed_before_the_program(self) -> None:
+        words = ["sudo", "--chdir", "/srv", "--close-from", "4", "--role", "r", "--type", "t", "gh", "pr"]
+        assert program_words(words) == ["gh", "pr"]
+
+    def test_bsd_xargs_replace_option_value_is_consumed_before_the_program(self) -> None:
+        assert program_words(["xargs", "-J", "%", "gh", "pr"]) == ["gh", "pr"]
+
     def test_a_segment_carrying_only_a_prefix_yields_no_program_word(self) -> None:
         assert program_words(["TOKEN=x", "(", ")"]) == []
 

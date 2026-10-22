@@ -2,8 +2,8 @@
 
 The per-tick inbound event buffers, split out of ``bot.py`` so the backend's
 outbound messaging surface stays under the module-health LOC cap. The Phase 3.6
-Socket Mode receiver pushes ``app_mention`` / ``message.im`` / ``reaction_added``
-events into :class:`SlackInbound`; the loop scanners read each per-tick batch
+Socket Mode receiver pushes ``app_mention`` / ``reaction_added`` events into
+:class:`SlackInbound`; the loop scanners read each per-tick batch
 back non-destructively so the scanners that share one backend each observe the
 same batch instead of racing a destructive drain.
 """
@@ -74,43 +74,34 @@ class SlackInbound:
     """Socket Mode inbound ingestion for one backend.
 
     The Phase 3.6 Socket Mode receiver pushes ``app_mention`` /
-    ``message.im`` / ``reaction_added`` events through :meth:`enqueue_mention`
-    / :meth:`enqueue_dm` / :meth:`enqueue_reaction`; the loop scanners read
-    each per-tick batch through :meth:`snapshot_mentions` / :meth:`snapshot_dms`
-    / :meth:`snapshot_reactions`. Reads are non-destructive within a tick so
-    the scanners that share one backend each observe the same batch, frozen at
-    the tick's first snapshot (#1655). The tick driver calls :meth:`begin_tick`
-    once at the start of each tick to roll in the arrivals that were buffered
-    for the next tick across all three queues at once.
-    Bundling the three queues and their ingestion behind one collaborator
-    keeps the inbound concern out of the outbound messaging surface.
+    ``reaction_added`` events through :meth:`enqueue_mention` /
+    :meth:`enqueue_reaction`; the loop scanners read each per-tick batch
+    through :meth:`snapshot_mentions` / :meth:`snapshot_reactions`. Reads are
+    non-destructive within a tick so the scanners that share one backend each
+    observe the same batch, frozen at the tick's first snapshot (#1655). The
+    tick driver calls :meth:`begin_tick` once at the start of each tick to roll
+    in the arrivals that were buffered for the next tick across both queues.
+    Bundling the queues and their ingestion behind one collaborator keeps the
+    inbound concern out of the outbound messaging surface.
     """
 
     def __init__(self) -> None:
         self._mentions = _TickFanoutQueue()
-        self._dms = _TickFanoutQueue()
         self._reactions = _TickFanoutQueue()
 
     def begin_tick(self) -> None:
-        """Freeze the next per-tick batch across all three queues (mentions/DMs/reactions)."""
+        """Freeze the next per-tick batch across both queues (mentions/reactions)."""
         self._mentions.begin_tick()
-        self._dms.begin_tick()
         self._reactions.begin_tick()
 
     def enqueue_mention(self, event: RawAPIDict) -> None:
         self._mentions.enqueue(event)
-
-    def enqueue_dm(self, event: RawAPIDict) -> None:
-        self._dms.enqueue(event)
 
     def enqueue_reaction(self, event: RawAPIDict) -> None:
         self._reactions.enqueue(event)
 
     def snapshot_mentions(self) -> list[RawAPIDict]:
         return self._mentions.snapshot()
-
-    def snapshot_dms(self) -> list[RawAPIDict]:
-        return self._dms.snapshot()
 
     def snapshot_reactions(self) -> list[RawAPIDict]:
         return self._reactions.snapshot()

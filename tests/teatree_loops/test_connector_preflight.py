@@ -9,7 +9,7 @@ down connector still fails loud.
 
 import datetime as dt
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -52,7 +52,7 @@ class _SlackDownOverlay(OverlayBase):
 
 
 @contextmanager
-def _registered(overlays: dict[str, OverlayBase]) -> Iterator[None]:
+def _registered(overlays: dict[str, OverlayBase]) -> Generator[None]:
     with (
         patch("teatree.core.connector_preflight.get_all_overlays", return_value=overlays),
         patch("teatree.loops.connector_preflight.get_all_overlays", return_value=overlays),

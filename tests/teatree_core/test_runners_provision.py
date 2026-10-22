@@ -7,7 +7,7 @@ the coding task.
 """
 
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -29,8 +29,9 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 class TestWorktreeProvisioner(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _scoped_ticket(self, repos: list[str], *, branch: str = "ac-repo-77-x") -> Ticket:
         return Ticket.objects.create(
@@ -41,7 +42,7 @@ class TestWorktreeProvisioner(TestCase):
         )
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -64,6 +65,48 @@ class TestWorktreeProvisioner(TestCase):
 
         assert result.ok is False
         assert "no repos" in result.detail.lower()
+
+    def test_duplicate_recorded_rows_use_the_first_row(self) -> None:
+        ticket = self._scoped_ticket(repos=["repo-a"])
+        first = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="repo-a", branch="first")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="repo-a", branch="second")
+        selected: list[int] = []
+
+        class RowSelectedError(Exception):
+            pass
+
+        def capture(_repo: str, existing: Worktree | None, _root: Path) -> None:
+            selected.append(existing.pk if existing is not None else -1)
+            raise RowSelectedError
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision._recorded_plan", side_effect=capture),
+            pytest.raises(RowSelectedError),
+        ):
+            WorktreeProvisioner(ticket).run()
+
+        assert selected == [first.pk]
+
+    def test_refuses_disallowed_new_checkout_before_clone_or_directory(self) -> None:
+        ticket = self._scoped_ticket(repos=["repo-a"])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch.object(Path, "home", return_value=self.workspace / "home"),
+            patch("teatree.config.checkout_roots._stored_workspace_dirs", return_value=((), "")),
+            patch("teatree.config.checkout_roots.disposable_roots", return_value=()),
+            patch("teatree.core.runners.provision.ensure_clone") as ensure_clone,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert not result.ok
+        assert "outside allowed worktree roots" in result.detail
+        assert not (self.workspace / "ac-repo-a-77-x").exists()
+        ensure_clone.assert_not_called()
+        assert Ticket.objects.filter(pk=ticket.pk).exists()
 
     def test_creates_worktree_rows_and_git_worktrees(self) -> None:
         repo_dir = self.workspace / "repo-a"
@@ -89,7 +132,7 @@ class TestWorktreeProvisioner(TestCase):
         ):
             result = WorktreeProvisioner(ticket).run()
 
-        assert result.ok is True
+        assert result.ok is True, result.detail
         wt_path = self.workspace / "ac-repo-a-77-x" / "repo-a"
         assert str(wt_path) in created_paths
 
@@ -283,11 +326,12 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -435,11 +479,12 @@ class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     @contextmanager
-    def _patch_workspace_dir(self) -> Iterator[None]:
+    def _patch_workspace_dir(self) -> Generator[None]:
         """Point both #regroup roots at the one test workspace.
 
         Clone discovery and worktree creation use separate resolvers after the
@@ -548,8 +593,9 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:
         return Ticket.objects.create(
@@ -696,8 +742,9 @@ class TestWorktreeProvisionerAdopt(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _outside_clone_and_worktree(self, branch: str) -> tuple[Path, Path]:
         """A real clone + a real worktree on *branch*, both OUTSIDE the clone root."""
@@ -787,6 +834,28 @@ class TestWorktreeProvisionerAdopt(TestCase):
         assert (wt.extra or {}).get("worktree_path") == str(worktree)
         assert (wt.extra or {}).get("clone_path") == str(discovered)
 
+    def test_partial_adopt_refuses_new_checkout_under_disallowed_root(self) -> None:
+        _, adopted = self._outside_clone_and_worktree("feature-partial")
+        disallowed = self.tmp / "capped"
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/5247-partial",
+            repos=["myrepo", "other"],
+            extra={"branch": "feature-partial", "adopt": {"myrepo": str(adopted)}},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=disallowed),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        assert not result.ok
+        assert "outside_allowed_roots" in result.detail
+        assert adopted.is_dir()
+        assert not disallowed.exists()
+        worktree_add.assert_not_called()
+
 
 class TestWorktreeProvisionerIsIdempotent(TestCase):
     """souliane/teatree#3234: a leftover worktree must never strand the ticket forever.
@@ -807,8 +876,9 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _clone(self, repo: str = "repo-a") -> Path:
         """A real clone with one commit on ``main``, PUSHED to a real ``origin``.
@@ -981,9 +1051,7 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert self._recorded_path(ticket) == str(wt_path), "the dead path was handed back instead of re-provisioned"
         assert git.current_branch(str(wt_path)) == branch
 
-    def test_row_recording_a_directory_that_is_not_a_checkout_is_reprovisioned(self) -> None:
-        # The dir survives but holds no checkout, so every git-driven step over it
-        # no-ops. A recorded path is not evidence; a live checkout is.
+    def test_dead_recorded_row_outside_roots_is_refused_without_touching_the_directory(self) -> None:
         self._clone()
         branch = "3943-hollow"
         hollow = self.tmp / "hollow" / "repo-a"
@@ -991,10 +1059,37 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
 
         result, ticket = self._provision(branch, recorded_path=str(hollow))
 
-        assert result.ok is True, result.detail
-        recorded = Path(self._recorded_path(ticket))
-        assert (recorded / ".git").exists(), "a hollow directory was accepted as a checkout"
-        assert git.current_branch(str(recorded)) == branch
+        assert not result.ok
+        assert "workspace_dir" in result.detail
+        assert "workspace relocate" in result.detail
+        assert result.code == "outside_allowed_roots"
+        assert self._recorded_path(ticket) == str(hollow)
+        assert hollow.is_dir()
+        assert not (hollow / ".git").exists()
+
+    def test_dead_outside_row_on_a_later_repo_still_points_at_relocate(self) -> None:
+        self._clone("repo-a")
+        self._clone("repo-b")
+        hollow = self.tmp / "hollow" / "repo-b"
+        hollow.mkdir(parents=True)
+
+        result, _ = self._provision("3943-later", repo="repo-b", repos=("repo-a", "repo-b"), recorded_path=str(hollow))
+
+        assert result.code == "outside_allowed_roots"
+        assert "workspace relocate" in result.detail
+
+    def test_hollow_recorded_directory_inside_allowed_root_is_reprovisioned(self) -> None:
+        self._clone()
+        branch = "3943-hollow-allowed"
+        hollow = self.workspace / branch / "repo-a"
+        hollow.mkdir(parents=True)
+
+        result, ticket = self._provision(branch, recorded_path=str(hollow))
+
+        assert result.ok, result.detail
+        assert self._recorded_path(ticket) == str(hollow)
+        assert (hollow / ".git").exists()
+        assert git.current_branch(str(hollow)) == branch
 
     def test_live_recorded_checkout_short_circuits_provisioning(self) -> None:
         # The other half of the contract: a checkout that IS there earns the no-op,
@@ -1133,8 +1228,9 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _init_clone(self, path: Path, remote_url: str) -> None:
         # ``make_git_repo`` (not a hand-rolled ``git init``): the provisioner runs a
@@ -1243,8 +1339,9 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _ticket(self, branch: str) -> Ticket:
         return Ticket.objects.create(
@@ -1255,7 +1352,7 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
         )
 
     @contextmanager
-    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Iterator[None]:
+    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Generator[None]:
         declared = ["group/widget-core=chore/fork-bootstrap"]
 
         class _Settings:
@@ -1352,8 +1449,9 @@ class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _clone(self, at: Path) -> Path:
         """A real clone with one commit on ``main``, pushed to a real bare origin.
@@ -1488,8 +1586,9 @@ class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _clone(self, at: Path) -> Path:
         at.mkdir(parents=True)
@@ -1551,8 +1650,9 @@ class TestWorktreeProvisionerCutsFromAFetchedBase(TestCase):
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
+        self.workspace = tmp_path / "home" / "workspace" / "t3-workspaces"
+        self.enterContext(patch.object(Path, "home", return_value=tmp_path / "home"))
+        self.workspace.mkdir(parents=True)
 
     def _origin(self, repo: str) -> Path:
         return self.tmp / "origin" / f"{repo}.git"

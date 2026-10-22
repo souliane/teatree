@@ -1258,10 +1258,20 @@ class TestTasksCancelCommand(TestCase):
         # #3957: the operator's words are kept, under the ``cancelled`` kind prefix that
         # makes the cause machine-readable on the listing and the card.
         assert attempt.error == "cancelled: superseded by !9122"
-        assert attempt.result == {"cancel_reason": "cancelled: superseded by !9122"}
+        assert attempt.result == {"cancel_reason": "cancelled: superseded by !9122", "cancel_source": "agent"}
         assert attempt.exit_code == 1  # a cancellation is a non-success terminal
         assert task.failure_kind == FailureKind.CANCELLED
         assert task.failure_reason == "cancelled: superseded by !9122"
+
+    def test_direct_owner_cancel_records_the_owner_source(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with mock.patch("teatree.core.management.commands.tasks.direct_owner_action", return_value=True):
+            call_command("tasks", "cancel", task.pk)
+
+        assert task.attempts.get().result["cancel_source"] == "owner"
 
     def test_cancel_without_reason_still_records_the_cancellation(self) -> None:
         # #3957: ``--reason`` is optional, recording a cause is not. A bare cancel used

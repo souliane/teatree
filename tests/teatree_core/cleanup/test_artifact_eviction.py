@@ -807,8 +807,7 @@ class TestGuards(_EvictionFixture):
         assert artifact.exists()
         assert outcome.freed_bytes == 0
 
-    def test_a_pid_that_goes_mute_mid_batch_does_not_abort_the_batch(self) -> None:
-        """A shared box always has mute pids; aborting on one leaves the reclaim inert."""
+    def test_a_same_user_pid_that_goes_mute_mid_batch_stops_deletion(self) -> None:
         checkout = make_git_repo(self.workspace / "clone")
         artifact = _artifact_in(checkout)
         self._some_process_exists()
@@ -827,8 +826,29 @@ class TestGuards(_EvictionFixture):
         with patch.object(Path, "readlink", _readlink):
             outcome = evict_artifacts(plan)
 
-        assert not artifact.exists()
-        assert not outcome.refusal
+        assert artifact.exists()
+        assert "pid 2" in outcome.refusal
+
+    def test_a_same_user_pid_that_is_mute_at_plan_time_refuses_the_pass(self) -> None:
+        checkout = make_git_repo(self.workspace / "clone")
+        artifact = _artifact_in(checkout)
+        self._some_process_exists()
+        hidden = self.host_proc / "2" / "fd" / "0"
+        hidden.parent.mkdir(parents=True)
+        hidden.symlink_to(self.workspace / "unknown")
+        readlink = Path.readlink
+
+        def _readlink(path: Path) -> Path:
+            if path == hidden:
+                raise PermissionError
+            return readlink(path)
+
+        with patch.object(Path, "readlink", _readlink):
+            plan = self._plan()
+
+        assert artifact.exists()
+        assert plan.candidates == ()
+        assert "pid 2" in plan.refusal
 
 
 class TestDeleteTimeIdentity(_EvictionFixture):
@@ -1222,16 +1242,8 @@ class TestThePassIsNotItsOwnWitness(_EvictionFixture):
         assert artifact.exists()
 
 
-class TestAMutePidCostsReclaimRatherThanTheWholePass(_EvictionFixture):
-    """Only a pid's own uid may read its links, so a shared box always has mute pids.
-
-    214 of 304 pids on the box that produced this issue are root-owned and 35 of 325
-    present a listable-but-unresolvable ``fd``. A table that demanded every answer
-    would refuse forever — the pass, the ``clean-all`` liveness guard and the
-    worktree GC alike.
-    """
-
-    def test_a_pid_this_uid_cannot_read_narrows_the_answer_without_refusing(self) -> None:
+class TestSameUserMutePidRefusesEviction(_EvictionFixture):
+    def test_a_pid_this_uid_cannot_read_refuses_the_pass(self) -> None:
         checkout = make_git_repo(self.workspace / "clone")
         artifact = _artifact_in(checkout)
         self._some_process_exists()
@@ -1242,9 +1254,10 @@ class TestAMutePidCostsReclaimRatherThanTheWholePass(_EvictionFixture):
         plan = self._plan()
         outcome = evict_artifacts(plan)
 
-        assert not plan.refusal, "a mute pid narrows what is known; it does not refuse the pass"
-        assert not artifact.exists()
-        assert outcome.freed_bytes > 0
+        assert "pid 12" in plan.refusal
+        assert plan.candidates == ()
+        assert artifact.exists()
+        assert outcome.freed_bytes == 0
 
 
 class TestTheVenueBoundsThePopulation(TestCase):

@@ -10,7 +10,7 @@ import contextlib
 import hashlib
 import json
 import shlex
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 from teatree.backends.notion.errors import NotionBlockChangedError, NotionWriteNotApprovedError
@@ -33,7 +33,7 @@ def approval_hint(target: str, action: str) -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def spent_approval(target: str, action: str) -> Iterator[None]:
+def spent_approval(target: str, action: str) -> Generator[None]:
     """Spend the recorded approval before the write runs, and audit it whether or not the write succeeds.
 
     The claim is its own short transaction and the audit runs after the send: one ``atomic`` block around
