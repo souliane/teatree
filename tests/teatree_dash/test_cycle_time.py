@@ -10,8 +10,10 @@ different time scales while the page shows one set of labels).
 import re
 from dataclasses import replace
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
+from django.db.models.signals import post_save
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -23,6 +25,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.signals import _auto_enqueue_task
 from teatree.dash.charts import BAR_WIDTH, TREND_PADDING, TREND_WIDTH, BarInput, line_series, stacked_bar
 from teatree.dash.cycle_time import (
     DEFAULT_WINDOW_DAYS,
@@ -33,6 +36,7 @@ from teatree.dash.cycle_time import (
     clamp_window_days,
 )
 from teatree.dash.views.base import NAV_ITEMS
+from tests.factories import PullRequestFactory
 
 State = Ticket.State
 MINUTE = 60.0
@@ -71,6 +75,17 @@ def ticket_taking(
         cost_is_estimated=True,
     )
     return ticket
+
+
+def started_pull_request(*, hours_ago: float, state: str = PullRequest.State.OPEN) -> PullRequest:
+    ticket = Ticket.objects.create()
+    task = Task.objects.create(
+        ticket=ticket,
+        session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+        phase="coding",
+    )
+    Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(hours=hours_ago))
+    return PullRequestFactory.create(ticket=ticket, state=state)
 
 
 class StackedBarGeometryTestCase(TestCase):
@@ -369,8 +384,55 @@ class CycleTimePageTestCase(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = ticket_taking(minutes=85, phase_cost=1.5)
 
+    def setUp(self) -> None:
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
     def test_the_page_is_in_the_nav(self) -> None:
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
+
+    def test_the_flow_band_shows_the_merged_median_and_open_ages_oldest_first(self) -> None:
+        for hours in (1, 2, 100):
+            merged = started_pull_request(hours_ago=hours, state=PullRequest.State.MERGED)
+            TicketTransition.objects.create(
+                ticket=merged.ticket, from_state=State.REVIEW_REQUESTED, to_state=State.MERGED
+            )
+        young = started_pull_request(hours_ago=5)
+        old = started_pull_request(hours_ago=80)
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Pull requests: start to merged" in body
+        assert "Median of 3 merged pull requests: <strong>2h</strong>" in body
+        assert body.index(old.url) < body.index(young.url)
+        old_row = re.search(rf'<tr>\s*<td><a href="{re.escape(old.url)}">.*?</tr>', body, re.DOTALL)
+        assert old_row is not None
+        assert '<td class="num">80h <span class="chip warn">72h+</span></td>' in old_row.group()
+        young_row = re.search(rf'<tr>\s*<td><a href="{re.escape(young.url)}">.*?</tr>', body, re.DOTALL)
+        assert young_row is not None
+        assert 'class="chip warn"' not in young_row.group()
+        assert re.search(rf'{re.escape(young.url)}</a></td>\s*<td class="num">5h</td>', body)
+
+    def test_the_flow_band_shows_empty_open_and_unmeasured_median_states(self) -> None:
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Median of 0 merged pull requests: <strong>—</strong>" in body
+        assert "No open pull requests." in body
+
+    def test_an_open_pull_request_without_a_clock_is_labelled_unmeasured(self) -> None:
+        row = PullRequestFactory(ticket=Ticket.objects.create())
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert re.search(rf'{re.escape(row.url)}</a></td>\s*<td class="num">unmeasured</td>', body)
+
+    def test_stale_pull_request_chip_uses_the_threshold(self) -> None:
+        started_pull_request(hours_ago=80)
+
+        with patch("teatree.dash.cycle_time.OPEN_PR_RED_HOURS", 48.0):
+            body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert '<span class="chip warn">48h+</span>' in body
 
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)

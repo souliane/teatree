@@ -21,9 +21,13 @@ from teatree.core.cycle_time import (
     TransitionStat,
     build_merge_wait_breakdowns,
     build_ticket_timelines,
+    merged_pull_request_seconds,
+    open_pull_requests,
+    percentile,
     transition_distribution,
     transition_trend,
 )
+from teatree.core.factory.factory_signal_queries import OPEN_PR_RED_HOURS
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.charts import BarInput, LineSeries, StackedBar, line_series, stacked_bar
@@ -103,6 +107,13 @@ class TicketRow:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenPullRequestRow:
+    url: str
+    age: str
+    stale: bool
+
+
+@dataclass(frozen=True, slots=True)
 class CycleTimeView:
     window_days: int
     since: datetime
@@ -115,6 +126,10 @@ class CycleTimeView:
     merge_rows: tuple[MergeWaitRow, ...]
     merge_summary: MergeSummary
     wait_headers: tuple[str, ...]
+    pr_median: str
+    pr_merged_count: int
+    open_prs: tuple[OpenPullRequestRow, ...]
+    open_pr_red_hours: float
 
 
 def clamp_window_days(raw: str) -> int:
@@ -127,8 +142,11 @@ def clamp_window_days(raw: str) -> int:
 
 
 def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTimeView:
-    since = timezone.now() - timedelta(days=window_days)
+    now = timezone.now()
+    since = now - timedelta(days=window_days)
     stats = transition_distribution(since=since)
+    merged = merged_pull_request_seconds(since=since, until=now)
+    open_rows = open_pull_requests(now=now)
     timelines = build_ticket_timelines(_recently_active_ticket_ids(since))
     ordered = sorted(timelines.values(), key=lambda line: line.ended_at or since, reverse=True)
     scale = max((line.lead_time_seconds for line in ordered), default=0.0)
@@ -162,6 +180,17 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
         ),
         merge_summary=build_merge_summary(merges),
         wait_headers=tuple(WAIT_LABELS[cause] for cause in WAIT_CAUSES),
+        pr_median=_humanize_duration(percentile(merged, 0.5)) if merged else "—",
+        pr_merged_count=len(merged),
+        open_pr_red_hours=OPEN_PR_RED_HOURS,
+        open_prs=tuple(
+            OpenPullRequestRow(
+                url=row.url,
+                age=_humanize_duration(row.age_seconds) if row.age_seconds is not None else "unmeasured",
+                stale=row.age_seconds is not None and row.age_seconds >= OPEN_PR_RED_HOURS * 3600,
+            )
+            for row in open_rows
+        ),
     )
 
 
