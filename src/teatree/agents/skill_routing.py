@@ -99,7 +99,7 @@ _LOCK = RLock()
 # which immediately replaces its observation through ``record_route_unavailable``.
 # Re-reading durable state on every dispatch would defeat the no-DB-hot-path goal.
 _AVAILABLE_TTL = timedelta(minutes=10)
-_UNAVAILABLE_TTL = timedelta(minutes=2)
+UNAVAILABLE_TTL = timedelta(minutes=2)
 QUOTA_AUTH_HOLD = timedelta(hours=1)
 
 
@@ -121,24 +121,30 @@ def _persistent_observation(key: _AvailabilityKey) -> RouteAvailabilityObservati
 
 def _persist(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> None:
     try:
-        AgentRouteAvailability.objects.update_or_create(
-            overlay=key[0],
-            harness=key[1],
-            provider=key[2],
-            model=key[3],
-            phase=key[4],
-            defaults={
-                "unavailable_reason": observation.unavailable_reason or "",
-                "observed_at": observation.observed_at,
-                "retry_at": observation.retry_at,
-            },
-        )
+        lookup = {
+            "overlay": key[0],
+            "harness": key[1],
+            "provider": key[2],
+            "model": key[3],
+            "phase": key[4],
+        }
+        if observation.unavailable_reason:
+            AgentRouteAvailability.objects.update_or_create(
+                **lookup,
+                defaults={
+                    "unavailable_reason": observation.unavailable_reason,
+                    "observed_at": observation.observed_at,
+                    "retry_at": observation.retry_at,
+                },
+            )
+        else:
+            AgentRouteAvailability.objects.filter(**lookup).delete()
     except (OperationalError, ProgrammingError):
         return
 
 
 def _is_long_hold(observation: RouteAvailabilityObservation) -> bool:
-    return bool(observation.unavailable_reason) and observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
+    return bool(observation.unavailable_reason) and observation.retry_at - observation.observed_at > UNAVAILABLE_TTL
 
 
 def _hold_was_cleared(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> bool:
@@ -183,13 +189,13 @@ def cached_unavailable_reason(
             # the cheap local capability probe before trusting cached health.
             reason = probe()
             if reason:
-                unavailable = RouteAvailabilityObservation(reason, now, now + _UNAVAILABLE_TTL)
+                unavailable = RouteAvailabilityObservation(reason, now, now + UNAVAILABLE_TTL)
                 _MEMORY[key] = unavailable
                 _persist(key, unavailable)
             return reason
 
         reason = probe()
-        ttl = _UNAVAILABLE_TTL if reason else _AVAILABLE_TTL
+        ttl = UNAVAILABLE_TTL if reason else _AVAILABLE_TTL
         observation = RouteAvailabilityObservation(reason, now, now + ttl)
         _MEMORY[key] = observation
         _persist(key, observation)
@@ -206,7 +212,7 @@ def record_route_unavailable(
 ) -> None:
     key = _key(overlay, candidate, phase)
     now = timezone.now()
-    observation = RouteAvailabilityObservation(reason, now, now + (retry_after or _UNAVAILABLE_TTL))
+    observation = RouteAvailabilityObservation(reason, now, now + (retry_after or UNAVAILABLE_TTL))
     with _LOCK:
         current = _MEMORY.get(key)
         if current is None or current.observed_at <= now:

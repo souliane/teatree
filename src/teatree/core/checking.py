@@ -155,7 +155,7 @@ class CheckingReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
-    metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
+    metered: CheckGroup
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -209,7 +209,7 @@ class AllOverlaysReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
-    metered: CheckGroup = field(default_factory=lambda: CheckGroup(title="Metered"))
+    metered: CheckGroup
 
     @property
     def groups(self) -> list[CheckGroup]:

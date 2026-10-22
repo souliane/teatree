@@ -89,6 +89,52 @@ class CheckingTestBase(TestCase):
 
 
 class TestMeteredGroup(CheckingTestBase):
+    def _metered(
+        self, ticket: Ticket, *, ended: datetime, cost_usd: float | None = None, lane: str = TaskAttempt.Lane.METERED
+    ) -> None:
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        attempt = TaskAttempt.objects.create(task=task, lane=lane, cost_usd=cost_usd)
+        TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=ended)
+
+    def test_a_ticket_with_an_unpriced_metered_attempt_reports_cost_unavailable(self) -> None:
+        ticket = self._ticket(number=5399)
+        self._metered(ticket, ended=self.now - timedelta(hours=1), cost_usd=1.25)
+        self._metered(ticket, ended=self.now - timedelta(hours=2))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [item.detail for item in report.metered.items] == ["2 attempts, estimated cost unavailable"]
+
+    def test_the_metered_group_counts_only_this_overlays_metered_attempts_inside_the_window(self) -> None:
+        mine = self._ticket(number=5399)
+        other = Ticket.objects.create(overlay="other", issue_url="https://github.com/other/x/issues/7")
+        self._metered(mine, ended=self.now - timedelta(hours=1), cost_usd=1.0)
+        self._metered(mine, ended=self.since - timedelta(minutes=1), cost_usd=2.0)
+        self._metered(mine, ended=self.now, cost_usd=4.0)
+        self._metered(mine, ended=self.now - timedelta(hours=1), cost_usd=8.0, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        self._metered(other, ended=self.now - timedelta(hours=1), cost_usd=16.0)
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [(item.label, item.detail) for item in report.metered.items] == [("#5399", "estimated $1.00")]
+        assert report.metered.total == 1
+
+    def test_the_all_overlays_metered_group_caps_its_rows_newest_first_and_counts_every_ticket(self) -> None:
+        beta = "beta"
+        tickets = [(self.OVERLAY, 5399, 1), (self.OVERLAY, 5400, 3), (beta, 7, 2)]
+        for overlay, number, hours_ago in tickets:
+            ticket = Ticket.objects.create(overlay=overlay, issue_url=f"https://github.com/{overlay}/x/issues/{number}")
+            self._metered(ticket, ended=self.now - timedelta(hours=hours_ago), cost_usd=1.0)
+
+        report = gather_all_overlays_report(
+            overlay_windows=dict.fromkeys((self.OVERLAY, beta), (self.since, self.now)),
+            overlay_configs={name: ("github", []) for name in (self.OVERLAY, beta)},
+            cap=1,
+        )
+
+        assert [item.label for item in report.metered.items] == ["#5399"]
+        assert report.metered.total == 3
+
     def test_metered_attempt_and_estimated_cost_appear_in_both_reports(self) -> None:
         ticket = self._ticket(number=5399)
         session = Session.objects.create(ticket=ticket, agent_id="a")
@@ -496,6 +542,7 @@ class TestPureRenderers:
             merged=CheckGroup(title="Merged"),
             in_flight=CheckGroup(title="In-flight"),
             needs_you=CheckGroup(title="Needs you"),
+            metered=CheckGroup(title="Metered"),
         )
         assert report.to_terse().startswith("Nothing since ")
 

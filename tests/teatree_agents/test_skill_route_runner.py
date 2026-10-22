@@ -162,6 +162,29 @@ class TestSkillRouteRuntimeFallback(TestCase):
             f"agent_route_paid_fallback:{timezone.now().date().isoformat()}"
         }
 
+    def test_a_metered_first_candidate_is_not_a_fall_through_and_sends_no_owner_alert(self) -> None:
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+
+        with patch.object(runner_mod, "notify_user") as notify:
+            attempt = self._run(self._config("claude_like"))
+
+        assert attempt.lane == TaskAttempt.Lane.METERED
+        notify.assert_not_called()
+
+    def test_a_failing_owner_alert_does_not_fail_the_metered_fall_through(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user", side_effect=RuntimeError("slack is down")) as notify,
+        ):
+            attempt = self._run(self._config("codex_like", "claude_like"))
+
+        assert (attempt.lane, attempt.exit_code) == (TaskAttempt.Lane.METERED, 0)
+        notify.assert_called()
+
     def test_typed_codex_runtime_failure_switches_to_claude_and_records_provenance(self) -> None:
         self._register("codex_like", _TypedFailureSession)
         self._register("claude_like", FakeHarnessSession)

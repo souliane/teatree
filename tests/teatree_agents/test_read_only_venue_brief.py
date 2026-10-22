@@ -11,6 +11,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+import teatree.agents.phase_blocks as phase_blocks_mod
+import teatree.agents.prompt as prompt_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents._runner_env import DispatchCredential
 from teatree.agents.context_budget import MAX_APPEND_BYTES
@@ -187,8 +189,31 @@ class TestTheReadOnlyVenueBrief(TestCase):
                 message = read_only_task_message(phase)
                 assert not _T3_INVOCATION.search(context)
                 if phase == "reviewing":
-                    assert "teatree ticket show 123" in context
+                    assert "teatree ticket show 123" not in context
                 assert "t3 teatree ticket show 123" in message
+
+    def test_review_rubric_and_seams_are_in_the_task_message(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        facts = ReadOnlyFacts("issue", "", "", "", "", "", "", "")
+        rubric = ("", "RUBRIC MARKER run t3 doctor check")
+        seams = ("", "SEAMS MARKER run `t3 teatree pr create`")
+
+        with (
+            patch.object(phase_blocks_mod, "rubric_brief_lines", return_value=rubric),
+            patch.object(phase_blocks_mod, "declared_seams_brief_lines", return_value=seams),
+            patch.object(prompt_mod, "rubric_brief_lines", return_value=rubric),
+            patch.object(prompt_mod, "declared_seams_brief_lines", return_value=seams),
+        ):
+            system = prompt_mod.build_read_only_system_context(task, skills=[])
+            message = build_read_only_task_prompt(task, facts)
+
+        assert "RUBRIC MARKER" not in system
+        assert "SEAMS MARKER" not in system
+        assert f"RUBRIC MARKER run {ABSENT_TOOL} doctor check" in message
+        assert f"SEAMS MARKER run {ABSENT_TOOL}" in message
+        assert not _T3_INVOCATION.search(message)
 
     def test_task_evidence_preserves_distinct_command_changes(self) -> None:
         task = self._task()

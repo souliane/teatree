@@ -16,12 +16,7 @@ from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import (
-    DispatchHarness,
-    resolve_dispatch_harness,
-    route_has_later_candidate,
-    route_hold,
-)
+from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness, route_hold
 from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
@@ -133,7 +128,7 @@ class _RouteRetry:
     handoff: Path | None
     dispatch: DispatchHarness
 
-    def after(self, record: _RouteFailureRecord) -> TaskAttempt:
+    def after(self, record: _RouteFailureRecord, *, learn_failure: bool = True) -> TaskAttempt:
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
         _alert_owner_of_metered_fallback(attempt)
         if record.outcome is not None:
@@ -141,7 +136,8 @@ class _RouteRetry:
             if record.outcome.tool_calls:
                 _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
+        if learn_failure:
+            _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
         return _run_agent(
             self.task,
             phase=self.phase,
@@ -196,7 +192,7 @@ def _retry_route_exception(
     if (
         isinstance(exc, ReadOnlyBriefRefusedError)
         and preflight.dispatch.route_candidate_index is not None
-        and not route_has_later_candidate(preflight.dispatch)
+        and not preflight.dispatch.has_later_candidate
     ):
         hold = route_hold(preflight.dispatch.name, str(exc))
         return park_on_timed_rejections(task, (hold,)) or _record_failure(  # no-usage: no billed turn ran
@@ -205,7 +201,7 @@ def _retry_route_exception(
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
-        return route_retry.after(record)
+        return route_retry.after(record, learn_failure=not isinstance(exc, ReadOnlyBriefRefusedError))
     return None
 
 

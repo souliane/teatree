@@ -30,6 +30,7 @@ _BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_
 CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
+READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
 
 
 _PARK_ERROR = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
@@ -42,19 +43,30 @@ class TaskAttemptQuerySet(models.QuerySet):
     def excluding_parks(self) -> "TaskAttemptQuerySet":
         return self.exclude(_PARK_ERROR)
 
-    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
-        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+    def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (
             self.filter(error__startswith=LIMIT_PARKED_PREFIX).order_by("-pk").values_list("pk", flat=True).first()
         )
-        failed = self.filter(
+        return self.filter(pk__gt=last_park or 0)
+
+    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
+        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+        failed = self._since_last_park().filter(
             route_source_skill=source_skill,
             route_candidate_index__isnull=False,
             outcome__in=TaskAttempt.FAILED_OUTCOMES,
             failure_kind__in=CANDIDATE_FAULT_KINDS,
-            pk__gt=last_park or 0,
         )
         return dict(failed.order_by("pk").values_list("route_candidate_index", "pk"))
+
+    def refused_brief_candidates(self, source_skill: str) -> dict[int, str]:
+        """Route candidate index -> the reason its read-only brief was last refused, since the task's last park."""
+        refused = self._since_last_park().filter(
+            route_source_skill=source_skill,
+            route_candidate_index__isnull=False,
+            error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX,
+        )
+        return dict(refused.order_by("pk").values_list("route_candidate_index", "error"))
 
     def create(self, **kwargs: object) -> "TaskAttempt":
         """Record an attempt — folding a REPEATED, unchanged usage-window park into one row.

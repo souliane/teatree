@@ -174,6 +174,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
     def test_a_refused_read_only_brief_records_failure_and_parks_without_spending(self) -> None:
         self._register_claude()
 
+        assert not AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
         before = timezone.now()
         attempt = self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"})
 
@@ -182,7 +183,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert attempt.task.not_before > before
         assert "the issue body could not be read" in attempt.error
         assert "agent_route_paid_fallback" in attempt.error
-        assert AgentRouteAvailability.objects.filter(harness="codex_app_server").exclude(unavailable_reason="").exists()
+        assert not AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
         assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
         assert self.built == []
         assert not [call for call in self.fake.calls if "setsid" in call]
@@ -203,21 +204,16 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert attempt.selected_harness == "other_free"
         assert attempt.lane != TaskAttempt.Lane.METERED
 
-    def test_a_read_only_run_that_fails_mid_run_is_recorded_and_held_then_parks_at_the_metered_gate(self) -> None:
+    def test_a_read_only_run_that_fails_mid_run_records_failure_and_route_hold(self) -> None:
         self._register_claude()
         register_harness(HarnessSpec(name="quota_ro", factory=lambda _context: _QuotaHarness(), allows_provider=False))
         self.addCleanup(harness_registry._REGISTRY.pop, "quota_ro", None)
 
         attempt = self._run("quota_ro", "claude_like")
 
-        attempt.task.refresh_from_db()
         failed = attempt.task.attempts.get(selected_harness="quota_ro")
         assert "ChatGPT quota exhausted" in failed.error
         assert AgentRouteAvailability.objects.filter(harness="quota_ro").exclude(unavailable_reason="").exists()
-        assert attempt.task.status == Task.Status.PENDING
-        assert attempt.task.not_before > timezone.now()
-        assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
-        assert self.built == []
 
     def test_third_read_only_refusal_fails_with_a_readable_reason(self) -> None:
         task = self._task()

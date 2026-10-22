@@ -13,6 +13,7 @@ from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
@@ -115,7 +116,7 @@ class ReadOnlyBriefRefusedError(HarnessFallbackError):
 
 def _refused(reason: str) -> ReadOnlyBriefRefusedError:
     return ReadOnlyBriefRefusedError(
-        f"read-only executor brief refused: {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False
+        f"{READ_ONLY_BRIEF_REFUSED_PREFIX} {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False
     )
 
 

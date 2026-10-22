@@ -455,6 +455,27 @@ class TestCheckingShowAllOverlays:
         assert "all_overlays" in payload
         assert "merged" in payload
 
+    def test_all_overlays_notify_recap_carries_each_overlays_metered_table(self, tmp_path: Path) -> None:
+        for overlay, number in (("acme", 1), ("beta", 2)):
+            ticket = Ticket.objects.create(
+                overlay=overlay, issue_url=f"https://github.com/{overlay}/core/issues/{number}"
+            )
+            task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+            attempt = TaskAttempt.objects.create(
+                task=task, lane=TaskAttempt.Lane.METERED, route_candidate_index=1, cost_usd=1.25, exit_code=0
+            )
+            TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=timezone.now() - timedelta(minutes=5))
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+            _two_overlay_patch(),
+        ):
+            _call("checking", "show", "--no-advance", "--notify")
+        row = BotPing.objects.get(idempotency_key__startswith="checking_recap:all:")
+        assert "Metered (2)" in row.text
+        assert row.text.count("estimated $1.25") == 2
+
 
 class TestMachineOutputChannel:
     """``checking show`` is a seam verb: stdout carries JSON or nothing at all."""

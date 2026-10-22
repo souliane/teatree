@@ -2,7 +2,6 @@
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -30,9 +29,10 @@ from teatree.agents.model_tiering import (
 )
 from teatree.agents.sdk_tool_map import phase_bars_write_tools
 from teatree.agents.session_lineage import honesty_subject
-from teatree.agents.skill_routing import resolve_skill_route
+from teatree.agents.skill_routing import UNAVAILABLE_TTL, resolve_skill_route
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolve_agent_config
+from teatree.core.admission.dispatch_lane import dispatch_lane
 from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.overlay_loader import OverlayConfigResolver
@@ -63,6 +63,7 @@ class SkillRouteSelection:
     candidate: AgentRouteCandidate
     selection: HarnessSelection
     provider: AgentHarnessProvider | None
+    has_later_candidate: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,16 +78,9 @@ class DispatchHarness:
     effort: str | None = None
     route_source_skill: str = ""
     route_candidate_index: int | None = None
+    has_later_candidate: bool = False
     rejected: tuple[HarnessRejection, ...] = ()
     availability_provider: str = ""
-
-
-def route_has_later_candidate(dispatch: DispatchHarness) -> bool:
-    index = dispatch.route_candidate_index
-    if index is None or not dispatch.route_source_skill:
-        return False
-    route = resolve_agent_config().skill_models.get(dispatch.route_source_skill)
-    return isinstance(route, tuple) and index + 1 < len(route)
 
 
 def task_overlay(task: "Task | None") -> str | None:
@@ -123,24 +117,34 @@ def candidate_selection(context: HarnessBuildContext, candidates: list[str]) -> 
             except (CredentialError, ValueError) as exc:
                 rejected.append(HarnessRejection(name, str(exc)))
                 continue
-            if _is_metered_route(selection.spec.capabilities, provider) and (
-                context.settings is None or not context.settings.agent_route_paid_fallback
-            ):
+            if _paid_fallback_blocked(selection.spec.capabilities, provider, context.settings, later=True):
                 rejected.append(_paid_fallback_rejection(name, rejected))
                 continue
         return HarnessSelection(selection.spec, tuple(rejected))
     raise NoAvailableHarnessError(tuple(rejected))
 
 
-_METERED_PROVIDERS = frozenset(
-    {AgentHarnessProvider.API_KEY, AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}
-)
-_ROUTE_RECHECK = timedelta(minutes=2)
 _PAID_FALLBACK_REQUIRED = "metered route fallback requires agent_route_paid_fallback"
 
 
 def _is_metered_route(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> bool:
-    return not capabilities.managed_lane and (capabilities.metered_lane or provider in _METERED_PROVIDERS)
+    from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred Django model import
+
+    return _route_lane(capabilities, provider) == TaskAttempt.Lane.METERED
+
+
+def _paid_fallback_blocked(
+    capabilities: HarnessCapabilities,
+    provider: AgentHarnessProvider | None,
+    settings: "UserSettings | None",
+    *,
+    later: bool,
+) -> bool:
+    return (
+        later
+        and _is_metered_route(capabilities, provider)
+        and (settings is None or not settings.agent_route_paid_fallback)
+    )
 
 
 def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> str:
@@ -148,11 +152,7 @@ def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvide
 
     if capabilities.managed_lane:
         return TaskAttempt.Lane.MANAGED
-    if _is_metered_route(capabilities, provider):
-        return TaskAttempt.Lane.METERED
-    if provider is AgentHarnessProvider.SUBSCRIPTION_OAUTH:
-        return TaskAttempt.Lane.SUBSCRIPTION
-    return ""
+    return dispatch_lane(provider=provider, metered_harness=capabilities.metered_lane)
 
 
 def _active_window(lane: str) -> "UsageWindowState | None":
@@ -187,7 +187,7 @@ def _dispatchable_off_lane(
     except (UnknownHarnessError, CredentialError, ValueError):
         return False
     lane = _route_lane(spec.capabilities, provider if spec.allows_provider else None)
-    if fallback and _is_metered_route(spec.capabilities, provider) and not settings.agent_route_paid_fallback:
+    if _paid_fallback_blocked(spec.capabilities, provider, settings, later=fallback):
         return False
     if lane == parked_lane or _active_window(lane) is not None:
         return False
@@ -248,7 +248,6 @@ def _route_provider(
 class _EligibleCandidate:
     selection: HarnessSelection
     provider: AgentHarnessProvider | None
-    metered: bool
 
 
 def _managed_provider_name(spec: HarnessSpec, provider: AgentHarnessProvider | None) -> str:
@@ -286,17 +285,16 @@ def _eligible_candidate(
         selection = select_harness([candidate.harness], candidate_context)
     except NoAvailableHarnessError as exc:
         return exc.rejected
-    return _EligibleCandidate(selection, provider, _is_metered_route(spec.capabilities, provider))
+    return _EligibleCandidate(selection, provider)
 
 
 def route_hold(harness: str, reason: str) -> HarnessRejection:
-    return HarnessRejection(harness, reason, retry_at=timezone.now() + _ROUTE_RECHECK, held=True)
+    return HarnessRejection(harness, reason, retry_at=timezone.now() + UNAVAILABLE_TTL, held=True)
 
 
-def paid_fallback_hold(harness: str, cause: str = "") -> HarnessRejection:
+def paid_fallback_hold(harness: str) -> HarnessRejection:
     """A re-checkable refusal: only the owner's ``agent_route_paid_fallback`` lets this dispatch spend."""
-    reason = f"{cause}; {_PAID_FALLBACK_REQUIRED}" if cause else _PAID_FALLBACK_REQUIRED
-    return route_hold(harness, reason)
+    return route_hold(harness, _PAID_FALLBACK_REQUIRED)
 
 
 def _paid_fallback_rejection(harness: str, earlier: list[HarnessRejection]) -> HarnessRejection:
@@ -326,11 +324,15 @@ def _skill_route_selection(
     if context.phase and source_skill != primary_skill and phase_bars_write_tools(context.phase):
         return None
     failed = context.task.attempts.failed_route_candidates(source_skill) if context.task is not None else {}
+    refused = context.task.attempts.refused_brief_candidates(source_skill) if context.task is not None else {}
     scalar_floors = [floor for skill in skills if isinstance((floor := config.skill_models.get(skill)), str)]
     floor_rank = max((tier_rank(floor) for floor in scalar_floors), default=-1)
     rejected: list[HarnessRejection] = []
     retry: SkillRouteSelection | None = None
     for index, candidate in enumerate(candidates):
+        if index in refused:
+            rejected.append(HarnessRejection(candidate.harness, refused[index]))
+            continue
         if reason := _static_rejection(context, candidate, floor_rank):
             rejected.append(HarnessRejection(candidate.harness, reason))
             continue
@@ -338,7 +340,9 @@ def _skill_route_selection(
         if not isinstance(eligible, _EligibleCandidate):
             rejected.extend(eligible)
             continue
-        if index and eligible.metered and (context.settings is None or not context.settings.agent_route_paid_fallback):
+        if _paid_fallback_blocked(
+            eligible.selection.spec.capabilities, eligible.provider, context.settings, later=index > 0
+        ):
             rejected.append(_paid_fallback_rejection(candidate.harness, rejected))
             continue
         passing = SkillRouteSelection(
@@ -347,6 +351,7 @@ def _skill_route_selection(
             candidate,
             HarnessSelection(eligible.selection.spec, tuple(rejected)),
             eligible.provider,
+            index + 1 < len(candidates),
         )
         if index not in failed:
             return passing
@@ -393,6 +398,7 @@ def resolve_dispatch_harness(
             effort=route.candidate.effort,
             route_source_skill=route.source_skill,
             route_candidate_index=route.index,
+            has_later_candidate=route.has_later_candidate,
             rejected=route.selection.rejected,
             availability_provider=candidate_context.provider,
         )

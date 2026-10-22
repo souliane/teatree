@@ -347,11 +347,13 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds every
-  required skills with CLI and posting-only sections omitted, names the others as not available, and points at no
+  required skill with CLI and posting-only sections omitted, names the others as not available, and points at no
   skill path. `reviewing` and `critic_reviewing` embed `rules`, their lifecycle skill, `code-review`,
   and loaded overlay review companions (no stack style guides). The lifecycle skill leaves out the sections that only
-  drive the `t3` CLI (`skill_injection._READ_ONLY_SKILL_SECTIONS`); the diff, the rubric and the declared
-  plan seams stay out of the system context. It embeds `RULES.md` before the rules skill body, resolving the document beside the selected
+  drive the `t3` CLI (`skill_injection._READ_ONLY_SKILL_SECTIONS`). The diff, the rubric and the declared
+  plan seams stay out of the system context: the diff enters the reviewing task message as evidence, and the
+  rubric and seams enter it with their commands rewritten as below. It embeds `RULES.md` before the rules skill
+  body, resolving the document beside the selected
   `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
   a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
   `<teatree tool, absent here>`, and so does every bare `t3` command in executable phase instructions.

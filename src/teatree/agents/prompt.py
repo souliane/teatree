@@ -12,6 +12,7 @@ from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
+    rubric_brief_lines,
 )
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
@@ -198,7 +199,9 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
-    lines.extend(("", "Instructions:", *(read_only_text(line) for line in _OWNER_STOP_LINES)))
+    if normalize_phase(task.phase) == "reviewing":
+        lines.extend(read_only_text(line) for line in (*rubric_brief_lines(task), *declared_seams_brief_lines(task)))
+    lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
     lines.append(final_output_reminder_line(task.phase))
