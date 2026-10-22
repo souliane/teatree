@@ -70,6 +70,99 @@ class TestIncomingEvent(TestCase):
         event.refresh_from_db()
         assert event.processed_at is not None
 
+    def test_mark_processed_clears_forge_payload(self) -> None:
+        event = IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:drained",
+                last_error="failed to process private payload",
+            )
+        )
+
+        event.mark_processed()
+        event.refresh_from_db()
+
+        assert (event.body, event.payload_json, event.last_error) == ("", {}, "")
+
+    def test_mark_processed_keeps_dead_lettered_forge_payload(self) -> None:
+        event = IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITLAB,
+                idempotency_key="gitlab:dead",
+                dead_lettered_at=timezone.now(),
+            )
+        )
+
+        event.mark_processed()
+        event.refresh_from_db()
+
+        assert event.body == "hey, can you ship MR !42 when CI goes green?"
+        assert event.payload_json == {"event_id": "Ev0000ABCD"}
+
+    def test_evidence_per_event_type(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:push",
+                origin="webhook",
+                repo_key="github:101",
+                event_name="push",
+            )
+        )
+
+        assert IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for(
+            "github", "github:101", "pull_request_review", timedelta(days=1)
+        )
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:202", "push", timedelta(days=1))
+
+    def test_poll_rows_are_not_evidence(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:polled",
+                origin="poll",
+                repo_key="github:101",
+                event_name="push",
+            )
+        )
+
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+
+    def test_webhook_evidence_respects_the_window(self) -> None:
+        IncomingEvent.objects.create(
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:old-push",
+                origin="webhook",
+                repo_key="github:101",
+                event_name="push",
+                received_at=timezone.now() - timedelta(days=2),
+            )
+        )
+
+        assert not IncomingEvent.objects.webhooks_verified_for("github", "github:101", "push", timedelta(days=1))
+
+    def test_relay_is_evidence_but_empty_repository_is_not(self) -> None:
+        for key, repo_key, event_name in (
+            ("gitlab:relay", "gitlab:101", "merge_request"),
+            ("gitlab:no-repo", "", "merge_request"),
+            ("gitlab:no-event", "gitlab:101", ""),
+        ):
+            IncomingEvent.objects.create(
+                **self._payload(
+                    source=IncomingEvent.Source.GITLAB,
+                    idempotency_key=key,
+                    origin="relay",
+                    repo_key=repo_key,
+                    event_name=event_name,
+                )
+            )
+
+        assert IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("gitlab", "", "merge_request", timedelta(days=1))
+        assert not IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "", timedelta(days=1))
+
     def test_unprocessed_manager_excludes_completed_events(self) -> None:
         unprocessed = IncomingEvent.objects.create(**self._payload())
         processed = IncomingEvent.objects.create(**self._payload(idempotency_key="slack:Ev9999XYZ"))

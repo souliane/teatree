@@ -62,6 +62,8 @@ FAILED_TASK_TABLE = "Task (failed)"
 COMPLETED_TASK_TABLE = "Task (completed)"
 PING_PAYLOAD_TABLE = "BotPing (payload)"
 INCOMING_EVENT_TABLE = "IncomingEvent"
+FORGE_EVENT_TABLE = "IncomingEvent (forge)"
+FORGE_EVENT_RETENTION_DAYS = 8
 TRANSITION_TABLE = "TicketTransition"
 TASK_RESULT_TABLE = "DBTaskResult"
 PENDING_DM_TABLE = "PendingChatInjection"
@@ -172,7 +174,18 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
             cascade=_task_attempts,
         ),
         Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=BotPing.compact),
-        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, IncomingEvent.objects.prunable, cascade=_event_children),
+        Lane(
+            FORGE_EVENT_TABLE,
+            FORGE_EVENT_RETENTION_DAYS,
+            IncomingEvent.objects.forge_identity_rows,
+            cascade=_event_children,
+        ),
+        Lane(
+            INCOMING_EVENT_TABLE,
+            POST_MORTEM_RETENTION_DAYS,
+            IncomingEvent.objects.non_identity_prunable_rows,
+            cascade=_event_children,
+        ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
         *_slack_lanes(),
     )
