@@ -29,6 +29,9 @@ _MIN_PROBE_CALL_SITES = 7
 #: Where a merged-detection primitive may legitimately be invoked, and why.
 _ALLOWED: dict[str, str] = {
     "core/worktree/branch_classification.py": "the canonical three-layer detector itself",
+    "core/worktree/checkout_released.py": (
+        "proves the released writer's recorded anchor precedes the current PR head — checkout custody, not landed-ness"
+    ),
     "utils/git_branch.py": "the thin `branch_merged` wrapper the canonical detector's layer (c) calls",
     "core/management/commands/repro.py": "proves a RED sha is an ancestor of a GREEN sha — provenance, not landed-ness",
     "agents/repro_phase_recorder.py": (

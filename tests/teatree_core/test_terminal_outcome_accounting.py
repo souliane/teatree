@@ -110,7 +110,7 @@ class TestS5FailureFractionUsesTerminalAttemptsOnly(TestCase):
         now = timezone.now()
         computation = compute_s5(current_window(now + timedelta(seconds=1), 7), _OVERLAY, now)
 
-        # `Computation.evidence` is the union across all five signals; this one came from compute_s5.
+        # `Computation.evidence` is the union across all six signals; this one came from compute_s5.
         evidence = cast("S5Evidence", computation.evidence)
 
         assert evidence["attempts"] == 5

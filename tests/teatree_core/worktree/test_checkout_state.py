@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import pytest
 from django.test import TestCase
 
-from teatree.core.worktree.checkout_state import checkout_state
+from teatree.core.worktree.checkout_state import checkout_digest, checkout_state
 from teatree.utils.git import run_strict
 from teatree.utils.run import CommandFailedError
 from tests.factories import TicketFactory
@@ -34,6 +34,13 @@ def test_checkout_state_detects_untracked_content_and_tracked_edits(tmp_path: Pa
 
     (checkout / "README.md").write_text("edited differently\n")
     assert checkout_state(checkout).digest != edited.digest, "same status, different tracked content"
+
+
+def test_clean_digest_matches_a_head_and_branch_read(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+    head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+    assert checkout_state(checkout).digest == checkout_digest(head, "feature")
 
 
 def test_checkout_state_counts_each_changed_path_once(tmp_path: Path) -> None:

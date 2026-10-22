@@ -5,7 +5,6 @@ import pytest
 from teatree.core.gates.cron_loop_shell_gate import (
     REACTIVE_RUN_SLOTS,
     CronLoopShellFinding,
-    cron_loop_ok_reason,
     deny_reason,
     find_cron_loop_shell,
 )
@@ -88,32 +87,13 @@ class TestDenyReason:
 
         assert "t3 worker" in reason
         assert "t3 loop resume" in reason
-        assert "cron-loop-ok" in reason
+        assert "gate-escape:block-cron-loop-shell" in reason
 
     def test_reactive_reason_names_the_slot_command(self) -> None:
         finding = find_cron_loop_shell("t3 loop drain-queue run", worker_alive=True)
         assert finding is not None
 
         assert "t3 loop drain-queue run" in deny_reason(finding)
-
-
-class TestOkToken:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("[cron-loop-ok: pre-flip box, worker is down]", "pre-flip box, worker is down"),
-            ("prefix [cron-loop-ok: reason] suffix", "reason"),
-            ("[cron-loop-ok:   spaced   ]", "spaced"),
-            ("[cron-loop-ok: ]", None),
-            ("no token here", None),
-            ("", None),
-        ],
-    )
-    def test_token_extraction(self, text: str, expected: str | None) -> None:
-        assert cron_loop_ok_reason(text) == expected
-
-    def test_token_past_the_scan_window_is_ignored(self) -> None:
-        assert cron_loop_ok_reason("x" * 600 + "[cron-loop-ok: late]") is None
 
 
 class TestFindingShape:

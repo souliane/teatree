@@ -96,6 +96,16 @@ def task_holder_id(task: Task) -> str:
     return f"task:{task.pk}"
 
 
+def _task_pk_from_holder(holder: str) -> int | None:
+    """The ``Task`` pk :func:`task_holder_id` encoded, or ``None`` for any other holder.
+
+    ``isascii`` because ``"²".isdigit()`` is true yet ``int("²")`` raises.
+    """
+    prefix = "task:"
+    suffix = holder.removeprefix(prefix)
+    return int(suffix) if suffix != holder and suffix.isascii() and suffix.isdigit() else None
+
+
 def terminal_task_pk(holder: str) -> int | None:
     """The exact inverse of :func:`task_holder_id`, iff that ``Task`` is terminal AND its claim is safe to release.
 
@@ -113,11 +123,9 @@ def terminal_task_pk(holder: str) -> int | None:
     :func:`terminal_holder_task_pk`. The only caller is the RELEASING self-heal,
     ``core.worktree.occupancy._release_if_finished_task``.
     """
-    prefix = "task:"
-    suffix = holder.removeprefix(prefix)
-    if suffix == holder or not suffix.isdigit():
+    pk = _task_pk_from_holder(holder)
+    if pk is None:
         return None
-    pk = int(suffix)
     row = Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).values("pk", *OWNER_COLUMNS).first()
     if row is None:
         return None
@@ -140,11 +148,9 @@ def terminal_holder_task_pk(holder: str) -> int | None:
     kept (#4872), the old run's heartbeat abort or its lease lapse frees the checkout
     on its own (#4867). A release needs :func:`terminal_task_pk`.
     """
-    prefix = "task:"
-    suffix = holder.removeprefix(prefix)
-    if suffix == holder or not suffix.isdigit():
+    pk = _task_pk_from_holder(holder)
+    if pk is None:
         return None
-    pk = int(suffix)
     return pk if Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists() else None
 
 

@@ -2,13 +2,10 @@
 
 from unittest.mock import patch
 
-import pytest
-
 from teatree.generation import (
     current_generation,
     generation_image,
     in_place_update_refusal,
-    is_generation_sha,
     is_image_generation,
     short_sha,
 )
@@ -43,18 +40,3 @@ def test_the_image_tag_is_derived_from_the_sha() -> None:
 def test_a_registry_repository_names_the_image_a_cloud_box_pulls() -> None:
     with patch.dict("os.environ", {"TEATREE_IMAGE_REPOSITORY": "registry.example/team/teatree-factory"}, clear=True):
         assert generation_image(SHA) == f"registry.example/team/teatree-factory:{SHA}"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (SHA, True),
-        (SHA.upper(), False),
-        (SHA[:39], False),
-        (f"{SHA}0", False),
-        ("main", False),
-        ("", False),
-    ],
-)
-def test_only_a_full_lowercase_commit_sha_names_a_generation(value: str, *, expected: bool) -> None:
-    assert is_generation_sha(value) is expected

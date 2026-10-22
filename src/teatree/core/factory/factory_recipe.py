@@ -1,7 +1,7 @@
 """The declarative factory-score recipe loader (SIG-PR-2).
 
 ``evals/recipe.yaml`` names the SIG-PR-1 :data:`~teatree.core.factory.factory_signals.SIGNALS`
-registry ids and assigns each a weight, an optional red-floor, and — for the two
+registry ids and assigns each a weight, an optional red-floor, and — for the three
 magnitude signals whose readings are not a 0..1 rate — a normalisation cap. This
 module parses that committed file into typed frozen dataclasses and fails loud on
 any drift, mirroring :mod:`teatree.eval.cost_bounds`'s loader doctrine: a missing
@@ -35,11 +35,11 @@ RECIPE_PATH = Path(__file__).resolve().parents[4] / "evals" / "recipe.yaml"
 #: one here would force a weight rebalance for a reading that scores nothing.
 _REGISTRY_IDS: frozenset[str] = frozenset(spec.provider_id for spec in SIGNALS)
 
-#: The magnitude signals whose readings are not a 0..1 rate (``merge_latency`` in
-#: hours, ``repair_burn`` in mean iterations): each MUST carry a ``cap`` so the
+#: The magnitude signals whose readings are not a 0..1 rate (``merge_latency`` and
+#: ``pr_start_to_merged`` in hours, ``repair_burn`` in mean iterations): each MUST carry a ``cap`` so the
 #: reading normalises to 0..1. A ``cap`` on any other (rate) signal is a
 #: configuration error — a rate is already bounded.
-CAP_REQUIRED_IDS: frozenset[str] = frozenset({"merge_latency", "repair_burn"})
+CAP_REQUIRED_IDS: frozenset[str] = frozenset({"merge_latency", "pr_start_to_merged", "repair_burn"})
 
 #: Weights must sum to 1.0 within this tolerance (float accumulation slack).
 _WEIGHT_SUM_TOLERANCE = 1e-6

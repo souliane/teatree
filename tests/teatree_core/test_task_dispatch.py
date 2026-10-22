@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.models import ModeOverride, Session, Task, Ticket
+from teatree.core.models import ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.task_dispatch import admit_waiting_tasks
 from teatree.core.tasks import drain_queue_body
@@ -116,6 +116,155 @@ class TestTheDrainAdmitsExpeditedWorkFirst(_AdmissionCase):
 
         assert drain_queue_body()["enqueued"] == [older.pk]
         assert not self._admitted(newer)
+
+
+class TestTheDrainServesStartedPullRequests(_AdmissionCase):
+    def setUp(self) -> None:
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _fill_coding_lane(self) -> None:
+        for _ in range(_CODING_CEILING - 1):
+            self._task("coding", status=Task.Status.CLAIMED)
+
+    def test_started_pull_request_precedes_older_coding_task(self) -> None:
+        self._fill_coding_lane()
+        older = self._task("coding")
+        ticket = Ticket.objects.create()
+        started = self._task("coding", ticket=ticket)
+        PullRequest.objects.record_opened(ticket=ticket, url="https://github.com/example-org/example-repo/pull/7")
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(older)
+
+    def test_started_planning_pull_request_precedes_unstarted_coding_task(self) -> None:
+        self._fill_coding_lane()
+        unstarted = self._task("coding")
+        started_ticket = Ticket.objects.create()
+        first = self._task("scoping", status=Task.Status.COMPLETED, ticket=started_ticket)
+        Task.objects.filter(pk=first.pk).update(admitted_at=timezone.now() - dt.timedelta(hours=2))
+        started = self._task("planning", ticket=started_ticket)
+        PullRequest.objects.record_opened(
+            ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/13"
+        )
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(unstarted)
+
+    def test_oldest_started_pull_request_precedes_older_task_row(self) -> None:
+        self._fill_coding_lane()
+        newer_ticket = Ticket.objects.create()
+        older_ticket = Ticket.objects.create()
+        newer = self._task("coding", ticket=newer_ticket)
+        older = self._task("coding", ticket=older_ticket)
+        PullRequest.objects.record_opened(ticket=newer_ticket, url="https://github.com/example-org/example-repo/pull/8")
+        PullRequest.objects.record_opened(ticket=older_ticket, url="https://github.com/example-org/example-repo/pull/9")
+        first = self._task("planning", status=Task.Status.COMPLETED, ticket=older_ticket)
+        second = self._task("planning", status=Task.Status.COMPLETED, ticket=newer_ticket)
+        Task.objects.filter(pk=first.pk).update(admitted_at=timezone.now() - dt.timedelta(days=3))
+        Task.objects.filter(pk=second.pk).update(admitted_at=timezone.now() - dt.timedelta(days=1))
+
+        assert drain_queue_body()["enqueued"] == [older.pk]
+        assert not self._admitted(newer)
+
+    def test_oldest_started_pull_request_wins_in_review_lane(self) -> None:
+        self._task("shipping", status=Task.Status.CLAIMED)
+        newer_ticket = Ticket.objects.create()
+        older_ticket = Ticket.objects.create()
+        newer = self._task("shipping", ticket=newer_ticket)
+        older = self._task("shipping", ticket=older_ticket)
+        PullRequest.objects.record_opened(
+            ticket=newer_ticket, url="https://github.com/example-org/example-repo/pull/11"
+        )
+        PullRequest.objects.record_opened(
+            ticket=older_ticket, url="https://github.com/example-org/example-repo/pull/12"
+        )
+        first = self._task("planning", status=Task.Status.COMPLETED, ticket=older_ticket)
+        second = self._task("planning", status=Task.Status.COMPLETED, ticket=newer_ticket)
+        Task.objects.filter(pk=first.pk).update(admitted_at=timezone.now() - dt.timedelta(days=3))
+        Task.objects.filter(pk=second.pk).update(admitted_at=timezone.now() - dt.timedelta(days=1))
+
+        assert drain_queue_body()["enqueued"] == [older.pk]
+        assert not self._admitted(newer)
+
+    def test_expedited_unstarted_ticket_keeps_its_priority(self) -> None:
+        self._fill_coding_lane()
+        started_ticket = Ticket.objects.create()
+        started = self._task("coding", ticket=started_ticket)
+        PullRequest.objects.record_opened(
+            ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/10"
+        )
+        expedited = self._task("planning", ticket=Ticket.objects.create(expedited=True))
+
+        assert drain_queue_body()["enqueued"] == [expedited.pk]
+        assert not self._admitted(started)
+
+    def test_started_review_precedes_pr_less_review_at_the_same_score(self) -> None:
+        self._task("reviewing", status=Task.Status.CLAIMED)
+        pr_less = self._task("reviewing")
+        started_ticket = Ticket.objects.create()
+        started = self._task("reviewing", ticket=started_ticket)
+        PullRequest.objects.record_opened(
+            ticket=started_ticket, url="https://github.com/example-org/example-repo/pull/302"
+        )
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(pr_less)
+
+
+class TestTheOpenPullRequestStartCap(_AdmissionCase):
+    def setUp(self) -> None:
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _open_prs(self, count: int) -> list[Ticket]:
+        tickets = [Ticket.objects.create() for _ in range(count)]
+        for index, ticket in enumerate(tickets):
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 40}"
+            )
+        return tickets
+
+    def test_three_open_prs_hold_new_shipping_and_first_push_but_serve_started_work(self) -> None:
+        started_ticket = self._open_prs(3)[0]
+        shipping = self._task("shipping")
+        first_push = self._task("coding", ticket=Ticket.objects.create())
+        started = self._task("coding", ticket=started_ticket)
+
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(shipping)
+        assert not self._admitted(first_push)
+
+    def test_two_open_prs_allow_a_new_shipping_task(self) -> None:
+        self._open_prs(2)
+        shipping = self._task("shipping")
+
+        assert drain_queue_body()["enqueued"] == [shipping.pk]
+
+    def test_three_open_prs_allow_review_and_critic(self) -> None:
+        self._open_prs(3)
+        review = self._task("reviewing")
+        critic = self._task("critic_reviewing", ticket=Ticket.objects.create(role=Ticket.Role.REVIEWER))
+
+        assert drain_queue_body()["enqueued"] == [review.pk, critic.pk]
+
+    def test_three_open_prs_allow_expedited_shipping(self) -> None:
+        self._open_prs(3)
+        expedited = self._task("shipping", ticket=Ticket.objects.create(expedited=True))
+
+        assert drain_queue_body()["enqueued"] == [expedited.pk]
+
+    def test_held_starter_denial_names_the_pull_request_cap(self) -> None:
+        self._open_prs(3)
+        held = self._task("shipping")
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            assert drain_queue_body()["enqueued"] == []
+
+        assert any("3 or more pull requests are open" in message for message in logs.output)
+        assert not self._admitted(held)
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
