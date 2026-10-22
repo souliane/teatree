@@ -197,21 +197,19 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
 
 
 def _purge_dir(path: str) -> float:
-    """Remove the cache DIRECTORY itself; return GB reclaimed (best-effort).
+    """Remove the cache DIRECTORY itself; return the GB that actually left the disk.
 
     ``rmtree`` takes the directory, not just its contents, so an allow-list entry
-    is only safe for a cache whose owner recreates its own root on next use.
+    is only safe for a cache whose owner recreates its own root on next use. The
+    yield is re-read after the delete: a purge the filesystem refused must extend
+    the zero-yield streak, not reset it.
     """
     target = Path(path).expanduser()
     if not target.is_dir():
         return 0.0
     before = _dir_size_gb(str(target))
-    try:
-        shutil.rmtree(target, ignore_errors=True)
-    except OSError:
-        logger.exception("free_resources: failed to purge %s", path)
-        return 0.0
-    return before
+    shutil.rmtree(target, ignore_errors=True)
+    return max(before - _dir_size_gb(str(target)), 0.0)
 
 
 def _dir_size_gb(path: str) -> float:

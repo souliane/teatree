@@ -1,9 +1,8 @@
 """Which shipped loops/presets/schedules are absent, off, or not actually firing (#3842).
 
-Measured on the live box: 27 shipped loops, 27 present, 0 missing, 10 disabled. **Nothing
-had ever been deleted** — every failure that cost time was present-but-inert (a janitor
-wired to no loop, a colleague loop held dark by an override, a tick reporting 58 actions
-while no ticket advanced). So the guard worth having detects inertness, not absence.
+**Nothing shipped has ever been deleted** — every failure that cost time was present-but-inert
+(a janitor wired to no loop, a colleague loop held dark by an override, a tick reporting 58
+actions while no ticket advanced). So the guard worth having detects inertness, not absence.
 
 The EXPECTED set is sourced from the shipped seed tables, never from the DB. A check that
 reads the DB for both "expected" and "actual" cannot detect a missing row at all — the same
