@@ -64,7 +64,6 @@ Key environment variables used by this skill (see `/t3:setup` for the full confi
 | `T3_WORKSPACE_DIR` | Yes | Root workspace directory |
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
-| `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
 ### One Agent Per Checkout (#3952)
 
@@ -74,14 +73,15 @@ length of its run, and a second requester is refused with the holder named
 instead of being handed the same tree.
 
 The claim is advisory: it refuses a second requester and never evicts the
-first. Nothing deletes, reaps or kills a checkout on the strength of it, and a
-lapsed lease grants the next requester without touching the previous holder's
-process, files or branch.
+first. Nothing deletes, reaps or kills a checkout on the strength of it. A
+lapsed lease does not authorize a writing factory run while the checkout's
+process or state fence still refuses it.
 
 ```bash
 t3 <overlay> worktree occupancy                     # who holds what right now
 t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
 t3 <overlay> worktree release-occupancy <path>      # hand it back, naming whose claim was freed
+t3 <overlay> worktree attest <path>                  # accept a clear checkout's current state
 ```
 
 A dispatched agent needs none of these — `run_headless` takes and releases the
@@ -89,11 +89,61 @@ claim around the run. Use them when you work a branch OUTSIDE the lifecycle
 (raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
 than walking into it.
 
+A writing factory task also requires, for every checkout of its ticket, exactly
+one worktree row for the path across all tickets, no live process there, and a
+checkout matching the last attested state. A record whose task does not hold its
+checkout is a hand record: it does not update that state and mints no next phase;
+`/loop` `record-attempt` finishes its own checkout and schedules the next phase. After hand work, inspect the
+checkout and use `worktree attest` directly as the owner only when no process
+is still working there; a refused factory task parks without spending its
+repair budget and leaves the work intact. When this venue cannot read a usable
+process table, owner attestation admits one dispatch after two matching state
+reads. The next dispatch needs a fresh owner attestation.
+An interrupted factory run is re-attested at the next writer's fence only when
+the recorded custody chain, a clear host process table, and every ticket checkout
+on its recorded branch or the forge-reported head branch of an open pull request
+owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
+records any qualifying pull request. Hand work still needs the owner's `worktree attest`.
+For a headless run recorded in a nested PID namespace, unreadable host-root namespace
+processes may be set aside and named in the audit; legacy and namespace-less tenures stay strict.
+Every admitted headless exit reaches checkout settlement; if these gaps block direct
+attestation, the next writer's fence can re-attest, including an in-session claim.
+Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
+A writing run whose exit was deferred by a checkout process records that exit state;
+the next writer attests it only after the process is gone and the state is unchanged.
+A released writing run may leave a clean checkout ahead of its prior attestation.
+The next writing claim can re-attest a released same-ticket custody chain with at least
+one writer when its current holder and occupancy match, no process holds the checkout,
+the old clean digest resolves to a reflog ancestor, and the checkout HEAD matches both
+the ticket-owned GitHub pull request head and its exact live source branch ref.
+The proof reads the GitHub API with the overlay's routed token, checks the digest again,
+and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
+The pull request read needs a `gh` that returns `headRepository.nameWithOwner`
+(the worker's 2.102.1 does; the host's 2.63.2 omits it, so the proof parks there).
+An unreadable or mismatched proof parks the task for the existing owner path.
+On completion, ordinary failure, lease-expiry reap, and attested park, checkout
+settlement waits two 60-second beats for descendants and marked children, sends
+SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
+for two more beats. Each signal rechecks PID and start time through a pidfd.
+The shared Codex App Server, unmarked non-descendants, and foreign processes are
+never exit stop targets; a survivor still holds the checkout. An agent-issued
+cancel waits two beats and signals nothing; an owner stop follows the narrower
+descendant-writer rule.
+A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
+
+An attestable refusal also asks the owner in Slack. The card links the ticket and
+states the checkout's commit count, uncommitted-file count and whether the host
+process list ruled out live work in the checkout.
+Accepting rechecks the checkout and releases the parked task; declining leaves it
+parked. The terminal command remains available for an owner with host access.
+Only the owner's Slack button tap can approve or decline the action card.
+
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
 the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
-occupied checkout too; `--take-over` is the explicit override. A fixed
-30-minute lease bounds a claim whose holder died without releasing.
+occupied checkout too; `--take-over` is the explicit override. The ordinary
+claim lease is 30 minutes; an in-session `/loop` claim uses the task's extended
+lease so a long sub-agent run keeps its checkout reservation.
 
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 
@@ -520,7 +570,10 @@ t3 <overlay> worktree provision             # re-run; now green end-to-end
 #### A checkout `t3` does not know yet — `worktree adopt`, never `provision`
 
 `WorktreeNotFoundError: Cannot auto-detect worktree from <path>` means the checkout has
-no `Worktree` row, not that you are standing in the wrong place. Registration used to
+no `Worktree` row, not that you are standing in the wrong place.
+A declaration line in this refusal means resolution used a fallback directory and says either
+`TEATREE_INVOCATION_CWD is unset (not declared)` or
+`TEATREE_INVOCATION_CWD='<path>' is declared but does not resolve here`. Registration used to
 happen only as a side effect of resolving something else, so a worktree cut by
 `git worktree add`, by another session, or one whose row was reaped, had no verb at all
 — and `provision` is the wrong answer (it runs tenant-DB provisioning many overlays
@@ -574,7 +627,7 @@ t3 <overlay> workspace ticket <issue-url-or-id>
 # RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
 # `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
 # refuses confusingly — and aims at main under push.default=upstream.
-git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+git fetch origin main -q && git worktree add -b <branch> --no-track ~/workspace/t3-workspaces/<repo>-wt-<slug> origin/main
 
 # WRONG — forks whatever the local ref holds:
 git checkout -b <branch>     # FORBIDDEN — stale local main

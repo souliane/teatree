@@ -29,6 +29,8 @@ LeaseRenewer = Callable[[Task], None]
 
 #: Beats a drain waits on an open tool call, so a push or merge is not cut in half yet the wait fits the drain grace.
 CHECKPOINT_MAX_DEFER_BEATS = 3
+HEARTBEAT_INTERVAL_SECONDS = 60
+CHECKPOINT_GRACE_SECONDS = HEARTBEAT_INTERVAL_SECONDS * (CHECKPOINT_MAX_DEFER_BEATS + 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +46,7 @@ def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
     """Renew task/worktree leases and close this worker thread's DB connection."""
     try:
         task.renew_lease(lease_seconds=lease_seconds)
-        if task.ticket_id is not None:  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        if task.ticket_id is not None:
             renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
     except LeaseLostError as exc:
         raise LeaseLostError(describe_lease_loss(task)) from exc
@@ -89,7 +91,7 @@ async def drive_with_heartbeat(
 def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> LiveTask:
     return LiveTask(
         pk=task.pk,
-        ticket=task.ticket_id,  # ty: ignore[unresolved-attribute] — Django FK attname
+        ticket=task.ticket_id,
         phase=task.phase,
         harness=harness.name if isinstance(harness, GuardedHarness) else type(harness).__name__,
         model=options.model or "",
@@ -116,7 +118,7 @@ class _Heartbeat:
             while True:
                 await asyncio.sleep(self.runtime.heartbeat_interval)
                 if await self._lost_the_lease():
-                    return
+                    continue
                 # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
                 if self.breach or await self._checkpointed():
                     continue
@@ -140,9 +142,12 @@ class _Heartbeat:
         try:
             await asyncio.to_thread(self.runtime.renew_lease, self.task)
         except LeaseLostError as exc:
-            # The flags name what FIRST interrupted the run; a claim lost after that only ends the beat.
-            self.lease_lost = not self.breach
-            logger.warning("Task %s lease lost; interrupting duplicate run", self.task.pk)
+            # The flags name what FIRST interrupted the run; a lost claim re-interrupts every beat until the drive ends.
+            if self.breach:
+                await self.live.interrupt()
+                return True
+            self.lease_lost = True
+            logger.warning("Task %s lease lost; interrupting run", self.task.pk)
             return await self._interrupt(str(exc))
         except Exception:
             logger.warning("Heartbeat failed for task %s", self.task.pk, exc_info=True)
@@ -160,8 +165,8 @@ class _Heartbeat:
             self.deferred_beats += 1
             return False
         self.checkpointed = True
-        logger.warning("Task %s checkpointing for a deploy drain: %s", self.task.pk, drain)
-        return await self._interrupt(f"deploy checkpoint: {drain}")
+        logger.warning("Task %s checkpointing for a drain: %s", self.task.pk, drain)
+        return await self._interrupt(f"checkpoint: {drain}")
 
     async def _breached(self) -> bool:
         watchdog = self.runtime.watchdog

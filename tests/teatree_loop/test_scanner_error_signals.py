@@ -18,7 +18,7 @@ propagates cleanly into ``report.errors`` without crashing the tick.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -63,7 +63,7 @@ class TestPrSweepGhApiClientAuthFailure:
                 ),
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
@@ -78,7 +78,7 @@ class TestPrSweepGhApiClientAuthFailure:
                 stderr="API rate limit exceeded for user ID 12345.",
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
@@ -97,7 +97,7 @@ class TestPrSweepGhApiClientAuthFailure:
             msg = "gh"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient()
         assert api.list_open_prs(slug="owner/repo") == []
 
@@ -112,13 +112,13 @@ class TestPrSweepGhApiClientAuthFailure:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout="[]", stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient()
         assert api.list_open_prs(slug="owner/repo") == []
 
 
 class TestPrSweepScannerPropagatesError:
-    """``PrSweepScanner._safe_list`` must propagate ``ScannerError`` to the dispatcher."""
+    """PR listing failures reach the dispatcher as structured errors."""
 
     def test_scanner_propagates_scanner_error_from_api(self) -> None:
         class _AuthFailingApi:
@@ -153,6 +153,17 @@ class TestPrSweepScannerPropagatesError:
         with pytest.raises(ScannerError) as excinfo:
             scanner.scan()
         assert excinfo.value.error_class == ScannerErrorClass.AUTH
+
+    def test_on_demand_listing_failure_is_not_a_closed_pr(self) -> None:
+        api = Mock()
+        api.list_open_prs.side_effect = RuntimeError("listing failed")
+        scanner = PrSweepScanner(
+            repos=("owner/repo",), api=api, keystone=Mock(), notifier=NullMergeNotifier(), overlay="t"
+        )
+
+        with pytest.raises(ScannerError) as caught:
+            scanner.evaluate_one(slug="owner/repo", pr_id=1)
+        assert caught.value.error_class == ScannerErrorClass.UNKNOWN
 
 
 # ---------------------------------------------------------------------------

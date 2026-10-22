@@ -1,7 +1,6 @@
 """Slack review-permalink sync — attach review channel links to in-flight PRs."""
 
 import logging
-from typing import TYPE_CHECKING, cast
 
 import httpx
 from django.utils import timezone
@@ -11,9 +10,6 @@ from teatree.core.gates.review_request_guard import REVIEW_CHANNEL_LOOKBACK
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import SyncResult
-
-if TYPE_CHECKING:
-    from teatree.core.models.types import TicketExtra
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +43,7 @@ def _apply_match(ticket: Ticket, pr_url: str, permalink: str, channel: str) -> b
     pr["review_channel"] = channel
     # #800 N3: canonical locked RMW — no longer clobbers a concurrent
     # pr_urls / visual_qa / reviewed_sha top-level writer.
-    ticket.merge_extra(set_keys=cast("TicketExtra", {"prs": prs}))
+    ticket.merge_extra(set_keys={"prs": prs})
     return True
 
 

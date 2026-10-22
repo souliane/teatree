@@ -4,27 +4,25 @@ The inbound-to-reactive chain for a user message that arrives as a Slack
 *thread reply* (not a top-level DM): the bot posts a top-level message,
 the user replies in-thread, and the reactive Slack-answer loop must stamp
 the same :eyes: receipt it stamps on a top-level DM. The whole chain runs
-unmodified — real ``SlackBotBackend.fetch_dms`` (with the
-``conversations.replies`` fan-out), real ``SlackDmInboundScanner``, real
-``PendingChatInjection`` rows, real ``run_slack_answer_cycle`` — with only
-the ``httpx`` network faked. The load-bearing assertion is that
+unmodified — the real downtime catch-up (with its ``conversations.replies``
+walk), the real recorder, real ``PendingChatInjection`` rows, real
+``run_slack_answer_cycle`` — with only the ``httpx`` network faked. The load-bearing assertion is that
 ``reactions.add`` is called on the *thread reply's* ``ts``, not the thread
 root's.
 """
+
+import time
 
 import pytest
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.models import PendingChatInjection
-from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport
+from teatree.loops.slack_inbound import catch_up_on_connect
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, serve_history
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
-
-_ROOT_TS = "1700000000.0001"
-_REPLY_TS = "1700000000.0002"
 
 
 class TestThreadReplyEyesReaction:
@@ -36,42 +34,31 @@ class TestThreadReplyEyesReaction:
     #1366 was the :eyes: receipt never landing on thread replies.
     """
 
-    def _seed_thread_reply(self, transport: FakeSlackTransport) -> SlackBotBackend:
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [
-                {
-                    "ts": _ROOT_TS,
-                    "thread_ts": _ROOT_TS,
-                    "user": "B_BOT",
-                    "text": "bot top-level notify",
-                },
-            ],
-        }
-        transport.default_responses["conversations.replies"] = {
-            "ok": True,
-            "messages": [
-                {"ts": _ROOT_TS, "user": "B_BOT", "text": "bot top-level notify"},
-                {"ts": _REPLY_TS, "thread_ts": _ROOT_TS, "user": "U_HUMAN", "text": "thanks"},
-            ],
-        }
-        return SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
+    def _catch_up_thread_reply(self, transport: FakeSlackTransport) -> str:
+        root, reply = f"{time.time() - 60:.6f}", f"{time.time() - 30:.6f}"
+        serve_history(
+            transport,
+            [{"ts": root, "user": "B_BOT", "text": "bot top-level notify"}],
+            replies={root: [{"ts": reply, "user": "U_HUMAN", "text": "thanks"}]},
+        )
+        catch_up_on_connect("demo", time.time() - 120)
+        return reply
 
-    def test_reactions_add_called_on_thread_reply_ts(self, transport: FakeSlackTransport) -> None:
-        backend = self._seed_thread_reply(transport)
-        SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+    def test_reactions_add_called_on_thread_reply_ts(
+        self, transport: FakeSlackTransport, overlay_backend: SlackBotBackend
+    ) -> None:
+        reply = self._catch_up_thread_reply(transport)
 
-        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: overlay_backend)
 
         eyes_calls = [c for c in transport.calls_to("reactions.add") if c.payload.get("name") == "eyes"]
-        reacted_ts = [c.payload.get("timestamp") for c in eyes_calls]
-        assert reacted_ts == [_REPLY_TS]
+        assert [c.payload.get("timestamp") for c in eyes_calls] == [reply]
 
-    def test_thread_reply_row_marked_eyes_reacted(self, transport: FakeSlackTransport) -> None:
-        backend = self._seed_thread_reply(transport)
-        SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+    def test_thread_reply_row_marked_eyes_reacted(
+        self, transport: FakeSlackTransport, overlay_backend: SlackBotBackend
+    ) -> None:
+        reply = self._catch_up_thread_reply(transport)
 
-        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: overlay_backend)
 
-        reply_row = PendingChatInjection.objects.get(slack_ts=_REPLY_TS)
-        assert reply_row.eyes_reacted_at is not None
+        assert PendingChatInjection.objects.get(slack_ts=reply).eyes_reacted_at is not None

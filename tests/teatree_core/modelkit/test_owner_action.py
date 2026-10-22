@@ -1,0 +1,21 @@
+"""Action cards have stable, scoped identities and reject malformed payloads."""
+
+from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
+
+
+def test_marker_qualifies_kind_target_and_binding() -> None:
+    action = ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest")
+    marker = action_marker(action)
+    assert marker.startswith("owner-action:attest:")
+    assert len(marker) <= 64
+    assert marker == action_marker(action)
+    assert marker != action_marker(ActionRequest(kind=OwnerActionKind.VOID, target="17", binding="digest"))
+    assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="18", binding="digest"))
+    assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="other"))
+
+
+def test_action_reader_refuses_malformed_payloads() -> None:
+    assert read_action({"action": {"kind": "attest", "target": "17", "binding": "digest"}}) is not None
+    assert read_action({"action": {"kind": "attest", "target": "", "binding": "digest"}}) is None
+    assert read_action({"action": {"kind": "unknown", "target": "17", "binding": "digest"}}) is None
+    assert read_action({"action": "attest"}) is None

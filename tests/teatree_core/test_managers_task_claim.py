@@ -238,6 +238,15 @@ class TestOnlyADrainCheckpointsAnInFlightRun(TestCase):
         assert drain_block_reason() == "this worker is quiescing for a rolling deploy"
         assert claim_admission_block_reason() == drain_block_reason()
 
+    def test_process_exit_refuses_claims_without_reading_the_database(self) -> None:
+        reason = "this worker is exiting non-zero: executor for queue loops (slot 0) died 2 times"
+        with (
+            patch.object(managers_task_claim.process_exit, "reason", reason),
+            patch.object(managers_task_claim, "worker_is_quiescing", side_effect=AssertionError("DB read")),
+        ):
+            assert drain_block_reason() == reason
+            assert claim_admission_block_reason() == reason
+
     def test_a_draining_own_generation_is_a_drain(self) -> None:
         WorkerGeneration.objects.boot(_N).begin_drain(deadline=_in_an_hour())
 

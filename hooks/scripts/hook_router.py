@@ -13,7 +13,6 @@ Reads JSON from stdin. Writes JSON to stdout when blocking (PreToolUse deny).
 Exits 0 silently for passthrough.
 """
 
-import argparse
 import contextlib
 import json
 import os
@@ -23,7 +22,7 @@ import sys
 import tempfile
 import time
 import traceback
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -47,11 +46,13 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
+from hooks.scripts import gate_escape as _gate_escape
 from hooks.scripts.active_repo_tracking import handle_track_active_repo
 from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
+from hooks.scripts.checkout_placement_gate import handle_block_worktree_checkout
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
@@ -128,11 +129,11 @@ from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchest
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
 from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
 from hooks.scripts.owner_prompts import is_live_user_turn, owner_prompted_since
+from hooks.scripts.owner_question_gate import attended_turn, handle_block_decision_prose, handle_block_unfit_question
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     _resolve_worktree_state,
     _ticket_state_for_cwd,
     handle_block_edit_before_planned,
-    skip_plan_gate_token,
 )
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
@@ -141,7 +142,6 @@ from hooks.scripts.question_gates import (
     _options_hash,
     denied_question_dedupe_key,
     denied_question_row_marker,
-    handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
 )
@@ -160,6 +160,8 @@ from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
+from hooks.scripts.router_args import parse_args as _parse_args
+from hooks.scripts.router_args import read_input as _read_input
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import handle_block_self_dm_via_mcp
 from hooks.scripts.session_end_work_check import handle_session_end
@@ -215,12 +217,6 @@ def _current_hook_context() -> tuple[str, dict]:
 
 _FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified hook router")
-    parser.add_argument("--event", required=True, help="Hook event name")
-    return parser.parse_args()
 
 
 # Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
@@ -297,13 +293,6 @@ def _ensure_state_dir() -> None:
     _sweep_stale_state_files()
 
 
-def _read_input() -> dict:
-    try:
-        return json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
 def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     """Emit a PreToolUse deny in the modern nested ``hookSpecificOutput`` schema.
 
@@ -324,25 +313,29 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     The caller still returns ``True`` to short-circuit the handler chain
     in ``main()``; ``main()`` translates that into ``sys.exit(2)``.
 
-    Every deny is routed through the repeated-denial circuit breaker
-    (:func:`_apply_deny_circuit_breaker`) so a session that loops on one
-    identical gate cannot burn tokens indefinitely: a UX/non-safety gate
-    auto-relaxes once (the breaker returns ``False`` here, allowing the
-    call), while a safety gate keeps denying with an escalation appended to
-    the reason. The breaker is crash-proof and falls back to the original
-    deny on any internal error.
+    A call carrying ``[gate-escape:<gate_id>: <reason>]`` is allowed only after
+    :func:`~hooks.scripts.gate_escape.escape_allows` has recorded the audit row.
+    Every other deny, including a refused escape, is routed through the
+    repeated-denial circuit breaker (:func:`_apply_deny_circuit_breaker`) so a
+    session that loops on one identical gate cannot burn tokens indefinitely: a
+    UX/non-safety gate auto-relaxes once (the breaker returns ``False`` here,
+    allowing the call), while a safety gate keeps denying with an escalation
+    appended to the reason. The breaker is crash-proof and falls back to the
+    original deny on any internal error.
 
     Returns ``True`` so handlers can ``return emit_pretooluse_deny(...)``,
-    or ``False`` when the breaker auto-relaxed a UX gate.
+    or ``False`` when an escape was recorded or the breaker auto-relaxed a UX gate.
     """
+    context = _current_hook_context()
+    if gate_id and _gate_escape.escape_allows(context[1], gate_id):
+        _record_gate_decision(reason, decision="escape", gate_id=gate_id, context=context)
+        return False
     decision = _apply_deny_circuit_breaker(reason, gate_id=gate_id)
     if decision.allow:
         _record_gate_decision(reason, decision="override", gate_id=gate_id, context=_current_hook_context())
         return False
-    # A sub-agent deny must not advertise the `[quote-ok: <reason>]` approval it
-    # cannot self-authorize (the classifier-denied retry poisoned its context) —
-    # rewrite the hint to escalation guidance, deny unchanged (#3252, sibling leaf).
-    reason_out = _suppress_self_auth_hint_for_subagent(decision.reason, _current_hook_context()[1])
+    # A sub-agent cannot grant a human-only exception; keep its deny fail-closed.
+    reason_out = _suppress_self_auth_hint_for_subagent(decision.reason, _current_hook_context()[1], gate_id)
     return _write_pretooluse_deny(reason_out, gate_id=gate_id, context=_current_hook_context())
 
 
@@ -554,7 +547,7 @@ def _tick_meta_stale() -> bool:
 # scan failed) the canonicalizer degrades to VERBATIM equality: a bare
 # ``code`` and a namespaced ``t3:code`` do NOT match. That strict-degrade is
 # the SAFE failure mode — it may re-block (recoverable via the kill-switch,
-# the per-call ``[skill-load-ok:]`` token, or the deny circuit breaker), but
+# the audited per-call ``[gate-escape:skill-loading-enforcement: <reason>]`` token, or the deny circuit breaker), but
 # it never satisfies a demand for skill B with skill A. Never-lockout is now
 # supplied by those off-ramps, so this prefers strict-degrade over the
 # original "a missed normalization fails open" rationale.
@@ -741,42 +734,6 @@ def normalize_skill_name(name: str) -> str:
     return _canonical_skill_token(name, owned, namespace) or name
 
 
-# Per-call escape mirroring the ``[fg-ok: <reason>]`` precedent of the
-# orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
-# in the CURRENT tool call's command/args unblocks this single Bash/Edit/
-# Write, an empty reason rejects. A false skill-trigger can therefore
-# never wedge the loop — but a genuine intent match still hard-blocks
-# every call that does NOT carry the escape (the #1488 loophole stays
-# closed).
-_SKILL_LOAD_OK_RE = re.compile(r"\[skill-load-ok:\s*(\S[^\]]*?)\s*\]")
-
-
-def _skill_load_ok_token(data: dict) -> str | None:
-    """Return the reason from a ``[skill-load-ok: <reason>]`` token, else None.
-
-    Scans the current tool call's command/args — for ``Bash`` the
-    ``command`` string, for ``Edit``/``Write`` the written text
-    (``new_string`` / ``content``) and the ``file_path`` — within the
-    first 512 characters of each field (matching :data:`_FG_OK_RE`'s cap)
-    so a buried token in a long body does not silently authorise the
-    call. An empty reason returns None.
-    """
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in ("command", "new_string", "content", "file_path"):
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = _SKILL_LOAD_OK_RE.search(value[:512])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
-
-
 # File suffixes whose Edit/Write is genuine Python/Django source work. A skill
 # demand for ``/ac-python`` / ``/ac-django`` is relevant only to these; a
 # ``.md`` / ``.yml`` / ``.toml`` / ``.sh`` / prose edit is not, so the gate must
@@ -848,7 +805,7 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 
     Fails open on a stale/unresolvable required skill (see the module
     comment above): such a name is warned about, never blocked on. A
-    per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
+    per-call ``[gate-escape:skill-loading-enforcement: <reason>]`` token in the tool's command/
     args is an explicit escape (#1567) so a false trigger can never wedge
     the loop; a genuine intent match still hard-blocks every code-work call
     lacking that token. The ``skill_loading_gate_enabled`` kill-switch
@@ -888,15 +845,12 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     if not enforceable:
         return False
 
-    if reason := _skill_load_ok_token(data):
-        sys.stderr.write(f"NOTE: skill-loading gate skipped via [skill-load-ok: {reason}].\n")
-        return False
-
     skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
         f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write. "
-        "If this is a false trigger, add `[skill-load-ok: <reason>]` to the command/args to proceed."
+        "If this is a false trigger, add "
+        "`[gate-escape:skill-loading-enforcement: <reason>]` to the command/args to proceed."
     )
     return _fail_open_or_deny(data, reason, gate_id="skill-loading-enforcement")
 
@@ -1359,9 +1313,7 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     matcher). Only a HIGH-confidence match denies — MEDIUM attribution
     shapes pass silently, because the fleet dispatches constantly and a
     false-deny on an ordinary brief is costlier here than a warn. The
-    opt-out is an in-prompt ``[quote-ok: <reason>]`` token (reason
-    mandatory), mirroring the ``[skill-load-ok: <reason>]`` convention —
-    a prompt body has no command line or env to carry a flag.
+    privacy gate accepts no inline escape; a HIGH match always denies.
 
     Fail-open on any internal error (a crashing gate is worse than no
     scan): the ``sys.path`` bootstrap + exception swallow mirror the #1314
@@ -1407,15 +1359,6 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
 
     result = quote_scanner.scan_text(payload)
 
-    if quote_scanner.dispatch_quote_ok_reason_for_input(tool_input):
-        quote_scanner.log_decision(
-            tool_name=f"{tool_name}:dispatch",
-            decision="allow-override",
-            result=result,
-            override=True,
-        )
-        return False
-
     if result.has_high:
         quote_scanner.log_decision(
             tool_name=f"{tool_name}:dispatch",
@@ -1458,9 +1401,8 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
     (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
     command). The gate is always on. The off-ramps that keep the operator from
-    being locked out are: the ``[quote-ok: <reason>]`` token in the
-    subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
-    a missing ``session_id`` (fail-open), and ``main``'s per-handler exception swallow. The master
+    being locked out are a missing ``session_id`` (fail-open), and
+    ``main``'s per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
     commands run as ``Bash``, never as task-list entries.
     """
@@ -1496,15 +1438,6 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
     subject = data.get("task_subject", "") or ""
     description = data.get("task_description", "") or ""
     payload = f"{subject}\n{description}"
-
-    if quote_scanner.dispatch_quote_ok_reason(payload):
-        quote_scanner.log_decision(
-            tool_name="TaskCreated:quote",
-            decision="allow-override",
-            result=quote_scanner.scan_text(payload),
-            override=True,
-        )
-        return False
 
     result = quote_scanner.scan_text(payload)
     if result.has_high:
@@ -1655,7 +1588,7 @@ _PYTEST_TARGETED_RE = re.compile(
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
 # the escape hatch is ``run_in_background: true`` (or, for a whole class
-# of work, dispatching a sub-agent), plus a per-call ``[fg-ok: <reason>]``
+# of work, dispatching a sub-agent), plus a per-call ``[gate-escape:orchestrator_bash: <reason>]``
 # marker. When in doubt the command is ALLOWED — only an explicit match
 # here, foreground, is gated. Patterns cover: Python/test runners, the
 # interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
@@ -1695,12 +1628,6 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
     r")",
 )
-
-# ``[fg-ok: <non-empty-reason>]`` anywhere in the command is the per-call
-# opt-out for the rare case the loop owner truly needs heavy output inline,
-# mirroring the ``[skill-load-ok: <reason>]`` token. An empty reason does not
-# unblock.
-_FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
 # A heavy verb invoked purely to print its ``--help``/``-h``/``--version`` (and
 # exit immediately) is trivially fast and read-only — NOT the long-running shape
@@ -1762,7 +1689,7 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     session — it only takes effect post-merge + ``t3 update``).
 
     Every never-lockout off-ramp stays intact even default-ON: a sub-agent
-    context, ``run_in_background: true``, a per-call ``[fg-ok: <reason>]`` token,
+    context, ``run_in_background: true``, a per-call ``[gate-escape:orchestrator_bash: <reason>]`` token,
     the ``[teatree] orchestrator_boundary_agent_gate_enabled = false``
     kill-switch, the deny-circuit-breaker, AND — via :func:`_fail_open_or_deny`
     (#1692) — the self-rescue allowlist and the master ``danger_gate_fail_open``
@@ -1794,7 +1721,7 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     ``run_in_background: False`` denies (current CC dispatches async and OMITS
     the field, so an absent field is background, allowed). The off-ramps are:
     the kill-switch flag, a sub-agent context, absent-or-``True`` background,
-    a per-call ``[fg-ok: <reason>]`` token. The deny routes through
+    a per-call ``[gate-escape:orchestrator_bash: <reason>]`` token. The deny routes through
     :func:`_fail_open_or_deny` (#1692) so the self-rescue allowlist and the
     master ``danger_gate_fail_open`` switch relax it — never a bare lockout.
     """
@@ -1802,15 +1729,12 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         return False
     if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is not False:
         return False
-    prompt = data.get("tool_input", {}).get("prompt", "")
-    if isinstance(prompt, str) and _FG_OK_RE.search(prompt[:512]):
-        return False
     return _fail_open_or_deny(
         data,
         "[main-agent-orchestration-guard] Foreground Agent dispatch "
         "DENIED in main agent context.\n"
         "Dispatch in the background (omit run_in_background or pass true) so the "
-        "main agent is not blocked; add an explicit `[fg-ok: <reason>]` marker "
+        "main agent is not blocked; add an explicit `[gate-escape:orchestrator_foreground_dispatch: <reason>]` marker "
         "to the prompt for a genuine foreground dispatch, or disable this "
         "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
         "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
@@ -1883,7 +1807,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
 
     Passes through when the call is a sanctioned orchestration verb,
     comes from a sub-agent, is dispatched with ``run_in_background:
-    true``, carries a ``[fg-ok: <reason>]`` opt-out marker, is a TARGETED
+    true``, carries a ``[gate-escape:orchestrator_bash: <reason>]`` opt-out marker, is a TARGETED
     ``pytest`` run with no other heavy arm (#1825), or does not match the
     heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
 
@@ -1900,11 +1824,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if (
-        _FG_OK_RE.search(command)
-        or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command)
-        or _heavy_command_is_help_only(command)
-    ):
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command) or _heavy_command_is_help_only(command):
         return False
     if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
         return False
@@ -1917,7 +1837,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "§17.4 / §17.8 / §17.6 gate 2). Either pass `run_in_background: "
         "true` to run it without blocking the session, dispatch a "
         "sub-agent (Task/Agent) to do it, add an explicit "
-        "`[fg-ok: <reason>]` marker if you truly need the output inline, "
+        "`[gate-escape:orchestrator_bash: <reason>]` marker if you truly need the output inline, "
         "or — if this is a false positive — set the DB-home "
         "`orchestrator_bash_gate_enabled` to false "
         "(`t3 <overlay> config_setting set orchestrator_bash_gate_enabled false`) to disable the gate.",
@@ -1935,7 +1855,7 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     :func:`_call_is_from_subagent`) runs a foreground Bash command that
     matches the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`) and
     is not dispatched with ``run_in_background: true`` (nor carrying a
-    ``[fg-ok: <reason>]`` opt-out), the call is blocked with an actionable
+    ``[gate-escape:orchestrator_bash: <reason>]`` opt-out), the call is blocked with an actionable
     message. Everything else — quick orientation Bash, ``git``
     reads/commits, ``cat``/``ls``/``grep`` — passes; the ``pytest`` verb
     is anchored so a ``git commit -m '…pytest…'`` / ``uv add
@@ -2601,7 +2521,7 @@ def _registry_lock_path() -> Path:
 
 
 @contextlib.contextmanager
-def _registry_write_lock() -> Iterator[None]:
+def _registry_write_lock() -> Generator[None]:
     """Hold an exclusive ``flock`` for the duration of a registry write.
 
     Stdlib-only (``fcntl``) so the Django-free hook router keeps no extra
@@ -2655,7 +2575,7 @@ def _write_loop_registry(registry: dict[str, dict]) -> None:
 
 
 @contextlib.contextmanager
-def _loop_registry_txn() -> Iterator[list[dict[str, dict]]]:
+def _loop_registry_txn() -> Generator[list[dict[str, dict]]]:
     """Atomic read-modify-write transaction over the loop registry.
 
     Holds the registry flock across the WHOLE critical section so a
@@ -3093,28 +3013,9 @@ def _session_drives_loop(session_id: str) -> bool:
 # `stop_hook_active` flag short-circuits so the gate cannot hot-loop on
 # its own re-fire.
 
-# The detection heuristic itself — ``is_user_directed_question`` and its
-# ``?``/decision-cue/soft-ask regexes — lives in the ``question_gates`` sibling
-# (imported above) alongside the one-decision-per-call warn; this handler keeps
-# the routing decision (loop-ownership, transcript parsing, the block emit).
-
-
 # ``_read_transcript_entries`` moved to the ``question_gates`` sibling (the
 # transcript-parsing home) and imported back as ``_read_transcript_entries`` so
 # this god-module stays under its LOC cap; callers below are unchanged.
-def _entry_role(entry: dict) -> str | None:
-    message = entry.get("message")
-    if isinstance(message, dict):
-        return message.get("role")
-    return entry.get("type")
-
-
-def _entry_content(entry: dict) -> list:
-    message = entry.get("message")
-    content = message.get("content", []) if isinstance(message, dict) else []
-    return content if isinstance(content, list) else []
-
-
 # ``_last_assistant_turn`` moved to the ``question_gates`` sibling (the
 # transcript-parsing home, beside ``read_transcript_entries``) and imported back
 # as ``_last_assistant_turn`` so this god-module keeps shrinking; callers and the
@@ -3204,7 +3105,7 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     """
     if data.get("stop_hook_active"):
         return None
-    if _is_live_user_turn(data) or not _session_drives_loop(data.get("session_id", "")):
+    if attended_turn(data):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
@@ -3254,7 +3155,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
+    if attended_turn(data):
         _supersede_pending_questions(data)
         return False
     queue_id = _capture_and_defer_question(data, dedupe=True)
@@ -3640,6 +3541,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_cron_loop_shell,
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
+        handle_block_worktree_checkout,
         handle_block_second_branch,
         handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,
@@ -3677,7 +3579,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_orchestrator_investigation_boundary,
         handle_warn_merged_detection_probe,
         handle_block_standing_grant_ask,
-        handle_warn_batched_questions,
+        handle_block_unfit_question,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
     ],
@@ -3706,6 +3608,7 @@ _HANDLERS: dict[str, list] = {
         handle_reset_turn_tool_budget,
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
+        handle_block_decision_prose,
         handle_answer_first_gate,
         handle_completion_claim_gate,
         handle_unbacked_claim_gate,

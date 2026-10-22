@@ -9,7 +9,7 @@ re-exports :class:`ClaimOrder` and :func:`_claimable_now_q`, so existing
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +26,17 @@ from teatree.core.schema_readiness import schema_admission_block_reason, schema_
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProcessExit:
+    reason: str = ""
+
+    def begin(self, reason: str) -> None:
+        self.reason = reason
+
+
+process_exit = ProcessExit()
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,8 @@ def _fleet_admission_refusal() -> str:
 
 def drain_block_reason() -> str:
     """The refusals that mean THIS worker is going away, so an in-flight run checkpoints rather than finishes."""
+    if process_exit.reason:
+        return process_exit.reason
     if worker_is_quiescing():
         return "this worker is quiescing for a rolling deploy"
     return generation_admission_refusal()
@@ -163,7 +176,7 @@ class ClaimWindow:
 
 
 @contextmanager
-def claim_window() -> Iterator[ClaimWindow]:
+def claim_window() -> Generator[ClaimWindow]:
     """The admission re-read and the claim in one transaction, fenced against a quiesce that commits in between."""
     with transaction.atomic():
         generation = quiesce_fence_generation(lock=True)
@@ -172,7 +185,7 @@ def claim_window() -> Iterator[ClaimWindow]:
 
 
 @contextmanager
-def redispatch_window() -> Iterator[str]:
+def redispatch_window() -> Generator[str]:
     """A re-dispatch's write transaction, yielding the claim refusal read inside it so a stop committed first wins."""
     with transaction.atomic():
         yield claim_admission_block_reason()

@@ -14,7 +14,7 @@ end to end. Every case asserts the row survives untouched — a refused claim is
 deferral, never a loss.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import cast
 from unittest.mock import patch
@@ -37,7 +37,7 @@ class _SchemaGateBase(django.test.TestCase):
         self.addCleanup(invalidate_schema_readiness)
 
     @contextmanager
-    def _behind(self) -> Iterator[None]:
+    def _behind(self) -> Generator[None]:
         with patch(_PROBE, return_value=_BEHIND):
             invalidate_schema_readiness()
             yield

@@ -7,7 +7,7 @@ returns a scanner whenever the overlay has a Python class and followup repos;
 ``/codex:review``. No setting value can produce "no reviewer".
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -41,7 +41,7 @@ def _backend(*, name: str = "t3-teatree", repos: tuple[str, ...] = ("souliane/te
 
 
 @contextmanager
-def _resolved_backend(backend: PrReviewBackend) -> Iterator[None]:
+def _resolved_backend(backend: PrReviewBackend) -> Generator[None]:
     with patch("teatree.loop.scanner_factories.resolve_pr_review_backend", return_value=backend):
         yield
 

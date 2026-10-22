@@ -30,12 +30,17 @@ Every applied answer, typed or tapped, closes the posted card in place.
 """
 
 import json
+import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from teatree.core.models import PendingChatInjection
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
@@ -54,6 +59,7 @@ if TYPE_CHECKING:
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
 OPTION_ACTION_PREFIX = "owner-question-option-"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +68,8 @@ class BoundAnswer:
 
     question: DeferredQuestion
     answer: str
+    answered_by: str = ""
+    from_click: bool = False
 
 
 def configured_owner_id(backend: object) -> str:
@@ -91,31 +99,59 @@ def bind_reply(
         question = _inferred_question(reply)
     if question is None:
         return None
+    if is_action_question(question):
+        return None
     answer = resolve_answer(body, question, reader=reader)
-    return None if answer is None else BoundAnswer(question=question, answer=answer)
+    return None if answer is None else BoundAnswer(question=question, answer=answer, answered_by=reply.user_id)
 
 
-def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None" = None) -> bool:
+def apply_bound_answer(
+    bound: BoundAnswer,
+    *,
+    backend: "MessagingBackend | None" = None,
+    on_answer: Callable[[DeferredQuestion], object] | None = None,
+) -> bool:
     """Resolve the bound question, resume its parked task and close its posted card; ``True`` when applied.
 
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
     """
-    applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+    if is_action_question(bound.question) and not bound.from_click:
+        return False
+    with transaction.atomic():
+        applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        if applied is not None and bound.answered_by:
+            DeferredQuestionAudit.objects.create(
+                question=applied,
+                action="answered",
+                answer_text=applied.answer_text,
+                resolver_id=f"slack:{bound.answered_by}",
+                note="button" if bound.from_click else "",
+            )
     if applied is None:
         return False
     from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
     resume_on_answer(applied, applied.parked_task)
+    if on_answer is not None:
+        on_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:
         replace_root(applied, closed_message(applied, answered_line(applied)), backend)
     return True
 
 
-def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
+def answer_from_click(
+    payload: dict,
+    *,
+    backend: "MessagingBackend",
+    on_answer: Callable[[DeferredQuestion], object] | None = None,
+) -> bool:
     """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
-    if tap is None or not _is_the_owner(tap.user_id, configured_owner_id(backend)):
+    if tap is None:
+        return False
+    if not _is_the_owner(tap.user_id, configured_owner_id(backend)):
+        logger.warning("Refused a tap on the card at message %s: not the owner", tap.root_ts)
         return False
     question = DeferredQuestion.objects.filter(
         slack_channel=tap.channel, slack_ts=tap.root_ts, audience=DeferredQuestion.Audience.OWNER_QUESTION
@@ -126,7 +162,11 @@ def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
         label = _tapped_label(question, tap)
         if label is None:
             return False
-        if apply_bound_answer(BoundAnswer(question=question, answer=label), backend=backend):
+        if apply_bound_answer(
+            BoundAnswer(question=question, answer=label, answered_by=tap.user_id, from_click=True),
+            backend=backend,
+            on_answer=on_answer,
+        ):
             return True
         question.refresh_from_db()
     closing = NO_LONGER_NEEDED if question.dismissed_at else f"{ALREADY_ANSWERED}{question.answer_text}"
@@ -151,18 +191,20 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
-    if not text.strip():
+    if not text.strip() or is_action_question(question):
         return None
     match = _DIGIT_RE.match(text)
     if match is None:
-        return None if reader(text).intent is InboundIntent.QUESTION else text
-    options = _live_options(question)
-    if options is None:
-        return None
-    index = int(match.group(1))
-    if not (1 <= index <= len(options)):
-        return text
-    return str(options[index - 1].get("label", "")) or text
+        if reader(text).intent is InboundIntent.QUESTION:
+            return None
+        answer = text
+    else:
+        options = _live_options(question)
+        if options is None:
+            return None
+        index = int(match.group(1))
+        answer = str(options[index - 1].get("label", "")) or text if 1 <= index <= len(options) else text
+    return answer
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +283,8 @@ def _inferred_question(reply: PendingChatInjection) -> DeferredQuestion | None:
     )
     if threaded is not None or reply.thread_ts:
         return threaded
-    return DeferredQuestion.sole_for_reply(channel=reply.channel, after_ts=reply.slack_ts)
+    sole = DeferredQuestion.sole_for_reply(channel=reply.channel, after_ts=reply.slack_ts)
+    return sole if sole is not None and not is_action_question(sole) else None
 
 
 def _recorded_options(question: DeferredQuestion) -> list[dict] | None:

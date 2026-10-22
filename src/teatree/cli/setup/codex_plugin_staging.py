@@ -2,7 +2,7 @@
 
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,7 +23,7 @@ def staging_dirs(home: Path) -> set[Path]:
 
 
 @contextmanager
-def reclaiming_new_staging(home: Path) -> Iterator[None]:
+def reclaiming_new_staging(home: Path) -> Generator[None]:
     before = staging_dirs(home)
     try:
         yield

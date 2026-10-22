@@ -1,4 +1,4 @@
-"""Single tri-state open-PR probe shared by the orphan, teardown, and fast-push gates.
+"""Open-PR probe shared by the orphan, teardown, and fast-push gates, plus the exact-head readers.
 
 Three gates each asked the forge the same question — "is there an OPEN PR/MR whose
 source is this branch?" — with their own hand-rolled ``gh pr list`` / ``glab mr
@@ -22,6 +22,11 @@ private repo, and a caller reading that as "no PR" refuses the second push to a
 branch whose PR already exists. It serves the GitHub arm only: the GitLab arm shells
 out to nothing, because the deploy IMAGE declares no ``glab`` and a probe must not
 depend on a binary only an operator's host bind mount happens to supply.
+
+:func:`github_open_pr_head` and :func:`github_exact_branch_head` serve the released-checkout
+recovery proof: one open PR for the exact branch with its source repository and head, and the
+branch's full remote ref. Both read through the routed credential and answer ``None`` for an
+unreadable, ambiguous or malformed reply, because a head proof must refuse what it cannot verify.
 """
 
 import json
@@ -30,19 +35,28 @@ import os
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
+from typing import NamedTuple
 
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
+from teatree.git_sha import is_full_git_sha
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# ``gh`` lists only OPEN PRs here, one row, so a non-empty payload IS an open PR. The
-# branch selector (``--head``) is appended by the forge-specific wrapper. The GitLab arm
-# runs no CLI at all — the image declares no ``glab``, so that side reads over the
-# token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
-_GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
+# ``gh`` lists only OPEN PRs here; each caller adds its ``--json`` fields, ``--limit`` and
+# ``--head``. The GitLab arm runs no CLI at all — the image declares no ``glab``, so that side
+# reads over the token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
+_GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open")
+_PROBE_TIMEOUT_SECONDS = 30
+
+
+class GithubOpenPrHead(NamedTuple):
+    url: str
+    repository: str
+    branch: str
+    head: str
 
 
 def forge_cli_env(repo: str | Path = ".") -> dict[str, str] | None:
@@ -147,7 +161,7 @@ def find_open_pr_for_branch(repo_dir: str | Path, branch: str) -> PrProbe:
     therefore no PR to find and nothing to protect), NOT unknown. An empty *branch*
     is :attr:`~PrProbeOutcome.UNKNOWN` — there is nothing to probe, and a
     fail-closed caller must not read that as "no PR". Any CLI failure (missing
-    binary, non-zero exit, unparsable JSON) is :attr:`~PrProbeOutcome.UNKNOWN`.
+    binary, timeout, non-zero exit, unparsable JSON) is :attr:`~PrProbeOutcome.UNKNOWN`.
 
     The remote read itself must tell "unreadable repo" apart from "readable repo,
     unrecognised host": ``git remote get-url`` failing (not a git repo, no
@@ -177,8 +191,62 @@ def forge_for_repo(repo_dir: str | Path) -> str | None:
 
 
 def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
-    """The tri-state open-PR probe for a known-GitHub repo (``gh pr list --head``)."""
-    return _probe_open_pr([*_GH_OPEN_PR, "--head", branch], repo_dir, key="url")
+    """The tri-state open-PR probe for a known-GitHub repo (``gh pr list --head``); one row IS an open PR."""
+    return _probe_open_pr([*_GH_OPEN_PR, "--json", "url", "--limit", "1", "--head", branch], repo_dir, key="url")
+
+
+def github_open_pr_head(repo_dir: str | Path, branch: str) -> GithubOpenPrHead | None:
+    """Read one open PR's source repo, branch and head for the exact branch."""
+    output = _github_cli_stdout(
+        [
+            *_GH_OPEN_PR,
+            "--json",
+            "url,headRepository,headRefName,headRefOid",
+            "--limit",
+            "2",
+            "--head",
+            branch,
+        ],
+        repo_dir,
+    )
+    if output is None:
+        return None
+    try:
+        rows = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    repository = row.get("headRepository")
+    head_branch = row.get("headRefName")
+    url = row.get("url")
+    head = row.get("headRefOid")
+    slug = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+    if slug is None:
+        logger.warning("GitHub PR head proof unavailable: gh did not return headRepository.nameWithOwner")
+    if not isinstance(url, str) or not url or not isinstance(slug, str) or not slug:
+        return None
+    if not isinstance(head_branch, str) or not head_branch:
+        return None
+    return GithubOpenPrHead(url, slug, head_branch, head) if isinstance(head, str) and is_full_git_sha(head) else None
+
+
+def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host: str) -> str | None:
+    """Read the exact GitHub branch ref; refuse missing or mismatched replies."""
+    # The backend's _branch_tip uses its own credentials; custody needs this routed read.
+    output = _github_cli_stdout(["gh", "api", "--hostname", host, f"repos/{slug}/git/ref/heads/{branch}"], repo_dir)
+    if output is None:
+        return None
+    try:
+        row = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(row, dict) or row.get("ref") != f"refs/heads/{branch}":
+        return None
+    object_data = row.get("object")
+    sha = object_data.get("sha") if isinstance(object_data, dict) else None
+    return sha if isinstance(sha, str) and is_full_git_sha(sha) else None
 
 
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
@@ -235,32 +303,34 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
 
     A non-empty JSON array whose first row carries a non-empty string at *key* is an
     open PR/MR (:attr:`~PrProbeOutcome.FOUND`, carrying that url); an empty array is
-    :attr:`~PrProbeOutcome.NONE`. A missing binary (``OSError``), a non-zero exit,
+    :attr:`~PrProbeOutcome.NONE`. A missing binary (``OSError``), timeout, non-zero exit,
     unparsable / non-list JSON, or a row shaped otherwise is
     :attr:`~PrProbeOutcome.UNKNOWN` — the probe could not answer. Both CLIs are
     invoked with an explicit field selector, so a row missing *key* is a changed
     output schema, never a PR with no url: reporting FOUND-with-``""`` there let the
     fail-closed teardown adapter read an unverified open PR as verified absence.
     """
-    stdout = _open_pr_stdout(cmd, repo_dir)
+    stdout = _github_cli_stdout(cmd, repo_dir)
     if stdout is None:
         return PrProbe.unknown()
     return _classify_open_pr_rows(stdout, cmd[0], key=key)
 
 
-def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
-    """*cmd*'s stdout, or ``None`` when the forge CLI could not answer at all."""
+def _github_cli_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
+    """GitHub CLI stdout, or ``None`` when the read could not answer."""
     env = forge_cli_env(repo_dir)
     if env is None:
-        logger.warning("open-PR probe has no routed GitHub token for %s — unknown", repo_dir)
+        logger.warning("GitHub read has no routed token for %s — unknown", repo_dir)
         return None
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=env)
-    except OSError:
-        logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
+        result = run_allowed_to_fail(
+            cmd, expected_codes=None, cwd=Path(repo_dir), env=env, timeout=_PROBE_TIMEOUT_SECONDS
+        )
+    except SUBPROCESS_UNREACHABLE:
+        logger.warning("GitHub read could not run %r in %s — unknown", cmd[0], repo_dir)
         return None
     if result.returncode != 0:
-        logger.warning("open-PR probe %r failed (exit %s) in %s — unknown", cmd[0], result.returncode, repo_dir)
+        logger.warning("GitHub read %r failed (exit %s) in %s — unknown", cmd[0], result.returncode, repo_dir)
         return None
     return result.stdout or "[]"
 

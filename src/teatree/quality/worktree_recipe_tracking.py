@@ -29,17 +29,28 @@ quotes the defective shape BECAUSE it is the defect being described.
 """
 
 import dataclasses
+import posixpath
 import re
+import shlex
 import sys
 from pathlib import Path
 
+from teatree.utils.disposable_checkout import DEFAULT_ROOTS
+from teatree.utils.git_worktree import worktree_destination
+
 ALLOW_PRAGMA = "worktree-tracking: allow"
+PLACEMENT_ALLOW_PRAGMA = "worktree-placement: allow"
 NO_TRACK = "--no-track"
+# A published recipe is read on every box, so it is judged against the default roots, never the runner's.
+RECIPE_ROOTS: tuple[str, ...] = ("~/workspace/t3-workspaces/", *(f"{root}/" for root in DEFAULT_ROOTS))
 
 _SCANNED_ROOTS: tuple[str, ...] = ("skills", "docs")
 _FENCE_RE = re.compile(r"^\s*```")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _WORKTREE_ADD_RE = re.compile(r"git\s+worktree\s+add\b")
+_WORKTREE_CREATE_RE = re.compile(
+    r"(?:sudo(?:\s+-u\s+\S+)?\s+)?git(?:\s+(?:-C\s+\S+|-C\S+|--git-dir(?:=|\s+)\S+|-c\s+\S+))*\s+worktree\s+(add|move)\b"
+)
 _TERMINATOR_RE = re.compile(r"&&|\|\||;|\||#")
 _BRANCH_FLAG_RE = re.compile(r"(?<![\w-])-[bB](?![\w-])")
 _REMOTE_START_POINT_RE = re.compile(r"(?<![\w./-])(?:origin|upstream|<remote>)/[A-Za-z0-9._<>/-]+")
@@ -58,6 +69,21 @@ class Finding:
             f"start point without `{NO_TRACK}` — the new branch then tracks that ref, so a routine "
             f"`git push` on it aims at the remote's branch (#4225). Add `{NO_TRACK}`, or mark the line "
             f"`{ALLOW_PRAGMA}` when quoting the defective shape IS the point."
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class PlacementFinding:
+    path: str
+    line_no: int
+    target: str
+
+    @property
+    def message(self) -> str:
+        return (
+            f"{self.path}:{self.line_no}: worktree target {self.target!r} is outside the allowed "
+            f"checkout roots. Use {', '.join(f'`{root}`' for root in RECIPE_ROOTS)}; "
+            f"mark an intentional quoted example `{PLACEMENT_ALLOW_PRAGMA}`."
         )
 
 
@@ -121,6 +147,42 @@ def scan_source(source: str, path: str) -> list[Finding]:
     return findings
 
 
+def _recipe_target(verb: str, argv: str) -> str | None:
+    try:
+        words = shlex.split(argv)
+    except ValueError:
+        return None
+    return worktree_destination(words, add=verb == "add")
+
+
+def _allowed_recipe_target(target: str) -> bool:
+    if re.fullmatch(r"<[A-Za-z][^>]*>", target):
+        return True
+    return f"{posixpath.normpath(target)}/".startswith(RECIPE_ROOTS)
+
+
+def scan_placement_source(source: str, path: str) -> list[PlacementFinding]:
+    findings: list[PlacementFinding] = []
+    for line_no, text, in_fence in logical_lines(source):
+        if PLACEMENT_ALLOW_PRAGMA in text:
+            continue
+        for fragment in code_fragments(text, in_fence=in_fence):
+            for match in _WORKTREE_CREATE_RE.finditer(fragment):
+                prefix = fragment[: match.start()].rstrip()
+                if (
+                    prefix
+                    and not prefix.endswith(("&&", "||", ";", "|"))
+                    and not re.fullmatch(r"[\w@:/~.-]*[$#]", prefix)
+                ):
+                    continue
+                tail = fragment[match.end() :]
+                cut = _TERMINATOR_RE.search(tail)
+                target = _recipe_target(match[1], tail[: cut.start()] if cut else tail)
+                if target is not None and not _allowed_recipe_target(target):
+                    findings.append(PlacementFinding(path, line_no, target))
+    return findings
+
+
 def collect_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for name in _SCANNED_ROOTS:
@@ -139,14 +201,22 @@ def scan_tree(root: Path) -> list[Finding]:
     return findings
 
 
+def scan_placement_tree(root: Path) -> list[PlacementFinding]:
+    findings: list[PlacementFinding] = []
+    for path in collect_files(root):
+        rel = path.relative_to(root).as_posix()
+        findings.extend(scan_placement_source(path.read_text(encoding="utf-8"), rel))
+    return findings
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
 def run(root: Path) -> int:
-    findings = scan_tree(root)
+    findings = [*scan_tree(root), *scan_placement_tree(root)]
     if not findings:
-        sys.stdout.write("worktree-recipe-tracking: OK (no untracked-start-point recipe found)\n")
+        sys.stdout.write("worktree-recipe-tracking: OK (tracking and placement recipes are safe)\n")
         return 0
     for finding in findings:
         sys.stdout.write(f"  - {finding.message}\n")

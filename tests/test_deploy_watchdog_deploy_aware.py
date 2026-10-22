@@ -18,7 +18,7 @@ import shutil
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -127,7 +127,7 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
 
 
 @contextlib.contextmanager
-def _deploy_lock_held(lock: Path) -> Iterator[Path]:
+def _deploy_lock_held(lock: Path) -> Generator[Path]:
     """Hold a REAL exclusive flock on *lock* for the body — what deploy.sh does."""
     lock.touch()
     holder = subprocess.Popen([_FLOCK or "flock", str(lock), "sleep", "60"])
@@ -264,6 +264,12 @@ def _compose_ups(tmp_path: Path) -> list[str]:
     log = tmp_path / "docker.log"
     lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     return [line for line in lines if " up -d" in line]
+
+
+def test_completed_init_restarts_the_forge_listener(tmp_path: Path) -> None:
+    _run_pass(tmp_path)
+
+    assert any("teatree-webhooks" in line for line in _compose_ups(tmp_path))
 
 
 class TestTheSupervisorStandsBackDuringAConvergence:

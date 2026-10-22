@@ -17,8 +17,9 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -35,6 +36,8 @@ from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from teatree.core.models.review_verdict import ReviewVerdict
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
 # A CLEAR binds to the exact reviewed tree (§17.4.2). An abbreviated SHA is
@@ -192,6 +195,11 @@ class ClearRequest:
     # ``failed`` snapshot is refused unconditionally — expedite can never waive it.
     expedite_authorizer: str = ""
     local_ci_green_sha: str = ""
+
+
+def _assert_no_standing_hold_for_clear(*, slug: str, pr_id: int, head_sha: str) -> None:
+    verdict_model = cast("type[ReviewVerdict]", apps.get_model("core", "ReviewVerdict"))
+    verdict_model.objects.assert_no_standing_hold_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
 class MergeClear(models.Model):
@@ -379,6 +387,7 @@ class MergeClear(models.Model):
         # cannot silently fail on a mixed-case input (#1162).
         def _create() -> "MergeClear":
             with transaction.atomic():
+                _assert_no_standing_hold_for_clear(slug=request.slug, pr_id=request.pr_id, head_sha=normalized_sha)
                 return cls.objects.create(
                     ticket=request.ticket,
                     pr_id=request.pr_id,

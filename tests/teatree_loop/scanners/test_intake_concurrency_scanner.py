@@ -8,7 +8,7 @@ moves — an adjustment nobody can see is indistinguishable from a knob nobody t
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -54,7 +54,7 @@ def _quota(weekly: float = 0.0) -> QuotaSignal:
 @contextlib.contextmanager
 def _pinned_box(
     *, available_mib: int | None, cores: int = 8, load1: float = 0.0, weekly: float = 0.0
-) -> Iterator[None]:
+) -> Generator[None]:
     """Pin every reading of one window.
 
     The ambient load average and the account quota cache are live properties of the

@@ -74,6 +74,13 @@ and releases the file lease. An unchanged cache causes no pass write. A new task
 starts a new process and revalidates/hydrates the pass entry; a task arriving
 during the idle grace reuses the existing process.
 
+The spawned process carries `T3_DISPATCHED_AGENT=1`, the same marker as the
+Claude child, so a cancelled run can identify its marked checkout processes.
+The shared App Server is never a cancellation stop target: a direct owner
+cancel may signal only runner descendants with a writable checkout file
+descriptor after a pidfd re-check. Marked orphans can keep a checkout held but
+cannot be stopped by that rule.
+
 This process-start lease is the boot preflight too: Teatree validates and
 hydrates before each new Codex process, including the first run after a worker
 recreation. It does not copy the credential during container entrypoint startup,
@@ -100,6 +107,18 @@ commands that resolve a GitHub token through the forge seam take `GH_TOKEN` only
 `T3_ROUTED_GH_TOKEN_KEY` names the pass key the repository's own `github_token` route resolves to.
 A `GH_TOKEN` with no marker, a marker naming another key, and any `gitlab_token` route are refused
 as before, and a marker in the worker's own environment never crosses into the child.
+
+The approval and post-tool router subprocesses run with an explicit environment allowlist: runtime paths
+and home from the worker, plus `GH_TOKEN` and `T3_ROUTED_GH_TOKEN_KEY` from the task's dispatch environment.
+The launcher adds `T3_DISPATCHED_CODEX_ROUTER`, a fixed non-secret marker it never copies from the worker
+or the task. The push ownership gate reads the remote's first configured URL, refuses one that is empty or
+starts with a dash, and passes `--` before it. Its `ls-remote` and `fetch` probes run from a neutral
+temporary directory (the fetch into a throwaway repository that borrows the checkout's objects), so
+checkout-local program settings do not run during those probes. Under the marker, a GitHub credential
+refusal from the `ls-remote` probe or the `gh` ownership probe is a venue fault: the refusal tells the task
+to keep its commit local and set the boolean `push_ownership_venue_fault` to `true` in its result. Only
+coding and debugging attempts act on that field: the attempt fails as a venue fault without an owner
+question, and the next route candidate can retry. Landing is verified from the local commit.
 
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
 (one credential writer). When the routed token changes, an idle server is retired and one new server
@@ -332,7 +351,9 @@ separate caps.
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
   skill the phase requires, stack skills included, names the others as not available, and points at no
-  skill path. Inline code spans naming a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
+  skill path. It embeds `RULES.md` before the rules skill body, resolving the document beside the selected
+  `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
+  a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
   `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
   context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and

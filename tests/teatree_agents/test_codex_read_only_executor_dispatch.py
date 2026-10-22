@@ -3,7 +3,7 @@
 import contextlib
 import json
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -55,7 +55,7 @@ class _Harness:
         self.capabilities = HarnessCapabilities()
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield FakeHarnessSession(success_stream({"summary": "claude planned instead", "plan_text": ""}))
 
@@ -93,7 +93,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
             return run_agent(self._task(), phase="planning", overlay_skill_metadata=SkillMetadata())
 
     @contextlib.contextmanager
-    def _world(self, config: AgentConfig, host: SimpleNamespace, *, skills: list[str] | None = None) -> Iterator[None]:
+    def _world(self, config: AgentConfig, host: SimpleNamespace, *, skills: list[str] | None = None) -> Generator[None]:
         with (
             patch.dict("os.environ", {**self.env, "T3_CODEX_HOME": str(self.fake.root / "worker-codex-home")}),
             patch.object(secrets, "run_bounded_group", run.run_bounded_group),

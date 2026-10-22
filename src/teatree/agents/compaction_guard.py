@@ -10,7 +10,7 @@ through :func:`with_compaction_off`.
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -103,7 +103,7 @@ class GuardedHarness:
         return self.harness.capabilities
 
     @asynccontextmanager
-    async def open(self, options: "ClaudeAgentOptions") -> "AsyncIterator[HarnessSession]":
+    async def open(self, options: "ClaudeAgentOptions") -> "AsyncGenerator[HarnessSession]":
         async with self.harness.open(options) as session:
             self.guard.arm(session.interrupt)
             yield session

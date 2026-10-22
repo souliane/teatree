@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._gate_escape_audit import write_recording_t3
+
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
@@ -281,34 +283,46 @@ class TestSelfBypassDoesNotPoisonDistinctCommands:
         assert _circuit_broken(env, "poison") == [], "distinct commands never trip the breaker"
 
 
-class TestConfirmedFalsePositiveGrant:
-    """#3252(b) — a confirmed identical false positive stops re-prompting.
+class TestRefusedEscapeStillCountsTowardTheBreaker:
+    def test_a_ux_gate_still_relaxes_when_the_escape_cannot_be_audited(
+        self, env: dict[str, str], tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        write_recording_t3(bin_dir, allowed=False)
+        env = {**env, "PATH": f"{bin_dir}:{env['PATH']}"}
+        _seed_pending(env, "tok", ["ac-reviewing-codebase"])
+        call = _skill_deny(env, "tok")
+        call["cwd"] = str(tmp_path)
+        call["tool_input"]["new_string"] = "x = 1  # [gate-escape:skill-loading-enforcement: probe]"
 
-    A ``[fp-confirmed:]`` token suppresses the deny and records a session-scoped,
-    per-fingerprint grant; the IDENTICAL command WITHOUT the token then auto-passes
-    (the grant hit) instead of re-prompting. RED on pre-fix code (no grant store,
-    and the token is not recognised).
-    """
+        for _ in range(2):
+            rc, payload, stderr = _run(env, call)
+            _assert_denied(rc, payload)
+            assert "audit unavailable" in stderr
+        rc3, payload3, stderr3 = _run(env, call)
 
-    def test_confirmed_fp_grants_and_identical_call_stops_reprompting(self, env: dict[str, str]) -> None:
+        assert rc3 == 0
+        assert payload3 is None
+        assert "CIRCUIT BREAKER" in stderr3
+
+
+class TestLegacyFalsePositiveToken:
+    def test_legacy_token_cannot_grant_an_identical_call(self, env: dict[str, str]) -> None:
         confirmed = {
             "session_id": "grant",
             "tool_name": "Bash",
             "tool_input": {"command": "uv run pytest --no-cov -q [fp-confirmed: known-quick targeted run]"},
         }
         rc_confirm, payload_confirm, stderr_confirm = _run(env, confirmed)
-        assert rc_confirm == 0, "the [fp-confirmed:] call is suppressed (allowed)"
-        assert payload_confirm is None
-        assert "CONFIRMED FALSE POSITIVE" in stderr_confirm
-        assert _grant_file(env, "grant").is_file(), "a session grant is recorded"
+        _assert_denied(rc_confirm, payload_confirm)
+        assert "CONFIRMED FALSE POSITIVE" not in stderr_confirm
+        assert not _grant_file(env, "grant").is_file()
 
         identical = _safety_deny("grant")  # same command, no token
         rc_reuse, payload_reuse, _ = _run(env, identical)
-        assert rc_reuse == 0, "the identical FP auto-passes via the grant — no re-prompt"
-        assert payload_reuse is None
-        assert _streak(env, "grant") is None, "a granted call accumulates no streak"
+        _assert_denied(rc_reuse, payload_reuse)
 
-    def test_distinct_command_after_grant_still_denies(self, env: dict[str, str]) -> None:
+    def test_distinct_command_after_legacy_token_still_denies(self, env: dict[str, str]) -> None:
         confirmed = {
             "session_id": "grant2",
             "tool_name": "Bash",

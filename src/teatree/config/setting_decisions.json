@@ -152,6 +152,10 @@
       "decision": "unified-gate",
       "reason": "Folded into the unified gate primitive; the switch goes when it lands"
     },
+    "worktree_containment_gate_enabled": {
+      "decision": "unified-gate",
+      "reason": "Folded into the unified gate primitive; the switch goes when it lands"
+    },
     "worker_quiescing": {
       "decision": "retain",
       "reason": "Keep transient worker-quiesce control for orderly shutdown"

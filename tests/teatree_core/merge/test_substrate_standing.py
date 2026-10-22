@@ -1,6 +1,6 @@
 """The standing substrate grant as configured — what a question gate may treat as already held."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import pytest
@@ -16,7 +16,7 @@ OWNER = "owner:standing"
 
 
 @contextmanager
-def _config(**settings: object) -> Iterator[None]:
+def _config(**settings: object) -> Generator[None]:
     rows = [ConfigSetting.objects.set_value(key, value, scope=OVERLAY) for key, value in settings.items()]
     try:
         yield

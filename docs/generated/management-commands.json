@@ -787,6 +787,10 @@
           "name": "discharge-pending"
         },
         {
+          "help": "Ask the owner on Slack to approve a merge correction",
+          "name": "request-void"
+        },
+        {
           "help": "Void a merge the forge records but whose content never reached the default branch",
           "name": "void-merge"
         },
@@ -1498,6 +1502,10 @@
         {
           "help": "Show every checkout a live agent currently holds (#3952)",
           "name": "occupancy"
+        },
+        {
+          "help": "Record the present checkout state after the owner has inspected it",
+          "name": "attest"
         },
         {
           "help": "Register an existing on-disk checkout as a ``Worktree`` row",

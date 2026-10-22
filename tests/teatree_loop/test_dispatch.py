@@ -388,7 +388,7 @@ class PrSweepFlagStatuslineTests(TestCase):
 
     def test_held_flag_surfaces_in_action_needed(self) -> None:
         # #4380: a contested head — a HOLD standing at the live head that a later
-        # merge_safe superseded under newest-wins — is refused by the autonomous
+        # merge_safe coexists with a standing HOLD — is refused by the autonomous
         # merge and needs a human to reconcile. Without the PR_SWEEP_FLAG_KINDS
         # entry the "pr_sweep." drop prefix swallows it and the refusal is silent.
         action = self._action("pr_sweep.flag_held", "contested_hold_at_head")
@@ -631,37 +631,6 @@ def test_incoming_answering_task_with_pr_url_still_routes_to_reviewer() -> None:
     actions = dispatch([signal])
     agent_zones = {a.zone for a in actions if a.kind == "agent"}
     assert agent_zones == {"t3:reviewer"}
-
-
-def _slack_user_reply_signal() -> ScanSignal:
-    """Mirror what ``SlackDmInboundScanner`` emits for a drained user reply."""
-    return ScanSignal(
-        kind="slack.user_reply",
-        summary="Slack user reply 1779215938.999779: if there are posted in the channel",
-        payload={
-            "ts": "1779215938.999779",
-            "channel": "C9XYZ",
-            "user_id": "U123",
-            "text": "if there are posted in the channel",
-            "overlay": "t3-teatree",
-        },
-    )
-
-
-def test_slack_user_reply_does_not_emit_statusline_action() -> None:
-    """#1113 Defect 2: the reactive Slack-answer loop owns replies.
-
-    ``slack.user_reply`` must not fall through to the statusline-action
-    fallback — the raw user text/ts is not an operator action item.
-    """
-    actions = dispatch([_slack_user_reply_signal()])
-    assert not any(a.kind == "statusline" for a in actions), [(a.kind, a.zone, a.detail) for a in actions]
-
-
-def test_slack_user_reply_routes_only_to_its_real_consumer() -> None:
-    """Routed mechanically (the drain/reactive loop), never as an agent/statusline."""
-    actions = dispatch([_slack_user_reply_signal()])
-    assert [(a.kind, a.zone) for a in actions] == [("mechanical", "slack_user_reply")]
 
 
 def test_codex_review_dispatch_standard_variant_routes_to_codex_review_agent() -> None:

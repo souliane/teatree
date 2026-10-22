@@ -1,6 +1,8 @@
 import asyncio
+import gc
 import os
 import socket
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -197,9 +199,20 @@ def test_remote_process_must_be_running_the_worker_command() -> None:
 
 
 def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) -> None:
+    recipient = LiveMailboxBroker(runtime_dir=tmp_path)
+    served = threading.Event()
+    handle = recipient._handle
+
+    async def handle_then_signal(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await handle(reader, writer)
+        finally:
+            served.set()
+
     with (
         LiveMailboxBroker(runtime_dir=tmp_path) as source,
-        LiveMailboxBroker(runtime_dir=tmp_path) as recipient,
+        patch.object(recipient, "_handle", handle_then_signal),
+        recipient,
     ):
         sender = source.register(room="first", harness="claude_sdk", label="sender")
         target = recipient.register(room="second", harness="claude_sdk", label="recipient")
@@ -207,6 +220,10 @@ def test_a_public_mode_socket_is_not_trusted_for_peer_discovery(tmp_path: Path) 
 
         peers = asyncio.run(MailboxClient(sender.socket_path, sender.token).peers())
         assert target.address not in {peer["address"] for peer in peers}
+        # The source refuses before sending, so a shutdown can race the recipient's accept and leak its transport.
+        assert served.wait(timeout=5)
+    # Report a leaked transport in this test, not in whichever test the collector next runs in.
+    gc.collect()
 
 
 def test_reset_shared_brokers_forgets_published_socket_paths(tmp_path: Path) -> None:
@@ -222,3 +239,23 @@ def test_closed_peer_connection_gets_no_error_response(tmp_path: Path) -> None:
         client.connect(str(broker.socket_path))
         client.shutdown(socket.SHUT_WR)
         assert client.recv(1024) == b""
+
+
+def test_cancelled_client_read_closes_server_transport(tmp_path: Path) -> None:
+    async def cancelled_read() -> bool:
+        server_socket, client_socket = socket.socketpair()
+        reader, writer = await asyncio.open_connection(sock=server_socket)
+        try:
+            broker = LiveMailboxBroker(runtime_dir=tmp_path)
+            task = asyncio.create_task(broker._handle(reader, writer))
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return writer.is_closing()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            client_socket.close()
+
+    assert asyncio.run(cancelled_read())

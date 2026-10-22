@@ -38,6 +38,7 @@ from tests._leak_hook_checkout import (
     REPO_ROOT,
     CommittedFingerprint,
     FingerprintState,
+    SourceFixture,
     commit_guarded,
     default_hook,
     place_hook,
@@ -515,7 +516,7 @@ def _relocated_checkout(tmp_path: Path, *, scanner: str | None) -> Path:
     The hook runs the scanner from the tree it lives in, so replacing
     ``scripts/privacy_scan.py`` here is the only way to give it another scanner.
     """
-    return place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY, scanner=scanner)
+    return place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY, sources=SourceFixture(scanner=scanner))
 
 
 #: A stand-in scanner agrees the registry is the committed one: these tests are about what the hook does next.
@@ -1358,7 +1359,7 @@ def _relocate_hook(root: Path) -> Path:
     directory, so this exercises the shipped script rather than a snapshot of
     it that could drift away from the file under test.
     """
-    return place_hook(root, registry=_DEFAULT_REGISTRY, scanner=None, with_sources=False)
+    return place_hook(root, registry=_DEFAULT_REGISTRY, sources=SourceFixture(scanner=None, with_sources=False))
 
 
 def _plant_always_finding_scanner(root: Path) -> None:
@@ -3203,6 +3204,153 @@ class TestTheHookRunsOnlyCommittedCode:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "privacy findings" in result.stdout
+
+
+class TestAVendoringCheckoutIsJudgedByItsVendoredCopy:
+    @staticmethod
+    def _checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        place_hook(tmp_path / "origin" / "vendor" / "x", registry=_REAL_REGISTRY, repository=tmp_path / "origin")
+        _git(work, "pull", "--ff-only", "origin", "main")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        return work, env, work / "vendor" / "x" / "scripts" / "hooks" / HOOK.name
+
+    def test_an_own_checkout_disguised_by_a_parent_worktree_is_still_refused(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path, env_registry=_FAKE_REGISTRY, committed=_REAL_REGISTRY)
+        _git(hook.parents[2], "config", "core.worktree", str(tmp_path))
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "leak-gate-sources.txt" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize("run_from", [".", "vendor/x"], ids=["git-top", "prek-nested"])
+    def test_a_clean_push_passes(self, tmp_path: Path, run_from: str) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work / run_from, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "cannot be checked" not in result.stdout
+
+    def test_a_host_registry_that_differs_from_the_vendored_fingerprint_passes_a_clean_push(
+        self, tmp_path: Path
+    ) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env["TEATREE_TERM_REGISTRY"] = _FAKE_REGISTRY
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_host_registry_that_differs_from_the_vendored_fingerprint_still_refuses_its_own_term(
+        self, tmp_path: Path
+    ) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env["TEATREE_TERM_REGISTRY"] = _FAKE_REGISTRY
+        (work / "feature.txt").write_text("fake-picked-term\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout
+        assert "leak#0" in result.stdout
+        assert "does not match" not in result.stdout
+
+    def test_a_vendoring_host_without_a_registry_is_refused_naming_the_missing_registry(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        env.pop("TEATREE_TERM_REGISTRY")
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "no term registry could be loaded" in result.stdout
+        assert "banned_term_registry" in result.stdout
+        assert "TEATREE_TERM_REGISTRY" in result.stdout
+        assert "term-source-fingerprint" not in result.stdout
+
+    def test_a_vendored_push_to_a_private_remote_needs_no_registry(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        _make_gh_shim(tmp_path / "bin", "PRIVATE")
+        env.pop("TEATREE_TERM_REGISTRY")
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("run_from", [".", "vendor/x"], ids=["git-top", "prek-nested"])
+    @pytest.mark.parametrize("path", ["vendor/x/leak.txt", "outside.txt"])
+    def test_a_leak_is_refused_and_named_wherever_it_sits(self, tmp_path: Path, run_from: str, path: str) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        target = work / path
+        target.write_text("demo-leak-term\n", encoding="utf-8")
+        _git(work, "add", path)
+        _git(work, "commit", "-m", "add file")
+
+        result = _run_hook(work / run_from, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout, result.stdout
+        assert f"file {path}:" in result.stdout, result.stdout
+
+    def test_diff_relative_cannot_hide_a_leak_outside_the_vendor_directory(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        (work / "outside.txt").write_text("demo-leak-term\n", encoding="utf-8")
+        _git(work, "add", "outside.txt")
+        _git(work, "commit", "-m", "add file")
+        _git(work, "config", "diff.relative", "true")
+        assert "demo-leak-term" not in _git_stdout(work / "vendor" / "x", "log", "-1", "--format=", "--patch")
+
+        result = _run_hook(work / "vendor" / "x", env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout, result.stdout
+        assert "file outside.txt:" in result.stdout, result.stdout
+
+    def test_an_uncommitted_vendored_scanner_edit_is_named(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        scanner = work / "vendor" / "x" / "scripts" / "privacy_scan.py"
+        scanner.write_text(scanner.read_text(encoding="utf-8") + "\nchanged = True\n", encoding="utf-8")
+        (work / "feature.txt").write_text("clean feature\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work / "vendor" / "x", env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "cannot be checked: 1 file(s)" in result.stdout, result.stdout
+        assert "scripts/privacy_scan.py" in result.stdout, result.stdout
+
+    def test_same_named_files_at_the_repository_top_do_not_replace_the_vendored_gate(self, tmp_path: Path) -> None:
+        work, env, hook = self._checkout(tmp_path)
+        (work / "scripts" / "hooks").mkdir(parents=True)
+        (work / "scripts" / "hooks" / "leak-gate-sources.txt").write_text("scripts/privacy_scan.py\n", encoding="utf-8")
+        (work / "scripts" / "privacy_scan.py").write_text(_CLEAN_SCANNER, encoding="utf-8")
+        (work / "outside.txt").write_text("demo-leak-term\n", encoding="utf-8")
+        _git(work, "add", "scripts", "outside.txt")
+        _git(work, "commit", "-m", "add files")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout, result.stdout
+        assert "file outside.txt:" in result.stdout, result.stdout
 
 
 if __name__ == "__main__":

@@ -219,14 +219,14 @@ class TestDeployShRunDerivesWorkerCaps:
             tmp_path,
             "import sys\n"
             'sys.stdout.write("TEATREE_WORKER_CPUS=7\\n")\n'
-            'sys.stderr.write("raise Docker memory allocation to at least 9473 MiB\\n")\n'
+            'sys.stderr.write("raise Docker memory allocation to at least 10497 MiB\\n")\n'
             "raise SystemExit(3)\n",
         )
 
         proc = self._run(repo, env)
 
         assert proc.returncode != 0, f"a refusal must abort the deploy:\n{proc.stdout}\n{proc.stderr}"
-        assert "9473" in proc.stderr, proc.stderr
+        assert "10497" in proc.stderr, proc.stderr
         assert not record_cpus.exists(), "the stack was converged despite an unusable worker cap"
 
     def test_a_sizer_that_merely_fails_still_degrades_to_the_compose_default(self, tmp_path: Path) -> None:

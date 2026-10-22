@@ -15,11 +15,11 @@ stay inert because the eval grades the CALL. The shell gets no model credential.
 """
 
 import dataclasses
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from teatree.eval.api_runner import resolve_agent_path
+from teatree.eval.agent_prompt import resolve_agent_path
 from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
 from teatree.eval.git_fixture import provision_fixture
 from teatree.eval.isolation import isolated_claude_env
@@ -155,7 +155,7 @@ def _render(result: CompletedProcess[str]) -> str:
 
 
 @contextmanager
-def provision_eval_sandbox(spec: EvalSpec) -> Iterator[EvalSandbox | None]:
+def provision_eval_sandbox(spec: EvalSpec) -> Generator[EvalSandbox | None]:
     """Yield the sandbox *spec* declared, or ``None`` when it declared none.
 
     ``None`` is the untouched shape: a scenario declaring neither field keeps the fully

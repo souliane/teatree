@@ -19,8 +19,8 @@ from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
-from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout
-from teatree.utils.git_run import git_env_without_overrides
+from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout, wrong_venue_reason
+from teatree.utils.git_run import git_env_without_overrides, run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -83,6 +83,19 @@ def probe_checkout(path: Path, *, clone: Path | None = None) -> CheckoutState:
     if result.returncode == 0 and result.stdout.strip():
         return CheckoutState.CHECKOUT
     return _refusal_state(path, clone=clone, stderr=result.stderr.lower())
+
+
+def recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
+    """Require positive checkout proof from either its own gitfile or the visible clone."""
+    return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
+
+
+def recorded_checkout_unreadable_reason(checkout: Path) -> str:
+    cause = wrong_venue_reason(checkout)
+    if not cause:
+        probe = run_with_status(repo=str(checkout), args=["rev-parse", "--git-dir"], env=git_env_without_overrides())
+        cause = f"{checkout} is a live checkout git cannot read in this execution context ({probe.stderr.strip()})"
+    return f"{cause}; re-provision or remove it from the context that owns it"
 
 
 def _refusal_state(path: Path, *, clone: Path | None, stderr: str) -> CheckoutState:
@@ -153,6 +166,8 @@ __all__ = [
     "CheckoutState",
     "canonical_worktree_root",
     "probe_checkout",
+    "recorded_checkout_is_live",
+    "recorded_checkout_unreadable_reason",
     "registered_worktree_paths",
     "registered_worktree_roots",
     "scanned_worktree_roots",

@@ -96,7 +96,7 @@ def _has_live_successor(task: Task) -> bool:
     doomed phase still hits its budget through the successor's own row.
     """
     return Task.objects.filter(
-        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_id=task.ticket_id,
         phase__in=phase_spellings(normalize_phase(task.phase)),
         status__in=Task.Status.active(),
         pk__gt=task.pk,

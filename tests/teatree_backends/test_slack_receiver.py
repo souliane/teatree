@@ -5,7 +5,9 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from teatree.backends.slack.listener_heartbeat import ConnectionLiveness
 from teatree.backends.slack.receiver import (
+    ListenerCallbacks,
     QueuePaths,
     _enqueue,
     _run_single_overlay,
@@ -18,8 +20,8 @@ from teatree.backends.slack.receiver import (
 )
 
 
-def _queues(tmp_path: Path, *, heartbeat: Path | None = None) -> QueuePaths:
-    return QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl", heartbeat=heartbeat)
+def _queues(tmp_path: Path) -> QueuePaths:
+    return QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl")
 
 
 class TestDefaultQueuePath:
@@ -279,7 +281,7 @@ class TestRunSingleOverlay:
                 overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
-                on_event=on_event,
+                callbacks=ListenerCallbacks(on_event=on_event),
             )
 
         # The inbound event fires the record-then-wake callback immediately — no cadence
@@ -317,7 +319,7 @@ class TestRunSingleOverlay:
                 overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
-                on_event=on_event,
+                callbacks=ListenerCallbacks(on_event=on_event),
             )
 
         # A filtered event is never enqueued, so it never signals the drain.
@@ -359,7 +361,7 @@ class TestRunSingleOverlay:
                 overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
-                on_event=boom,
+                callbacks=ListenerCallbacks(on_event=boom),
             )
 
         # The durable JSONL write still landed even though the wake signal raised.
@@ -388,13 +390,15 @@ class TestRunSingleOverlay:
         ):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path, heartbeat=heartbeat),
+                queues=_queues(tmp_path),
                 stop_event=stop,
+                liveness=ConnectionLiveness(heartbeat_path=heartbeat),
             )
 
         beat = json.loads(heartbeat.read_text(encoding="utf-8"))
         assert beat["interval_seconds"] > 0
         assert beat["updated_at"] > 0
+        assert beat["overlays"]["ov"] > 0
 
     def test_a_disconnected_client_does_not_refresh_the_heartbeat(self, tmp_path: Path) -> None:
         import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
@@ -417,8 +421,9 @@ class TestRunSingleOverlay:
         ):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path, heartbeat=heartbeat),
+                queues=_queues(tmp_path),
                 stop_event=stop,
+                liveness=ConnectionLiveness(heartbeat_path=heartbeat),
             )
 
         assert not heartbeat.exists()
@@ -432,8 +437,9 @@ class TestRunSingleOverlay:
         with patch.dict("sys.modules", {"slack_sdk": None, "slack_sdk.socket_mode": None}):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path, heartbeat=heartbeat),
+                queues=_queues(tmp_path),
                 stop_event=stop,
+                liveness=ConnectionLiveness(heartbeat_path=heartbeat),
             )
 
         assert not heartbeat.exists()
@@ -556,7 +562,7 @@ class TestRunSingleOverlay:
 
 class TestRunListener:
     def test_returns_when_no_overlay_threads(self, tmp_path: Path) -> None:
-        run_listener([], queue_path=tmp_path / "events.jsonl")
+        run_listener([], paths=_queues(tmp_path))
 
     def test_starts_threads_and_stops_on_signal(self, tmp_path: Path) -> None:
         import signal as sig  # noqa: PLC0415
@@ -575,5 +581,5 @@ class TestRunListener:
         with patch("teatree.backends.slack.receiver._run_single_overlay", side_effect=fake_overlay):
             trigger = threading.Thread(target=run_and_signal, daemon=True)
             trigger.start()
-            run_listener([("ov", "xapp", "xoxb")], queue_path=tmp_path / "events.jsonl")
+            run_listener([("ov", "xapp", "xoxb")], paths=_queues(tmp_path))
             trigger.join(timeout=2.0)

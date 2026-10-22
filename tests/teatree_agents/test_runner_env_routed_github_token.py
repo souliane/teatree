@@ -5,10 +5,13 @@ The long-running containers hold no ambient GitHub token, so an agent that shell
 unreadable one adds nothing rather than guessing.
 """
 
+from unittest.mock import Mock, patch
+
 import pytest
 
 from teatree import forge_credentials
 from teatree.agents._runner_env import with_routed_github_token
+from teatree.agents.runner import _capped_forge_env
 from teatree.forge_credentials import ForgeCredentialRequest, ForgeTokenResolution, ForgeTokenState
 
 
@@ -51,3 +54,13 @@ def test_an_unreadable_route_leaves_the_environment_alone(monkeypatch: pytest.Mo
     monkeypatch.setattr(forge_credentials, "_provider", broken)
 
     assert with_routed_github_token({"A": "1"}, overlay="acme") == {"A": "1"}
+
+
+def test_spawn_marker_reaches_claude_without_a_routed_token() -> None:
+    with (
+        patch("teatree.agents.runner_preparation._active_agent_count", return_value=1),
+        patch("teatree.agents.runner_preparation.with_test_worker_cap", return_value={}),
+        patch("teatree.agents.runner_preparation._overlay_scope", return_value="test"),
+        patch("teatree.agents.runner_preparation.with_routed_github_token", return_value=None),
+    ):
+        assert _capped_forge_env(Mock(), None)["T3_DISPATCHED_AGENT"] == "1"

@@ -38,7 +38,7 @@ from django.utils import timezone
 from teatree.core.models.loop import Loop
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.skills import skill_bundle
 from teatree.loops.loop_table import loop_block_reasons
@@ -252,7 +252,7 @@ def _outcomes() -> tuple[OutcomeRow, ...]:
 
 def _outcome_row(attempt: TaskAttempt) -> OutcomeRow:
     ticket = attempt.task.ticket
-    parked = attempt.error.startswith(LIMIT_PARKED_PREFIX)
+    parked = attempt.error.startswith(PARK_ERROR_PREFIXES)
     return OutcomeRow(
         attempt_id=attempt.pk,
         ticket_number=ticket.ticket_number if ticket else "",

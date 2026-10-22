@@ -1,7 +1,7 @@
 """End-to-end dispatch proofs for ordered per-skill harness routes."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,7 +11,7 @@ from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
-from teatree.agents import harness_registry
+from teatree.agents import harness_registry, runner_preparation
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -66,7 +66,7 @@ class _Harness:
         self.capabilities = capabilities
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield self._session(success_stream({"summary": "fallback done"}))
 
@@ -203,7 +203,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         with (
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
-                runner_mod, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
+                runner_preparation, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
             ),
         ):
             final = self._run(self._config("claude_like", "codex_like"))

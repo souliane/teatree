@@ -21,7 +21,9 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.models import Worktree
+from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -53,6 +55,21 @@ class OccupancyCommands(TyperCommand):
             return
         for worktree, holder in held:
             self.stdout.write(f"  {worktree.worktree_path or '<unprovisioned>'} — {holder.describe()}")
+
+    @command()
+    def attest(self, path: str) -> None:
+        """Record the present checkout state after the owner has inspected it."""
+        if not direct_owner_action():
+            self.stderr.write("  Refused: only a direct owner command may attest a checkout.")
+            raise SystemExit(1)
+        worktree = _worktree_for_path(path)
+        try:
+            attestation = attest_checkout(worktree)
+        except AttestRefusedError as exc:
+            self.stderr.write(f"  Refused: {path} {exc}")
+            raise SystemExit(1) from exc
+        suffix = " (one dispatch; host process evidence unavailable)" if not attestation.host_evidence else ""
+        self.stdout.write(f"  attested {worktree.worktree_path} at {attestation.state.digest}{suffix}")
 
     @command(name="claim-occupancy")
     def claim_occupancy(

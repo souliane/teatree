@@ -213,6 +213,7 @@ class TeatreeSettingsSchema(BaseSettings):
     eval_local_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     excluded_skills: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     expected_required_contexts: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
+    forced_repro_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gate_relaxation_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gitlab_events_subscription: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY_BOX]
     handover_mirror_path: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
@@ -352,6 +353,7 @@ class TeatreeSettingsSchema(BaseSettings):
     hook_validator_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     headless_authoring_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     main_clone_guard_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    worktree_containment_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     self_dm_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     single_branch_repo_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     mcp_slack_write_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
@@ -361,6 +363,7 @@ class TeatreeSettingsSchema(BaseSettings):
     orchestrator_turn_budget: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     orchestrator_turn_wall_clock_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     out_of_band_merge_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    owner_question_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     raw_pr_create_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     plan_edit_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     visible_plan_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]

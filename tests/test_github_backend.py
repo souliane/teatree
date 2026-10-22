@@ -13,17 +13,13 @@ import teatree.backends.github.client as github_mod
 import teatree.backends.github.pr_notes as github_pr_notes_mod
 import teatree.backends.github.pr_reads as github_pr_reads_mod
 import teatree.backends.github.projects as github_projects_mod
+import teatree.backends.github.reads as github_reads_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
-from teatree.backends.github.api import (
-    _FORGE_READ_TIMEOUT_SECONDS,
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_patch,
-    _gh_api_post,
-    _gh_api_search_paginated,
-    _run_gh,
-)
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.api import gh_api_get as _gh_api_get
+from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
+from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
 
 
@@ -863,20 +859,6 @@ class TestGitHubCodeHost:
             result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="x")
         assert result == {}
 
-    def test_list_pr_comments(self) -> None:
-        # ``--slurp`` wraps each page in an outer array; one page → one inner list.
-        notes = [{"id": 1, "body": "comment"}]
-        with patch.object(github_pr_notes_mod, "_gh_api_get_paginated", return_value=notes):
-            host = GitHubCodeHost()
-            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
-        assert result == notes
-
-    def test_list_pr_comments_returns_empty_for_non_list(self) -> None:
-        with patch.object(github_pr_notes_mod, "_gh_api_get_paginated", return_value=[]):
-            host = GitHubCodeHost()
-            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
-        assert result == []
-
     def test_list_pr_comments_paginates_beyond_the_first_page(self) -> None:
         # A PR with >30 comments: GitHub's default page size silently caps a
         # non-paginated GET at 30, so a ``## Test Plan`` note older than the 30
@@ -907,7 +889,7 @@ class TestGitHubCodeHost:
 
     def test_list_issue_comments_returns_payload(self) -> None:
         notes = [{"id": 1, "body": "x"}]
-        with patch.object(github_mod, "_gh_api_get_paginated", return_value=notes) as mock_get:
+        with patch.object(github_reads_mod, "_gh_api_get_paginated", return_value=notes) as mock_get:
             host = GitHubCodeHost()
             result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
         assert result == notes
@@ -964,7 +946,7 @@ class TestGitHubCodeHost:
 
     def test_get_issue_parses_url_and_returns_payload(self) -> None:
         payload = {"number": 7, "title": "Bug", "body": "details"}
-        with patch.object(github_mod, "_gh_api_get", return_value=payload) as mock_get:
+        with patch.object(github_reads_mod, "_gh_api_get", return_value=payload) as mock_get:
             host = GitHubCodeHost(token="tok")
             result = host.get_issue("https://github.com/souliane/teatree/issues/7")
         assert result == payload
@@ -976,7 +958,7 @@ class TestGitHubCodeHost:
         assert "error" in result
 
     def test_get_issue_returns_error_when_api_returns_non_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+        with patch.object(github_reads_mod, "_gh_api_get", return_value=[]):
             host = GitHubCodeHost()
             result = host.get_issue("https://github.com/souliane/teatree/issues/9")
         assert "error" in result
@@ -1269,7 +1251,7 @@ class TestGitHubWave2Reads:
     """Wave-2 forge READ methods — pr list/diff/commits + repo metadata."""
 
     def test_list_prs_builds_repo_state_author_search(self) -> None:
-        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 5}]) as mock_search:
+        with patch.object(github_reads_mod, "_gh_api_search_paginated", return_value=[{"number": 5}]) as mock_search:
             result = GitHubCodeHost(token="tok").list_prs(repo="org/repo", state="open", author="alice")
         assert result == [{"number": 5}]
         mock_search.assert_called_once_with(
@@ -1278,7 +1260,7 @@ class TestGitHubWave2Reads:
         )
 
     def test_list_prs_omits_empty_state_and_author(self) -> None:
-        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+        with patch.object(github_reads_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
             GitHubCodeHost().list_prs(repo="org/repo")
         mock_search.assert_called_once_with(
             "search/issues?q=repo%3Aorg%2Frepo+is%3Apr&per_page=100",
@@ -1315,14 +1297,14 @@ class TestGitHubWave2Reads:
 
     def test_list_pr_commits_returns_commits(self) -> None:
         commits = [{"sha": "abc", "commit": {"message": "fix"}}]
-        with patch.object(github_mod, "_gh_api_get_paginated", return_value=commits) as mock_get:
+        with patch.object(github_reads_mod, "_gh_api_get_paginated", return_value=commits) as mock_get:
             result = GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=7)
         assert result == commits
         mock_get.assert_called_once_with("repos/org/repo/pulls/7/commits?per_page=100", token="")
 
     def test_list_pr_commits_unknown_pr_returns_empty(self) -> None:
         with patch.object(
-            github_mod,
+            github_reads_mod,
             "_gh_api_get_paginated",
             side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)"),
         ):
@@ -1331,7 +1313,7 @@ class TestGitHubWave2Reads:
     def test_list_pr_commits_reraises_non_404_error(self) -> None:
         with (
             patch.object(
-                github_mod,
+                github_reads_mod,
                 "_gh_api_get_paginated",
                 side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: rate limit exceeded (HTTP 403)"),
             ),

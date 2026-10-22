@@ -63,7 +63,7 @@ order being read as wider than it is:
 
 - **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
   ticket the factory already started.
-- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+- **The recorded per-action emergency escape** — `[gate-escape:headless_authoring: <reason>]`, for a
   genuine emergency (the factory itself is down). Single-use, recorded, per action.
 
 The deterministic backstop is the PreToolUse authoring gate
@@ -94,7 +94,7 @@ The deterministic backstop is the PreToolUse delegation gate
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
 `AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
-is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+is its job. Escapes: `[gate-escape:orchestrator_delegation_gate: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)
@@ -136,6 +136,8 @@ Work is *work-bearing* from the moment it exists in the working tree. There are 
 Every state either advances or leaves a durable record that something else drains. Nothing may exit 0 having observed work and stored nothing.
 
 A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger. `workspace emit` now names it (#4579: it unions the ledger with the unregistered checkouts holding work), so it is visible — but visibility is not delivery, and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+
+**Hand work owns its checkout state (#5238).** A manual hand-recorded plan, review or held decision mints no writing factory task and does not attest checkout changes. Claim occupancy while editing, release it after the work stops, then explicitly attest the reviewed checkout state before allowing a factory writer to resume. A `/loop` claim-next → spawn → record-attempt chain holds its checkout as `task:<pk>` in every phase, attests it at record-attempt, then schedules its next phase; any other record counts as hand work. Cancelling a factory task does not release a checkout with live processes; an agent-issued cancel leaves any stop decision to the owner.
 
 ### The mechanisms
 

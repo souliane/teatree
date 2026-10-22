@@ -110,7 +110,7 @@ def test_a_drain_interrupts_the_run_at_its_next_heartbeat() -> None:
     outcome = _drive(session, drain_reason=_drain_from_beat(2, []))
 
     assert outcome.checkpointed is True
-    assert outcome.stuck_reason == f"deploy checkpoint: {_DRAIN}"
+    assert outcome.stuck_reason == f"checkpoint: {_DRAIN}"
     assert session.interrupts == 1
     assert outcome.result_message is not None
     assert outcome.result_message.session_id == _SESSION
@@ -213,7 +213,15 @@ def test_a_lease_lost_after_the_checkpoint_request_stops_the_beat_and_stays_a_ch
     assert session.interrupts == 2, "the run is asked to stop again once a rival holds its claim"
     assert outcome.checkpointed is True
     assert outcome.lease_lost is False, "the flags name what first interrupted the run"
-    assert outcome.stuck_reason == f"deploy checkpoint: {_DRAIN}"
+    assert outcome.stuck_reason == f"checkpoint: {_DRAIN}"
+
+
+def test_cancel_keeps_interrupting_until_the_drive_returns() -> None:
+    session = _SlowToStopSession(stops_on_interrupt=3)
+    with patch.object(runner_heartbeat._Heartbeat, "_cancelled", return_value=True, create=True):
+        _drive(session, drain_reason=lambda: "", renew_lease=_lease_lost_on_beat(1))
+
+    assert session.interrupts == 3
 
 
 class _OperatorSteerableSession(InterruptibleSession):
@@ -240,9 +248,7 @@ class _OperatorSteerableSession(InterruptibleSession):
 @pytest.mark.parametrize(
     ("drain_reason", "renew_lease", "ceilings", "stopped_by"),
     [
-        pytest.param(
-            _drain_from_beat(1, []), _no_lease_renewal, _NO_BREACH, "deploy checkpoint:", id="deploy-checkpoint"
-        ),
+        pytest.param(_drain_from_beat(1, []), _no_lease_renewal, _NO_BREACH, "checkpoint:", id="checkpoint"),
         pytest.param(
             _drain_from_beat(10**9, []), _lease_lost_on_beat(1), _NO_BREACH, "lease lost for task", id="lost-lease"
         ),
@@ -328,7 +334,7 @@ def test_the_runner_wires_the_gate_read_off_the_event_loop_into_every_run() -> N
         )
 
     assert outcome.checkpointed is True
-    assert outcome.stuck_reason == f"deploy checkpoint: {_DRAIN}"
+    assert outcome.stuck_reason == f"checkpoint: {_DRAIN}"
     assert read_on[0] is not threading.main_thread()
 
 

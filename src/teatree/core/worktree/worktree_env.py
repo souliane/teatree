@@ -157,7 +157,7 @@ def store_postgres_secret(worktree: "Worktree", overlay: "OverlayBase") -> str:
     password = overlay.provisioning.env_extra(worktree).get(POSTGRES_PASSWORD_ENV, "")
     if not password:
         return ""
-    return ensure_postgres_pass_entry(worktree.ticket_id, password)  # ty: ignore[unresolved-attribute]  # Django FK
+    return ensure_postgres_pass_entry(worktree.ticket_id, password)
 
 
 def _declared_core_keys() -> set[str]:
