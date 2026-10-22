@@ -11,7 +11,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from io import StringIO
@@ -30,6 +33,7 @@ from tests.factories import SessionFactory, TicketFactory
 
 _REPO = Path(__file__).resolve().parents[4]
 _HELPER = Path(__file__).with_name("live_worker_helper.py")
+_PYDANTIC_HELPER = Path(__file__).with_name("live_pydantic_worker_helper.py")
 
 
 def _env(control_dir: Path) -> dict[str, str]:
@@ -74,6 +78,94 @@ def worker(control_dir: Path) -> Iterator[subprocess.Popen[str]]:
         assert helper.stdout is not None
         assert helper.stdout.readline().strip() == "ready"
         yield helper
+
+
+@pytest.fixture
+def pydantic_worker(control_dir: Path) -> Iterator[subprocess.Popen[str]]:
+    with subprocess.Popen(
+        [sys.executable, str(_PYDANTIC_HELPER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=_env(control_dir),
+        start_new_session=True,
+    ) as helper:
+        assert helper.stdout is not None
+        assert helper.stdout.readline().strip() == "ready"
+        try:
+            yield helper
+        finally:
+            if helper.stdin is not None and not helper.stdin.closed:
+                with suppress(BrokenPipeError):
+                    helper.stdin.write("\n\n\n")
+                    helper.stdin.flush()
+
+
+def test_live_list_and_steer_reach_a_pydantic_session_at_its_next_request(
+    control_dir: Path, pydantic_worker: subprocess.Popen[str]
+) -> None:
+    cli = _Cli(control_dir)
+    listed = cli("list", "--json")
+    assert listed.returncode == 0, listed.stderr
+    [row] = [row for row in json.loads(listed.stdout) if row["task"] == 105]
+    assert (row["harness"], row["steerable"]) == ("pydantic_ai", True)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        steering = pool.submit(cli, "steer", "105", "--text", "peer nonce", "--json")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            inspected = cli("inspect", "105", "--json")
+            if inspected.returncode == 0 and json.loads(inspected.stdout)["pending_inputs"] == 1:
+                break
+        else:
+            message = "input did not reach the pydantic session"
+            raise AssertionError(message)
+        assert not steering.done()
+        assert pydantic_worker.stdin is not None
+        pydantic_worker.stdin.write("go\n")
+        pydantic_worker.stdin.flush()
+        accepted = steering.result(timeout=15)
+    assert accepted.returncode == 0, accepted.stderr
+    assert json.loads(accepted.stdout)["outcome"] == "accepted_current_turn"
+    request_log = control_dir / "requests.json"
+    deadline = time.monotonic() + 10
+    while not request_log.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    requests = json.loads(request_log.read_text())
+    assert "peer nonce" not in requests[0]
+    assert requests[1].count("peer nonce") == 1
+
+
+def test_pydantic_steer_exit_codes_follow_turn_and_session_end(
+    control_dir: Path, pydantic_worker: subprocess.Popen[str]
+) -> None:
+    cli = _Cli(control_dir)
+    assert pydantic_worker.stdin is not None
+    pydantic_worker.stdin.write("go\n")
+    pydantic_worker.stdin.flush()
+    ended = control_dir / "turn-ended"
+    deadline = time.monotonic() + 10
+    while not ended.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ended.exists()
+
+    refused = cli("steer", "105", "--text", "late", "--json")
+    assert refused.returncode == 3
+    assert (json.loads(refused.stdout)["outcome"], json.loads(refused.stdout)["code"]) == ("rejected", "turn_ended")
+
+    pydantic_worker.stdin.write("close\n")
+    pydantic_worker.stdin.flush()
+    closed = control_dir / "session-closed"
+    deadline = time.monotonic() + 10
+    while not closed.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert closed.exists()
+
+    after_close = cli("steer", "105", "--text", "later", "--json")
+    missing = cli("steer", "999", "--text", "x")
+    assert after_close.returncode == 3
+    assert json.loads(after_close.stdout)["code"] == "session_closed"
+    assert missing.returncode == 5
 
 
 def test_list_with_no_worker_socket_is_offline(control_dir: Path) -> None:

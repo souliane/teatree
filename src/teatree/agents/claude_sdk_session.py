@@ -79,9 +79,10 @@ class LiveInputQueue:
                 item.accepted.set_exception(SteerRejectedError(code))
 
     def reopen(self) -> None:
-        self._ended = None
+        if self._ended == RejectCode.TURN_ENDED:
+            self._ended = None
 
-    def _take(self) -> str:
+    def take(self) -> str:
         texts = []
         while self._pending:
             item = self._pending.popleft()
@@ -96,12 +97,12 @@ class LiveInputQueue:
         del tool_use_id, context
         if input_data.get("agent_id"):
             return {}
-        text = self._take()
+        text = self.take()
         return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}} if text else {}
 
     async def _stop(self, input_data: StopHookInput, tool_use_id: str | None, context: HookContext) -> HookJSONOutput:
         del input_data, tool_use_id, context
-        text = self._take()
+        text = self.take()
         return {"decision": "block", "reason": text} if text else {}
 
 

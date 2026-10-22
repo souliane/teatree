@@ -269,8 +269,9 @@ To hand over a resource, paste it (at most 16 KiB) or write it into the task's w
 
 Read the receipt, not the hope. `accepted_current_turn` and `accepted_new_turn` (exit 0) mean the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_idle` (use current-turn steer), `stale_command` (inspect the new attempt), `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task or its session has closed: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. An idle session lists `steerable: false`; use `live follow-up` while its idle window is open. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
-Factory agents use the five `agent_mailbox_*` tools in their own TeaTree-managed
-MCP child to reach live peers across tickets and same-host workers. `self` and
+Claude factory agents use five `agent_mailbox_*` tools in their TeaTree-managed
+MCP child. A `pydantic_ai` task gets four native tools and no `agent_mailbox_self`.
+They reach live peers across tickets and same-host workers. `self` (Claude only) and
 `peers` provide addresses and receive status; `send` returns a receipt after a
 current-turn push or an acknowledged `inbox`/`wait` read. A `rejected` receipt
 gives the cause and says whether the text remains in the inbox;

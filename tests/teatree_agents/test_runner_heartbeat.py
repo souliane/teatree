@@ -11,7 +11,7 @@ import contextlib
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -25,12 +25,14 @@ from django.test import TestCase
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_control import (
     DEFAULT_IDLE_WINDOW_SECONDS,
     MAX_FOLLOW_UP_TURNS,
     ControlOutcome,
     ControlReceipt,
     LiveFence,
+    LiveTask,
     RejectCode,
 )
 from teatree.agents.live_mailbox import shared_broker
@@ -688,3 +690,51 @@ class TestTheProductionDrainRead(TestCase):
         assert raws, "the drain read never opened the worker thread's connection"
         with pytest.raises(sqlite3.ProgrammingError):
             raws[0].execute("SELECT 1")
+
+
+def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
+    mailbox_tasks: list[LiveTask] = []
+    registry_tasks: list[LiveTask] = []
+    registry = shared_registry()
+    real_bound, real_attach = runner_heartbeat.bound_task_mailbox, registry.attach
+
+    @contextlib.contextmanager
+    def bound_spy(options: ClaudeAgentOptions, live_task: LiveTask) -> Any:
+        mailbox_tasks.append(live_task)
+        with real_bound(options, live_task) as identity:
+            assert identity is not None
+            peer = shared_broker().identity_of(identity.address)
+            assert peer is not None
+            assert peer["can_receive"] is True
+            assert HarnessOptions.from_sdk_options(options).mailbox is not None
+            yield identity
+
+    def attach_spy(
+        live_task: LiveTask, capture: Any, *, claim_live: Callable[[], Awaitable[bool]] | None = None
+    ) -> Any:
+        registry_tasks.append(live_task)
+        return real_attach(live_task, capture, claim_live=claim_live)
+
+    runtime = HeartbeatRuntime(
+        watchdog=_WATCHDOG,
+        heartbeat_interval=0.005,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=_drain_from_beat(1, []),
+    )
+    harness = GuardedHarness(
+        harness=OneSessionHarness(InterruptibleSession([], session_id=_SESSION)),
+        guard=CompactionGuard(),
+        name="pydantic_ai",
+    )
+    with (
+        patch.object(runner_heartbeat, "bound_task_mailbox", bound_spy),
+        patch.object(registry, "attach", attach_spy),
+    ):
+        asyncio.run(
+            drive_with_heartbeat(Task(pk=_TASK_PK, phase="coding"), "p", ClaudeAgentOptions(), harness, runtime=runtime)
+        )
+
+    assert len(mailbox_tasks) == len(registry_tasks) == 1
+    assert mailbox_tasks[0].harness == registry_tasks[0].harness == "pydantic_ai"
+    assert mailbox_tasks[0].fence == registry_tasks[0].fence
