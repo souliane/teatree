@@ -12,6 +12,7 @@ import sys
 
 from hooks.scripts.classifier_relax_gate import ask_input_offers_relax_option
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.gate_escape import escape_allows
 from hooks.scripts.question_gates import _first_question, denied_question_dedupe_key, denied_question_row_marker
 
 SLACK_FIRST_QUESTION_GATE = "slack_first_question"
@@ -79,7 +80,7 @@ def _route(data: dict) -> str | None:
     verdict = factory_slack_live(os.environ.get("T3_OVERLAY_NAME", ""))
     first = _first_question(data)
     question = str(first.get("question", "")).strip()
-    if not verdict.live or not question:
+    if not verdict.live or not question or escape_allows(data, "slack_first_question"):
         return None
     raw_options = first.get("options")
     options = (

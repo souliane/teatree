@@ -25,6 +25,7 @@ from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDeci
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from tests._factory_slack import FakeOwnerDm, live_factory_slack
+from tests._gate_escape_audit import audited_escape
 from tests._owner_channel import owner_card
 
 
@@ -473,3 +474,61 @@ class TestTheSlackFirstArmFailsOpenToTheModal:
 
         assert result is False
         assert dm.posts == []
+
+
+class TestTheAuditedEscapeIsReadBeforeAnythingIsPosted:
+    _REASON = "the owner is at the terminal"
+
+    def _escaped(self, tmp_path: Path, **extra: str) -> dict:
+        payload = _ask_payload("Should the release ship today?", _RELEASE_OPTIONS, **_attended(tmp_path, **extra))
+        payload["tool_input"]["questions"][0]["header"] = f"[gate-escape:slack_first_question: {self._REASON}]"
+        return payload
+
+    def test_a_recorded_escape_renders_the_question_in_client_and_posts_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dm = FakeOwnerDm()
+        payload = self._escaped(tmp_path, tool_use_id="t-33")
+        with live_factory_slack(dm), audited_escape(payload) as requests:
+            result = handle_mirror_question_to_slack(payload)
+
+        assert result is False
+        assert _stdout(capsys) == {}
+        assert (DeferredQuestion.objects.count(), dm.posts) == (0, [])
+        assert [(request["gate"], request["reason"]) for request in requests] == [
+            ("slack_first_question", self._REASON)
+        ]
+
+    def test_a_recorded_escape_supersedes_the_loop_row_the_in_client_ask_replaces(self, tmp_path: Path) -> None:
+        payload = self._escaped(tmp_path, run_id="r-1", tool_use_id="t-34")
+        prior = DeferredQuestion.record(
+            "Ship it?",
+            session_id="s-3",
+            run_id="r-1",
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
+        )
+        with live_factory_slack(FakeOwnerDm()), audited_escape(payload):
+            handle_mirror_question_to_slack(payload)
+
+        prior.refresh_from_db()
+        assert prior.dismissed_at is not None
+
+    def test_a_refused_audit_keeps_the_question_posted_and_the_modal_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dm = FakeOwnerDm()
+        payload = self._escaped(tmp_path, tool_use_id="t-35")
+        with live_factory_slack(dm), audited_escape(payload, recorded=False):
+            result = handle_mirror_question_to_slack(payload)
+
+        assert result is True
+        assert _stdout(capsys)["permissionDecision"] == "deny"
+        assert (DeferredQuestion.objects.count(), len(dm.posts)) == (1, 1)
+
+    def test_a_token_while_slack_is_not_live_writes_no_audit_row(self, tmp_path: Path) -> None:
+        payload = self._escaped(tmp_path, tool_use_id="t-36")
+        with audited_escape(payload) as requests:
+            result = handle_mirror_question_to_slack(payload)
+
+        assert result is False
+        assert requests == []
