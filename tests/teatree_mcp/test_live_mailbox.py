@@ -32,12 +32,13 @@ from typer.testing import CliRunner
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
+from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
-    bound_task_mailbox,
+    PushOnlyTask,
     reset_shared_brokers,
     shared_broker,
 )
@@ -462,7 +463,7 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
     sender = routed_broker.register(room="ticket", harness="codex_app_server", label="reviewing task 4")
-    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coding task 7", task=_TASK.pk)
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coding task 7", task=_TASK)
     session = BoundarySession()
     client = MailboxClient(sender.socket_path, sender.token)
 
@@ -503,7 +504,7 @@ def test_a_push_finishing_just_after_the_wait_returns_its_real_outcome(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     client = MailboxClient(sender.socket_path, sender.token)
 
     with OwnerLoop(registry, _TASK, LateSession()):
@@ -527,7 +528,7 @@ def test_push_refusals_return_their_codes_without_waiting_for_the_inbox(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     client = MailboxClient(sender.socket_path, sender.token)
     for session, code in ((FinishingSession(), "turn_ended"), (NonSteerableSession(), "not_steerable")):
         with OwnerLoop(registry, _TASK, session):
@@ -558,7 +559,7 @@ def test_unknown_push_retry_waits_for_the_original_delivery(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     session = UnknownSession()
     client = MailboxClient(sender.socket_path, sender.token)
     reader = MailboxClient(recipient.socket_path, recipient.token)
@@ -582,7 +583,7 @@ def test_an_inbox_read_accepts_first_and_withdraws_the_pending_push(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
     sender = routed_broker.register(room="ticket", harness="claude_sdk", label="planner")
-    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coder", task=_TASK.pk)
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coder", task=_TASK)
     session = BoundarySession()
     client = MailboxClient(sender.socket_path, sender.token)
     reader = MailboxClient(recipient.socket_path, recipient.token)
@@ -831,7 +832,7 @@ def test_peer_push_crosses_worker_sockets_to_the_recipient_owner_loop(
         LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as receiver_broker,
     ):
         sender = sender_broker.register(room="ticket-1", harness="codex_app_server", label="reviewer")
-        recipient = receiver_broker.register(room="ticket-2", harness="claude_sdk", label="coder", task=_TASK.pk)
+        recipient = receiver_broker.register(room="ticket-2", harness="claude_sdk", label="coder", task=_TASK)
         session = BoundarySession()
         with OwnerLoop(registry, _TASK, session) as owner:
 
@@ -945,7 +946,7 @@ def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exist
     broker: LiveMailboxBroker,
 ) -> None:
     sender = broker.register(room="ticket-1", harness="claude_sdk", label="planner")
-    recipient = broker.register(room="ticket-2", harness="pydantic_ai", label="coder", task=7)
+    recipient = broker.register(room="ticket-2", harness="pydantic_ai", label="coder", task=_TASK)
     client = MailboxClient(sender.socket_path, sender.token)
 
     receipt = invoke(client, "send", to=recipient.address, text="review", key="pydantic", timeout_seconds=0.05)
@@ -1038,7 +1039,8 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "phase": "coding",
             "can_receive": True,
         }
-        assert (broker._by_address[identity.address].room, broker._by_address[identity.address].task) == ("3", 7)
+        assert broker._by_address[identity.address].room == "3"
+        assert broker._by_address[identity.address].task == _TASK
         assert isinstance(options.mcp_servers, dict)
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
@@ -1092,7 +1094,13 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
 
     class _BrokenBroker(LiveMailboxBroker):
         def register(
-            self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+            self,
+            *,
+            room: str,
+            harness: str,
+            label: str,
+            task: LiveTask | PushOnlyTask | None = None,
+            phase: str = "",
         ) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)
