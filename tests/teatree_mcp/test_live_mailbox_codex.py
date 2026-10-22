@@ -260,10 +260,10 @@ def test_the_delivery_scenario_fails_when_steering_or_routing_is_disabled(tmp_pa
     assert inbox == []
 
     options = ClaudeAgentOptions(mcp_servers={})
-    non_codex = LiveTask(pk=8, ticket=3, phase="coding", harness="pydantic_ai", model="test")
+    unbound_claude = LiveTask(pk=8, ticket=3, phase="coding", harness="claude_sdk", model="test")
     with (
         LiveMailboxBroker(runtime_dir=tmp_path) as broker,
-        bound_task_mailbox(options, non_codex, broker=broker) as peer,
+        bound_task_mailbox(options, unbound_claude, broker=broker) as peer,
     ):
         assert peer is None
         sender = broker.register(room="3", harness="claude_sdk", label="sender")
