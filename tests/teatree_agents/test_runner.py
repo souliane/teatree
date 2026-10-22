@@ -1810,7 +1810,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     ``agent_harness=pydantic_ai`` + ``agent_harness_provider=anthropic_api`` — a pair
     :meth:`~teatree.config.AgentHarnessProvider.valid_for` accepts, the ``ConfigSetting``
     cross-key write gate admits, and ``resolve_harness`` deliberately passes.
-    ``PHASE_HARNESS`` then pins the verification phases (``reviewing`` /
+    ``agent_phase_harness`` then pins the verification phases (``reviewing`` /
     ``requesting_review`` / ``testing``) to ``claude_sdk``, flipping Layer 1 without
     flipping Layer 2 — so the claude_sdk-scoped child-env resolver saw a provider that
     is invalid under the harness it was NOW running and refused every verification

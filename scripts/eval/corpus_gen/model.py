@@ -236,12 +236,12 @@ def infer_tier_or_phase(agent_path: str) -> str:
     ``teatree.agents.model_tiering.tier_models()`` owns the concrete model
     ids — this emits an ABSTRACT tier/phase only, never a model id.
 
-    A phase that :data:`teatree.agents.model_tiering.DEFAULT_PHASE_MODELS`
+    A phase that :func:`teatree.config.registries.phase_models`
     resolves to the ``frontier`` tier (``coding``/``reviewing``/``planning``/
     ``debugging``/``retrospecting``) is pinned to ``tier: balanced`` instead of
     emitted as ``phase:`` — a shipped scenario silently riding Opus throttled the
     metered CI eval lane's shared subscription-OAuth account (souliane/teatree
-    run 28515055436). Reading ``DEFAULT_PHASE_MODELS`` (never duplicating its
+    run 28515055436). Reading ``phase_models()`` (never duplicating its
     frontier set here) keeps this in lockstep with production phase tiering, so
     a future frontier phase is caught automatically rather than by memory.
     """

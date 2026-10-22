@@ -24,9 +24,6 @@ from teatree.agents import model_tiering
 from teatree.agents.model_tiering import (
     DEFAULT_TIER,
     HARNESS_EFFORT_SCALE,
-    PHASE_HARNESS,
-    PYDANTIC_AI_TIER_MODELS,
-    VERIFICATION_PHASES,
     UnconfiguredOpenAICompatibleModelError,
     _resolve_pydantic_ai_tier,
     model_supports_thinking,
@@ -42,7 +39,12 @@ from teatree.agents.model_tiering import (
     tier_models,
 )
 from teatree.config import AgentHarness
-from teatree.config.registries import COLD_SETTINGS
+from teatree.config.registries import (
+    COLD_SETTINGS,
+    VERIFICATION_PHASES,
+    phase_harness_defaults,
+    pydantic_ai_tier_models,
+)
 from teatree.config.resolution import effective_default
 from teatree.core.models import ConfigSetting
 
@@ -82,6 +84,7 @@ class TestTierConstantIsSingleSource:
         assert not hasattr(model_tiering, "TIER_MODELS")
         assert not hasattr(model_tiering, "TIER_EFFORT")
         assert not hasattr(model_tiering, "DEFAULT_PHASE_MODELS")
+        assert not hasattr(model_tiering, "PHASE_HARNESS")
 
     def test_shipped_tier_models(self) -> None:
         assert tier_models() == {
@@ -435,11 +438,11 @@ class TestHarnessScopedEffortDefaultHarness(TestCase):
 
 
 class TestPydanticAiTierModels:
-    """:data:`PYDANTIC_AI_TIER_MODELS` — operator-supplied, SEPARATE from :data:`tier_models()`."""
+    """:func:`pydantic_ai_tier_models` — operator-supplied, SEPARATE from :func:`tier_models`."""
 
     def test_ships_empty_so_no_third_party_catalog_is_assumed(self) -> None:
         # teatree carries no opinion about another provider's model ids (#3666).
-        assert PYDANTIC_AI_TIER_MODELS == {}
+        assert pydantic_ai_tier_models() == {}
 
     def test_an_unconfigured_tier_fails_loud_rather_than_fabricating_an_id(self) -> None:
         with pytest.raises(UnconfiguredOpenAICompatibleModelError, match="openai_compatible_model"):
@@ -536,8 +539,11 @@ class TestResolvePhaseHarness:
     """:func:`resolve_phase_harness` — the cheap-model verifier pin (plan §4 guardrail #2)."""
 
     def test_verification_phases_are_pinned_to_claude_sdk(self) -> None:
-        assert set(PHASE_HARNESS) == set(VERIFICATION_PHASES)
-        assert set(PHASE_HARNESS.values()) == {AgentHarness.CLAUDE_SDK}
+        assert COLD_SETTINGS["agent_phase_harness"].default == dict.fromkeys(
+            VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK
+        )
+        assert set(phase_harness_defaults()) == set(VERIFICATION_PHASES)
+        assert set(phase_harness_defaults().values()) == {AgentHarness.CLAUDE_SDK}
 
     def test_codex_review_uses_its_live_probed_executor(self) -> None:
         assert resolve_phase_harness("codex_app_server", "reviewing") == "codex_app_server"
@@ -604,21 +610,29 @@ class TestResolvePhaseHarnessOverride:
         assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.CLAUDE_SDK
 
 
-def test_tier_table_defaults_have_one_literal_home() -> None:
+def test_agent_table_defaults_have_one_literal_home() -> None:
     source = Path(__file__).resolve().parents[2] / "src/teatree/agents/model_tiering.py"
     tree = ast.parse(source.read_text())
-    names = {"TIER_MODELS", "TIER_EFFORT", "DEFAULT_PHASE_MODELS"}
+    names = {"TIER_MODELS", "TIER_EFFORT", "DEFAULT_PHASE_MODELS", "PHASE_HARNESS", "PYDANTIC_AI_TIER_MODELS"}
     assignments = [
         node
         for node in tree.body
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id in names
     ]
     assert assignments == []
-    keys = ("agent_tier_models", "agent_tier_effort", "agent_phase_models")
+    keys = (
+        "agent_tier_models",
+        "agent_tier_effort",
+        "agent_phase_models",
+        "agent_phase_harness",
+        "agent_pydantic_ai_tier_models",
+    )
     assert all(isinstance(COLD_SETTINGS[key].default, dict) for key in keys)
 
 
-def test_effective_default_of_the_tier_tables_is_the_full_map() -> None:
+def test_effective_default_of_the_agent_tables_is_the_full_map() -> None:
     assert effective_default("agent_tier_models") == tier_models()
     assert effective_default("agent_tier_effort") == tier_effort()
     assert effective_default("agent_phase_models") == phase_models()
+    assert effective_default("agent_phase_harness") == phase_harness_defaults()
+    assert effective_default("agent_pydantic_ai_tier_models") == pydantic_ai_tier_models()

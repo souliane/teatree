@@ -39,6 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
+from teatree.config.agent_enums import AgentHarness
 from teatree.config.agent_spawn import parse_phase_harness_entry, parse_skill_models
 from teatree.config.declaration import Category
 from teatree.config.setting_parsers import (
@@ -52,6 +53,8 @@ from teatree.config.setting_parsers import (
 #: Element types stay open so a default is assignable to the renderer's own stored-value
 #: union; ``dict`` and ``list`` are invariant, and no reader consumes the narrower form.
 type ColdSettingValue = bool | int | str | list[object] | dict[str, Any]
+
+VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
 
 def _parse_registry_dict(raw: object) -> dict[str, Any]:
@@ -211,7 +214,7 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     ),
     "agent_phase_harness": ColdHookSetting(
         _parse_agent_phase_harness,
-        default={},
+        default=dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK.value),
         help="per-phase harness override, for a phase that needs a different CLI",
         stored=dict[str, Any],
         category=Category.PERSONAL,
@@ -339,12 +342,20 @@ def tier_models() -> dict[str, str]:
     return cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
 
 
+def pydantic_ai_tier_models() -> dict[str, str]:
+    return cast("dict[str, str]", COLD_SETTINGS["agent_pydantic_ai_tier_models"].default)
+
+
 def tier_effort() -> dict[str, str]:
     return cast("dict[str, str]", COLD_SETTINGS["agent_tier_effort"].default)
 
 
 def phase_models() -> dict[str, str]:
     return cast("dict[str, str]", COLD_SETTINGS["agent_phase_models"].default)
+
+
+def phase_harness_defaults() -> dict[str, str]:
+    return cast("dict[str, str]", COLD_SETTINGS["agent_phase_harness"].default)
 
 
 # Disjoint from ``OVERLAY_OVERRIDABLE_SETTINGS`` and from every ``UserSettings``

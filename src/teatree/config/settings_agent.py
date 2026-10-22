@@ -184,7 +184,7 @@ class _ModeHarnessSettings:
         ),
     )
     # The model id requested from that endpoint. Empty (the default) falls back to the
-    # ``PYDANTIC_AI_TIER_MODELS`` id for the dispatch's abstract tier. Overrides ONLY
+    # ``pydantic_ai_tier_models()`` id for the dispatch's abstract tier. Overrides ONLY
     # the normalise-UP branch of ``resolve_pydantic_ai_model``, so an explicit
     # provider-native model pin still wins. Per-overlay overridable;
     # ``T3_OPENAI_COMPATIBLE_MODEL`` env wins.

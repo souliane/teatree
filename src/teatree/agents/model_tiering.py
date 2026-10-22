@@ -2,7 +2,7 @@
 
 On the DISPATCH-RESOLUTION path, every concrete Claude model id lives in ONE
 place: the ``agent_tier_models`` registry declaration (the ``claude_sdk`` catalog; the
-``pydantic_ai`` harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
+``pydantic_ai`` harness has its own :func:`pydantic_ai_tier_models`
 catalog — see the harness-scoped note below). Production phase dispatch and the
 eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
 ``cheap``), never a concrete model id, so adopting a new model for a live spawn
@@ -35,7 +35,7 @@ inherit the SDK default.
 (``claude-<family>-<version>``). The ``pydantic_ai`` harness's OpenAI-compatible
 provider does NOT carry those dash-form ids (those serve provider-prefixed ids —
 ``anthropic/<dotted-id>``, the open-source pool, and named router handles), so its
-catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
+catalog is the SEPARATE :func:`pydantic_ai_tier_models` (all tiers collapsing to
 one router handle; the router's own bandit does the mundane-vs-hard tiering).
 :func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
 teatree-native id UP to the configured id for the OpenAI-compatible harness, while
@@ -72,7 +72,14 @@ from dataclasses import dataclass
 from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES
 from teatree.config import AgentHarness, cold_reader, get_effective_settings
 from teatree.config.agent_spawn import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
-from teatree.config.registries import phase_models, tier_effort, tier_models
+from teatree.config.registries import (
+    VERIFICATION_PHASES,
+    phase_harness_defaults,
+    phase_models,
+    pydantic_ai_tier_models,
+    tier_effort,
+    tier_models,
+)
 from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_rank
 
 # Oldest CLI known to serve each default model that has a compatibility floor.
@@ -80,19 +87,6 @@ MODEL_MINIMUM_CLI_VERSIONS: dict[str, str] = {
     "claude-opus-5-5": "2.1.280",
     "claude-sonnet-5-5": "2.1.284",
 }
-
-# The ``pydantic_ai`` parallel of :data:`tier_models()`. The ``claude_sdk`` harness
-# serves the Claude dash-form ids above; the ``pydantic_ai`` harness serves an
-# OpenAI-compatible provider's PROVIDER-PREFIXED catalog, so its tier map is
-# SEPARATE — :data:`tier_models()`'s dash-form ids do not exist
-# there, so trusting them here would send an unresolvable id. This shipped default
-# is EMPTY: teatree carries no opinion about a third party's catalog. The operator
-# supplies the id through the generic ``openai_compatible_model`` setting (the
-# whole-lane answer) or per tier via ``agent_pydantic_ai_tier_models`` (merged OVER
-# this default), and an unpinned lane with neither fails loud rather than sending a
-# fabricated model name (#3666).
-PYDANTIC_AI_TIER_MODELS: dict[str, str] = {}
-
 
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`tier_models()` for the effort axis. Abstract tier name -> CLI effort level
@@ -146,17 +140,6 @@ _NON_THINKING_TIER = "haiku"
 # SITUATIONAL (gated on an active escalation row), NOT a phase floor:
 # ``phase_models()`` keeps each verification phase at its own tier so
 # without an active escalation these phases resolve exactly as today.
-VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
-
-# Phases PINNED to a specific harness for candidates without a live-probed executor.
-# When a MAKER phase runs on a cheap open-source model via ``pydantic_ai``,
-# the VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
-# trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
-# CI, never the cheap maker model checking its own work. Data-driven so the pinned
-# set is one place, not a branch in :func:`resolve_harness`.
-PHASE_HARNESS: dict[str, str] = dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK.value)
-
-
 def resolve_phase_harness(configured: str, phase: str | None) -> str:
     """The harness a *phase* dispatch actually uses — *configured*, unless the phase is pinned.
 
@@ -169,7 +152,7 @@ def resolve_phase_harness(configured: str, phase: str | None) -> str:
         harness FLIPS the pin, an explicit unpin (``None``) drops the phase back
         to *configured* even when the shipped default below would pin it.
     2.  A configured Codex candidate keeps an executor-served phase; its live probe
-        decides admission. The shipped :data:`PHASE_HARNESS` default otherwise forces
+        decides admission. The shipped ``agent_phase_harness`` declaration otherwise forces
         ``claude_sdk`` even when the overlay configured ``pydantic_ai`` (so the
         checker stays on the trusted lane while the maker rides the cheap one).
     3.  Otherwise (and for an absent *phase*) *configured*, unchanged.
@@ -185,9 +168,7 @@ def resolve_phase_harness(configured: str, phase: str | None) -> str:
         return pinned.value if pinned is not None else configured
     if configured == "codex_app_server" and phase in EXECUTOR_PHASES:
         return configured
-    if phase in PHASE_HARNESS:
-        return PHASE_HARNESS[phase]
-    return configured
+    return phase_harness_defaults().get(phase, configured)
 
 
 def known_model_vocabulary() -> frozenset[str]:
@@ -201,7 +182,13 @@ def known_model_vocabulary() -> frozenset[str]:
     this is only the shipped vocabulary a bare pin is checked against before the
     doctor flags it as a likely typo (:func:`teatree.cli.doctor.checks_session._check_agent_session_pins`).
     """
-    tokens = {*tier_models(), *tier_models().values(), *PYDANTIC_AI_TIER_MODELS.values(), *FAMILY_TO_TIER, *PRICE_TABLE}
+    tokens = {
+        *tier_models(),
+        *tier_models().values(),
+        *pydantic_ai_tier_models().values(),
+        *FAMILY_TO_TIER,
+        *PRICE_TABLE,
+    }
     return frozenset(token.lower() for token in tokens if token)
 
 
@@ -272,7 +259,7 @@ def _resolve_pydantic_ai_tier(tier: str) -> str:
     """Resolve an abstract *tier* to the configured model id for the pydantic_ai harness.
 
     The :func:`resolve_tier` sibling for the ``pydantic_ai`` harness: reads
-    :data:`PYDANTIC_AI_TIER_MODELS`, each entry OVERRIDABLE via
+    :func:`pydantic_ai_tier_models`, each entry OVERRIDABLE via
     ``agent_pydantic_ai_tier_models`` (merged OVER the shipped default). Unlike
     :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
     caller may hand it a concrete id — an unknown tier here falls back to the
@@ -281,7 +268,7 @@ def _resolve_pydantic_ai_tier(tier: str) -> str:
     configured it raises rather than fabricating an id for a third party's catalog.
     """
     config = resolve_agent_config()
-    merged = {**PYDANTIC_AI_TIER_MODELS, **config.pydantic_ai_tier_models}
+    merged = {**pydantic_ai_tier_models(), **config.pydantic_ai_tier_models}
     resolved = merged.get(tier) or merged.get(DEFAULT_TIER)
     if not resolved:
         msg = (
@@ -313,7 +300,7 @@ def resolve_pydantic_ai_model(
     whole-lane model id, config/overlay-driven, never hardcoded. It applies ONLY to
     the normalise-UP branch (a teatree-native id / ``None``), so an explicit
     provider-native pin still wins; ``None``/empty falls back to the per-tier
-    :data:`PYDANTIC_AI_TIER_MODELS` entry.
+    :func:`pydantic_ai_tier_models` entry.
 
     *tier* carries the abstract tier when the caller still knows it; two tiers
     may share one Claude id, so the id alone cannot recover the intended route.

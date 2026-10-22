@@ -131,7 +131,7 @@ class AgentConfig:
     *   ``pydantic_ai_tier_models`` — the ``tier_models`` sibling for the
         ``pydantic_ai`` (OpenAI-compatible) harness: abstract-tier-name → provider-native
         model/router-handle id, merged OVER
-        :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS`. Distinct from
+        :func:`teatree.config.registries.pydantic_ai_tier_models`. Distinct from
         ``tier_models`` because the two harnesses target different catalogs — the
         ``claude_sdk`` harness serves Claude dash-form ids, the ``pydantic_ai``
         harness serves the provider's own prefixed ids. Empty by default → the
@@ -168,7 +168,7 @@ class AgentConfig:
         phase (e.g. ``"reviewing"``). Each value is an :class:`AgentHarness`
         (flip the pin) or ``None`` (an explicit unpin — the phase drops back to
         the configured ``agent_harness``). Merged OVER
-        :data:`teatree.agents.model_tiering.PHASE_HARNESS` (the verification-phase
+        :func:`teatree.config.registries.phase_harness_defaults` (the verification-phase
         ``claude_sdk`` pin) by :func:`~teatree.agents.model_tiering.resolve_phase_harness`,
         so an EMPTY map is byte-identical to the shipped pin — a full swap of the
         verification checker onto ``pydantic_ai`` becomes one ``agent_phase_harness``
@@ -195,7 +195,7 @@ def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
     ``pydantic_ai`` — the phase is PINNED to that transport) or an inherit
     sentinel (``""`` / ``default`` / ``inherit`` — the phase is explicitly
     UNPINNED, dropping back to the configured ``agent_harness`` even when the
-    shipped :data:`teatree.agents.model_tiering.PHASE_HARNESS` default would pin
+    shipped ``agent_phase_harness`` declaration would pin
     it). The unpin case is kept as an explicit ``None`` entry (distinct from an
     absent key) so :func:`~teatree.agents.model_tiering.resolve_phase_harness`
     can tell "override to no-pin" apart from "no override at all".
@@ -310,7 +310,7 @@ def _pydantic_ai_tier_models_from(raw: object) -> dict[str, str]:
     The ``pydantic_ai`` sibling of :func:`_tier_models_from` — identical
     tolerance (non-dict → empty, a non-string-or-blank entry skipped) so a
     malformed override never poisons the shipped
-    :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS` default.
+    :func:`teatree.config.registries.pydantic_ai_tier_models` default.
     """
     return _tier_models_from(raw)
 

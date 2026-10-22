@@ -1357,7 +1357,7 @@ class TestVerifierPinnedToClaude(TestCase):
 class TestResolveDispatchProvider(TestCase):
     """The Layer-2 provider follows the SAME phase pin Layer 1 does.
 
-    ``resolve_harness`` validates the CONFIGURED pair and then lets ``PHASE_HARNESS`` flip
+    ``resolve_harness`` validates the CONFIGURED pair and then lets ``agent_phase_harness`` flip
     Layer 1 for a verification phase. The credential must follow that flip, or a valid
     ``pydantic_ai`` deployment hands the claude_sdk child-env resolver a provider invalid
     under the harness it is actually running and every verification dispatch is refused.
