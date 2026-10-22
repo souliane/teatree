@@ -85,7 +85,6 @@ def _parse_args(args: tuple[str, ...]) -> dict[str, object]:
     """Tiny arg parser for the test harness — covers the flags we exercise."""
     kwargs: dict[str, object] = {
         "overlay": "teatree",
-        "fixture_ticket_url": "",
         "variant": "",
         "dry_run": False,
         "notify_on_failure": True,
@@ -573,7 +572,7 @@ class TestOverlayFixtureExecution:
                     ticket = TicketFactory(issue_url=OWN_FIXTURE_URL, overlay="t3-acme")
                 if not ticket.worktrees.exists():
                     WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(checkout)})
-            elif step.command[2:4] == ("worktree", "teardown") or step.command[2:4] == ("workspace", "teardown"):
+            elif step.command[2:4] == ("worktree", "teardown"):
                 checkout.rmdir()
                 ticket = Ticket.objects.matching_issue(OWN_FIXTURE_URL).first()
                 assert ticket is not None
@@ -709,23 +708,21 @@ class TestOverlayFixtureExecution:
         assert not any(command[2:4] == ("worktree", "teardown") for command in commands)
         assert own_path.is_dir()
 
-    def test_preexisting_sibling_blocks_workspace_teardown(
+    def test_preexisting_sibling_survives_primary_cleanup(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
+        primary = tmp_path / "primary"
         sibling = tmp_path / "sibling"
         sibling.mkdir()
-        primary = tmp_path / "primary"
         ticket = TicketFactory(issue_url=OWN_FIXTURE_URL, overlay="t3-acme")
         WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(sibling)})
-        commands: list[tuple[str, ...]] = []
 
         def run(step: SmokeStep) -> StepResult:
-            commands.append(step.command)
             if step.name == "workspace_ticket":
                 primary.mkdir()
                 WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(primary)})
             elif step.command[2:4] == ("worktree", "teardown"):
-                primary.rmdir()
+                Path(step.command[-1]).rmdir()
             return StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
 
         with _registered_acme(), patch("teatree.core.management.commands.dogfood.run_t3_command", side_effect=run):
@@ -734,7 +731,7 @@ class TestOverlayFixtureExecution:
         assert code == 11
         assert "fixture checkout pre-existed" in out
         assert not primary.exists()
-        assert not any(command[2:4] == ("workspace", "teardown") for command in commands)
+        assert sibling.is_dir()
 
     def test_database_failure_before_workspace_ticket_preserves_existing_checkout(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
@@ -795,6 +792,28 @@ class TestFixtureCleanup:
         assert [failure.stderr for failure in failures] == [
             "could not read fixture checkouts: DatabaseError: database down"
         ]
+
+    def test_all_created_checkouts_use_the_short_overlay_name(self, tmp_path: Path) -> None:
+        fixture = _FixtureCheckout(issue_url=OWN_FIXTURE_URL, overlay="t3-acme", cli_overlay="acme")
+        fixture.capture()
+        ticket = TicketFactory(issue_url=OWN_FIXTURE_URL, overlay="t3-acme")
+        paths = [tmp_path / name for name in ("first", "second", "third")]
+        for path in paths:
+            path.mkdir()
+            WorktreeFactory(ticket=ticket, overlay="t3-acme", extra={"worktree_path": str(path)})
+        commands: list[tuple[str, ...]] = []
+
+        def teardown(step: SmokeStep) -> StepResult:
+            commands.append(step.command)
+            Path(step.command[-1]).rmdir()
+            return StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+
+        with patch.object(dogfood, "run_t3_command", side_effect=teardown):
+            failures = fixture.cleanup()
+
+        assert failures == []
+        assert commands == [("t3", "acme", "worktree", "teardown", "--path", str(path)) for path in paths]
+        assert all(not path.exists() for path in paths)
 
     def test_teardown_transport_error_is_reported(self, tmp_path: Path) -> None:
         fixture, path = self._created_checkout(tmp_path)

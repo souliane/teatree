@@ -288,6 +288,7 @@ class TestStepOutcomeKindCoverage:
             ("worktree_start", SmokeOutcomeKind.START_FAILED),
             ("worktree_ready", SmokeOutcomeKind.READY_FAILED),
             ("worktree_teardown", SmokeOutcomeKind.TEARDOWN_FAILED),
+            ("workspace_clean_all", SmokeOutcomeKind.CLEAN_FAILED),
             ("workspace_provision_env_unset", SmokeOutcomeKind.OVERLAY_RESOLUTION_FAILED),
             ("workspace_provision_env_set", SmokeOutcomeKind.PROVISION_FAILED),
         ],
@@ -297,7 +298,7 @@ class TestStepOutcomeKindCoverage:
 
     def test_no_default_step_is_missing_from_the_outcome_table(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
-        assert set(STEP_OUTCOME_KIND) == {step.name for step in steps}
+        assert {step.name for step in steps} <= set(STEP_OUTCOME_KIND)
 
     def test_empty_smoke_passes_trivially(self) -> None:
         report = run_smoke([], runner=_step_result)

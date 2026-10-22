@@ -165,7 +165,7 @@ class Command(TyperCommand):
         ] = "",
         dry_run: Annotated[  # noqa: FBT002 — typer convention; bool flag with default
             bool,
-            typer.Option("--dry-run", help="Print the planned steps and exit 0 without executing them."),
+            typer.Option("--dry-run", help="Print steps without running them; invalid fixtures fail and notify."),
         ] = False,
         notify_on_failure: Annotated[  # noqa: FBT002 — typer CLI boolean flag; the bool parameter is typer's option idiom
             bool,
@@ -260,15 +260,11 @@ def _resolve_smoke_inputs(overlay_name: str, fixture: str, variant: str) -> tupl
 def _resolve_fixture_url(overlay_name: str, explicit: str, loaded_overlay: _LoadedOverlay | None = None) -> str:
     if explicit.strip():
         return _canonical_fixture_url(overlay_name, explicit, loaded_overlay)
-    overlay = _smoke_overlay(overlay_name, loaded_overlay)
-    if overlay is None:
-        try:
-            configured = OverlayConfigResolver.dogfood_smoke_fixture_url(overlay_name)
-        except ImproperlyConfigured:
-            return DEFAULT_FIXTURE_TICKET_URL
-    else:
-        configured = overlay.config.dogfood_smoke_fixture_url
-    resolved = _canonical_fixture_url(overlay_name, configured, _LoadedOverlay(overlay)) if configured else ""
+    try:
+        configured = OverlayConfigResolver.dogfood_smoke_fixture_url(overlay_name)
+    except ImproperlyConfigured:
+        return DEFAULT_FIXTURE_TICKET_URL
+    resolved = _canonical_fixture_url(overlay_name, configured, loaded_overlay) if configured else ""
     return resolved or DEFAULT_FIXTURE_TICKET_URL
 
 
