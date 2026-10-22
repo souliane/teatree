@@ -16,8 +16,6 @@ TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
 KEY_SUFFIXES = (".pem", ".key", ".p8", ".ppk")
 PRIVATE_KEY_MARKERS = (b"PRIVATE KEY-----", b"PuTTY-User-Key-File")
 KEY_READ_BYTES = 64 * 1024
-GIT_FILES = ("HEAD", "commondir", "config", "index", "packed-refs")
-GIT_TREES = ("objects", "refs")
 
 
 class ProbeRequest(TypedDict):
@@ -210,29 +208,70 @@ def _secrets(top: str, mounted: set[str]) -> list[str]:
     return sorted(found)
 
 
-def _git_dirs(root: str) -> list[Path]:
+def resolved_git_dirs(root: str) -> list[Path]:
     pointer = Path(root, ".git")
     gitdir = pointer
     if not pointer.is_dir():
-        gitdir = Path(pointer.read_text(encoding="utf-8").removeprefix("gitdir:").strip())
+        named = Path(pointer.read_text(encoding="utf-8").removeprefix("gitdir:").strip())
+        gitdir = named if named.is_absolute() else pointer.parent / named
+    gitdir = gitdir.resolve()
     commondir = gitdir / "commondir"
     common = (gitdir / commondir.read_text(encoding="utf-8").strip()).resolve() if commondir.is_file() else gitdir
     return list(dict.fromkeys([gitdir, common]))
 
 
-def git_readable(root: str) -> str:
-    """``OK`` when this process can read every file git reads for *root*, else the first one it cannot."""
+def _internal_git_link(path: Path, tops: list[Path]) -> bool:
     try:
-        tops = _git_dirs(root)
+        target = path.resolve(strict=True)
+    except OSError:
+        return False
+    return any(target.is_relative_to(top) for top in tops)
+
+
+def _git_path_readable(path: Path, tops: list[Path], *, directory: bool) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if stat.S_ISLNK(mode):
+        return _internal_git_link(path, tops)
+    needed = stat.S_IROTH | stat.S_IXOTH if directory else stat.S_IROTH
+    access = os.R_OK | os.X_OK if directory else os.R_OK
+    return mode & needed == needed and os.access(path, access)
+
+
+def _unreadable_git_paths(top: Path, tops: list[Path]) -> set[str]:
+    unreadable: set[str] = set()
+    for directory, names, filenames in os.walk(top, onerror=lambda exc: unreadable.add(str(exc.filename))):
+        current = Path(directory)
+        if not _git_path_readable(current, tops, directory=True):
+            unreadable.add(str(current))
+        unreadable.update(
+            str(path) for name in filenames if not _git_path_readable(path := current / name, tops, directory=False)
+        )
+        for name in list(names):
+            path = current / name
+            if path.is_symlink():
+                if not _git_path_readable(path, tops, directory=True):
+                    unreadable.add(str(path))
+                names.remove(name)
+    return unreadable
+
+
+def git_readable(root: str) -> str:
+    """``OK`` when the executor can read every reachable Git metadata path."""
+    try:
+        tops = resolved_git_dirs(root)
     except OSError as exc:
         return f"{exc.filename}: {_error_name(exc)}"
-    files = [top / name for top in tops for name in GIT_FILES if (top / name).exists()]
-    unreadable = [str(path) for path in files if not os.access(path, os.R_OK)]
-    for tree in (top / name for top in tops for name in GIT_TREES if (top / name).exists()):
-        for directory, _, filenames in os.walk(tree, onerror=lambda exc: unreadable.append(str(exc.filename))):
-            paths = (str(Path(directory, name)) for name in filenames)
-            unreadable.extend(path for path in paths if not os.access(path, os.R_OK))
-    return f"{unreadable[0]} is unreadable" if unreadable else "OK"
+    unreadable: set[str] = set()
+    for top in tops:
+        unreadable.update(_unreadable_git_paths(top, tops))
+    if not unreadable:
+        return "OK"
+    return "Git metadata unreadable: " + "; ".join(sorted(unreadable)) + "; fix: chmod -R a+rX <gitdir> in the worker"
 
 
 def _home(home: str) -> HomeAnswer | None:

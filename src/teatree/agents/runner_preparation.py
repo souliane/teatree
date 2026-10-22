@@ -27,9 +27,15 @@ from teatree.agents.prompt import (
     read_only_required_skills,
     required_skill_delivery,
 )
-from teatree.agents.read_only_venue_brief import ReadOnlyFacts, read_only_system_context
+from teatree.agents.read_only_venue_brief import ReadOnlyFacts, fit_read_only_context, read_only_system_context
 from teatree.agents.runner_interruption import _record_failure
-from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
+from teatree.agents.skill_assurance import (
+    SkillAssurance,
+    SkillDelivery,
+    assess_skill_dispatch,
+    recover_truncated_inline_skills,
+)
+from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider
@@ -65,7 +71,7 @@ def restore_unconsumed_resume_thread(harness: Harness) -> None:
         restore()
 
 
-def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str]:
+def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str, str]:
     """The task prompt and system context; the read-only executor gets its facts inline or the run is refused."""
     skills, stage_skills = preflight.skills, preflight.stage_skills
     if preflight.dispatch.harness.capabilities.read_only_venue:
@@ -73,12 +79,15 @@ def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: P
         context = build_read_only_system_context(
             task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills
         )
-        return prompt, context
+        context, continued_skills = fit_read_only_context(context)
+        if continued_skills:
+            prompt = f"Required skills continued from the system context:\n\n{continued_skills}\n\n{prompt}"
+        return prompt, context, continued_skills
     prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
     context = build_system_context(
         task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills, handoff=handoff
     )
-    return prompt, context
+    return prompt, context, ""
 
 
 def prepare_run(
@@ -91,12 +100,11 @@ def prepare_run(
 ) -> PreparedRun:
     """Refuse an undelivered mandatory skill before creating billable options."""
     skills = preflight.skills
-    stage_skills = preflight.stage_skills
     dispatch = preflight.dispatch
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
-    prompt, system_context = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
+    prompt, system_context, continued_skills = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
     read_only_venue = dispatch.harness.capabilities.read_only_venue
-    stage_present = stage_skills_present(task, skills, configured=stage_skills)
+    stage_present = stage_skills_present(task, skills, configured=preflight.stage_skills)
     if read_only_venue:
         handoff = None
         required_inline = read_only_required_skills(
@@ -107,21 +115,27 @@ def prepare_run(
         required_inline, required_explicit = required_skill_delivery(
             task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
         )
-    required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
-        required_inline=required_inline,
-        required_explicit=required_explicit,
-        rendered_context=system_context,
-    )
+    load_directive = ""
+    if not read_only_venue:
+        required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
+            required_inline=required_inline,
+            required_explicit=required_explicit,
+            rendered_context=system_context,
+        )
     if load_directive:
         prompt = f"{load_directive}\n\n{prompt}"
     assurance = assess_skill_dispatch(
         skills=skills,
         required_inline=required_inline,
         required_explicit=required_explicit,
-        rendered_context=f"{system_context}\n{prompt}",
+        rendered_context=SkillDelivery(f"{system_context}\n{prompt}", _read_only_skill_text)
+        if read_only_venue
+        else f"{system_context}\n{prompt}",
     )
     if read_only_venue:
         system_context = read_only_system_context(system_context)
+        if continued_skills:
+            prompt = prompt.replace(continued_skills, read_only_system_context(continued_skills, max_bytes=None), 1)
     guard = CompactionGuard()
     options = _build_options(
         task,

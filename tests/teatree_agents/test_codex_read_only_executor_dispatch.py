@@ -272,8 +272,8 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         self.fake.install()
         config = AgentConfig(skill_models={"review": (AgentRouteCandidate("codex_app_server", "codex-model"),)})
         host = SimpleNamespace(
-            get_issue=lambda url: {"body": "Review this pull request."},
-            list_issue_comments=lambda *, issue_url: [],
+            fetch_pr_message=lambda *, slug, pr_id: SimpleNamespace(body="Review this pull request."),
+            list_pr_comments=lambda *, repo, pr_iid: [],
             get_pr_file_diffs=lambda *, repo, pr_iid: {"src/example.py": "@@ -1 +1 @@\n-old\n+new"},
         )
         with (
