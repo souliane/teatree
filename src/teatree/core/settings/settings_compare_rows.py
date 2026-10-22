@@ -1,6 +1,6 @@
 """A comparable setting or seed row and each instance's reading of it."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
@@ -205,21 +205,8 @@ class CompareRow:
         return self.has_write_target and not self.unwritable_reason
 
     @property
-    def can_apply(self) -> bool:
-        return self.differs and self.writable and self.outcome.disposition in {Disposition.IMPORT, Disposition.CLEAR}
-
-    @property
     def local_edit(self) -> SettingCell | None:
         return next((self._edit_cell(cell) for cell in self.cells if cell.local), None)
-
-    @property
-    def apply_url(self) -> str:
-        edit = self.local_edit
-        if edit is None or not self.can_apply:
-            return ""
-        if self.outcome.disposition is Disposition.CLEAR:
-            return settings_restore_url(self.title, self.scope)
-        return edit.post_url
 
     @property
     def revert_url(self) -> str:
@@ -230,6 +217,27 @@ class CompareRow:
         if self.surface == SETTING and local is not None and not local.present:
             return settings_restore_url(self.title, self.scope)
         return edit.post_url
+
+    def _apply_url(self, peer: Cell) -> str:
+        if peer.local or not peer.present or not peer.known or not self.writable:
+            return ""
+        local = next((cell for cell in self.cells if cell.local), None)
+        if local is None or not local.known or peer.opinion == local.opinion:
+            return ""
+        edit = self._edit_cell(local)
+        if edit is None:
+            return ""
+        equals_default = local.default_recorded and canonical_json(peer.value) == canonical_json(local.default_value)
+        candidate = replace(
+            self,
+            cells=(peer,),
+            equals_shipped_default=equals_default,
+            env_shadowed=self.source == ENV_SOURCE,
+        )
+        disposition = classify(candidate).disposition
+        if disposition is Disposition.CLEAR:
+            return settings_restore_url(self.title, self.scope) if local.present else ""
+        return edit.post_url if disposition is Disposition.IMPORT else ""
 
     @property
     def readings(self) -> tuple[Reading, ...]:
@@ -255,6 +263,7 @@ class CompareRow:
             ),
             source=cell.source,
             wire_value=canonical_json(cell.value) if cell.present and not opaque else "",
+            apply_url=self._apply_url(cell),
             opaque=opaque,
             cell=self._edit_cell(cell),
         )

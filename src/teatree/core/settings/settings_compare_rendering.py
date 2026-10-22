@@ -50,11 +50,10 @@ KIND_RANK: Final[dict[RowKind, int]] = {
 class Reading:
     """How ONE instance's answer RENDERS — folding, and the digest a withheld value stands for.
 
-    Purely presentational: whether the cell may be EDITED, where its write goes and what a
-    control holds are not decided here. They ride on *cell*, the same
-    :class:`~teatree.core.setting_cell.SettingCell` the single-instance grid edits through, so
-    the two pages cannot drift into two answers about how one key is written. A column offering
-    no edit at all — every peer, and every row with no key to write — carries no cell.
+    Local editing rides on *cell*, the same
+    :class:`~teatree.core.setting_cell.SettingCell` the single-instance grid uses.
+    CompareRow supplies a peer apply URL only after classifying that peer's value against
+    this instance's default; this rendering object makes no write decision.
     """
 
     label: str
@@ -65,6 +64,7 @@ class Reading:
     default_text: str = "not recorded"
     source: str = ""
     wire_value: str = ""
+    apply_url: str = ""
     opaque: bool = False
     cell: SettingCell | None = None
 

@@ -139,9 +139,9 @@
                         <span class="mono {% if reading.opaque %}cell-opaque{% endif %}">{{ reading.text }}</span>
                       {% endif %}
                       <span class="row-note">default here: <span class="mono">{{ reading.default_text }}</span>{% if reading.source %} · via {{ reading.source }}{% endif %}</span>
-                      {% if not reading.local and reading.present and not reading.opaque and row.can_apply and row.local_edit %}
+                      {% if reading.apply_url %}
                         <div class="compare-apply">
-                          <form class="compare-use-here" hx-post="{{ row.apply_url }}" hx-swap="none">
+                          <form class="compare-use-here" hx-post="{{ reading.apply_url }}" hx-swap="none">
                             <input type="hidden" name="value" value="{{ reading.wire_value }}">
                             <button class="dash-btn" type="submit">Use here</button>
                           </form>
