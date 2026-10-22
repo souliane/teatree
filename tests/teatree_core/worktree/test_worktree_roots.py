@@ -23,6 +23,7 @@ from teatree.core.worktree.worktree_roots import (
     worktrees_outside_the_canonical_root,
 )
 from teatree.utils import git
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 
 class _RootsTestCase(TestCase):
@@ -91,6 +92,79 @@ class ProbeCheckoutTest(_RootsTestCase):
 
 
 class WorktreesOutsideCanonicalRootTest(_RootsTestCase):
+    def test_a_symlink_outside_the_root_pointing_inside_stays_outside_without_an_alias(self) -> None:
+        inside = self.canonical / "T1" / "repo"
+        inside.mkdir(parents=True)
+        link = self.tmp / "external-link"
+        link.symlink_to(inside, target_is_directory=True)
+        row = self._register(link, branch="external-link")
+        with missing_mount_table():
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+        with patched_mount_table(("259:2", "/ws", str(self.canonical))):
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+
+    def test_a_row_under_another_mount_spelling_of_the_canonical_root_is_inside(self) -> None:
+        alias = Path("/nonexistent-t3/alias/T1/repo")
+        row_alias = self._register(alias, branch="alias")
+        row_elsewhere = self._register(self.tmp / "elsewhere" / "repo", branch="elsewhere")
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.canonical)),
+            ("259:2", "/ws", "/nonexistent-t3/alias"),
+            ("259:2", "/other", str(self.tmp / "elsewhere")),
+        ):
+            assert [row.pk for row in worktrees_outside_the_canonical_root()] == [row_elsewhere.pk]
+        with missing_mount_table():
+            assert {row.pk for row in worktrees_outside_the_canonical_root()} == {row_alias.pk, row_elsewhere.pk}
+
+    def test_a_symlinked_canonical_root_accepts_its_mount_alias(self) -> None:
+        link = self.tmp / "canonical-link"
+        link.symlink_to(self.canonical, target_is_directory=True)
+        alias = Path("/nonexistent-t3/alias/T1/repo")
+        self._register(alias, branch="symlink-alias")
+        with (
+            mock.patch("teatree.core.worktree.worktree_roots.worktree_root", return_value=link),
+            patched_mount_table(("259:2", "/ws", str(self.canonical)), ("259:2", "/ws", "/nonexistent-t3/alias")),
+        ):
+            assert worktrees_outside_the_canonical_root() == []
+
+    def test_a_dotdot_escape_from_the_canonical_root_is_listed(self) -> None:
+        escape = self.canonical / ".." / "elsewhere" / "T1" / "repo"
+        row = self._register(escape, branch="escape")
+        assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+
+    def test_dotdot_in_the_canonical_root_is_normalized(self) -> None:
+        self._register(self.canonical / "T1" / "repo", branch="normalized")
+        elsewhere = self.tmp / "elsewhere" / "nested"
+        elsewhere.mkdir(parents=True)
+        link = self.tmp / "link"
+        link.symlink_to(elsewhere, target_is_directory=True)
+        with (
+            mock.patch(
+                "teatree.core.worktree.worktree_roots.worktree_root",
+                return_value=link / ".." / "canonical",
+            ),
+            missing_mount_table(),
+        ):
+            assert worktrees_outside_the_canonical_root() == []
+
+    def test_a_deeper_mount_on_another_device_stays_outside(self) -> None:
+        row = self._register(Path("/nonexistent-t3/alias/T1/repo"), branch="deeper")
+        aliased = (("259:2", "/ws", str(self.canonical)), ("259:2", "/ws", "/nonexistent-t3/alias"))
+        with patched_mount_table(*aliased):
+            assert worktrees_outside_the_canonical_root() == []
+        with patched_mount_table(*aliased, ("259:3", "/other", "/nonexistent-t3/alias/T1")):
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+        with patched_mount_table(*aliased, ("259:3", "/other", str(self.canonical / "T1"))):
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+
+    def test_a_bind_of_a_subdirectory_is_inside(self) -> None:
+        self._register(Path("/nonexistent-t3/branch/repo"), branch="subdir")
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.canonical)),
+            ("259:2", "/ws/T1", "/nonexistent-t3/branch"),
+        ):
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == []
+
     def test_only_the_outside_worktrees_are_returned(self) -> None:
         inside = self.canonical / "1234" / "repo"
         self._register(inside, branch="inside")

@@ -60,6 +60,17 @@ class DiskCachePurgeTests(TestCase):
         assert not cache.exists()
         self.uv_prune.assert_called_once()
 
+    def test_a_purge_the_filesystem_refuses_yields_nothing_and_extends_the_stall_streak(self) -> None:
+        cache = self.tmp / "pre-commit"
+        _write_file(cache / "blob", 1024)
+        payload = {"resource": "disk", "disk_cache_allowlist": [str(cache)], "free_gb": 1.0, "disk_crit_free_gb": 5.0}
+
+        with patch("os.unlink", side_effect=PermissionError), patch("os.rmdir", side_effect=PermissionError):
+            free_resources(payload)
+
+        assert (cache / "blob").exists()
+        assert "YIELD 0.00 GB this pass (zero-yield streak 1)" in ResourcePressureMarker.load().last_plan
+
     def test_non_allowlisted_dir_is_untouched(self) -> None:
         listed = self.tmp / "puppeteer"
         unlisted = self.tmp / "prek"
@@ -469,14 +480,6 @@ class HelperTests(TestCase):
         with patch.object(mechanical_resources.Path, "resolve", new=selective_resolve):
             resolved = mechanical_resources._resolve_disk_allowlist({"disk_cache_allowlist": [str(marker)]})
         assert resolved == []
-
-    def test_purge_dir_rmtree_failure_returns_zero(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        cache = self.tmp / "c"
-        _write_file(cache / "f", 1024)
-        with patch.object(mechanical_resources.shutil, "rmtree", side_effect=OSError):
-            assert mechanical_resources._purge_dir(str(cache)) == pytest.approx(0.0)
 
     def test_dir_size_skips_unstattable_file(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415

@@ -35,6 +35,7 @@ SETTING_HELP: dict[str, str] = {
         "credential the harness authenticates with — under claude_sdk: plans only, API only, "
         "or plans first with automatic failover to the API; empty inherits the ambient one"
     ),
+    "agent_route_paid_fallback": "allow an ordered agent route to fall through to a metered lane",
     "agent_honesty_model": "model used for honesty-critical verification, where over-claiming costs most",
     "agent_shell_max_output_bytes": "per-call ceiling on Bash output the agent lane carries; 0 is uncapped",
     "agent_phase_harness": "per-phase harness override, for a phase that needs a different CLI",
@@ -69,8 +70,8 @@ SETTING_HELP: dict[str, str] = {
     "brief_anchor_gate_enabled": "refuse a sub-agent brief that asserts specifics it anchors to nothing",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
     "cheap_phase_admission_ceiling": (
-        "review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling,"
-        " one review executor each (min 1)"
+        "per-class width (min 1): reviews and shipping/review requests are each capped at this width"
+        " inside a cheap lane one seat wider; machine brakes spare both classes"
     ),
     "clean_ignore": "branch globs the cleanup reapers never touch",
     "colleague_repo_url_pattern": "regex matching repo URLs owned by colleagues rather than the operator",
@@ -95,6 +96,7 @@ SETTING_HELP: dict[str, str] = {
     "dream_umbrella_url": "issue whose ticket queues the dream pass's collected gaps for the backlog sweep",
     "e2e_repos": "external repositories containing Playwright test specs and their clone locations",
     "envelope_stop_gate_refusals": "refuse a turn that ends without the required result envelope",
+    "eval_ci_account_allowlist": "password-store OAuth accounts allowed in the CI eval pool",
     "eval_local_skill": "skill the local eval loop runs",
     "excluded_skills": "skills never offered to an agent, whatever the loader suggests",
     "harness_skill_exclusions": (
@@ -182,7 +184,7 @@ SETTING_HELP: dict[str, str] = {
     "review_exempt_repos": "repos whose merge requests need no review request (a `!` prefix un-exempts one)",
     "review_exempt_repos_count_toward_group_readiness": "let review-exempt merge requests still hold their work group",
     "review_nag_max_interval_days": "ceiling on the review nag's widening re-ask interval",
-    "review_nag_reask_mention": "user group id or handle, or user handle, the review nag's re-ask mentions",
+    "review_nag_reask_mention": "user group id or handle, or user handle, used when no engaged reviewer maps to Slack",
     "review_skill": "skill a review dispatch runs",
     "review_skill_alternates": "extra skills whose recorded run also satisfies the reviewing-phase evidence gate",
     "scanner_overlay_scope": "overlays the full-fleet scanners sweep; empty sweeps every registered overlay",

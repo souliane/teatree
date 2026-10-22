@@ -11,6 +11,7 @@ history/regression gates. The multi-trial and model-matrix shapes live in
 import dataclasses
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -28,7 +29,7 @@ from teatree.cli.eval.escalate import (
     render_escalation_markdown,
 )
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import (
     API_BACKEND,
@@ -40,8 +41,8 @@ from teatree.eval.backends import (
     UnknownBackendError,
     make_runner,
 )
-from teatree.eval.models import CachedPass, EvalSpec
-from teatree.eval.parallel import run_specs
+from teatree.eval.models import CachedPass, EvalRun, EvalSpec
+from teatree.eval.parallel import UsageLimitLatch, is_usage_limit_skip, run_specs, usage_limit_skip
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.summary_json import SummaryCacheData, write_summary_json
@@ -132,6 +133,39 @@ def _persist_all_cached(cached_specs: list[EvalSpec], gates: SingleTrialGates, m
         )
 
 
+def _usage_limit_result(spec: EvalSpec) -> ScenarioResult:
+    return ScenarioResult(spec=spec, run=usage_limit_skip(spec.name), matcher_results=(), skipped=True)
+
+
+class _JudgeLimitLatch:
+    def __init__(self, grader: JudgeGrader | None) -> None:
+        self.grader = grader
+        self.limited = False
+
+    def grade(self, spec: EvalSpec, run: Callable[[], EvalRun]) -> ScenarioResult:
+        if self.limited:
+            return _usage_limit_result(spec)
+        try:
+            return evaluate(spec, run(), judge=self.grader)
+        except UsageLimitReachedError:
+            self.limited = True
+            return _usage_limit_result(spec)
+
+
+def _grade_runs(specs: list[EvalSpec], runs: list[EvalRun], grader: JudgeGrader | None) -> list[ScenarioResult]:
+    latch = _JudgeLimitLatch(grader)
+    return [latch.grade(spec, lambda run=run: run) for spec, run in zip(specs, runs, strict=True)]
+
+
+def _escalation_trial_runner(latch: UsageLimitLatch, grader: JudgeGrader | None) -> TrialRunner:
+    judge_latch = _JudgeLimitLatch(grader)
+
+    def trial(spec: EvalSpec) -> ScenarioResult:
+        return judge_latch.grade(spec, lambda: latch.run(spec))
+
+    return trial
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval run` value into the single-pass path.
     specs: list[EvalSpec],
@@ -188,7 +222,7 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     except CreditExhaustedError as exc:
         typer.echo(f"ABORTED: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-    results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
+    results = _grade_runs(specs, runs, grader)
     _emit_single_results(results, cached, output_format)
     reports.write_single_trial(results, cached=cached, content_keys=content_keys, backend=backend)
     if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
@@ -205,11 +239,9 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
             backend=backend, max_budget_usd=max_budget_usd, effort=effort, require_executed=require_executed
         )
 
-        def _escalation_trial(spec: EvalSpec) -> ScenarioResult:
-            return evaluate(spec, escalation_runner.run(spec), judge=grader)
-
+        latch = UsageLimitLatch(escalation_runner, limited=bool(_refused_by_the_usage_limit(results)))
         escalation_report = _escalate_and_gate(
-            results, escalation=escalation, trial=_escalation_trial, summary_md=summary_md
+            results, escalation=escalation, trial=_escalation_trial_runner(latch, grader), summary_md=summary_md
         )
         if summary_json is not None:
             write_summary_json(
@@ -250,7 +282,7 @@ def _exit_suite_budget_exhausted(results: list[ScenarioResult]) -> None:
 
 
 def _refused_by_the_usage_limit(results: list[ScenarioResult]) -> list[ScenarioResult]:
-    return [r for r in results if r.run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")]
+    return [r for r in results if is_usage_limit_skip(r.run)]
 
 
 def _exit_when_the_usage_limit_ran_nothing(results: list[ScenarioResult]) -> None:
@@ -269,9 +301,9 @@ def _exit_when_the_usage_limit_refused_any(results: list[ScenarioResult]) -> Non
 
 def _exit_did_not_run(refused: list[ScenarioResult], *, collected: int) -> None:
     typer.echo(
-        f"eval run DID NOT RUN {len(refused)} of {collected} scenario(s): the Anthropic API refused them on the "
-        f"organisation's usage limit before the model saw them ({refused[0].run.terminal_reason}). Nothing that ran "
-        f"failed. Exiting {MEASURED_NOTHING_EXIT_CODE} (tolerated, never green).",
+        f"eval run DID NOT COMPLETE {len(refused)} of {collected} scenario(s): the subscription usage limit "
+        f"interrupted evaluation ({refused[0].run.terminal_reason}). Nothing measured failed. "
+        f"Exiting {MEASURED_NOTHING_EXIT_CODE} (tolerated, never green).",
         err=True,
     )
     raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE)

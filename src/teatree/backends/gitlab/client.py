@@ -266,6 +266,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        return _pr_reads.project_engaged_reviewers(self._client, self._resolve_project(repo), repo=repo, pr_iid=pr_iid)
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
 

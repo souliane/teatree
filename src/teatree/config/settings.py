@@ -20,6 +20,7 @@ from teatree.config.settings_loop_owned import (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
     _InboxLoopSettings,
     _IssueImplementerLoopSettings,
@@ -156,6 +157,7 @@ class _ModeHarnessSettings:
     # carries no enum member yet. Per-overlay overridable;
     # ``T3_AGENT_HARNESS_PROVIDER`` env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
+    agent_route_paid_fallback: bool = False
     # The EXPLICIT allowlist of model-id patterns eligible on a regulated lane
     # (matched case-insensitively as substrings). Empty means this installation
     # has no regulated model restriction; a nonempty list enforces membership.
@@ -714,15 +716,8 @@ class _ProvisioningSettings:
     # and the provider's cycle boundaries are not discoverable from teatree's data.
     # Per-overlay overridable.
     metered_spend_window_hours: int = 24
-    # #4098 #5051 Review lane width: how many review-lane agents (reviewing, critic,
-    # shipping, review requests — ``teatree.core.modelkit.phases.CHEAP_PHASES``) are
-    # admitted OUTSIDE the coding ceiling; the worker runs one review executor per seat.
-    # Those phases RETIRE work, so they are never queued behind coding. They are cheap by
-    # comparison, not free — one still gets a shell and can still run a suite — so this
-    # number is small on purpose: the
-    # bound is what keeps the lane from becoming a second unbounded one (#4097). The
-    # exemption is from the MACHINE brake only; a spent token budget still refuses every
-    # class. Floored at 1. Per-overlay overridable.
+    # Each cheap class is capped at this width (min 1) inside a lane one seat wider;
+    # machine brakes spare both classes, while quota brakes still apply.
     cheap_phase_admission_ceiling: int = 2
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
@@ -820,12 +815,6 @@ class _PrePublishGateSettings:
     # ``t3 <overlay> config_setting set ban_close_trailers_on_namespaces``;
     # the TOML value is ignored on read.
     ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
-    # Ceiling for the nag's Fibonacci re-ask backoff. Uncapped, the sequence runs past
-    # the point where a reminder still reads as one — a request nobody answered would
-    # go quiet for months instead of settling into a monthly rhythm.
-    review_nag_max_interval_days: int = 30
-    # A Slack user-group id, or a handle resolved as a user group then a user. Empty re-asks with no mention.
-    review_nag_reask_mention: str = ""
     # Repo patterns whose merge requests need no review request: the user asks for
     # review in person there, so a posted request is noise a colleague has to dismiss.
     # Matched by ``teatree.core.review.repo_exemption`` on the same host-stripped
@@ -917,6 +906,7 @@ class UserSettings(
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
     _InboxLoopSettings,
     _IssueImplementerLoopSettings,

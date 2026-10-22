@@ -6,7 +6,7 @@ what landed, or to hand-roll a shadow run that had to mirror the scanner's inter
 stay honest. Both are how a colleague's merge request gets re-pinged under the owner's
 name by an agent verifying the guard meant to prevent exactly that.
 
-The preview is the same run with two terminal substitutions, and nothing else:
+The preview runs built-in scanners with two terminal substitutions:
 
 1. **The database is a throwaway file copy** (:func:`_disposable_database_copies`, a
     WAL-safe :func:`teatree.sqlite_snapshot._sqlite_snapshot` per alias). Scanners claim,
@@ -18,10 +18,9 @@ The preview is the same run with two terminal substitutions, and nothing else:
     on-behalf approval check and the audit all still run for real and their refusals are
     what the report prints.
 
-Everything between those two is the live code: the same ``collect_scan`` fan-out, the same
-scanners, the same ``_is_self_authored``, the same ``OnBehalfSlackEgress``. That is the
-point — a preview with its own copy of the decisions is a preview that can be right while
-live is wrong. What this module adds is purely observational: three ContextVar observers
+Overlay hooks and their scanners are excluded and reported: their forge writes bypass both
+substitutions. Built-in scanners keep the live ``collect_scan`` fan-out, ``_is_self_authored``
+and ``OnBehalfSlackEgress``. Three ContextVar observers
 (authorship, egress attempt, owner question) correlate one row per candidate.
 
 The correlation is per-context, which is why the preview's pool submits each job through
@@ -50,6 +49,7 @@ from teatree.core.on_behalf_egress import EgressAttempt, EgressKind, observe_on_
 from teatree.core.review.mr_state_question import observe_owner_question_creation
 from teatree.core.review.review_candidate import AuthorshipAssessment, AuthorshipVerdict, observe_authorship
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.overlay_followup_jobs import skip_overlay_followup_hooks
 from teatree.loop.phases.scan import SCAN_DEADLINE_SECONDS, ScanOutcome, collect_scan, scan_pool_size
 from teatree.sqlite_snapshot import _sqlite_snapshot
 from teatree.types import RawAPIDict
@@ -100,6 +100,7 @@ class FollowupDryRunReport:
     candidates: list[FollowupDryRunCandidate]
     errors: dict[str, str]
     selected_scanners: tuple[str, ...] = ()
+    not_previewed: tuple[str, ...] = ()
     live_admission: str = ""
 
     @property
@@ -127,16 +128,14 @@ class FollowupDryRunReport:
 
     @property
     def exit_code(self) -> int:
-        """0 clean · 1 guard breach · 3 vacuous — the gate contract (usage 2 is the CLI's).
+        """0 complete · 1 guard breach · 3 incomplete — usage errors are CLI exit 2.
 
-        3 exists so a gate run can never PASS by previewing nothing: with the active
-        posture forbidding egress, or with no messaging backend, ``build_jobs`` selects
-        no colleague scanner at all and a plain "0 candidates, exit 0" would read as
-        proof the guard holds when in fact nothing was examined.
+        Exit 3 means no colleague scanner was selected or an overlay hook was
+        excluded, so the preview cannot certify the full selected job set.
         """
         if self.breach_count:
             return 1
-        if not self.selected_scanners:
+        if not self.selected_scanners or self.not_previewed:
             return 3
         return 0
 
@@ -152,6 +151,7 @@ class FollowupDryRunReport:
             "refused_count": self.refused_count,
             "breach_count": self.breach_count,
             "selected_scanners": list(self.selected_scanners),
+            "not_previewed": list(self.not_previewed),
             "live_admission": self.live_admission,
             "exit_code": self.exit_code,
             "candidates": [asdict(candidate) for candidate in self.candidates],
@@ -324,13 +324,12 @@ def _disposable_database_copies() -> Generator[_CopyLease]:
 
 
 def run_followup_dry_run(jobs_or_builder: DryRunJobs, *, live_admission: str = "") -> FollowupDryRunReport:
-    """Run the followup scanners for real against a disposable copy, posting nothing.
+    """Run built-in followup scanners against a disposable copy, posting nothing.
 
     Everything the live tick decides is decided here, by the live code: the same
-    ``collect_scan`` fan-out, the same scanners, the same ``_is_self_authored``, the same
-    ``OnBehalfSlackEgress`` gates. Only two things differ, and both are terminal — the
-    database is a throwaway file copy, and the final Slack call is swapped for a
-    recorder. So there is no second decision surface that can drift from live.
+    ``collect_scan`` fan-out, the same built-in scanners, the same ``_is_self_authored``
+    and ``OnBehalfSlackEgress`` gates. The database is a throwaway copy and Slack calls
+    are recorded. Overlay hooks and scanners are omitted and named in the report.
 
     *live_admission* is what the live tick's admission gate would say right now (the
     caller reads it from ``loop_block_reasons``); it is REPORTED, never applied — see
@@ -344,13 +343,17 @@ def run_followup_dry_run(jobs_or_builder: DryRunJobs, *, live_admission: str = "
         suppress_on_behalf_egress(recorder.suppress_egress),
         observe_on_behalf_egress(recorder.record_action),
         observe_owner_question_creation(recorder.record_owner_question),
+        skip_overlay_followup_hooks() as skipped_hooks,
     ):
-        jobs = jobs_or_builder if isinstance(jobs_or_builder, list) else jobs_or_builder()
+        built_jobs = jobs_or_builder if isinstance(jobs_or_builder, list) else jobs_or_builder()
+        not_previewed = (*skipped_hooks, *(job.label for job in built_jobs if job.overlay_hook))
+        jobs = [job for job in built_jobs if not job.overlay_hook]
         outcome = _scan_to_completion(jobs, lease)
     return FollowupDryRunReport(
         candidates=recorder.candidates,
         errors=outcome.errors,
         selected_scanners=tuple(job.scanner.name for job in jobs),
+        not_previewed=not_previewed,
         live_admission=live_admission,
     )
 
@@ -365,6 +368,8 @@ def render_followup_dry_run(report: FollowupDryRunReport) -> str:
         f"live tick would be: {report.live_admission_line}",
         f"scanners selected: {scanners}",
     ]
+    if report.not_previewed:
+        lines.append(f"NOT PREVIEWED (external writes possible): {', '.join(report.not_previewed)}")
     if not report.selected_scanners:
         lines.append(
             "VACUOUS no colleague scanner was selected — the active posture forbids egress or no "

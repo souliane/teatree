@@ -36,8 +36,10 @@ from teatree.core.managers import (
     per_loop_owner_slot,
 )
 from teatree.core.models import LoopLease
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from tests._loop_principal_env import pinned_loop_principal
+from tests.db_alias import register_control_db_alias, wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 
 def _seed_dead_pid_lease(slot: str, *, session_id: str, owner_pid: int, ttl_seconds: int) -> None:
@@ -283,17 +285,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"loopown_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(db_file),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
+    register_control_db_alias(alias, db_file)
     with connections[alias].schema_editor() as editor:
         editor.create_model(LoopLease)
     connections[alias].close()
@@ -359,10 +351,10 @@ class TestCrossSessionLoopHijackOnSqlite:
                 "os.environ.setdefault('DJANGO_SETTINGS_MODULE','teatree.settings');"
                 "django.setup();"
                 "from django.db import connections;"
-                "from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS;"
+                "from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS;"
                 "alias='hijack';"
                 "connections.databases[alias]={"
-                "'ENGINE':'django.db.backends.sqlite3','NAME':sys.argv[1],"
+                "'ENGINE':SQLITE_BOUNDARY_ENGINE,'NAME':sys.argv[1],"
                 "'OPTIONS':dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),"
                 "'ATOMIC_REQUESTS':False,'AUTOCOMMIT':True,'CONN_MAX_AGE':0,"
                 "'CONN_HEALTH_CHECKS':False,'TIME_ZONE':None,'TEST':{}};"

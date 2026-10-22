@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.matrix import MatrixRow, render_matrix_html
-from teatree.eval.matrix_html_tally import MatrixTallyError, ModelTally, parse_model_tallies
+from teatree.eval.matrix_html_tally import MatrixTallyError, ModelTally, parse_model_tallies, parse_scenario_passes
 from teatree.eval.models import EvalSpec
 
 
@@ -63,3 +63,34 @@ class TestModelTally:
         assert ModelTally(model="a", passed=0, failed=3, skipped=0, errored=0, cost_usd=0.0).is_unmetered
         assert not ModelTally(model="a", passed=0, failed=3, skipped=0, errored=0, cost_usd=0.01).is_unmetered
         assert not ModelTally(model="a", passed=0, failed=0, skipped=3, errored=0, cost_usd=0.0).is_unmetered
+
+
+def test_only_scenarios_passing_every_model_can_settle_debt() -> None:
+    rows = [
+        MatrixRow(scenario="passed", model="opus", passed=True, score=1.0, trials=1, skipped=False),
+        MatrixRow(scenario="passed", model="haiku", passed=True, score=1.0, trials=1, skipped=False),
+        MatrixRow(scenario="red", model="opus", passed=True, score=1.0, trials=1, skipped=False),
+        MatrixRow(scenario="red", model="haiku", passed=False, score=0.0, trials=1, skipped=False),
+        MatrixRow(scenario="skipped", model="opus", passed=True, score=1.0, trials=1, skipped=False),
+        MatrixRow(scenario="skipped", model="haiku", passed=False, score=0.0, trials=1, skipped=True),
+    ]
+
+    passes = parse_scenario_passes(
+        render_matrix_html(rows, ["opus", "haiku"], [_spec(n) for n in ("passed", "red", "skipped")])
+    )
+
+    assert passes == {"passed": True, "red": False, "skipped": False}
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<table><tr><td>scenario</td><td>model</td></tr></table>",
+        "<table><tr><td>scenario</td><td>model</td></tr><tr><td></td><td>pass</td></tr>"
+        + "<tr><td>model</td><td>passed</td><td>failed</td><td>skipped</td><td>errored</td><td>cost</td></tr></table>",
+    ],
+    ids=["missing-tally", "blank-scenario"],
+)
+def test_incomplete_scenario_matrix_refuses_settlement(html: str) -> None:
+    with pytest.raises(MatrixTallyError):
+        parse_scenario_passes(html)

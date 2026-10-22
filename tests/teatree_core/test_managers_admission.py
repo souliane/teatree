@@ -9,8 +9,9 @@ from django.utils import timezone
 
 from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
-from teatree.core.cycle_time.timeline import _engagements
+from teatree.core.cycle_time.timeline import engagements_for_tickets
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW, _lane_occupancy_q
+from teatree.core.modelkit.phases import CheapClass, PhaseCost
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.worktree.checkout_fence import park_task_checkout
 
@@ -67,7 +68,7 @@ class TestAdmissionSeatPredicates(TestCase):
 
         task.refresh_from_db()
         assert task.admitted_at == admitted_at
-        assert len(_engagements([ticket.pk])[ticket.pk, "coding"]) == 1
+        assert len(engagements_for_tickets([ticket.pk])[ticket.pk, "coding"]) == 1
         assert Task.objects.expensive_lane_occupancy() == 0
 
     def test_short_route_failure_hold_keeps_readmit_throttle(self) -> None:
@@ -96,7 +97,7 @@ class TestAdmissionSeatPredicates(TestCase):
         )
         Task.objects.filter(pk=waiting.pk).update(status=Task.Status.PENDING, admitted_at=None)
 
-        assert Task.objects.record_admission(waiting.pk, cheap=False, lane_ceiling=1)
+        assert Task.objects.record_admission(waiting.pk, cheap_class=None, lane_ceiling=1)
 
     def test_cost_lanes_exclude_expired_pending_seats(self) -> None:
         ticket = Ticket.objects.create()
@@ -112,10 +113,12 @@ class TestAdmissionSeatPredicates(TestCase):
             admitted_at=now - ADMITTED_INFLIGHT_WINDOW - timedelta(seconds=1),
         )
 
-        assert set(Task.objects.filter(_lane_occupancy_q(now, cheap=True)).values_list("pk", flat=True)) == {
-            reviewing.pk
-        }
-        assert set(Task.objects.filter(_lane_occupancy_q(now, cheap=False)).values_list("pk", flat=True)) == {coding.pk}
+        assert set(
+            Task.objects.filter(_lane_occupancy_q(now, lane=CheapClass.REVIEW)).values_list("pk", flat=True)
+        ) == {reviewing.pk}
+        assert set(
+            Task.objects.filter(_lane_occupancy_q(now, lane=PhaseCost.EXPENSIVE)).values_list("pk", flat=True)
+        ) == {coding.pk}
 
     def test_future_park_is_not_reported_as_a_released_cheap_seat(self) -> None:
         ticket = Ticket.objects.create()

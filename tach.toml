@@ -221,6 +221,7 @@ layer = "platform"
 depends_on = [
   "teatree.db",
   "teatree.paths",
+  "teatree.sqlite_snapshot",
   "teatree.types",
   "teatree.utils",
   "teatree.update_check"
@@ -321,6 +322,7 @@ depends_on = [
   "teatree.core.admission",
   "teatree.core.admission_pressure",
   "teatree.core.modelkit",
+  "teatree.core.admission.pr_start_cap",
   "teatree.core.owner_question_message",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
@@ -379,6 +381,11 @@ depends_on = ["teatree.core.models"]
 path = "teatree.core.modelkit"
 layer = "domain"
 depends_on = []
+
+[[modules]]
+path = "teatree.core.admission.pr_start_cap"
+layer = "domain"
+depends_on = ["teatree.core.modelkit"]
 
 [[modules]]
 # The owner-question card as Slack text and blocks. Its own node so the loop-layer binder
@@ -514,6 +521,7 @@ depends_on = [
   "teatree.core.claim_liveness",
   "teatree.utils",
   "teatree.core.modelkit",
+  "teatree.core.admission.pr_start_cap",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
   "teatree.core.managers_admission",
@@ -536,6 +544,7 @@ depends_on = [
   "teatree.core.claim_liveness",
   "teatree.core.forge_url",
   "teatree.core.modelkit",
+  "teatree.core.admission.pr_start_cap",
   "teatree.core.managers",
   # a worker_quiescing write advances the claim fence from the one ConfigSetting write seam.
   "teatree.core.managers_task_claim",
@@ -832,7 +841,8 @@ depends_on = [
   "teatree.loop.rendering_zones",
   "teatree.loop.rendering",
   "teatree.loop.slack_answer",
-  "teatree.loop.question_binding"
+  "teatree.loop.question_binding",
+  "teatree.token_report"
 ]
 
 [[modules]]

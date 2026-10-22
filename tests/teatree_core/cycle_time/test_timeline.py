@@ -191,6 +191,11 @@ class OverlappingAndUnfinishedAttemptsTestCase(TestCase):
         record_task(self.ticket, phase="coding", queued=0, admitted=40)
         assert self._coding_work() == 60 * MINUTE
 
+    def test_a_pending_admitted_task_without_attempt_is_not_working(self) -> None:
+        task = record_task(self.ticket, phase="coding", queued=0, admitted=40)
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING)
+        assert self._coding_work() == 0
+
     def test_an_attempt_with_no_admission_stamp_leaves_the_split_unmeasured(self) -> None:
         """Work is UNKNOWN there, never zero — `admitted_at` is stamped going forward only."""
         record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=None), ended=50)
@@ -244,3 +249,35 @@ class CostRidesAlongsideTimeTestCase(TestCase):
         timeline = build_ticket_timeline(self.ticket.pk)
         assert timeline.cost_usd == pytest.approx(2.0)
         assert timeline.cost_estimated_usd == pytest.approx(0.75)
+
+
+class ParkDoesNotImplyWorkTestCase(TestCase):
+    def test_park_closes_prior_work_at_its_start(self) -> None:
+        ticket = Ticket.objects.create(state=State.CODED)
+        record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
+        record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
+        task = record_task(ticket, phase="coding", queued=0, admitted=10)
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING)
+        record_attempt(task, ended=20, row_written=15, error="checkout_parked: refused")
+
+        segment = build_ticket_timeline(ticket.pk).segments[0]
+        assert segment.work_seconds == 5 * MINUTE
+        assert segment.queue_seconds == 95 * MINUTE
+
+    def _only_attempt_segment(self, **attempt_fields: object) -> PhaseSegment:
+        ticket = Ticket.objects.create(state=State.CODED)
+        record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
+        record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
+        task = record_task(ticket, phase="coding", queued=0, admitted=None)
+        record_attempt(task, ended=50, **attempt_fields)
+        return build_ticket_timeline(ticket.pk).segments[0]
+
+    def test_park_only_span_keeps_its_queue_split_measured(self) -> None:
+        segment = self._only_attempt_segment(error="checkout_parked: refused")
+        assert segment.work_measured
+        assert segment.queue_seconds == 100 * MINUTE
+
+    def test_cancel_only_span_keeps_its_queue_split_measured(self) -> None:
+        segment = self._only_attempt_segment(result={"cancel_source": "owner"})
+        assert segment.work_measured
+        assert segment.queue_seconds == 100 * MINUTE

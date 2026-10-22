@@ -9,10 +9,26 @@ on every poll; this model is the *write* surface for the bot's
 review-request post.
 """
 
+import datetime as dt
 from typing import ClassVar
 
 from django.db import models
 from django.utils import timezone
+
+
+class ReviewRequestPostQuerySet(models.QuerySet["ReviewRequestPost"]):
+    def open_thread(self, post: "ReviewRequestPost") -> "ReviewRequestPostQuerySet":
+        if not post.slack_channel_id or not post.slack_thread_ts:
+            return self.filter(pk=post.pk, done_at__isnull=True)
+        return self.filter(
+            overlay=post.overlay,
+            slack_channel_id=post.slack_channel_id,
+            slack_thread_ts=post.slack_thread_ts,
+            done_at__isnull=True,
+        )
+
+    def nagged_within(self, right_now: dt.datetime, interval: dt.timedelta) -> bool:
+        return self.filter(last_nag_at__gt=right_now - interval).exists()
 
 
 class ReviewRequestPost(models.Model):
@@ -46,6 +62,8 @@ class ReviewRequestPost(models.Model):
     resumed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     done_at = models.DateTimeField(null=True, blank=True)
+
+    objects = ReviewRequestPostQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_review_request_post"

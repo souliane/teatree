@@ -29,7 +29,13 @@ from teatree.agents.prompt import (
 )
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts, fit_read_only_context, read_only_system_context
 from teatree.agents.runner_interruption import _record_failure
-from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
+from teatree.agents.skill_assurance import (
+    SkillAssurance,
+    SkillDelivery,
+    assess_skill_dispatch,
+    recover_truncated_inline_skills,
+)
+from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider
@@ -109,18 +115,22 @@ def prepare_run(
         required_inline, required_explicit = required_skill_delivery(
             task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
         )
-    required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
-        required_inline=required_inline,
-        required_explicit=required_explicit,
-        rendered_context=f"{system_context}\n{prompt}" if read_only_venue else system_context,
-    )
+    load_directive = ""
+    if not read_only_venue:
+        required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
+            required_inline=required_inline,
+            required_explicit=required_explicit,
+            rendered_context=system_context,
+        )
     if load_directive:
         prompt = f"{load_directive}\n\n{prompt}"
     assurance = assess_skill_dispatch(
         skills=skills,
         required_inline=required_inline,
         required_explicit=required_explicit,
-        rendered_context=f"{system_context}\n{prompt}",
+        rendered_context=SkillDelivery(f"{system_context}\n{prompt}", _read_only_skill_text)
+        if read_only_venue
+        else f"{system_context}\n{prompt}",
     )
     if read_only_venue:
         system_context = read_only_system_context(system_context)

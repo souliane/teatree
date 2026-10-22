@@ -96,6 +96,7 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # run, and are exercised both ways in
     # tests/teatree_cli/doctor/test_checks_db_integrity.py.
     monkeypatch.setattr("teatree.cli.doctor.checks_db_integrity._control_db_writers", list)
+    monkeypatch.setattr("teatree.cli.doctor.checks_container_env._running_stack_environments", dict)
     # The config-tier health gate (#3873) reports whether a ConfigSetting override read
     # recently FAILED, reading a marker file beside the box's REAL control DB — a path
     # outside this test's DB isolation, so a genuine unrelated degradation recorded by

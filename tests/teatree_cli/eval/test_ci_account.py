@@ -6,6 +6,7 @@ a no-op when the secret already points at the best account, and — the load-bea
 invariant — no token value in any captured output.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -46,11 +47,16 @@ class TestSwitchCommand:
     def test_a_performed_switch_exits_zero_and_names_both_accounts(self, stub_switcher) -> None:
         stub_switcher.switch.return_value = _outcome(changed=True, applied=True)
 
-        result = CliRunner().invoke(app, ["eval", "ci-account", "switch"])
+        with patch(
+            "teatree.cli.eval.ci_account.get_effective_settings",
+            return_value=SimpleNamespace(eval_ci_account_allowlist=[HEALTHY]),
+        ):
+            result = CliRunner().invoke(app, ["eval", "ci-account", "switch"])
 
         assert result.exit_code == 0
         assert HEALTHY in result.output
         assert SPENT in result.output
+        assert stub_switcher.switch.call_args.kwargs["allowlist"] == [HEALTHY]
 
     def test_already_optimal_reports_a_no_op(self, stub_switcher) -> None:
         stub_switcher.switch.return_value = _outcome(changed=False, applied=False, previous=HEALTHY)

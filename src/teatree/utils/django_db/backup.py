@@ -21,6 +21,7 @@ while the live loop holds the DB open for writing.
 
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -122,11 +123,24 @@ def hours_since_last_backup(backup_dir: Path, *, now: datetime) -> float | None:
     return (now - latest).total_seconds() / 3600.0
 
 
+def _quick_check_problems(snapshot: Path) -> list[str]:
+    connection = sqlite3.connect(snapshot)
+    try:
+        rows = [str(row[0]) for row in connection.execute("PRAGMA quick_check")]
+    except sqlite3.DatabaseError as damaged:
+        return [str(damaged)]
+    finally:
+        connection.close()
+    return [] if rows == ["ok"] else rows
+
+
 def create_backup(*, source: Path, backup_dir: Path, now: datetime) -> Path:
     """Snapshot *source* into *backup_dir* as ``db-<now>.sqlite3`` and return the path.
 
     The snapshot is written to a temp sibling and atomically renamed into place so
     a concurrent reader (or a same-second re-run) never observes a partial file.
+    A snapshot failing ``PRAGMA quick_check`` raises instead: the page copy carries a
+    corrupt source over unchanged, and retention would age out the last sound backup.
     """
     backup_dir.mkdir(parents=True, exist_ok=True)
     dest = backup_dir / f"db-{now.strftime(_TIMESTAMP_FORMAT)}.sqlite3"
@@ -134,6 +148,9 @@ def create_backup(*, source: Path, backup_dir: Path, now: datetime) -> Path:
     tmp.unlink(missing_ok=True)
     try:
         _sqlite_snapshot(source, tmp)
+        if problems := _quick_check_problems(tmp):
+            msg = f"refusing to publish {dest.name}: {source} fails PRAGMA quick_check — {problems[0][:200]!r}"
+            raise sqlite3.DatabaseError(msg)
         tmp.replace(dest)
     finally:
         tmp.unlink(missing_ok=True)

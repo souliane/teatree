@@ -26,7 +26,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from teatree.cli.eval.app_helpers import RunReportPaths
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
 from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
-from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.backends import (
     ANTHROPIC_API_BACKEND,
@@ -35,8 +35,8 @@ from teatree.eval.backends import (
     TRANSCRIPT_BACKEND,
     EvalRunner,
 )
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
-from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
+from teatree.eval.report import JudgeGrader, JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
@@ -113,6 +113,7 @@ class _Lane:
 
     backend: str = TRANSCRIPT_BACKEND
     require_executed: bool = False
+    grader: JudgeGrader | None = None
 
 
 _DEFAULT_LANE = _Lane()
@@ -136,8 +137,8 @@ def _call(
         effort=None,
         parallel=1,
         output_format="text",
-        grader=None,
-        judge=False,
+        grader=lane.grader,
+        judge=lane.grader is not None,
         transcript_html=transcript_html,
         summary_md=summary_md,
         gates=_NO_GATES,
@@ -146,6 +147,41 @@ def _call(
 
 
 class TestRunSingleTrialArtifacts:
+    def test_judge_limit_parks_remaining_grades(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _run_with(monkeypatch, _passing_run)
+        calls: list[str] = []
+
+        def limited_grade(spec: EvalSpec, run: EvalRun) -> JudgeOutcome:
+            calls.append(spec.name)
+            reason = "weekly limit"
+            raise UsageLimitReachedError(reason)
+
+        specs = [dataclasses.replace(_spec(name), judge=JudgeSpec(rubric="x")) for name in ("alpha", "beta")]
+        summary = tmp_path / "summary.md"
+        with pytest.raises(typer.Exit) as exc:
+            run_single_trial(
+                specs,
+                backend=API_BACKEND,
+                max_turns=None,
+                transcript_dir=None,
+                require_executed=True,
+                max_budget_usd=1.0,
+                effort=None,
+                parallel=1,
+                output_format="text",
+                grader=limited_grade,
+                judge=True,
+                transcript_html=None,
+                summary_md=summary,
+                gates=_NO_GATES,
+            )
+        assert exc.value.exit_code == 75
+        assert calls == ["alpha"]
+        assert "**2 skipped**" in summary.read_text(encoding="utf-8")
+        assert "usage_limit_reached" in capsys.readouterr().out
+
     def test_drops_both_artifacts_for_a_passing_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _run_with(monkeypatch, _passing_run)
         transcript = tmp_path / "transcript.html"
@@ -493,4 +529,70 @@ class TestTheUsageLimitIsADidNotRunNotAVerdict:
         _escalate_with(monkeypatch, _refused_run)
         with pytest.raises(SystemExit) as exc:
             _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+
+
+class _CountingEscalation:
+    def __init__(self, run_for) -> None:
+        self._run_for = run_for
+        self.calls = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        return self._run_for(spec.name)
+
+
+def _raise_usage_limit(_name: str) -> EvalRun:
+    raise UsageLimitReachedError(_USAGE_LIMIT_MESSAGE)
+
+
+class TestEscalationNeverSpendsIntoTheLimit:
+    def test_a_judge_limit_during_escalation_is_a_clean_red(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _run_with(monkeypatch, _failing_run)
+        escalation = _CountingEscalation(_failing_run)
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_escalation_runner", lambda **_k: escalation)
+        calls = 0
+
+        def grade(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise UsageLimitReachedError(_USAGE_LIMIT_MESSAGE)
+            return JudgeOutcome(passed=True, skipped=False, rationale="measured")
+
+        spec = dataclasses.replace(_spec("alpha"), judge=JudgeSpec(rubric="x"))
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [spec],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=dataclasses.replace(_METERED_LANE, grader=grade),
+            )
+        assert exc.value.code == 1
+        assert calls == 2
+        assert escalation.calls == 1
+
+    @pytest.mark.parametrize("refusal", [_refused_run, _raise_usage_limit], ids=["skipped", "raised"])
+    def test_the_first_refused_escalation_trial_stops_the_rest(self, monkeypatch: pytest.MonkeyPatch, refusal) -> None:
+        _run_with(monkeypatch, _failing_run)
+        escalation = _CountingEscalation(refusal)
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_escalation_runner", lambda **_k: escalation)
+        with pytest.raises(SystemExit) as exc:
+            _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+        assert escalation.calls == 1
+
+    def test_a_limit_in_trial_one_runs_zero_escalation_trials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outcome = {"alpha": _failing_run, "beta": _refused_run}
+        _run_with(monkeypatch, lambda name: outcome[name](name))
+        _escalate_with(monkeypatch, lambda name: pytest.fail(f"{name} escalated into a known usage limit"))
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [_spec("alpha"), _spec("beta")],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=_METERED_LANE,
+            )
         assert exc.value.code == 1

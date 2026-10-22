@@ -57,6 +57,7 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `workspace_repos` | `[]` | Repo paths relative to `workspace_dir` (supports nested paths) |
 | `protected_branches` | `[]` | Branch names that should never be deleted during cleanup |
 | `dev_env_url` | `""` | Development environment base URL |
+| `dogfood_smoke_fixture_url` | `""` | Fixture issue URL for this overlay's provision smoke, including path-only TOML overlays; empty uses the core fixture, and an explicit `--fixture-ticket-url` wins |
 
 ### Secret getters
 
@@ -187,6 +188,7 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 | Method | Default | Purpose |
 |--------|---------|---------|
 | `merge_candidate_repo_slugs()` | `[]` | Static working-repo slugs the cross-repo merge probe binds against. |
+| `get_followup_scanners(backend)` | `[]` | Extra scanners selected for the follow-up loop only when a messaging backend exists and colleague egress is allowed. At selection on every tick, outside the scan deadline, the hook is called if no prior call is in flight. Selection waits up to 5 seconds; a timed-out call stays in flight and later ticks wait for that same call instead of starting another. Construct scanners there without I/O, and do forge I/O in `scan()`. Their signals carry the overlay name and their labels include `[hook]` to avoid collisions with built-in scanners. Import `Scanner` and `ScanSignal` from `teatree.loop.scanners.base` inside the hook or `scan()` (or under `TYPE_CHECKING` for annotations), never at entry-point module level before `django.setup()`. The follow-up dry run skips overridden hooks and their scanners and reports them as not previewed; the default empty hook adds no omission. Invalid results, duplicate names, reserved sweep names (`pr_sweep`, `self_update`, `pull_main_clone`), and hook failures are reported as `overlay_followup_scanners[<overlay>]`; agent-routed signal kinds are refused. Scanner names must be unique among all follow-up scanners in one overlay. |
 | `can_auto_merge(*, target_ref, thread_ref)` | `MergeGuard(allowed=True)` | Verdict on whether an approved merge request may auto-merge. Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=…)` to block, adding `escalate=True` to raise an escalation instead of a silent block. |
 | `visual_qa_targets(changed_files)` | `[]` | Files whose change warrants a visual-QA pass. |
 | `classify_customer_display_impact(changed_files)` | `True` (fail-closed) | Whether a diff could impact what the customer sees; the mandatory-E2E gate reads it, so the default treats every diff as display-impacting. |

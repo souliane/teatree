@@ -21,9 +21,12 @@ from teatree.ci_oauth_switch import (
     WEIGHT_5H,
     WEIGHT_7D,
     CiAccountSwitcher,
+    CiAccountSwitchError,
     NoEligibleAccountError,
     select_account,
 )
+from teatree.config import get_effective_settings
+from teatree.core.models import ConfigSetting
 from teatree.credential_config import TokenKind
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.token_report import TokenAccountRow, TokenSource, TokenStatus
@@ -109,6 +112,25 @@ def _switcher(gh: FakeGh) -> CiAccountSwitcher:
 
 
 class TestPoolReconciliation:
+    def test_unset_allowlist_refuses_without_touching_github(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(RuntimeError, match="allowlist"):
+            _switcher(gh).reconcile_pool(_live_rows())
+        assert gh.calls == []
+
+    def test_only_allowlisted_accounts_are_published(self) -> None:
+        gh = FakeGh()
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda account: account)
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+        assert accounts == (SOULIANE,)
+        assert gh.stdin[0] == SOULIANE
+
+    def test_allowlisted_account_missing_from_store_refuses_before_writing(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(CiAccountSwitchError, match="not configured"):
+            _switcher(gh).reconcile_pool(_live_rows(), allowlist=("missing",))
+        assert gh.calls == []
+
     def test_readable_pool_membership_is_read_back(self) -> None:
         gh = FakeGh(pool_accounts=json.dumps([SOULIANE, SPARE_ACCOUNT]))
         assert _switcher(gh).active_pool_accounts() == (SOULIANE, SPARE_ACCOUNT)
@@ -121,7 +143,7 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two", SPENT_ACCOUNT: "sk-token-three"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        accounts = switcher.reconcile_pool(_live_rows())
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=tuple(tokens))
 
         assert accounts == tuple(sorted(tokens))
         pool_writes = [i for i, args in enumerate(gh.calls) if args[:3] == ["secret", "set", CI_OAUTH_POOL_SECRET]]
@@ -134,8 +156,8 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        switcher.reconcile_pool(_live_rows()[:2])
-        assert switcher.reconcile_pool(_live_rows()[:1]) == (SOULIANE,)
+        switcher.reconcile_pool(_live_rows()[:2], allowlist=tuple(tokens))
+        assert switcher.reconcile_pool(_live_rows()[:1], allowlist=(SOULIANE,)) == (SOULIANE,)
 
         bodies = [body for args, body in zip(gh.calls, gh.stdin, strict=True) if CI_OAUTH_POOL_SECRET in args]
         assert bodies == ["sk-token-one\nsk-token-two", "sk-token-one"]
@@ -145,7 +167,7 @@ class TestPoolReconciliation:
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _: "")
 
         with pytest.raises(RuntimeError, match="no token stored"):
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert not gh.wrote_secret
 
     def test_failed_pool_write_reports_gh_error_without_leaking_token(self) -> None:
@@ -153,7 +175,7 @@ class TestPoolReconciliation:
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert "permission denied" in str(caught.value)
         assert SECRET_TOKEN not in str(caught.value)
 
@@ -255,11 +277,34 @@ class TestSelectionRule(TestCase):
 class TestSwitch(TestCase):
     """Applying the selection to the repo secret + its readable account variable."""
 
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SOULIANE, SPARE_ACCOUNT, SPENT_ACCOUNT])
+
+    def test_manual_switch_uses_only_allowlisted_accounts(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SPARE_ACCOUNT])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        outcome = _switcher(gh).switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
+        assert outcome.account == SPARE_ACCOUNT
+        assert gh.wrote_secret
+
+    def test_manual_switch_refuses_an_unset_allowlist(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        with pytest.raises(NoEligibleAccountError, match="allowlist"):
+            _switcher(gh).switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
+        assert not gh.wrote_secret
+
     def test_switch_writes_the_secret_and_records_the_account(self) -> None:
         gh = FakeGh(active=SPENT_ACCOUNT)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START)
+        outcome = switcher.switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
 
         assert outcome.changed is True
         assert outcome.applied is True
@@ -272,7 +317,7 @@ class TestSwitch(TestCase):
         gh = FakeGh()
         switcher = _switcher(gh)
 
-        switcher.switch(_live_rows(), run_start=RUN_START)
+        switcher.switch(_live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         flat_argv = " ".join(part for call in gh.calls for part in call)
         assert SECRET_TOKEN not in flat_argv
@@ -282,7 +327,9 @@ class TestSwitch(TestCase):
         gh = FakeGh(active=SOULIANE)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START)
+        outcome = switcher.switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
 
         assert outcome.changed is False
         assert outcome.applied is False
@@ -294,7 +341,12 @@ class TestSwitch(TestCase):
         gh = FakeGh(active=SPENT_ACCOUNT)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START, dry_run=True)
+        outcome = switcher.switch(
+            _live_rows(),
+            run_start=RUN_START,
+            allowlist=get_effective_settings().eval_ci_account_allowlist,
+            dry_run=True,
+        )
 
         assert outcome.changed is True
         assert outcome.applied is False
@@ -311,7 +363,7 @@ class TestSwitch(TestCase):
         ]
 
         with pytest.raises(NoEligibleAccountError) as caught:
-            switcher.switch(rows, run_start=RUN_START)
+            switcher.switch(rows, run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         message = str(caught.value)
         for account in (SOULIANE, SPARE_ACCOUNT, SPENT_ACCOUNT):
@@ -325,7 +377,7 @@ class TestSwitch(TestCase):
         switcher = _switcher(gh)
 
         with pytest.raises(NoEligibleAccountError) as caught:
-            switcher.switch([], run_start=RUN_START)
+            switcher.switch([], run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         assert "anthropic_oauth_pass_paths" in str(caught.value)
         assert not gh.wrote_secret
@@ -335,7 +387,9 @@ class TestSwitch(TestCase):
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
-            switcher.switch(_live_rows(), run_start=RUN_START)
+            switcher.switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
 
         assert SECRET_TOKEN not in str(caught.value)
         assert "permission denied" in str(caught.value)
@@ -348,7 +402,9 @@ class TestSwitch(TestCase):
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: "")
 
         with pytest.raises(RuntimeError):
-            switcher.switch(_live_rows(), run_start=RUN_START)
+            switcher.switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
 
         assert not gh.wrote_secret
 

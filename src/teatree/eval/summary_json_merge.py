@@ -42,7 +42,7 @@ def summary_json_files(inputs: list[str]) -> list[Path]:
 def merge_summary_payloads(
     payloads: Sequence[Mapping[str, Any]], *, head_sha: str, generated_at: str
 ) -> dict[str, Any]:
-    """Fold per-shard §2.4 payloads into one — totals summed, scenarios concatenated.
+    """Fold per-shard §2.4 payloads into one — totals summed, scenarios concatenated, parked if any shard parked.
 
     A shard with distinct ``model`` values is joined into a sorted comma list so
     the field stays informative and deterministic; a run whose shards all agree
@@ -79,6 +79,7 @@ def merge_summary_payloads(
             name: outcomes[name] for name in ("PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED")
         },
         "scenarios": scenarios,
+        "parked": any(payload.get("parked") is True for payload in payloads),
     }
     if has_cache:
         trials = {payload.get("trial_count") for payload in payloads}
