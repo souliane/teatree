@@ -88,7 +88,8 @@ class IncomingEvent(models.Model):
         if type(self).objects.is_settled_forge(self.source, dead_lettered=self.dead_lettered_at is not None):
             self.body = ""
             self.payload_json = {}
-            update_fields.extend(["body", "payload_json"])
+            self.last_error = ""
+            update_fields.extend(["body", "payload_json", "last_error"])
         self.save(update_fields=update_fields)
 
     def record_failure(

@@ -5,6 +5,7 @@ store and the downstream drain run for real against the test database.
 """
 
 import logging
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -32,7 +33,7 @@ def _merge_request(*, iid: int = 7, title: str = "Add the thing", action: str = 
     return {
         "object_kind": "merge_request",
         "user": {"username": "alice"},
-        "project": {"path_with_namespace": "group/project"},
+        "project": {"id": 101, "path_with_namespace": "group/project"},
         "object_attributes": {"iid": iid, "title": title, "action": action},
     }
 
@@ -73,6 +74,16 @@ class TestStoringMessages(GitLabEventsTestCase):
 
         row = IncomingEvent.objects.get(idempotency_key="gitlab:wh-trim")
         assert (row.body, row.payload_json) == ("", {})
+        assert (row.event_name, row.origin, row.repo_key, row.action, row.signer) == (
+            "merge_request",
+            "relay",
+            "gitlab:101",
+            "open",
+            "",
+        )
+        assert row.occurred_at is not None
+        assert row.occurred_at_unknown is False
+        assert IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
 
     def test_stores_each_message_keyed_on_its_webhook_id_and_acknowledges_it(self) -> None:
         first = self.pubsub.publish_gitlab(_merge_request(iid=7), webhook_id="wh-1")
@@ -123,6 +134,7 @@ class TestStoringMessages(GitLabEventsTestCase):
 
         signals = IncomingEventsScanner().scan()
 
+        assert IncomingEvent.objects.get(idempotency_key="gitlab:wh-1").body == ""
         assert [s.kind for s in signals] == []
 
 
@@ -311,6 +323,8 @@ class TestPoisonAndOversizeMessages(GitLabEventsTestCase):
         event = IncomingEvent.objects.get(idempotency_key="gitlab:wh-big")
         assert event.dead_lettered_at is None
         assert event.processed_at is not None
+        assert (event.event_name, event.origin, event.repo_key) == ("pipeline", "relay", "")
+        assert event.occurred_at is not None
         assert self.pubsub.acked_message_ids == [message]
         assert IncomingEventsScanner().scan() == []
 

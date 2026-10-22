@@ -72,13 +72,17 @@ class TestIncomingEvent(TestCase):
 
     def test_mark_processed_clears_forge_payload(self) -> None:
         event = IncomingEvent.objects.create(
-            **self._payload(source=IncomingEvent.Source.GITHUB, idempotency_key="github:drained")
+            **self._payload(
+                source=IncomingEvent.Source.GITHUB,
+                idempotency_key="github:drained",
+                last_error="failed to process private payload",
+            )
         )
 
         event.mark_processed()
         event.refresh_from_db()
 
-        assert (event.body, event.payload_json) == ("", {})
+        assert (event.body, event.payload_json, event.last_error) == ("", {}, "")
 
     def test_mark_processed_keeps_dead_lettered_forge_payload(self) -> None:
         event = IncomingEvent.objects.create(

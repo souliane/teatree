@@ -25,6 +25,7 @@ class TestForgeIngestIdentityMigration(TransactionTestCase):
                 idempotency_key=f"{source}:{settled}",
                 body="private",
                 payload_json={"private": True},
+                last_error="private failure detail",
                 processed_at=timezone.now() if settled else None,
             )
         before.objects.create(
@@ -41,8 +42,8 @@ class TestForgeIngestIdentityMigration(TransactionTestCase):
         assert list(
             after.objects.filter(
                 source__in=["github", "gitlab"], processed_at__isnull=False, dead_lettered_at__isnull=True
-            ).values_list("body", "payload_json")
-        ) == [("", {}), ("", {})]
+            ).values_list("body", "payload_json", "last_error")
+        ) == [("", {}, ""), ("", {}, "")]
         assert after.objects.get(idempotency_key="gitlab:dead").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="github:False").payload_json == {"private": True}
         assert after.objects.get(idempotency_key="slack:True").body == "private"

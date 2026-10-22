@@ -14,7 +14,7 @@ def backfill_event_time_and_trim_forge_rows(apps: StateApps, schema_editor: Base
     # Mirrors IncomingEventQuerySet.forge_identity_rows with historical models.
     incoming_event.objects.using(schema_editor.connection.alias).filter(
         source__in=["github", "gitlab"], processed_at__isnull=False, dead_lettered_at__isnull=True
-    ).update(body="", payload_json={})
+    ).update(body="", payload_json={}, last_error="")
 
 
 class Migration(migrations.Migration):
