@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
 from teatree.eval.models import EvalSpec
+from teatree.eval.parallel import usage_limit_skip
 from teatree.eval.summary_json import scenario_version
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -138,6 +139,38 @@ class TestGreenProofCli:
             result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
         assert result.exit_code == 1, result.output
         assert "NOT A GREEN PROOF" in result.output
+
+    def test_a_scenario_the_usage_limit_skipped_parks_the_proof(self, tmp_path: Path) -> None:
+        payload = _green_payload()
+        payload["scenarios"][1].update(
+            verdict="skip",
+            outcome="UNVERIFIED",
+            triage_class="no_coverage",
+            terminal_reason=usage_limit_skip("b").terminal_reason,
+        )
+        payload["totals"] = {"total": 2, "passed": 1, "failed": 0, "skipped": 1}
+        path = _write(tmp_path, payload)
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 75, result.output
+        assert "PARKED" in result.output
+
+    def test_a_parked_leg_parks_the_proof(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, {**_green_payload(), "parked": True})
+        with _catalog_of(3):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 75, result.output
+        assert "PARKED" in result.output
+
+    def test_a_measured_red_beats_a_parked_leg(self, tmp_path: Path) -> None:
+        payload = _green_payload()
+        payload["parked"] = True
+        payload["scenarios"][1].update(verdict="fail", outcome="BEHAVIOR_FAIL", triage_class="behavioral")
+        payload["totals"] = {"total": 2, "passed": 1, "failed": 1, "skipped": 0}
+        path = _write(tmp_path, payload)
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 1, result.output
 
     def test_a_missing_artifact_exits_nonzero(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(app, ["eval", "green-proof", str(tmp_path / "nope.json")])

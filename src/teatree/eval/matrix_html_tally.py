@@ -9,6 +9,7 @@ table is a fail-loud :class:`MatrixTallyError` rather than a silent empty list.
 """
 
 import dataclasses
+import re
 from html.parser import HTMLParser
 from typing import override
 
@@ -85,6 +86,25 @@ def parse_model_tallies(html_text: str) -> list[ModelTally]:
         msg = f"no per-model tally table (expected a header row {TALLY_HEADER})"
         raise MatrixTallyError(msg)
     return [_parse_tally_row(row) for row in rows[header_index + 1 :] if len(row) == len(TALLY_HEADER)]
+
+
+def parse_scenario_passes(html_text: str) -> dict[str, bool]:
+    extractor = _TableRowExtractor()
+    extractor.feed(html_text)
+    rows = extractor.rows
+    scenario_header = next((i for i, row in enumerate(rows) if len(row) > 1 and row[0] == "scenario"), None)
+    tally_header = next((i for i, row in enumerate(rows) if tuple(row) == TALLY_HEADER), None)
+    if scenario_header is None or tally_header is None or scenario_header >= tally_header:
+        msg = "missing benchmark scenario or tally table"
+        raise MatrixTallyError(msg)
+    passes: dict[str, bool] = {}
+    for row in rows[scenario_header + 1 : tally_header]:
+        if len(row) != len(rows[scenario_header]) or not row[0]:
+            msg = f"malformed benchmark scenario row {row!r}"
+            raise MatrixTallyError(msg)
+        passed = all(re.fullmatch(r"pass|\d+\.\d{2}", cell) for cell in row[1:])
+        passes[row[0]] = passes.get(row[0], True) and passed
+    return passes
 
 
 def _parse_tally_row(row: list[str]) -> ModelTally:

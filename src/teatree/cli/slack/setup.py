@@ -35,6 +35,7 @@ from typing import NoReturn
 import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.web_reads import SLACK_USER_ID_RE as _USER_ID_RE
 from teatree.cli.slack.app_resolve import overlay_scope_profile, read_overlay_field, write_overlay_fields
 from teatree.cli.slack.config_token import (
     ConfigTokenStore,
@@ -64,7 +65,6 @@ from teatree.utils.secrets import read_pass
 _APP_ID_RE = re.compile(r"^A[A-Z0-9]{6,}$")
 _BOT_TOKEN_RE = re.compile(r"^xoxb-[A-Za-z0-9-]+$")
 _APP_TOKEN_RE = re.compile(r"^xapp-[A-Za-z0-9-]+$")
-_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{6,}$")
 
 _SMOKE_TEST_TIMEOUT_SECONDS = 120
 _SMOKE_TEST_POLL_SECONDS = 3
@@ -108,7 +108,7 @@ def _prompt_token(label: str, pattern: re.Pattern[str]) -> str:
 def _prompt_user_id() -> str:
     while True:
         value = typer.prompt("Your Slack user id (e.g. U01ABCD1234)").strip()
-        if _USER_ID_RE.match(value):
+        if _USER_ID_RE.fullmatch(value):
             return value
         typer.echo("      Slack user ids start with 'U' or 'W' followed by uppercase alphanumerics.")
 

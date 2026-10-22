@@ -14,9 +14,7 @@ the undifferentiated parallel set.
 
 from dataclasses import dataclass, field
 
-from teatree.loop.job_identity import _ScannerJob
-
-SWEEP_SCANNER_NAMES: frozenset[str] = frozenset({"pr_sweep", "self_update", "pull_main_clone"})
+from teatree.loop.job_identity import SWEEP_SCANNER_NAMES, _ScannerJob
 
 
 @dataclass(slots=True)

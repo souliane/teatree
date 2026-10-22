@@ -10,7 +10,7 @@ retry with its configured user token. Connect routing stays on the backend.
 
 import re
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import Protocol, TypeGuard, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES, SlackReadRefusedError
 from teatree.backends.slack.pagination import next_cursor
@@ -20,12 +20,23 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
 _USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
+SLACK_USER_ID_RE = re.compile(r"[UW][A-Z0-9]{6,}")
+
+
+def is_slack_user_id(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and SLACK_USER_ID_RE.fullmatch(value) is not None
+
+
 # A bot can be absent from a channel that the configured user can read.
 _BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
 class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
+
+
+class SlackUserDirectoryUnreadableError(RuntimeError):
+    pass
 
 
 def read_with_user_token_fallback(
@@ -174,6 +185,49 @@ def resolve_user_id(*, get: Getter, handle: str) -> str:
         if cursor is None:
             return ""
     return ""
+
+
+def resolve_unique_active_user_id(*, get: Getter, handle: str) -> str:
+    clean = handle.strip().lstrip("@").casefold()
+    if not clean:
+        return ""
+    matches: set[str] = set()
+    cursor: str | None = None
+    for _ in range(_MAX_USER_PAGES):
+        params: dict[str, str | int] = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        listing = get("users.list", params)
+        members = listing.get("members")
+        if listing.get("ok") is not True or not isinstance(members, list):
+            msg = "Slack user directory could not be read"
+            raise SlackUserDirectoryUnreadableError(msg)
+        for raw_member in members:
+            if isinstance(raw_member, dict) and (user_id := _active_directory_match(raw_member, clean)):
+                matches.add(user_id)
+        cursor = next_cursor(listing)
+        if cursor is None:
+            return next(iter(matches)) if len(matches) == 1 else ""
+    return ""
+
+
+def _active_directory_match(member: RawAPIDict, clean: str) -> str:
+    if (
+        member.get("deleted") is not False
+        or any(member.get(flag) is not False for flag in ("is_bot", "is_restricted", "is_ultra_restricted"))
+        or member.get("is_app_user") is True
+    ):
+        return ""
+    profile = member.get("profile")
+    names = (member.get("name"), member.get("real_name"))
+    if isinstance(profile, dict):
+        names += (profile.get("display_name"),)
+    user_id = member.get("id")
+    if not any(isinstance(name, str) and name.casefold() == clean for name in names) and not (
+        is_slack_user_id(user_id) and user_id.casefold() == clean
+    ):
+        return ""
+    return user_id if is_slack_user_id(user_id) else ""
 
 
 def resolve_usergroup_id(*, get: Getter, handle: str) -> str:

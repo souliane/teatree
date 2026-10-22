@@ -222,6 +222,12 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _list_pr_comments(repo=repo, pr_iid=pr_iid, token=self._token)
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        pr = _gh_api_get(f"repos/{repo}/pulls/{pr_iid}", token=self._token)
+        requested = _pr_reads.ReviewerReads.requested(pr, repo=repo, pr_iid=pr_iid)
+        reviews = self.list_pr_reviews(repo=repo, pr_iid=pr_iid)
+        return _pr_reads.ReviewerReads.engaged(requested, reviews)
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
 

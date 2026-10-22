@@ -108,3 +108,5 @@ class _LoopFlagAndCredentialSettings:
     # anthropic_oauth_pass_paths '["anthropic/<account>/oauth-token"]'``.
     anthropic_oauth_pass_paths: list[str] = field(default_factory=list)
     anthropic_api_key_pass_paths: list[str] = field(default_factory=list)
+
+    eval_ci_account_allowlist: list[str] = field(default_factory=list)

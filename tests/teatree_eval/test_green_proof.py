@@ -9,6 +9,7 @@ cannot masquerade as proof of all of it.
 """
 
 from teatree.eval.green_proof import UNCLASSIFIED, evaluate_green_proof
+from teatree.eval.parallel import usage_limit_skip
 
 
 def _payload(scenarios: list[dict[str, object]], totals: dict[str, int]) -> dict[str, object]:
@@ -108,6 +109,17 @@ class TestEvaluateGreenProof:
         proof = evaluate_green_proof(
             _payload(scenarios, _totals(scenarios)), expected=_expected(scenarios), expected_sha="sha"
         )
+        assert not proof.is_green
+        assert [red.name for red in proof.reds] == ["a"]
+
+    def test_a_scenario_the_usage_limit_skipped_is_unmeasured_never_red_never_green(self) -> None:
+        skipped = {**_red("b", "no_coverage", verdict="skip"), "terminal_reason": usage_limit_skip("b").terminal_reason}
+        scenarios = [_pass("a"), skipped]
+        proof = evaluate_green_proof(
+            _payload(scenarios, _totals(scenarios)), expected=_expected(scenarios), expected_sha="sha"
+        )
+        assert proof.reds == ()
+        assert [row.name for row in proof.unmeasured] == ["b"]
         assert not proof.is_green
 
     def test_missing_grader_on_advisory_surface_is_unverified_and_blocks(self) -> None:

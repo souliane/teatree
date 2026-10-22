@@ -10,7 +10,7 @@ throttle prefix are asserted to come from their canonical homes, not a copy.
 
 import pytest
 
-from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX, ThrottleKind, ThrottleSignal
+from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX, ThrottleSignal
 from teatree.eval.models import CAP_TERMINAL_REASONS
 from teatree.eval.throttle_retry import throttle_reason
 from teatree.eval.triage import ScenarioTriage, TriageClass, classify_red
@@ -56,7 +56,7 @@ class TestClassifyRedTable:
     def test_real_throttle_reason_string_is_infra_throttle(self) -> None:
         # The classifier must catch the EXACT string throttle_reason() builds, not
         # a hand-written approximation — proves the shared prefix is not divergent.
-        reason = throttle_reason(ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=None, wait_seconds=None), attempts=5)
+        reason = throttle_reason(ThrottleSignal(cause=None), attempts=5)
         assert classify_red(_triage(verdict="fail", terminal_reason=reason)) is TriageClass.INFRA_THROTTLE
 
     @pytest.mark.parametrize("cap_reason", sorted(CAP_TERMINAL_REASONS))

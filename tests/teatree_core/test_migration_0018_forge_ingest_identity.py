@@ -3,8 +3,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from django.utils import timezone
 
-_BEFORE = ("core", "0015_gate_escape")
-_AFTER = ("core", "0016_forge_ingest_identity")
+_BEFORE = ("core", "0017_cievalhealsession_park_cycles")
+_AFTER = ("core", "0018_forge_ingest_identity")
 
 
 class TestForgeIngestIdentityMigration(TransactionTestCase):

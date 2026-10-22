@@ -34,11 +34,18 @@ from teatree.loop.scanners.review_request_resume import (
     _claim_resume,
 )
 from teatree.on_behalf_gate import OnBehalfContext
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_control_db_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 _MR_URL = "https://github.com/o/r/pull/7"
 _CHANNEL = "C_REVIEW"
@@ -62,6 +69,8 @@ class _Slack:
     fetch_error: Exception | None = None
     post_error: Exception | None = None
     post_response: RawAPIDict | None = None
+    thread_replies: list[RawAPIDict] = field(default_factory=list)
+    active_user_ids: set[str] = field(default_factory=set)
     posted: list[tuple[str, str, str]] = field(default_factory=list)
 
     def route_token(self, channel: str) -> str:
@@ -87,6 +96,15 @@ class _Slack:
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
         return ""
+
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return "S0REVIEWERS" if handle == "reviewers-team" else ""
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        return [self.fetch_message(channel=channel, ts=thread_ts), *self.thread_replies]
+
+    def resolve_unique_active_user_id(self, handle: str) -> str:
+        return handle if handle in self.active_user_ids else ""
 
 
 @dataclass
@@ -131,6 +149,14 @@ class _Host:
             raise self.author_error
         return self.author
 
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        _ = (repo, pr_iid)
+        return []
+
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        _ = (repo, pr_iid)
+        return []
+
 
 def _seed(
     *,
@@ -158,6 +184,7 @@ class TestReviewRequestResumeScanner(TestCase):
         self.enterContext(posture_permits_cm())
         allow_slack_channels(_CHANNEL)
         self.post = _seed()
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
 
     def _scan(self, slack: _Slack, host: _Host) -> list[ScanSignal]:
         with mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host):
@@ -166,6 +193,7 @@ class TestReviewRequestResumeScanner(TestCase):
                 host=host,
                 overlay="overlay-a",
                 identities=("owner",),
+                requester_slack_id="UOWNER",
             ).scan()
 
     def test_other_overlay_and_unattributed_rows_are_skipped(self) -> None:
@@ -187,9 +215,42 @@ class TestReviewRequestResumeScanner(TestCase):
         signals = self._scan(slack, _Host())
 
         assert _kinds(signals) == ["review_request.resumed"]
-        assert slack.posted == [(_CHANNEL, RESUME_REPLY_TEXT, _THREAD_TS)]
+        assert slack.posted == [(_CHANNEL, f"<!subteam^S0REVIEWERS> {RESUME_REPLY_TEXT}", _THREAD_TS)]
         self.post.refresh_from_db()
         assert self.post.resumed_at is not None
+
+    def test_engaged_thread_reviewer_gets_direct_resume_mention(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        slack = _Slack(thread_replies=[{"ts": "1780473409.000001", "user": "UPEER001"}], active_user_ids={"UPEER001"})
+
+        signals = self._scan(slack, _Host())
+
+        assert _kinds(signals) == ["review_request.resumed"]
+        assert slack.posted == [(_CHANNEL, f"<@UPEER001> {RESUME_REPLY_TEXT}", _THREAD_TS)]
+
+    def test_no_safe_mention_holds_resume_without_consuming_the_claim(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        slack = _Slack()
+
+        signals = self._scan(slack, _Host())
+
+        assert _kinds(signals) == ["review_request.resume_mention_held"]
+        assert slack.posted == []
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
+    def test_unexpected_mention_error_surfaces_without_claiming_resume(self) -> None:
+        slack = _Slack()
+        with mock.patch(
+            "teatree.loop.scanners.review_request_resume.engaged_reask_mention",
+            side_effect=RuntimeError("lookup failed"),
+        ):
+            signals = self._scan(slack, _Host())
+
+        assert _kinds(signals) == ["review_request.resume_failed"]
+        assert slack.posted == []
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
 
     def test_colleague_authored_request_refuses_before_resume_claim(self) -> None:
         slack = _Slack()
@@ -267,7 +328,7 @@ class TestReviewRequestResumeScanner(TestCase):
 
         recovered = _Slack()
         assert _kinds(self._scan(recovered, _Host())) == ["review_request.resumed"]
-        assert recovered.posted == [(_CHANNEL, RESUME_REPLY_TEXT, _THREAD_TS)]
+        assert recovered.posted == [(_CHANNEL, f"<!subteam^S0REVIEWERS> {RESUME_REPLY_TEXT}", _THREAD_TS)]
 
     def test_an_empty_publish_body_releases_the_claim(self) -> None:
         signals = self._scan(_Slack(post_response={}), _Host())
@@ -322,7 +383,7 @@ class TestReviewRequestResumeScanner(TestCase):
         signals = self._scan(recovered, _Host())
 
         assert _kinds(signals) == ["review_request.resumed"]
-        assert recovered.posted == [(_CHANNEL, RESUME_REPLY_TEXT, _THREAD_TS)]
+        assert recovered.posted == [(_CHANNEL, f"<!subteam^S0REVIEWERS> {RESUME_REPLY_TEXT}", _THREAD_TS)]
 
     def test_a_review_exempt_repo_is_never_resumed(self) -> None:
         """The reply IS a review request on a colleague's thread — the exemption governs it.
@@ -432,8 +493,8 @@ class TestLosingTickPostsNothing(TestCase):
         slack = _Slack()
 
         context = OnBehalfContext(own_mr=True, target=_MR_URL)
-        winner = _claim_and_reply(first, slack, context=context)
-        loser = _claim_and_reply(second, slack, context=context)
+        winner = _claim_and_reply(first, slack, mention="<!subteam^S0REVIEWERS>", context=context)
+        loser = _claim_and_reply(second, slack, mention="<!subteam^S0REVIEWERS>", context=context)
 
         assert winner is not None
         assert winner.kind == "review_request.resumed"
@@ -474,7 +535,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"resume_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
+    register_control_db_alias(alias, db_file)
     with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()

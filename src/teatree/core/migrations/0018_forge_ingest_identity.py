@@ -19,7 +19,7 @@ def backfill_event_time_and_trim_forge_rows(apps: StateApps, schema_editor: Base
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0015_gate_escape"),
+        ("core", "0017_cievalhealsession_park_cycles"),
     ]
 
     operations = [

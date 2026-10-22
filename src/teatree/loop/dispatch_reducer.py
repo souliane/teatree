@@ -44,7 +44,7 @@ def is_statusline_dropped(signal: ScanSignal) -> bool:
     """True when *signal* is diagnostic-only and must not reach the statusline."""
     if is_self_update_ci_skip(signal) or is_pr_sweep_flag(signal):
         return False
-    if signal.kind == "review_request_merge_react.missing_scope":
+    if signal.kind in {"review_request_merge_react.missing_scope", "review_nag.mention_held"}:
         return False
     # #3901 The clone advanced onto code its control DB cannot serve and the post-pull
     # reconcile could not fix it, so the claim gate is refusing work until a human acts.

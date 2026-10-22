@@ -180,7 +180,7 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
 - `t3 ci fetch-errors` — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
-- `t3 eval ci-heal open` — open an observe-only healing session against a red PR branch.
+- `t3 eval ci-heal open` — open a healing session against a red PR branch; the loop parks below reserve, then runs a bounded fix for measured reds.
 
 ### CI Pipeline Monitoring
 
