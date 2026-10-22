@@ -14,7 +14,7 @@ a diagnosis, and a label-shaped severity trigger scanned on fence-stripped text
 so a quoted log level never fires it.
 
 Never-lockout: ``stop_hook_active`` short-circuits the re-fire, the per-call
-``[skip-evidence-gate: <reason>]`` token in the turn text clears one stop, the
+``[gate-escape:unbacked_claim: <reason>]`` token in the turn text clears one stop, the
 ``[teatree] unbacked_claim_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate unbacked-claim disable``) clears all of them, and any
 internal error allows the stop — a Stop hook must never crash turn-end.
@@ -22,29 +22,21 @@ internal error allows the stop — a Stop hook must never crash turn-end.
 
 import contextlib
 import json
-import re
 import sys
 from pathlib import Path
+
+from hooks.scripts.gate_escape import escape_allows
 
 # Alias both identities so the live hook's bare import and a test's
 # ``hooks.scripts.unbacked_claim_gate`` import resolve ONE module object.
 sys.modules.setdefault("unbacked_claim_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.unbacked_claim_gate", sys.modules[__name__])
 
-_SKIP_TOKEN_RE = re.compile(r"\[skip-evidence-gate:\s*(\S[^\]]*?)\s*\]")
-
 
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
     return teatree_bool_setting("unbacked_claim_gate_enabled", default=True)
-
-
-def _skip_token(text: str) -> str | None:
-    match = _SKIP_TOKEN_RE.search(text)
-    if match is None:
-        return None
-    return match.group(1).strip() or None
 
 
 def handle_unbacked_claim_gate(data: dict) -> bool | None:
@@ -72,6 +64,7 @@ def handle_unbacked_claim_gate(data: dict) -> bool | None:
 def _run(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
     from teatree.hooks import unbacked_claim_scanner  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.gate_escape import strip_escape  # noqa: PLC0415 — deferred: cold-hook import
 
     if data.get("stop_hook_active") or not _gate_enabled():
         return None
@@ -79,11 +72,10 @@ def _run(data: dict) -> bool | None:
     if turn is None:
         return None
     text = turn[0]
-    if reason := _skip_token(text):
-        sys.stderr.write(f"NOTE: evidence gate skipped via [skip-evidence-gate: {reason}].\n")
-        return None
-    verdict = unbacked_claim_scanner.find_unbacked_claim(text)
+    verdict = unbacked_claim_scanner.find_unbacked_claim(strip_escape(text))
     if verdict is None:
+        return None
+    if escape_allows(data, "unbacked_claim", turn_text=text):
         return None
     json.dump({"decision": "block", "reason": unbacked_claim_scanner.format_block_message(verdict)}, sys.stdout)
     return True

@@ -40,6 +40,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import self_dm_destinations
 from teatree.config.host_projection import ProjectionPublisher
+from tests._gate_escape_audit import write_recording_t3
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -422,6 +423,8 @@ def _run_router(payload: dict, settings: dict[str, object], tmp_path: Path) -> s
     db = tmp_path / "chain.sqlite3"
     _seed_config_db(db, settings)
     env = {key: value for key, value in os.environ.items() if key != "XDG_DATA_HOME"}
+    write_recording_t3(tmp_path / "bin")
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     return subprocess.run(
         [sys.executable, str(_HOOK_ROUTER), "--event", "PreToolUse"],
         input=json.dumps(payload),
@@ -435,8 +438,11 @@ def _run_router(payload: dict, settings: dict[str, object], tmp_path: Path) -> s
 
 _LIFTS_THE_WRITE_GUARD: dict[str, tuple[dict[str, object], str]] = {
     "fail-open switch stored true": ({"danger_gate_fail_open": True}, "status"),
-    "per-call token an agent can add": ({}, "status [slack-mcp-ok: vetted one-off]"),
     "write guard switched off": ({"mcp_slack_write_gate_enabled": False}, "status"),
+    "per-action tokens an agent can add": (
+        {},
+        "status [gate-escape:mcp_slack_write: vetted one-off] [gate-escape:self_dm: vetted one-off]",
+    ),
 }
 
 
@@ -446,7 +452,12 @@ class TestNothingOnTheCallLiftsTheSelfDmRefusal:
     @pytest.mark.parametrize("lift", list(_LIFTS_THE_WRITE_GUARD))
     def test_a_self_dm_write_is_still_refused(self, lift: str, tmp_path: Path) -> None:
         settings, text = _LIFTS_THE_WRITE_GUARD[lift]
-        payload = {"session_id": "chain", "tool_name": _SEND, "tool_input": {"channel": _DM_CHANNEL, "text": text}}
+        payload = {
+            "session_id": "chain",
+            "cwd": str(tmp_path),
+            "tool_name": _SEND,
+            "tool_input": {"channel": _DM_CHANNEL, "text": text},
+        }
 
         result = _run_router(payload, {**_ROWS_WITH_DM_CHANNELS, **settings}, tmp_path)
 
@@ -456,7 +467,12 @@ class TestNothingOnTheCallLiftsTheSelfDmRefusal:
     @pytest.mark.parametrize("lift", list(_LIFTS_THE_WRITE_GUARD))
     def test_the_same_write_to_a_colleague_channel_goes_through(self, lift: str, tmp_path: Path) -> None:
         settings, text = _LIFTS_THE_WRITE_GUARD[lift]
-        payload = {"session_id": "chain", "tool_name": _SEND, "tool_input": {"channel": "C0COLLEAGUE1", "text": text}}
+        payload = {
+            "session_id": "chain",
+            "cwd": str(tmp_path),
+            "tool_name": _SEND,
+            "tool_input": {"channel": "C0COLLEAGUE1", "text": text},
+        }
 
         result = _run_router(payload, {**_ROWS_WITH_DM_CHANNELS, **settings}, tmp_path)
 

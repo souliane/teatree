@@ -41,29 +41,19 @@ class TestThePublishArm:
 
 
 class TestEachArmDescribesItsOwnSurface:
-    def test_the_dispatch_arm_names_owner_approval_and_the_working_escape_location(self) -> None:
-        assert messages.format_dispatch_block_message(_high()) == (
-            "BLOCKED: pre-dispatch quote-scanner gate (#1401). The Agent/Task prompt carries verbatim "
-            'user-voice/PII content (e.g. "x") — matched patterns: heading-user-mandate. Paraphrase it '
-            "into author-voice description before dispatching (the sub-agent would otherwise echo it "
-            "into a published output, defeating the #1213 publish gate). If this is a false match, "
-            "rephrase without the quoted span or ask the owner. The owner may approve this one dispatch "
-            "with a per-call `[quote-ok: <reason>]` override in the one-line `description` (subject) "
-            "field, which always gets its own 512-character window regardless of prompt length. A token "
-            "placed more than 512 characters into the `prompt` field itself is NOT read — an embedded "
-            "skill preamble routinely pushes the top of your brief past that point, and a token merely "
-            "quoted inside pasted/relayed content must never authorise the whole dispatch."
-        )
-        assert "add `[quote-ok:" not in messages.format_dispatch_block_message(_high())
+    def test_the_dispatch_arm_names_the_privacy_boundary(self) -> None:
+        message = messages.format_dispatch_block_message(_high())
+        assert "pre-dispatch quote-scanner" in message
+        assert "Agent/Task prompt" in message
+        assert "does not accept an inline escape" in message
+        assert "quote-ok" not in message
 
     def test_the_task_entry_arm_names_the_carrier_it_actually_scans(self) -> None:
         message = messages.format_task_entry_block_message(_high())
         assert "task subject/description" in message
         assert "heading-user-mandate" in message
-        assert "[quote-ok: <reason>]" in message
-        assert "rephrase without the quoted span or ask the owner" in message.lower()
-        assert "owner may approve this one entry" in message.lower()
-        assert "add `[quote-ok:" not in message
+        assert "does not accept an inline escape" in message
+        assert "quote-ok" not in message
 
     @pytest.mark.parametrize("retired", ["pre-dispatch", "Agent/Task prompt", "before dispatching", "sub-agent"])
     def test_the_task_entry_arm_asserts_no_dispatch_premise(self, retired: str) -> None:
