@@ -4,8 +4,8 @@ The model-evolution goal requires that adopting/swapping a model is a config cha
 not a code edit. A concrete dated model-id string (``claude-haiku-4-5``,
 ``claude-opus-4-8[1m]``) is only legitimate in a small, enumerated set of files:
 
-*   ``src/teatree/agents/model_tiering.py`` — THE dispatch-resolution single source
-    of truth (:data:`TIER_MODELS`);
+*   ``src/teatree/config/registries.py`` — the declared tier-model default;
+*   ``src/teatree/agents/model_tiering.py`` — CLI compatibility floors and examples;
 *   two NON-dispatch model-capability pins (``llm/rate_limits.py``'s probe model,
     which cannot import the tier catalog without an upward layer edge;
     ``core/autocompact_advisory.py``'s harness native-1M set, a decoded harness fact
@@ -68,6 +68,7 @@ _DOC_GLOBS: tuple[str, ...] = (
 _ALLOWLIST: frozenset[str] = frozenset(
     {
         "src/teatree/agents/model_tiering.py",
+        "src/teatree/config/registries.py",
         "src/teatree/llm/rate_limits.py",
         "src/teatree/core/autocompact_advisory.py",
         "src/teatree/core/cost.py",

@@ -124,11 +124,33 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     "private_repos": ColdHookSetting(_parse_private_repos, default=[]),
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
     # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.
-    "agent_phase_models": ColdHookSetting(_parse_registry_dict, default={}),
+    "agent_phase_models": ColdHookSetting(
+        _parse_registry_dict,
+        default={
+            "planning": "frontier",
+            "coding": "frontier",
+            "debugging": "frontier",
+            "reviewing": "frontier",
+            "retrospecting": "frontier",
+            "testing": "balanced",
+            "shipping": "balanced",
+            "requesting_review": "cheap",
+        },
+    ),
     "agent_skill_models": ColdHookSetting(_parse_agent_skill_models, default={}),
-    "agent_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
+    "agent_tier_models": ColdHookSetting(
+        _parse_registry_dict,
+        default={
+            "frontier": "claude-opus-5-5",
+            "balanced": "claude-sonnet-5-5",
+            "cheap": "claude-sonnet-5-5",
+        },
+    ),
     "agent_pydantic_ai_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
-    "agent_tier_effort": ColdHookSetting(_parse_registry_dict, default={}),
+    "agent_tier_effort": ColdHookSetting(
+        _parse_registry_dict,
+        default={"frontier": "xhigh", "balanced": "xhigh"},
+    ),
     "agent_phase_harness": ColdHookSetting(_parse_agent_phase_harness, default={}),
     # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
     "agent_compaction_keep_recent": ColdHookSetting(_parse_registry_dict, default={}),

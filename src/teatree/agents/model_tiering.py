@@ -1,7 +1,7 @@
 """Per-phase headless model tiering by ABSTRACT TIER (#880, #562 §3).
 
 On the DISPATCH-RESOLUTION path, every concrete Claude model id lives in ONE
-place: the :data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
+place: the ``agent_tier_models`` registry declaration (the ``claude_sdk`` catalog; the
 ``pydantic_ai`` harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
 catalog — see the harness-scoped note below). Production phase dispatch and the
 eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
@@ -68,22 +68,16 @@ configured default applies unchanged.
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import cast
 
 from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES
 from teatree.config import AgentHarness, cold_reader, get_effective_settings
 from teatree.config.agent_spawn import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
+from teatree.config.registries import COLD_SETTINGS
 from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_rank
 
-# THE SINGLE SOURCE OF TRUTH for concrete model ids. This is the ONLY place a
-# concrete Claude model id appears in teatree's model-resolution code: abstract
-# tier name -> concrete model id. Overridable per tier via ``agent_tier_models``
-# (merged OVER this default), so adopting a new model is one edit here or one
-# DB row — no scenario, test, or dispatch edit.
-TIER_MODELS: dict[str, str] = {
-    "frontier": "claude-opus-5-5",
-    "balanced": "claude-sonnet-5-5",
-    "cheap": "claude-sonnet-5-5",
-}
+# The registry entry owns the shipped map; this name keeps existing consumers on it.
+TIER_MODELS: dict[str, str] = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
 
 # Oldest CLI known to serve each default model that has a compatibility floor.
 MODEL_MINIMUM_CLI_VERSIONS: dict[str, str] = {
@@ -110,10 +104,7 @@ PYDANTIC_AI_TIER_MODELS: dict[str, str] = {}
 # is ``xhigh`` for both reasoning tiers (``frontier``/``balanced``); ``cheap``
 # (the dummy/mechanical-task tier) is deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
 # its spawns run effortless (inherit the SDK default, emit no ``--effort``).
-TIER_EFFORT: dict[str, str] = {
-    "frontier": "xhigh",
-    "balanced": "xhigh",
-}
+TIER_EFFORT: dict[str, str] = cast("dict[str, str]", COLD_SETTINGS["agent_tier_effort"].default)
 
 # HARNESS-SCOPED effort vocabularies ([#2885](https://github.com/souliane/teatree/issues/2885)):
 # the set of effort strings each headless harness (:mod:`teatree.agents.harness`)
@@ -153,16 +144,7 @@ _NON_THINKING_TIER = "haiku"
 # mechanical-but-non-trivial phases (testing, shipping) get ``balanced``; the
 # pure-handoff phase (requesting_review) gets ``cheap``. A phase NOT in this dict
 # resolves to :data:`DEFAULT_TIER`.
-DEFAULT_PHASE_MODELS: dict[str, str] = {
-    "planning": "frontier",
-    "coding": "frontier",
-    "debugging": "frontier",
-    "reviewing": "frontier",
-    "retrospecting": "frontier",
-    "testing": "balanced",
-    "shipping": "balanced",
-    "requesting_review": "cheap",
-}
+DEFAULT_PHASE_MODELS: dict[str, str] = cast("dict[str, str]", COLD_SETTINGS["agent_phase_models"].default)
 
 # The phases a situational honesty-critical escalation routes to the most-honest
 # model (teatree#2263). These are the *verification* phases — the sub-agent that

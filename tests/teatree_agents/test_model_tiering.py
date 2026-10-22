@@ -12,6 +12,7 @@ nothing exercises the shipped-default path (the autouse ``_isolate_env`` fixture
 leaves the cold reader with no DB).
 """
 
+import ast
 import json
 import sqlite3
 from pathlib import Path
@@ -40,6 +41,7 @@ from teatree.agents.model_tiering import (
     resolve_tier_effort,
 )
 from teatree.config import AgentHarness
+from teatree.config.resolution import effective_default
 from teatree.core.models import ConfigSetting
 
 
@@ -590,3 +592,22 @@ class TestResolvePhaseHarnessOverride:
         # falls back to the shipped verification pin — never a silent bad value.
         _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"reviewing": "gpt-sdk"})
         assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.CLAUDE_SDK
+
+
+def test_tier_table_defaults_have_one_literal_home() -> None:
+    source = Path(__file__).resolve().parents[2] / "src/teatree/agents/model_tiering.py"
+    tree = ast.parse(source.read_text())
+    names = {"TIER_MODELS", "TIER_EFFORT", "DEFAULT_PHASE_MODELS"}
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id in names
+    ]
+    assert {node.target.id for node in assignments} == names
+    assert all(not isinstance(node.value, ast.Dict) for node in assignments)
+
+
+def test_effective_default_of_the_tier_tables_is_the_full_map() -> None:
+    assert effective_default("agent_tier_models") == TIER_MODELS
+    assert effective_default("agent_tier_effort") == TIER_EFFORT
+    assert effective_default("agent_phase_models") == DEFAULT_PHASE_MODELS
