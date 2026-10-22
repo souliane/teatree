@@ -29,6 +29,7 @@ graph TD
     teatree.ci_oauth_switch --> teatree.utils
     teatree.config --> teatree.db
     teatree.config --> teatree.paths
+    teatree.config --> teatree.sqlite_snapshot
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check

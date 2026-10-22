@@ -46,8 +46,17 @@ from teatree.core.models.task_enqueue import (
     enqueue_phase_task_once,
 )
 from teatree.core.models.ticket import Ticket
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_sqlite_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _PHASE = "reviewing"
 _REASON = "Review now."
@@ -107,7 +116,8 @@ def _default_pointed_at(db_file: Path) -> Generator[None]:
     cross-connection contention the race needs.
     """
     settings_dict = connections.databases[DEFAULT_DB_ALIAS]
-    original = {key: settings_dict[key] for key in ("NAME", "OPTIONS")}
+    original = {key: settings_dict[key] for key in ("ENGINE", "NAME", "OPTIONS")}
+    settings_dict["ENGINE"] = SQLITE_BOUNDARY_ENGINE
     settings_dict["NAME"] = str(db_file)
     settings_dict["OPTIONS"] = dict(SQLITE_WRITE_SERIALIZATION_OPTIONS)
     try:

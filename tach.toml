@@ -221,6 +221,7 @@ layer = "platform"
 depends_on = [
   "teatree.db",
   "teatree.paths",
+  "teatree.sqlite_snapshot",
   "teatree.types",
   "teatree.utils",
   "teatree.update_check"

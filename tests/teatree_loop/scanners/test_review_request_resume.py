@@ -34,11 +34,18 @@ from teatree.loop.scanners.review_request_resume import (
     _claim_resume,
 )
 from teatree.on_behalf_gate import OnBehalfContext
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_control_db_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 _MR_URL = "https://github.com/o/r/pull/7"
 _CHANNEL = "C_REVIEW"
@@ -528,7 +535,7 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"resume_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
+    register_control_db_alias(alias, db_file)
     with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()
