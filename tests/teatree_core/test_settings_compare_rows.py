@@ -3,7 +3,7 @@ from dataclasses import replace
 from django.template.loader import get_template
 from django.urls import reverse
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.core.setting_control import SettingControl
 from teatree.core.settings.settings_compare import CompareFilters, CompareView
 from teatree.core.settings.settings_compare_rows import WITHHELD_REASON, Cell, CompareRow
@@ -42,7 +42,7 @@ def test_a_manual_row_does_not_offer_use_here() -> None:
             Cell(label="peer", present=True, known=True, value=3),
         ),
         syncable=False,
-        control=SettingControl("merge_wip", shipped_defaults_table()),
+        control=SettingControl("merge_wip", declared_defaults()),
     )
     instances = (
         PeerSnapshot(label="local", url="", note="", payload={"instance": {}}),
@@ -70,7 +70,7 @@ def test_apply_without_a_prior_local_row_reverts_by_removing_the_new_row() -> No
             Cell(label="local", present=False, known=True, local=True),
             Cell(label="peer", present=True, known=True, value=True),
         ),
-        control=SettingControl("merge_wip", shipped_defaults_table()),
+        control=SettingControl("merge_wip", declared_defaults()),
     )
     instances = (
         PeerSnapshot(label="local", url="", note="", payload={"instance": {}}),
@@ -106,7 +106,7 @@ def test_a_clear_disposition_uses_the_restore_endpoint() -> None:
             Cell(label="peer", present=True, known=True, value=False),
         ),
         equals_shipped_default=True,
-        control=SettingControl("merge_wip", shipped_defaults_table()),
+        control=SettingControl("merge_wip", declared_defaults()),
     )
     assert row.outcome.disposition is Disposition.CLEAR
     assert row.readings[1].apply_url == reverse("dash:settings_restore", args=["merge_wip"])
@@ -124,7 +124,7 @@ def test_each_peer_apply_uses_its_own_value_against_the_local_default() -> None:
             Cell(label="peer other", present=True, known=True, value=3),
             Cell(label="peer same", present=True, known=True, value=2),
         ),
-        control=SettingControl("merge_wip", shipped_defaults_table()),
+        control=SettingControl("merge_wip", declared_defaults()),
     )
     assert row.readings[1].apply_url == reverse("dash:settings_restore", args=["merge_wip"])
     assert row.readings[2].apply_url == reverse("dash:settings_set", args=["merge_wip"])
@@ -169,7 +169,7 @@ def test_use_here_requires_an_import_or_clear_disposition() -> None:
             Cell(label="local", present=False, known=True, default_value=0, default_recorded=True, local=True),
             Cell(label="peer", present=True, known=True, value=3),
         ),
-        control=SettingControl("merge_wip", shipped_defaults_table()),
+        control=SettingControl("merge_wip", declared_defaults()),
     )
 
     assert base.outcome.disposition is Disposition.IMPORT

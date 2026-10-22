@@ -24,7 +24,7 @@ from django.urls import reverse
 import teatree.core.settings.settings_compare as settings_compare_module
 import teatree.dash
 from teatree.config import PeerInstance, PeerTunnel
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.provenance import ValueSource
 from teatree.config.setting_registries import ENV_VAR_BY_SETTING, SAFETY_POSTURE_KEYS
 from teatree.core.models import ConfigSetting
@@ -61,7 +61,7 @@ def _row(*cells: Cell, **kwargs: Any) -> CompareRow:
 
 def _control(key: str) -> SettingControl:
     """The control the page derives per key — the row half of every editable cell."""
-    return SettingControl(key, shipped_defaults_table())
+    return SettingControl(key, declared_defaults())
 
 
 def _held(label: str, value: Any) -> Cell:

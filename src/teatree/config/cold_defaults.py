@@ -1,32 +1,5 @@
-"""Django-free, pydantic-free stdlib reader for the shipped ``defaults.toml``.
+"""Cold-safe flattening for the generated settings table and TOML interchange."""
 
-The stdlib reader of the shipped file's SEED tables and its ``[teatree]`` export. It is
-a stdlib reader — rather than reading the same file through
-:func:`teatree.config.schema.shipped_defaults` — because ``teatree.config``'s package
-init imports ``resolution``, and the cold hook path loads that package init: a
-pydantic read there would put the model's ~110ms import on EVERY hook invocation.
-Only the standard library is imported — never ``schema``/``pydantic``, never Django,
-never a sibling that would pull either — and a subprocess control pins that.
-
-The file is packaged data. Its ``[teatree]`` table is GENERATED from the settings
-declarations (``config/declared_defaults.py``) and the sibling seed tables are
-hand-maintained. The table this module exposes carries EXACTLY the ``Category.DEFAULT``
-keys (Secret/Personal keys are absent by construction and have no shipped default).
-
-The FILE nests those keys into the declaration hierarchy as real sub-tables; the KEY
-NAMESPACE stays flat, because that namespace is the persisted contract every env
-override, ``ConfigSetting`` row and cold sqlite3 read depends on. :func:`flatten_settings_table`
-is the one place the two meet, and being the single Django-free reader of the table is
-why it lives here. Disambiguation needs no marker: a sub-table whose name is a DECLARED
-setting is a genuine nested setting (``speak`` / ``mr_reminder``) and stays a value; any
-other sub-table is a group wrapper and is descended into.
-
-The parse is cached per file mtime — an edited ``defaults.toml`` invalidates the cache on
-the next read, so a fresh value is never masked by a stale parse.
-"""
-
-import threading
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -41,12 +14,7 @@ from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS as _DECLARED
 #: from: this stdlib one and ``schema.shipped_defaults``. It is no longer a resolution
 #: tier: ``config/declared_defaults.py`` RENDERS it from the declarations instead.
 DEFAULTS_TOML = Path(__file__).with_name("defaults.toml")
-_TEATREE_TABLE = "teatree"
-
-_lock = threading.Lock()
-_cache: dict[int, dict[str, Any]] = {}
-
-__all__ = ["DEFAULTS_TOML", "flatten_settings_table", "shipped_defaults_table"]
+__all__ = ["DEFAULTS_TOML", "flatten_settings_table"]
 
 
 def flatten_settings_table(table: Mapping[str, Any]) -> dict[str, Any]:
@@ -67,35 +35,3 @@ def flatten_settings_table(table: Mapping[str, Any]) -> dict[str, Any]:
         else:
             flat[key] = value
     return flat
-
-
-def shipped_defaults_table(path: Path | None = None) -> dict[str, Any]:
-    """The ``[teatree]`` table of ``defaults.toml``, FLAT, parsed once per file mtime.
-
-    The file nests its keys into the declaration hierarchy; :func:`flatten_settings_table`
-    collapses that back to the flat namespace every reader below this one expects, so
-    nesting is a file shape and never reaches a resolver, an env override or a stored row.
-
-    Returns a fresh copy so a caller can never mutate the cached parse. A missing
-    file yields an empty table (a fresh checkout always ships the file; the empty
-    fallback keeps a cold read from raising).
-
-    The default path is resolved from :data:`DEFAULTS_TOML` at CALL time, not bound as a
-    default argument at import time — a test that re-points the module constant at a
-    fixture file would otherwise be silently ignored by every no-argument caller while
-    a caller that passes it explicitly honoured it, so the key set and the values could
-    come from two different files.
-    """
-    resolved = DEFAULTS_TOML if path is None else path
-    try:
-        mtime = resolved.stat().st_mtime_ns
-    except OSError:
-        return {}
-    with _lock:
-        table = _cache.get(mtime)
-        if table is None:
-            parsed = tomllib.loads(resolved.read_text(encoding="utf-8")).get(_TEATREE_TABLE, {})
-            table = flatten_settings_table(parsed)
-            _cache.clear()  # only the current-mtime parse is worth keeping
-            _cache[mtime] = table
-    return dict(table)

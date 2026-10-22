@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.override_reader import column_spelling, fold_overlay_rows
 from teatree.config.secret_settings import is_pass_key_setting
 from teatree.config.seed_defaults import SEED_FAMILIES
@@ -364,7 +364,7 @@ def _controls(keys: Sequence[str]) -> dict[str, SettingControl]:
     A key no local schema declares — a peer on other code — gets none, and its row stays a
     reading.
     """
-    shipped = shipped_defaults_table()
+    shipped = declared_defaults()
     return {key: SettingControl(key, shipped) for key in keys if key in ALL_KNOWN_CONFIG_SETTINGS}
 
 

@@ -343,7 +343,7 @@ repos:
         pass_filenames: false
         # The declarations that state a shipped value, the renderer that lays them out,
         # and the file itself — so a hand edit to the generated table is rendered away.
-        files: ^src/teatree/config/(settings(_loop_owned|_loop_flags)?|registries|schema|declared_defaults|defaults_snapshot|setting_(help|groups|annotation))\.py|^src/teatree/config/defaults\.toml$|^hooks/scripts/statusline\.sh$|^scripts/hooks/generate_defaults_toml\.py$
+        files: ^src/teatree/config/(settings(_loop_owned|_loop_flags)?|registries|schema|declaration|declared_defaults|defaults_snapshot|setting_(help|groups|annotation|registries))\.py|^src/teatree/config/(defaults\.toml|declared_keys\.txt)$|^hooks/scripts/statusline\.sh$|^scripts/hooks/generate_defaults_toml\.py$
       - id: generate-cli-output-snapshot
         name: Generate the representative CLI-output fixture from the CLI
         language: system

@@ -32,18 +32,14 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import teatree.config as _facade
+from teatree.config.declaration import stored_form
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode
 from teatree.config.known_settings import SETTING_ENTRIES
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
 from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
-from teatree.config.setting_layers import (
-    SettingLayers,
-    apply_structured_settings,
-    drop_db_home_overlay_keys,
-    stored_form,
-)
+from teatree.config.setting_layers import SettingLayers, apply_structured_settings, drop_db_home_overlay_keys
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, env_pinned_value
 from teatree.config.settings import OverlayEntry, UserSettings
 from teatree.request_cache import cached_per_request

@@ -7,6 +7,7 @@ their export. Without ``--write`` it reports drift with a unified diff, exiting 
 
 import argparse
 import difflib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,9 +16,33 @@ import generated_doc_staging
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declaration import render_keys_manifest, validate_manifest_history
 from teatree.config.declared_defaults import declared_defaults, render_defaults_file
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 
 STATUSLINE_SH = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "statusline.sh"
+DECLARED_KEYS = DEFAULTS_TOML.with_name("declared_keys.txt")
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def committed_manifest() -> str:
+    relative = DECLARED_KEYS.relative_to(_ROOT).as_posix()
+    listing = subprocess.run(
+        ["git", "-C", str(_ROOT), "ls-tree", "--name-only", "HEAD", "--", relative],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not listing.stdout.strip():
+        return ""
+    return subprocess.run(
+        ["git", "-C", str(_ROOT), "show", f"HEAD:{relative}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
 _AUTOLOAD_BEGIN = "# BEGIN GENERATED: autoload default"
 _AUTOLOAD_END = "# END GENERATED: autoload default"
 
@@ -46,9 +71,12 @@ def main(argv: list[str] | None = None) -> int:
 
     defaults_text = DEFAULTS_TOML.read_text(encoding="utf-8")
     statusline_text = STATUSLINE_SH.read_text(encoding="utf-8")
+    keys_text = DECLARED_KEYS.read_text(encoding="utf-8") if DECLARED_KEYS.exists() else ""
+    validate_manifest_history(committed_manifest(), keys_text)
     changes = [
         (DEFAULTS_TOML, defaults_text, render_defaults_file(defaults_text)),
         (STATUSLINE_SH, statusline_text, render_statusline_default(statusline_text)),
+        (DECLARED_KEYS, keys_text, render_keys_manifest(keys_text, ALL_KNOWN_CONFIG_SETTINGS)),
     ]
     drifted = [(path, before, after) for path, before, after in changes if before != after]
     if not drifted:

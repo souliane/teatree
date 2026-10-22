@@ -39,7 +39,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.override_reader import column_spelling
 from teatree.config.provenance import ResolvedSetting, resolve_settings
 from teatree.config.schema import TeatreeSettingsSchema
@@ -194,7 +194,7 @@ def _build_grid(keys: Sequence[str], columns: Sequence[str] | None = None) -> _G
     return _Grid(
         scopes=scopes,
         resolved={scope: resolve_settings(keys, scope=scope) for scope in scopes},
-        shipped=shipped_defaults_table(),
+        shipped=declared_defaults(),
     )
 
 
