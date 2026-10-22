@@ -75,7 +75,7 @@ class TestOverlayFollowupScanners(TestCase):
             Mode.objects.update_or_create(name=name, defaults={"entries": dict.fromkeys(loops, True), "egress": egress})
         ModeOverride.objects.set_override("present", reason="test posture")
 
-    def _backend(self, name: str, review: _HookReview | None = None) -> OverlayBackends:
+    def _backend(self, name: str, review: OverlayReview | None = None) -> OverlayBackends:
         overlay = TeatreeOverlay()
         if review is not None:
             overlay.review = review
@@ -101,6 +101,15 @@ class TestOverlayFollowupScanners(TestCase):
         scanner = _ExtraScanner()
         backend = self._backend("alpha")
         with patch.object(OverlayReview, "get_followup_scanners", return_value=[scanner]) as hook:
+            jobs = MINI_LOOP.build_jobs(backends=[backend])
+        assert any(job.scanner is scanner for job in jobs)
+        hook.assert_called_once_with(backend)
+
+    def test_instance_hook_selects_a_scanner(self) -> None:
+        scanner = _ExtraScanner()
+        review = OverlayReview()
+        backend = self._backend("alpha", review)
+        with patch.object(review, "get_followup_scanners", return_value=[scanner]) as hook:
             jobs = MINI_LOOP.build_jobs(backends=[backend])
         assert any(job.scanner is scanner for job in jobs)
         hook.assert_called_once_with(backend)
@@ -183,6 +192,17 @@ class TestOverlayFollowupScanners(TestCase):
         outcome = scan_phase(failures)
         assert set(outcome.errors) == {"overlay_followup_scanners[alpha]"}
         assert outcome.errors["overlay_followup_scanners[alpha]"] == "ValueError: bad hook"
+
+    def test_base_exception_from_hook_is_reported_as_a_hook_failure(self) -> None:
+        class InterruptingReview(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                message = "stopped"
+                raise KeyboardInterrupt(message)
+
+        with patch.object(overlay_followup_jobs_module, "HOOK_DEADLINE_SECONDS", 0.01):
+            jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", InterruptingReview())])
+        refused = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
+        assert scan_phase(refused).errors == {"overlay_followup_scanners[alpha]": "KeyboardInterrupt: stopped"}
 
     def test_blocking_hook_is_bounded_and_reported(self) -> None:
         release = Event()
@@ -322,6 +342,35 @@ class TestOverlayFollowupScanners(TestCase):
                 outcome = scan_phase(failures)
                 assert set(outcome.errors) == {"overlay_followup_scanners[alpha]"}
                 assert bad_type in outcome.errors["overlay_followup_scanners[alpha]"]
+
+    def test_raising_scanner_attributes_are_refused_without_losing_healthy_jobs(self) -> None:
+        class RaisingNameScanner:
+            @property
+            def name(self) -> str:
+                message = "name unavailable"
+                raise ValueError(message)
+
+            def scan(self) -> list[ScanSignal]:
+                return []
+
+        class RaisingScanScanner:
+            name = "raising_scan"
+
+            @property
+            def scan(self) -> object:
+                message = "scan unavailable"
+                raise RuntimeError(message)
+
+        for scanner, reason in (
+            (RaisingNameScanner(), "ValueError: name unavailable"),
+            (RaisingScanScanner(), "RuntimeError: scan unavailable"),
+        ):
+            with self.subTest(reason=reason):
+                healthy = _ExtraScanner()
+                jobs = MINI_LOOP.build_jobs(backends=[self._backend("alpha", _HookReview([scanner, healthy]))])
+                assert any(job.scanner is healthy for job in jobs)
+                refused = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
+                assert reason in scan_phase(refused).errors["overlay_followup_scanners[alpha]"]
 
     def test_duplicate_and_reserved_names_are_refused_without_losing_other_jobs(self) -> None:
         review = _HookReview([_ExtraScanner(), _ExtraScanner(), _ReservedScanner(), _UnnamedScanner()])

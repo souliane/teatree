@@ -55,7 +55,7 @@ class _RefusedOverlayFollowupScanners:
 class _HookCallError(Exception):
     """Keep the hook's original exception available across the selection thread."""
 
-    def __init__(self, original: Exception) -> None:
+    def __init__(self, original: BaseException) -> None:
         self.original = original
 
 
@@ -70,7 +70,7 @@ def _start_or_await_hook_call(backend: OverlayBackends, review: OverlayReview) -
             def invoke() -> None:
                 try:
                     future.set_result(list(review.get_followup_scanners(backend)))
-                except Exception as exc:
+                except BaseException as exc:
                     logger.exception("Overlay %s follow-up scanner hook raised", backend.name)
                     future.set_exception(_HookCallError(exc))
                 finally:
@@ -88,10 +88,16 @@ def _validated_scanner_jobs(scanners: list[Scanner], tag: str, reserved_names: I
     jobs: list[_ScannerJob] = []
     refusals: list[str] = []
     for scanner in scanners:
-        if isinstance(scanner, type) or not isinstance(scanner, Scanner) or not callable(scanner.scan):
+        try:
+            valid = not isinstance(scanner, type) and isinstance(scanner, Scanner) and callable(scanner.scan)
+            name = scanner.name if valid else None
+        except BaseException as exc:
+            logger.exception("Overlay %s follow-up scanner attribute access raised", tag)
+            refusals.append(f"{type(exc).__name__}: {exc}")
+            continue
+        if not valid:
             refusals.append(f"Non-Scanner item: {type(scanner).__name__}")
             continue
-        name = scanner.name
         if not isinstance(name, str) or not name:
             refusals.append(f"Invalid scanner name: {name!r}")
         elif name in used_names:
@@ -108,8 +114,8 @@ def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str
     if backend.overlay is None:
         return []
     review = backend.overlay.review
-    hook = getattr(type(review), "get_followup_scanners", None)
-    if hook is None or hook is _DEFAULT_FOLLOWUP_HOOK:
+    hook = getattr(review, "get_followup_scanners", None)
+    if hook is None or getattr(hook, "__func__", hook) is _DEFAULT_FOLLOWUP_HOOK:
         return []
     tag = backend.name
     if (skipped := _SKIPPED_HOOKS.get()) is not None:
