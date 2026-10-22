@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, TypedDict
 import typer
 
 from teatree.cli.worker_status import admission_line, agent_admission_report, deploy_drain_report, holder_lines
-from teatree.generation import is_generation_sha
+from teatree.git_sha import is_full_git_sha
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
@@ -361,7 +361,7 @@ def drain_command(
         drain_worker,
     )
 
-    if generation and not is_generation_sha(generation):
+    if generation and not is_full_git_sha(generation):
         typer.echo(f"refused: --generation takes a full 40-hex commit sha, got {generation!r}", err=True)
         raise SystemExit(_REFUSED_EXIT)
     try:

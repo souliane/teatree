@@ -8,7 +8,7 @@ identity first, the session's overlay as the fallback — and routes the deny
 through the router's ``_fail_open_or_deny`` chain. It runs BEFORE the question
 mirror, so a loop-driven ask is refused rather than deferred to the owner's Slack.
 
-NEVER-LOCKOUT: a per-call ``[grant-ask-ok: <reason>]`` token in the question, the
+NEVER-LOCKOUT: a per-call ``[gate-escape:block-standing-grant-ask: <reason>]`` token in the question, the
 ``[teatree] standing_grant_ask_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate standing-grant-ask disable``), and a fail-open on every
 unreadable grant keep this gate from wedging a session.
@@ -82,9 +82,6 @@ def _deny_reason_for(core, texts: list[str]) -> str | None:  # noqa: ANN001 — 
     """The refusal for these questions, or None when the gate allows them."""
     finding = core.find_standing_grant_ask(texts)
     if finding is None:
-        return None
-    if escape := next(filter(None, map(core.grant_ask_ok_reason, texts)), None):
-        sys.stderr.write(f"NOTE: standing-grant-ask gate skipped via [grant-ask-ok: {escape}].\n")
         return None
     resolved = _configured_grant(core.repo_refs(" ".join(texts)))
     if resolved is None:

@@ -60,6 +60,7 @@ from teatree.core.models.worktree_occupancy import (
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
     _occupied_error,
+    _task_pk_from_holder,
     _worktree_at,
     acquire,
     held_dispatch_checkout,
@@ -169,8 +170,8 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
     row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
     if row is None:
         return
-    pk = holder.removeprefix("task:")
-    task = Task.objects.filter(pk=int(pk)).first() if pk.isdigit() else None
+    pk = _task_pk_from_holder(holder)
+    task = Task.objects.filter(pk=pk).first() if pk is not None else None
     parked = task is not None and task.status == Task.Status.PENDING
     if (
         task is None

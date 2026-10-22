@@ -12,7 +12,7 @@ Subcommands:
 * ``overlay-provision-smoke`` — run the smoke against ``--overlay`` and
     exit 0 on PASS, non-zero with a categorised failure
     (``provision_failed`` / ``start_failed`` / ``ready_failed`` /
-    ``teardown_failed`` / ``clean_failed`` / ``overlay_resolution_failed``
+    ``teardown_failed`` / ``overlay_resolution_failed``
     / ``timeout``). DMs the user with the failing command + stderr on any
     non-PASS outcome.
 
@@ -36,26 +36,45 @@ would silently report success to cron/CI/the loop. ``SystemExit`` propagates.
 """
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from django.core.exceptions import ImproperlyConfigured
+from django.db import DatabaseError
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.config import OverlayEntry
+from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.overlay_loader import get_overlay, resolve_overlay_name
+from teatree.core.overlay import OverlayBase
+from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay
+from teatree.core.overlay_name_resolution import registered_overlay_name
 from teatree.loop.dogfood_smoke import (
     SmokeOutcomeKind,
-    WorktreePathResolver,
+    SmokeReport,
+    SmokeStep,
+    StepResult,
+    WorktreePathRefusalError,
     default_steps,
     pick_alias_variant,
     report_summary,
     run_smoke,
     run_t3_command,
 )
+
+DEFAULT_FIXTURE_TICKET_URL = "https://github.com/souliane/teatree/issues/1308"
+
+
+@dataclass(frozen=True)
+class _LoadedOverlay:
+    """Cache an attempted lookup, including an unloadable overlay."""
+
+    value: OverlayBase | None
 
 
 def _dm_failure_body(report_summary_text: str, *, failing_step: str, command_str: str, stderr: str) -> str:
@@ -109,6 +128,14 @@ def _exit_code_for(outcome: SmokeOutcomeKind) -> int:
     }.get(outcome, 1)
 
 
+def _print_dry_run(steps: Sequence[SmokeStep], uncovered: Sequence[str]) -> None:
+    typer.echo("[dogfood] dry-run — planned steps:")
+    for step in steps:
+        typer.echo(f"  {step.name}: {' '.join(step.command)}")
+    for item in uncovered:
+        typer.echo(f"  uncovered: {item}")
+
+
 class Command(TyperCommand):
     help = "Dogfood overlay smokes — exercise CLI paths so bugs surface in the loop, not in E2E."
 
@@ -130,15 +157,15 @@ class Command(TyperCommand):
         ] = "",
         fixture_ticket_url: Annotated[
             str,
-            typer.Option(help="Fixture ticket URL the smoke binds against."),
-        ] = "https://github.com/souliane/teatree/issues/1308",
+            typer.Option(help="Fixture ticket URL (empty: overlay declaration, then core fixture)."),
+        ] = "",
         variant: Annotated[
             str,
             typer.Option(help="Overlay tenant variant the smoke provisions (empty = overlay's default)."),
         ] = "",
         dry_run: Annotated[  # noqa: FBT002 — typer convention; bool flag with default
             bool,
-            typer.Option("--dry-run", help="Print the planned steps and exit 0 without executing them."),
+            typer.Option("--dry-run", help="Print steps without running them; invalid fixtures fail and notify."),
         ] = False,
         notify_on_failure: Annotated[  # noqa: FBT002 — typer CLI boolean flag; the bool parameter is typer's option idiom
             bool,
@@ -163,32 +190,38 @@ class Command(TyperCommand):
 
         # get_overlay() needs the dispatchable Ticket.overlay form (t3-teatree);
         # the shelled ``t3 <overlay> ...`` steps below need the CLI sub-app's short form (teatree).
-        dispatch_overlay = resolve_overlay_name(target_overlay) or target_overlay
+        dispatch_overlay = registered_overlay_name(target_overlay) or target_overlay
         cli_overlay = OverlayEntry.canonical_overlay_name(dispatch_overlay)
 
-        smoke_variant, uncovered = _resolve_smoke_variant(dispatch_overlay, variant)
-        steps = default_steps(
-            overlay=cli_overlay,
-            fixture_ticket_url=fixture_ticket_url,
-            variant=smoke_variant,
-        )
-        if dry_run:
-            typer.echo("[dogfood] dry-run — planned steps:")
-            for step in steps:
-                typer.echo(f"  {step.name}: {' '.join(step.command)}")
-            for item in uncovered:
-                typer.echo(f"  uncovered: {item}")
-            return
+        try:
+            resolved_fixture_url, smoke_variant, uncovered = _resolve_smoke_inputs(
+                dispatch_overlay, fixture_ticket_url.strip(), variant
+            )
+        except InvalidIssueRefError as exc:
+            step = SmokeStep(
+                name="workspace_ticket", command=("t3", cli_overlay, "workspace", "ticket", fixture_ticket_url.strip())
+            )
+            report = SmokeReport(
+                outcome=SmokeOutcomeKind.PROVISION_FAILED,
+                failing_step=step.name,
+                steps=[StepResult(step=step, returncode=1, stderr=str(exc), stdout="", elapsed_seconds=0.0)],
+            )
+            cleanup_errors: list[str] = []
+        else:
+            steps = default_steps(overlay=cli_overlay, fixture_ticket_url=resolved_fixture_url, variant=smoke_variant)
+            if dry_run:
+                _print_dry_run(steps, uncovered)
+                return
 
-        report = run_smoke(
-            steps,
-            runner=run_t3_command,
-            uncovered=uncovered,
-            resolve_worktree_path=_worktree_path_resolver(
-                issue_url=fixture_ticket_url,
+            report, cleanup_errors = _run_fixture_smoke(
+                steps,
+                issue_url=resolved_fixture_url,
                 overlay=dispatch_overlay,
-            ),
-        )
+                cli_overlay=cli_overlay,
+                uncovered=uncovered,
+            )
+        for error in cleanup_errors:
+            typer.echo(f"fixture cleanup failed: {error}", err=True)
         summary = report_summary(report)
         typer.echo(summary)
 
@@ -203,7 +236,7 @@ class Command(TyperCommand):
                 summary_text=summary,
                 failing_step=failing,
                 command_str=command_str,
-                stderr=report.failing_step_stderr,
+                stderr="\n".join(dict.fromkeys(item for item in [report.failing_step_stderr, *cleanup_errors] if item)),
             )
 
         code = _exit_code_for(report.outcome)
@@ -215,7 +248,40 @@ class Command(TyperCommand):
 ALIAS_VARIANT_UNCOVERED = "dslr-alias-variant"
 
 
-def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[str]]:
+def _resolve_smoke_inputs(overlay_name: str, fixture: str, variant: str) -> tuple[str, str, list[str]]:
+    loaded_overlay: _LoadedOverlay | None = None
+    if not fixture or not variant:
+        loaded_overlay = _load_smoke_overlay(overlay_name)
+    fixture_url = _resolve_fixture_url(overlay_name, fixture, loaded_overlay)
+    selected_variant, uncovered = _resolve_smoke_variant(overlay_name, variant, loaded_overlay)
+    return fixture_url, selected_variant, uncovered
+
+
+def _resolve_fixture_url(overlay_name: str, explicit: str, loaded_overlay: _LoadedOverlay | None = None) -> str:
+    if explicit.strip():
+        return _canonical_fixture_url(overlay_name, explicit, loaded_overlay)
+    try:
+        configured = OverlayConfigResolver.dogfood_smoke_fixture_url(overlay_name)
+    except ImproperlyConfigured:
+        return DEFAULT_FIXTURE_TICKET_URL
+    resolved = _canonical_fixture_url(overlay_name, configured, loaded_overlay) if configured else ""
+    return resolved or DEFAULT_FIXTURE_TICKET_URL
+
+
+def _canonical_fixture_url(overlay_name: str, value: str, loaded_overlay: _LoadedOverlay | None = None) -> str:
+    ref = value.strip()
+    if not ref.removeprefix("#").isdigit():
+        return ref
+    overlay = _smoke_overlay(overlay_name, loaded_overlay)
+    if overlay is None:
+        msg = f"{ref!r} is a bare issue number, but overlay {overlay_name!r} is not loadable. Pass the full issue URL."
+        raise InvalidIssueRefError(msg)
+    return canonicalize_issue_ref(overlay, ref)
+
+
+def _resolve_smoke_variant(
+    overlay_name: str, explicit: str, loaded_overlay: _LoadedOverlay | None = None
+) -> tuple[str, list[str]]:
     """Resolve the variant the smoke provisions, plus what it could not cover.
 
     An explicit ``--variant`` always wins. Otherwise the overlay's own
@@ -225,13 +291,9 @@ def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[
     """
     if explicit:
         return explicit, []
-    try:
-        overlay = get_overlay(overlay_name)
-    except ImproperlyConfigured:
-        # Only the not-registered case is an uncovered acceptance item. A bare `except
-        # Exception` here turned every configuration error into this same silent answer,
-        # which is what let three tests patch a name the function never reads and still pass.
-        logging.getLogger(__name__).exception("Could not load overlay %s to pick an alias variant", overlay_name)
+    overlay = _smoke_overlay(overlay_name, loaded_overlay)
+    if overlay is None:
+        logging.getLogger(__name__).warning("Could not load overlay %s to pick an alias variant", overlay_name)
         return "", [f"{ALIAS_VARIANT_UNCOVERED} (overlay {overlay_name} not loadable)"]
     alias = pick_alias_variant(overlay)
     if not alias:
@@ -239,22 +301,130 @@ def _resolve_smoke_variant(overlay_name: str, explicit: str) -> tuple[str, list[
     return alias, []
 
 
-def _worktree_path_resolver(*, issue_url: str, overlay: str) -> WorktreePathResolver:
-    """Answer where ``workspace_ticket`` put the worktree, read at call time.
+def _load_smoke_overlay(overlay_name: str) -> _LoadedOverlay:
+    try:
+        return _LoadedOverlay(get_overlay(overlay_name))
+    except ImproperlyConfigured:
+        return _LoadedOverlay(None)
 
-    Deferred behind a closure because the answer does not exist until that step
-    has run: the ticket row is created by the shelled-out ``t3 <overlay>
-    workspace ticket``, in a child process, so it can only be read back from the
-    DB afterwards. Keyed on the DISPATCHABLE overlay form, which is what
-    ``Ticket.overlay`` stores; '' when no row or no materialised checkout exists,
-    which :func:`run_smoke` turns into a categorised failure.
-    """
 
-    def resolve() -> str:
-        ticket = Ticket.objects.filter(issue_url=issue_url, overlay=overlay).order_by("-pk").first()
-        return dispatch_worktree_path(ticket) if ticket is not None else ""
+def _smoke_overlay(overlay_name: str, loaded_overlay: _LoadedOverlay | None) -> OverlayBase | None:
+    """Reuse a failed lookup too, so path-only overlays are not repeatedly loaded."""
+    return (loaded_overlay or _load_smoke_overlay(overlay_name)).value
 
-    return resolve
+
+class FixtureCheckoutRefusalError(WorktreePathRefusalError):
+    """The fixture checkout predates this run or belongs to another overlay."""
+
+
+class _FixtureCheckout:
+    """Snapshot preexisting paths so cleanup touches only this run's checkouts."""
+
+    def __init__(self, *, issue_url: str, overlay: str, cli_overlay: str) -> None:
+        self.issue_url = issue_url
+        self.overlay = overlay
+        self.cli_overlay = cli_overlay
+        self.preexisting_paths: set[Path] = set()
+        self.captured = False
+
+    def _ticket(self) -> Ticket | None:
+        return Ticket.objects.matching_issue(self.issue_url).filter(overlay=self.overlay).order_by("-pk").first()
+
+    def _paths(self, ticket: Ticket | None) -> set[Path]:
+        if ticket is None:
+            return set()
+        return {
+            Path(worktree.worktree_path).resolve()
+            for worktree in ticket.worktrees.all()
+            if worktree.worktree_path and Path(worktree.worktree_path).is_dir()
+        }
+
+    def capture(self) -> None:
+        self.preexisting_paths = {
+            path for ticket in Ticket.objects.matching_issue(self.issue_url) for path in self._paths(ticket)
+        }
+        self.captured = True
+
+    def resolve(self) -> str:
+        ticket = self._ticket()
+        if ticket is None:
+            foreign = Ticket.objects.matching_issue(self.issue_url).exclude(overlay=self.overlay).first()
+            if foreign is not None:
+                msg = f"fixture ticket owned by another overlay: {foreign.overlay}"
+                raise FixtureCheckoutRefusalError(msg)
+            return ""
+        preexisting = self._paths(ticket) & self.preexisting_paths
+        if preexisting:
+            msg = f"fixture checkout pre-existed: {min(preexisting)}"
+            raise FixtureCheckoutRefusalError(msg)
+        return dispatch_worktree_path(ticket)
+
+    def cleanup(self) -> list[StepResult]:
+        if not self.captured:
+            return []
+        failures: list[StepResult] = []
+        try:
+            created_paths = self._paths(self._ticket()) - self.preexisting_paths
+        except (DatabaseError, OSError) as exc:
+            step = SmokeStep(name="fixture_cleanup", command=("t3", self.cli_overlay, "worktree", "teardown"))
+            return [
+                StepResult(
+                    step=step,
+                    returncode=-2,
+                    stderr=f"could not read fixture checkouts: {type(exc).__name__}: {exc}",
+                    stdout="",
+                    elapsed_seconds=0.0,
+                )
+            ]
+        for path in sorted(created_paths):
+            step = SmokeStep(
+                name="fixture_cleanup",
+                command=("t3", self.cli_overlay, "worktree", "teardown", "--path", str(path)),
+            )
+            try:
+                result = run_t3_command(step)
+            except OSError as exc:
+                failures.append(
+                    StepResult(
+                        step=step,
+                        returncode=-2,
+                        stderr=f"{path}: {type(exc).__name__}: {exc}",
+                        stdout="",
+                        elapsed_seconds=0.0,
+                    )
+                )
+                continue
+            if result.returncode != 0 or path.is_dir():
+                failures.append(
+                    StepResult(
+                        step=step,
+                        returncode=result.returncode or 1,
+                        stderr=f"{path}: {result.stderr or 'checkout still present after teardown'}",
+                        stdout=result.stdout,
+                        elapsed_seconds=result.elapsed_seconds,
+                        timed_out=result.timed_out,
+                    )
+                )
+        return failures
+
+
+def _run_fixture_smoke(
+    steps: Sequence[SmokeStep], *, issue_url: str, overlay: str, cli_overlay: str, uncovered: Sequence[str]
+) -> tuple[SmokeReport, list[str]]:
+    fixture = _FixtureCheckout(issue_url=issue_url, overlay=overlay, cli_overlay=cli_overlay)
+
+    def run_step(step: SmokeStep) -> StepResult:
+        if step.name == "workspace_ticket":
+            fixture.capture()
+        return run_t3_command(step)
+
+    report = run_smoke(steps, runner=run_step, uncovered=uncovered, resolve_worktree_path=fixture.resolve)
+    cleanup_failures = fixture.cleanup()
+    if cleanup_failures and report.passed:
+        report.outcome = SmokeOutcomeKind.TEARDOWN_FAILED
+        report.failing_step = "fixture_cleanup"
+        report.steps.extend(cleanup_failures)
+    return report, [failure.stderr for failure in cleanup_failures]
 
 
 def _resolve_active_overlay() -> str:

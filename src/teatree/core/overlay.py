@@ -200,6 +200,7 @@ class OverlayConfig(BaseModel):
     eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfooding"
+    dogfood_smoke_fixture_url: str = ""
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
     # The dashboard header mark, as a static path; an overlay ships its own logo in
     # its package's ``static/`` dir and names it here.
