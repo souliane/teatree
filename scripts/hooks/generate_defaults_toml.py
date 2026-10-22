@@ -36,7 +36,7 @@ def committed_manifest() -> str:
     if not listing.stdout.strip():
         return ""
     return subprocess.run(
-        ["git", "-C", str(_ROOT), "show", f"HEAD:{relative}"],
+        ["git", "-C", str(_ROOT), "cat-file", "blob", f"HEAD:{relative}"],
         capture_output=True,
         text=True,
         check=True,

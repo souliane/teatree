@@ -24,6 +24,7 @@ from hooks.scripts.hook_router import (
     handle_orchestrator_turn_budget_nudge,
     handle_reset_turn_tool_budget,
 )
+from teatree.config.resolution import effective_default
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -79,7 +80,7 @@ def _set_turn_start(session_id: str, monotonic_value: float) -> None:
 
 class TestWallClockThresholdConfig:
     def test_default_threshold_is_positive(self) -> None:
-        assert _orchestrator_turn_wall_clock_threshold() == router._DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
+        assert _orchestrator_turn_wall_clock_threshold() == effective_default("orchestrator_turn_wall_clock_seconds")
 
     def test_explicit_zero_disables(self) -> None:
         _seed_config_db(_config_db(), {"orchestrator_turn_wall_clock_seconds": 0})

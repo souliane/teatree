@@ -117,29 +117,28 @@ class TestReadersDelegateToHelper:
     def test_fail_open_reader_routes_through_helper(
         self, reader: str, key: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        seen: list[tuple[str, bool]] = []
+        seen: list[tuple[str, bool | None]] = []
 
-        def _fake(name: str, *, default: bool = True) -> bool:
+        def _fake(name: str, *, default: bool | None = None) -> bool:
             seen.append((name, default))
-            return not default
+            return False
 
         monkeypatch.setattr(router, "_teatree_bool_setting", _fake)
-        # A fail-open reader defaults True, so the fake (which returns ``not
-        # default``) forces it False — observable only through delegation.
+        # The opposite verdict makes a direct default read fail this test.
         assert getattr(router, reader)() is False
-        assert (key, True) in seen
+        assert (key, None) in seen
 
     @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
     def test_fail_closed_reader_routes_through_helper(
         self, reader: str, key: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        seen: list[tuple[str, bool]] = []
+        seen: list[tuple[str, bool | None]] = []
 
-        def _fake(name: str, *, default: bool = True) -> bool:
+        def _fake(name: str, *, default: bool | None = None) -> bool:
             seen.append((name, default))
-            return not default
+            return True
 
         monkeypatch.setattr(router, "_teatree_bool_setting", _fake)
-        # A fail-closed reader defaults False, so the fake forces it True.
+        # The opposite verdict makes a direct default read fail this test.
         assert getattr(router, reader)() is True
-        assert (key, False) in seen
+        assert (key, None) in seen
