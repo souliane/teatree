@@ -108,8 +108,8 @@ def _wrong_shape(payload: Mapping[str, Any]) -> str:
     """Why this JSON object is not a snapshot THIS teatree reads, or ``""`` when it is one."""
     if (declared := payload.get("format")) != SNAPSHOT_FORMAT:
         return f"its 'format' is {declared!r}, not {SNAPSHOT_FORMAT!r}"
-    if (version := payload.get("format_version")) != FORMAT_VERSION:
-        return f"its 'format_version' is {version!r} — this teatree reads format_version {FORMAT_VERSION}"
+    if (version := payload.get("format_version")) not in {1, FORMAT_VERSION}:
+        return f"its 'format_version' is {version!r} — this teatree reads format_version {FORMAT_VERSION} or 1"
     return ""
 
 

@@ -30,6 +30,7 @@ from teatree.core.settings_snapshot import (
     serialise,
 )
 from teatree.core.settings_snapshot.fingerprint import Warnings, schema_state
+from teatree.core.settings_snapshot.payload import _fold_stored_settings, _setting_family
 from teatree.hooks.term_match import line_matches
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
@@ -65,7 +66,7 @@ class TestPayloadShape(TestCase):
     def test_the_format_stamp_is_the_one_the_offline_page_reads(self) -> None:
         snapshot = build_snapshot("box-a")
         assert snapshot["format"] == SNAPSHOT_FORMAT
-        assert snapshot["format_version"] == 1
+        assert snapshot["format_version"] == 2
 
     def test_the_top_level_keys_are_the_documented_set(self) -> None:
         assert sorted(build_snapshot("box-a")) == [
@@ -100,6 +101,7 @@ class TestPayloadShape(TestCase):
             "choices",
             "default",
             "feature_flag",
+            "family",
             "group",
             "help",
             "home",
@@ -132,6 +134,15 @@ class TestNoRawSecretLeaves(TestCase):
 
     def test_the_payload_declares_it_carries_no_private_values(self) -> None:
         assert build_snapshot("box-a")["includes_private"] is False
+
+    def test_a_credential_coordinate_has_a_withheld_compare_row(self) -> None:
+        ConfigSetting.objects.update_or_create(key="example_pass_key", scope="", defaults={"value": _SECRET_VALUE})
+        snapshot = build_snapshot("box-a")
+        row = snapshot["registry"]["settings"]["example_pass_key"]
+        assert row["family"] == "credential"
+        assert row["syncable"] is False
+        assert snapshot["values"]["settings"][""]["example_pass_key"]["__redacted__"] == "credential-coordinate"
+        assert _SECRET_VALUE not in json.dumps(snapshot)
 
     def test_a_stored_secret_value_appears_nowhere_in_the_serialised_payload(self) -> None:
         assert _SECRET_VALUE not in json.dumps(self._snapshot_with_a_stored_secret())
@@ -277,3 +288,23 @@ class TestSerialisation(TestCase):
 def _raises() -> None:
     message = f"this source refused {_SECRET_VALUE!r}"
     raise RuntimeError(message)
+
+
+def test_stored_scope_aliases_fold_through_the_resolution_merge() -> None:
+    stored = {
+        "": {"autoload": False},
+        "t3-example": {"shared": "qualified", "only_qualified": 1},
+        "example": {"shared": "bare", "only_bare": 2},
+    }
+    folded = _fold_stored_settings(stored, {"t3-example"})
+    assert folded == {
+        "": {"autoload": False},
+        "t3-example": {"shared": "qualified", "only_qualified": 1, "only_bare": 2},
+    }
+
+
+def test_registry_family_covers_cold_hook_table_and_regular_keys() -> None:
+    assert _setting_family("agent_tier_models") == "table"
+    assert _setting_family("orchestrator_delegation_gate_enabled") == "hook-gate"
+    assert _setting_family("contribute") == "setting"
+    assert _setting_family("overlays") == "registry"

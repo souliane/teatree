@@ -97,6 +97,12 @@ class TestARefusedDocumentIsNamedNotIgnored(SimpleTestCase):
     def test_a_document_with_no_format_field_names_the_absence(self) -> None:
         assert "'format' is None" in _refusal("bare.json", b"{}").reason
 
+    def test_v1_record_is_still_readable_after_v2_ships(self) -> None:
+        assert FORMAT_VERSION == 2
+        loaded = load_snapshots([("old.json", _raw(_document(format_version=1)))])
+        assert len(loaded.snapshots) == 1
+        assert loaded.refusals == ()
+
     def test_a_snapshot_of_the_wrong_format_version_names_both_versions(self) -> None:
         reason = _refusal("future.json", _raw(_document(format_version=FORMAT_VERSION + 1))).reason
         assert f"'format_version' is {FORMAT_VERSION + 1}" in reason
