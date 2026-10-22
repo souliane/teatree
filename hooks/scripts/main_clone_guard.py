@@ -31,14 +31,13 @@ canonicalised before comparing. The git-command classification is the pure core
 imported lazily — ``hook_router`` imports this module at top level, so a
 top-level back-import would cycle.
 
-NEVER-LOCKOUT: a per-call ``[main-clone-ok: <reason>]`` token, the
+NEVER-LOCKOUT: a recorded per-action ``[gate-escape:main_clone: <reason>]`` token, the
 ``[teatree] main_clone_guard_gate_enabled = false`` kill-switch, and the shared
 ``_fail_open_or_deny`` chain (self-rescue allowlist + master fail-open +
 circuit breaker) all keep this gate from wedging a session.
 """
 
 import contextlib
-import re
 import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors managed_repo).
 import sys
 from pathlib import Path
@@ -63,7 +62,6 @@ if TYPE_CHECKING:
 sys.modules.setdefault("main_clone_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.main_clone_guard", sys.modules[__name__])
 
-_MAIN_CLONE_OK_RE = re.compile(r"\[main-clone-ok:\s*(\S[^\]]*?)\s*\]")
 _FILE_TOOLS = {"Write", "Edit"}
 
 
@@ -76,24 +74,6 @@ def _gate_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("main_clone_guard_gate_enabled", default=True)
-
-
-def _ok_token(data: dict) -> str | None:
-    """Return the reason from a ``[main-clone-ok: <reason>]`` token, else None."""
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in ("content", "new_string", "file_path", "command"):
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = _MAIN_CLONE_OK_RE.search(value[:512])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
 
 
 def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
@@ -327,9 +307,6 @@ def _gate_should_skip(data: dict) -> bool:
     if data.get("tool_name", "") not in {"Write", "Edit", "Bash"}:
         return True
     if not _gate_enabled():
-        return True
-    if reason := _ok_token(data):
-        sys.stderr.write(f"NOTE: main-clone gate skipped via [main-clone-ok: {reason}].\n")
         return True
     return not isinstance(data.get("tool_input", {}), dict)
 

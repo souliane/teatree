@@ -30,6 +30,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _skill_resolves, handle_enforce_skill_loading
+from tests._gate_escape_audit import audited_escape
 
 
 def _seed_skill(skills_dir: Path, name: str) -> None:
@@ -96,6 +97,8 @@ def _as_code_work(data: dict) -> dict:
             # Token-cap test: keep the long body but make the leading verb a
             # Python tool so the call counts as code work.
             tool_input["command"] = "uv run python -c '' && " + command
+        elif command.startswith("uv run pytest"):
+            pass
         elif "[skill-load-ok:" in command:
             token = command[command.find("# [skill-load-ok:") :]
             tool_input["command"] = f"uv run pytest -q  {token}".rstrip()
@@ -118,50 +121,32 @@ def _run(data: dict) -> tuple[bool, dict | None, str]:
 
 
 class TestPerCallSkillLoadOkEscape:
-    """``[skill-load-ok: <reason>]`` in the tool call unblocks a real demand (#1567).
-
-    The escape is the structural guarantee that a false skill-trigger can
-    never wedge an autonomous loop: a genuine, resolvable, unloaded skill
-    still blocks every Bash/Edit/Write that does NOT carry the token, but a
-    single call carrying the token proceeds. An empty reason is rejected.
-    """
-
-    def test_token_in_bash_command_unblocks(self, gate: Path) -> None:
-        _write_pending("sess-tok-bash", ["ac-reviewing-codebase"])
-        blocked, payload, err = _run(
-            {
-                "session_id": "sess-tok-bash",
-                "tool_name": "Bash",
-                "tool_input": {"command": "git status  # [skill-load-ok: unrelated loop work]"},
-            }
-        )
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input"),
+        [
+            ("Bash", {"command": "uv run pytest -q # [gate-escape:skill-loading-enforcement: false trigger]"}),
+            ("Edit", {"new_string": "x = 1 # [gate-escape:skill-loading-enforcement: false trigger]"}),
+            ("Write", {"content": "# [gate-escape:skill-loading-enforcement: false trigger]\nprint('hi')\n"}),
+        ],
+    )
+    def test_audited_token_unblocks(self, gate: Path, tool_name: str, tool_input: dict) -> None:
+        session_id = f"sess-audit-{tool_name}"
+        _write_pending(session_id, ["ac-reviewing-codebase"])
+        data = {"session_id": session_id, "tool_name": tool_name, "tool_input": tool_input}
+        with audited_escape(_as_code_work(data)) as requests:
+            blocked, payload, err = _run(data)
         assert blocked is False
         assert payload is None
-        assert "skill-load-ok" in err
+        assert requests[0]["gate"] == "skill-loading-enforcement"
+        assert "escape recorded" in err
 
-    def test_token_in_edit_new_string_unblocks(self, gate: Path) -> None:
-        _write_pending("sess-tok-edit", ["ac-reviewing-codebase"])
+    def test_legacy_token_does_not_unblock(self, gate: Path) -> None:
+        _write_pending("sess-legacy", ["ac-reviewing-codebase"])
         blocked, payload, _ = _run(
-            {
-                "session_id": "sess-tok-edit",
-                "tool_name": "Edit",
-                "tool_input": {"new_string": "x = 1  # [skill-load-ok: false trigger]"},
-            }
+            {"session_id": "sess-legacy", "tool_name": "Write", "tool_input": {"content": "# [skill-load-ok: old]\n"}}
         )
-        assert blocked is False
-        assert payload is None
-
-    def test_token_in_write_content_unblocks(self, gate: Path) -> None:
-        _write_pending("sess-tok-write", ["ac-reviewing-codebase"])
-        blocked, payload, _ = _run(
-            {
-                "session_id": "sess-tok-write",
-                "tool_name": "Write",
-                "tool_input": {"content": "# [skill-load-ok: scaffolding]\nprint('hi')\n"},
-            }
-        )
-        assert blocked is False
-        assert payload is None
+        assert blocked is True
+        assert payload is not None
 
     def test_empty_reason_does_not_unblock(self, gate: Path) -> None:
         _write_pending("sess-tok-empty", ["ac-reviewing-codebase"])
@@ -169,34 +154,25 @@ class TestPerCallSkillLoadOkEscape:
             {
                 "session_id": "sess-tok-empty",
                 "tool_name": "Bash",
-                "tool_input": {"command": "git status  # [skill-load-ok: ]"},
+                "tool_input": {"command": "uv run pytest -q # [gate-escape:skill-loading-enforcement: ]"},
             }
         )
         assert blocked is True
         assert payload is not None
-        assert payload["permissionDecision"] == "deny"
 
     def test_no_token_still_blocks(self, gate: Path) -> None:
         _write_pending("sess-tok-none", ["ac-reviewing-codebase"])
         blocked, payload, _ = _run(
-            {
-                "session_id": "sess-tok-none",
-                "tool_name": "Bash",
-                "tool_input": {"command": "git status"},
-            }
+            {"session_id": "sess-tok-none", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
         )
         assert blocked is True
         assert payload is not None
 
     def test_token_beyond_512_chars_does_not_unblock(self, gate: Path) -> None:
         _write_pending("sess-tok-far", ["ac-reviewing-codebase"])
-        buried = "echo " + ("a" * 600) + " [skill-load-ok: buried]"
+        buried = "uv run pytest -q # " + ("a" * 600) + " [gate-escape:skill-loading-enforcement: buried]"
         blocked, payload, _ = _run(
-            {
-                "session_id": "sess-tok-far",
-                "tool_name": "Bash",
-                "tool_input": {"command": buried},
-            }
+            {"session_id": "sess-tok-far", "tool_name": "Bash", "tool_input": {"command": buried}}
         )
         assert blocked is True
         assert payload is not None

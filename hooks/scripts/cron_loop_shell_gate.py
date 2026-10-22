@@ -12,7 +12,7 @@ supplies the worker-liveness probe, the per-call escape, the kill-switch, and
 routes the deny through the router's shared ``_fail_open_or_deny`` chain
 (self-rescue allowlist + master fail-open + circuit breaker all apply).
 
-NEVER-LOCKOUT: a per-call ``[cron-loop-ok: <reason>]`` token (in the scheduled
+NEVER-LOCKOUT: a per-call ``[gate-escape:block-cron-loop-shell: <reason>]`` token (in the scheduled
 prompt or a wakeup's reason), the ``[teatree] cron_loop_shell_gate_enabled =
 false`` kill-switch (``t3 <overlay> gate cron-loop-shell disable``), and the
 unconditional fail-open chain all keep this gate from wedging a session.
@@ -33,11 +33,9 @@ sys.modules.setdefault("hooks.scripts.cron_loop_shell_gate", sys.modules[__name_
 
 _SCHEDULING_TOOLS = frozenset({"CronCreate", "ScheduleWakeup"})
 
+
 #: Fields a scheduling call carries text in — the prompt is what fires, the
 #: reason is where a ScheduleWakeup caller naturally writes the escape token.
-_TEXT_FIELDS = ("prompt", "reason")
-
-
 def _cron_loop_shell_gate_enabled() -> bool:
     """Whether the gate is enabled (default True); an explicit ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
@@ -80,21 +78,10 @@ def _scheduled_text(tool_input: dict) -> str:
     return prompt if isinstance(prompt, str) else ""
 
 
-def _escape_reason(core, tool_input: dict) -> str | None:  # noqa: ANN001 — duck-typed core handle
-    for field in _TEXT_FIELDS:
-        value = tool_input.get(field, "")
-        if isinstance(value, str) and (reason := core.cron_loop_ok_reason(value)):
-            return reason
-    return None
-
-
 def _finding(core, data: dict) -> "CronLoopShellFinding | None":  # noqa: ANN001 — duck-typed core handle
     """The gate's verdict for this call, or None when it is out of scope or escaped."""
     tool_input = data.get("tool_input", {})
     if not isinstance(tool_input, dict):
-        return None
-    if reason := _escape_reason(core, tool_input):
-        sys.stderr.write(f"NOTE: cron-loop-shell gate skipped via [cron-loop-ok: {reason}].\n")
         return None
     return core.find_cron_loop_shell(_scheduled_text(tool_input), worker_alive=_worker_is_alive())
 

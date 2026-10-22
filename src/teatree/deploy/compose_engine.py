@@ -76,6 +76,10 @@ class DockerComposeEngine:
     def up(self, generation: str, services: Sequence[str]) -> None:
         self._compose(generation, "up", "-d", "--no-deps", *services, action=f"up {' '.join(services)}")
 
+    def topology_services(self, generation: str) -> frozenset[str]:
+        result = self._compose(generation, "config", "--services", action="read compose services")
+        return frozenset(result.stdout.splitlines())
+
     def stop(self, services: Sequence[str]) -> None:
         ids = [container for service in services for container in self._containers(service, running_only=True)]
         if ids:
@@ -118,15 +122,14 @@ class DockerComposeEngine:
             args.insert(1, "-a")
         return self._docker(*args).stdout.split()
 
-    def _compose(self, generation: str, *args: str, action: str) -> None:
+    def _compose(self, generation: str, *args: str, action: str) -> CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="teatree-roll-") as scratch:
             files = self._topology(generation, Path(scratch))
             argv = ["docker", "compose", "-p", self.project, "--project-directory", str(self.deploy_dir)]
             argv += [flag for path in files for flag in ("-f", str(path))]
-            self._checked(
-                run_allowed_to_fail([*argv, *args], expected_codes=None, env=self._compose_env(generation)),
-                action=action,
-            )
+            result = run_allowed_to_fail([*argv, *args], expected_codes=None, env=self._compose_env(generation))
+            self._checked(result, action=action)
+            return result
 
     def _compose_env(self, generation: str) -> dict[str, str]:
         if generation:

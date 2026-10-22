@@ -150,6 +150,7 @@ def test_a_second_stack_rolls_under_its_own_project_and_forwards_its_identity(tm
         "TEATREE_COMPOSE_PROJECT": "zddproof",
         "TEATREE_PROMOTED_TAG": "zdd:latest",
         "TEATREE_ADMIN_PORT": "8100",
+        "TEATREE_WEBHOOK_PORT": "8101",
         "TEATREE_IMAGE_REPOSITORY": "registry.example/team/teatree-factory",
     }
 
