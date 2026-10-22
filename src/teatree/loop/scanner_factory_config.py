@@ -33,7 +33,7 @@ def stranger_pr_admission(overlay_name: str) -> tuple[tuple[str, ...], str]:
 def _user_slack_id_for_overlay(overlay_name: str) -> str:
     """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
 
-    Used by the PR-sweep scanner to know where to DM its findings. Reads the DB
+    Used by PR-sweep for DMs and review-nag for requester identity. Reads the DB
     overlays registry + ``ConfigSetting`` store directly so a fresh tick picks up
     a runtime config change without an overlay reload.
     """

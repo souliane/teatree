@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from teatree.backends.github.ci_eval_client import DEFAULT_CI_EVAL_REPO
 from teatree.ci_oauth_switch import CiAccountSwitcher, CiAccountSwitchError
+from teatree.config import get_effective_settings
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -18,6 +19,10 @@ def _cached_rows() -> list["TokenAccountRow"]:
     from teatree.token_report import TokenReport  # noqa: PLC0415 — requires ready Django apps
 
     return TokenReport(from_cache=True).rows()
+
+
+def _configured_allowlist() -> Sequence[str]:
+    return get_effective_settings().eval_ci_account_allowlist
 
 
 def _declared_deployment_repo() -> str:
@@ -31,7 +36,7 @@ def _declared_deployment_repo() -> str:
 
 @dataclass(slots=True)
 class CiOauthPoolReconcileScanner:
-    """Refresh a write-only GitHub secret from every configured pass entry.
+    """Refresh a write-only GitHub secret from allowlisted pass entries.
 
     The housekeeping loop supplies the hourly cadence. Account health comes from
     the cache: reconciliation is about membership, not a fresh Anthropic probe.
@@ -43,6 +48,7 @@ class CiOauthPoolReconcileScanner:
     repo: str | None = None
     deployment_repo: str | None = None
     rows: Callable[[], Sequence["TokenAccountRow"]] = _cached_rows
+    allowlist: Callable[[], Sequence[str]] = _configured_allowlist
     switcher: Callable[[str], CiAccountSwitcher] = lambda repo: CiAccountSwitcher(repo=repo)
     name: str = "ci_oauth_pool_reconcile"
 
@@ -62,7 +68,7 @@ class CiOauthPoolReconcileScanner:
                 )
             ]
         try:
-            accounts = self.switcher(repo).reconcile_pool(self.rows())
+            accounts = self.switcher(repo).reconcile_pool(self.rows(), allowlist=self.allowlist())
         except CiAccountSwitchError as exc:
             return [ScanSignal("ci_oauth_pool.failed", f"CI OAuth pool reconciliation failed: {exc}")]
         except Exception as exc:  # noqa: BLE001 — keep the loop alive; do not expose unknown secret-bearing errors

@@ -438,6 +438,8 @@ class CodeHostBackend(Protocol):
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]: ...  # pragma: no branch
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:  # pragma: no branch
         """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
         ...
@@ -665,6 +667,8 @@ class MessagingBackend(Protocol):
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def resolve_unique_active_user_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def resolve_usergroup_id(self, handle: str) -> str: ...  # pragma: no branch
 

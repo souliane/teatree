@@ -809,7 +809,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .cache/django-test-template
-          key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py') }}
+          key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'src/**/migrations/max_migration.txt', 'uv.lock', 'tests/django_settings.py') }}
       - name: Ensure the template cache dir exists (fresh on a cache miss)
         run: mkdir -p .cache/django-test-template
       # Hosted runners come in hardware classes; a shard's timing is only comparable within one.

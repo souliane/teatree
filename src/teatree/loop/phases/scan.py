@@ -117,7 +117,7 @@ def collect_scan(
     """
     outcome = ScanOutcome()
     future_to_label: dict[Future[_ScanResult], str] = {
-        pool.submit(_run_job_closing_connections, job): job.scanner.name for job in jobs
+        pool.submit(_run_job_closing_connections, job): job.label for job in jobs
     }
     deadline = time.monotonic() + per_job_timeout
     for future, label in future_to_label.items():

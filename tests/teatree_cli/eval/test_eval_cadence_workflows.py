@@ -1,21 +1,25 @@
-"""Static checks for the three-tier eval cadence workflows (owner-refined 2026-07-23).
+"""Contracts for changed-scenario, nightly debt/smoke, and full-sweep eval workflows."""
 
-PER-PR (`eval-pr.yml` + the reusable) runs only the changed scenarios and is
-zero-is-RED; NIGHTLY (`eval-nightly.yml`) runs a small smoke slice ONLY on a day
-something merged; WEEKLY (`eval.yml`) runs the full catalog on its own cron,
-unchanged. These guard that contract against a future edit silently removing a
-piece of it.
-"""
-
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
+import yaml
+
+from tests._actions_workflow import render, step_runs
 
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr.yml"
 _PR_REUSABLE = _WORKFLOWS / "eval-pr-reusable.yml"
 _NIGHTLY = _WORKFLOWS / "eval-nightly.yml"
 _WEEKLY = _WORKFLOWS / "eval.yml"
+_WEEKLY_REUSABLE = _WORKFLOWS / "eval-weekly-reusable.yml"
+_BENCHMARK = _WORKFLOWS / "eval-benchmark.yml"
 _CACHE_ACTION = _WORKFLOWS.parent / "actions" / "eval-verdict-cache" / "action.yml"
+_BASH = shutil.which("bash") or "/bin/bash"
 
 
 def test_pr_verdict_caches_merge_main_before_run_and_refresh_before_save() -> None:
@@ -72,6 +76,63 @@ def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
     text = _WEEKLY.read_text(encoding="utf-8")
     assert "summary-directory: ${{ runner.temp }}/summaries" in text
     assert 'mkdir -p "$SUMMARY_DIRECTORY"' in _CACHE_ACTION.read_text(encoding="utf-8")
+
+
+def test_oauth_selector_steps_receive_repository_reserve_overrides() -> None:
+    selectors = 0
+    for workflow in _WORKFLOWS.glob("eval*.yml"):
+        jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+        for job in jobs.values():
+            for step in job.get("steps", []):
+                if "scripts/eval/select_oauth.py" not in step.get("run", ""):
+                    continue
+                selectors += 1
+                env = step["env"]
+                assert env["EVAL_RESERVE_5H_FREE"] == "${{ vars.EVAL_RESERVE_5H_FREE }}", workflow
+                assert env["EVAL_RESERVE_7D_FREE"] == "${{ vars.EVAL_RESERVE_7D_FREE }}", workflow
+    assert selectors > 0
+
+
+def test_benchmark_caller_grants_prepare_read_permissions() -> None:
+    caller = yaml.safe_load(_BENCHMARK.read_text(encoding="utf-8"))
+    grants = caller["jobs"]["benchmark"]["permissions"]
+    assert grants["actions"] == "read"
+    assert grants["pull-requests"] == "read"
+
+
+def test_benchmark_publish_downloads_ledger_before_settlement() -> None:
+    workflow = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))
+    downloads = [
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if step.get("name") == "Download the owed ledger"
+    ]
+    assert downloads == ["publish"]
+    steps = workflow["jobs"]["publish"]["steps"]
+    downloaded = next(i for i, step in enumerate(steps) if step.get("name") == "Download the owed ledger")
+    settled = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name") == "Settle owed scenarios covered by the full green benchmark"
+    )
+    assert downloaded < settled
+    assert steps[downloaded]["with"]["name"] == "eval-owed-ledger"
+    assert steps[downloaded]["with"]["path"] == "${{ runner.temp }}"
+    assert steps[settled]["run"].startswith("uv run t3 eval owed settle")
+    assert '--passed-file "$RUNNER_TEMP/eval-owed-passed.txt"' in steps[settled]["run"]
+
+
+def test_benchmark_ledger_commands_use_migrated_runner_sandboxes() -> None:
+    jobs = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    for job, command in (
+        ("prepare", "Harvest owed scenarios from merged PRs"),
+        ("publish", "Settle owed scenarios covered by the full green benchmark"),
+    ):
+        steps = jobs[job]["steps"]
+        names = [step.get("name") for step in steps]
+        assert names.index("Sandbox the control DB") < names.index("Migrate the self-DB") < names.index(command)
+        assert "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" in steps[names.index("Sandbox the control DB")]["run"]
 
 
 def test_verdict_cache_bookkeeping_cannot_fail_the_eval_job() -> None:
@@ -188,13 +249,39 @@ class TestNightlySmokeLane:
         text = _NIGHTLY.read_text(encoding="utf-8")
         assert 'cron: "0 5 * * *"' in text
 
-    def test_nightly_is_conditional_on_a_same_day_merge(self) -> None:
-        # NOT an unconditional nightly: it runs only when >=1 PR merged in the last
-        # day (a 1-day window, vs the weekly's 7). No merge → skip, no token spend.
+    def test_nightly_checks_recent_merges_when_nothing_is_owed(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
         assert "merged_prs_since.py" in text
         assert "--days 1" in text
         assert "if: needs.prepare.outputs.run_eval == 'true'" in text
+
+    def test_owed_scenarios_run_the_shipped_prepare_gate(self, tmp_path: Path) -> None:
+        jobs = yaml.safe_load(_NIGHTLY.read_text(encoding="utf-8"))["jobs"]
+        gate = next(step for step in jobs["prepare"]["steps"] if step.get("id") == "gate")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, body in (("gh", '#!/bin/sh\nprintf "[]"\n'), ("uv", "#!/bin/sh\nexit 1\n")):
+            stub = bin_dir / name
+            stub.write_text(body, encoding="utf-8")
+            stub.chmod(0o755)
+        output = tmp_path / "output"
+        result = subprocess.run(
+            [_BASH, "-e", "-c", gate["run"].replace("${{ github.repository }}", "owner/repo")],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "EVENT_NAME": "schedule",
+                "OWED": "alpha",
+                "GITHUB_OUTPUT": str(output),
+            },
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert output.read_text(encoding="utf-8") == "run_eval=true\n"
 
     def test_nightly_runs_a_bounded_cheap_smoke_slice(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
@@ -218,10 +305,197 @@ class TestNightlySmokeLane:
         assert "scripts/eval/select_oauth.py" in text
 
 
-class TestWeeklyCatalogUntouched:
-    def test_weekly_still_runs_the_full_catalog_on_its_own_cron(self) -> None:
-        # The full-catalog weekly stays on its existing Monday 06:00 cadence — the
-        # additive PER-PR + NIGHTLY tiers do not replace it.
-        text = _WEEKLY.read_text(encoding="utf-8")
-        assert 'cron: "0 6 * * 1"' in text
-        assert "--days 7" in text
+@pytest.mark.parametrize(
+    ("gate", "owed", "parked", "expected"),
+    [
+        ("false", "alpha", "false", True),
+        ("true", "", "false", True),
+        ("true", "", "true", False),
+        ("false", "", "false", False),
+    ],
+)
+def test_benchmark_prepare_run_eval_expression(gate: str, owed: str, parked: str, *, expected: bool) -> None:
+    prepare = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["prepare"]
+    context = {
+        "steps": {
+            "gate": {"outputs": {"run_eval": gate}},
+            "owed": {"outputs": {"owed": owed}},
+            "reserve": {"outputs": {"parked": parked}},
+        }
+    }
+    assert render(prepare["outputs"]["run_eval"], context) is expected
+
+
+@pytest.mark.parametrize(
+    ("gate", "owed", "expected"), [("false", "alpha", True), ("true", "", True), ("false", "", False)]
+)
+def test_benchmark_reserve_step_runs_for_work(gate: str, owed: str, *, expected: bool) -> None:
+    prepare = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["prepare"]
+    reserve = next(step for step in prepare["steps"] if step.get("id") == "reserve")
+    context = {"steps": {"gate": {"outputs": {"run_eval": gate}}, "owed": {"outputs": {"owed": owed}}}}
+    assert step_runs(reserve, context, earlier_step_failed=False, cancelled=False) is expected
+
+
+def test_benchmark_publish_sets_true_after_successful_verification(tmp_path: Path) -> None:
+    publish = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]["publish"]
+    verify = next(step for step in publish["steps"] if step.get("id") == "verify")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$UV_CALLS"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    (tmp_path / "benchmarks").mkdir()
+    output = tmp_path / "output"
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        [_BASH, "-e", "-c", verify["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+            "EVAL_MATRIX": "[{}]",
+            "UV_CALLS": str(calls),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == "publish=true\n"
+    assert calls.read_text(encoding="utf-8").startswith("run t3 eval verify-benchmark-publish ")
+
+
+@pytest.mark.parametrize(
+    ("receipt", "has_summary", "publishes"),
+    [(None, True, False), ("parked", True, False), ("complete", True, True), ("complete", False, False)],
+)
+def test_weekly_dashboard_requires_every_leg_to_complete(
+    tmp_path: Path, receipt: str | None, *, has_summary: bool, publishes: bool
+) -> None:
+    jobs = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))["jobs"]
+    eval_steps = jobs["eval"]["steps"]
+    upload = next(step for step in eval_steps if step.get("name") == "Upload the leg result")
+    assert upload["with"]["path"].endswith("/eval-leg-result-${{ steps.artifact.outputs.suffix }}.txt")
+    publish_steps = jobs["publish"]["steps"]
+    download = next(step for step in publish_steps if step.get("name") == "Download every leg result")
+    assert download["with"]["pattern"] == "eval-leg-result-*"
+    assert download["with"]["merge-multiple"] is True
+    merge = next(
+        step for step in publish_steps if step.get("name") == "Merge the shard summaries into the public dashboard"
+    )
+    (tmp_path / "summaries").mkdir()
+    if has_summary:
+        (tmp_path / "summaries" / "eval-summary-one.md").write_text("measured row\n", encoding="utf-8")
+    (tmp_path / "receipts").mkdir()
+    if receipt is not None:
+        (tmp_path / "receipts" / "eval-leg-result-one.txt").write_text(receipt + "\n", encoding="utf-8")
+    dashboard = tmp_path / "docs" / "evals" / "index.md"
+    dashboard.parent.mkdir(parents=True)
+    dashboard.write_text("old dashboard\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$UV_CALLS"\ncat > /dev/null\n', encoding="utf-8")
+    stub.chmod(0o755)
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        [_BASH, "-e", "-c", merge["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary"),
+            "EVAL_MATRIX": "[{}]",
+            "RUN_URL": "https://example.test/run",
+            "SHA": "a" * 40,
+            "UV_CALLS": str(calls),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls.exists() is publishes
+
+
+def test_scheduled_sweep_window_is_24_hours_in_both_selectors() -> None:
+    workflow = yaml.safe_load(_WEEKLY.read_text(encoding="utf-8"))
+    prepare = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "sweep")
+    selector = next(step for step in workflow["jobs"]["eval"]["steps"] if step.get("id") == "select")
+    hours = int(prepare["env"]["EVAL_SWEEP_WITHIN_HOURS"])
+    assert hours == 24
+    assert f"&& '{hours}' || ''" in selector["env"]["EVAL_SWEEP_WITHIN_HOURS"]
+
+
+def test_nightly_ledger_steps_are_main_only_and_retries_skip_passed_debt() -> None:
+    workflow = yaml.safe_load(_NIGHTLY.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]
+    for name in (
+        "Harvest the owed-scenario ledger",
+        "Upload the owed-scenario ledger",
+        "Settle the owed-scenario ledger",
+        "Upload the settled owed-scenario ledger",
+    ):
+        step = next(step for job in steps.values() for step in job.get("steps", []) if step.get("name") == name)
+        assert "github.ref == 'refs/heads/main'" in step["if"]
+    settle = next(step for step in steps["eval"]["steps"] if step.get("name") == "Settle the owed-scenario ledger")
+    owed = next(step for step in steps["eval"]["steps"] if step.get("name") == "Owed scenarios (in Docker)")
+    assert 'grep -Fxq -- "$name" "$PASSED"' in owed["with"]["command"]
+    assert '--attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"' in settle["run"]
+
+
+def test_pr_deferred_tail_reaches_the_owed_record_step() -> None:
+    jobs = yaml.safe_load(_PR.read_text(encoding="utf-8"))["jobs"]
+    detect = jobs["detect"]
+    select = next(step for step in detect["steps"] if step.get("id") == "select")
+    record = next(step for step in jobs["eval"]["steps"] if step.get("name") == "Record the owed scenarios")
+    assert "--deferred-out deferred.txt" in select["run"]
+    assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
+    assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
+    assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
+
+
+def test_reusable_pr_deferred_tail_reaches_the_owed_record_step() -> None:
+    jobs = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    detect = jobs["detect"]
+    select = next(step for step in detect["steps"] if step.get("id") == "select")
+    record = next(step for step in jobs["eval"]["steps"] if step.get("name") == "Record owed scenarios")
+    assert "--deferred-out deferred.txt" in select["run"]
+    assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
+    assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
+    assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"
+    assert "for reason in limit deferred" in record["run"]
+    assert '--reason "$reason"' in record["run"]
+
+
+def test_reusable_owed_steps_require_the_old_overlay_to_expose_the_command() -> None:
+    pr = yaml.safe_load(_PR_REUSABLE.read_text(encoding="utf-8"))["jobs"]["eval"]["steps"]
+    availability = next(step for step in pr if step.get("id") == "owed-availability")
+    record = next(step for step in pr if step.get("name") == "Record owed scenarios")
+    upload = next(step for step in pr if step.get("name") == "Upload the owed scenarios")
+    assert "t3 eval owed --help" in availability["run"]
+    assert "steps.owed-availability.outputs.enabled == 'true'" in record["if"]
+    assert "steps.owed-availability.outputs.enabled == 'true'" in upload["if"]
+    assert "always()" in upload["if"]
+
+    weekly = yaml.safe_load(_WEEKLY_REUSABLE.read_text(encoding="utf-8"))["jobs"]
+    prepare = weekly["prepare"]["steps"]
+    select = next(step for step in weekly["eval"]["steps"] if step.get("id") == "select")
+    settle = next(step for step in weekly["publish"]["steps"] if step.get("id") == "settle")
+    uploads = [
+        step
+        for job in weekly.values()
+        for step in job.get("steps", [])
+        if step.get("with", {}).get("name") == "eval-owed-ledger"
+        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert "t3 eval owed collect" in next(step for step in prepare if step.get("id") == "owed")["run"]
+    assert select["run"] == 'uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]'
+    assert "t3 eval owed settle" in settle["run"]
+    assert uploads

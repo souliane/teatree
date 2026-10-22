@@ -41,24 +41,16 @@ from django.db import OperationalError, connections
 # serialization). The race test must run against the SAME options the
 # prod config ships, not a bare ``{}`` — otherwise it tests a backend
 # the user never runs.
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import register_control_db_alias, wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
 
 
 def _make_alias(tmp_path: Path) -> str:
     """Register a Django connection on a fresh file-backed SQLite DB with prod OPTIONS."""
     alias = f"ans_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(db_file),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
+    register_control_db_alias(alias, db_file)
     with connections[alias].cursor() as cur:
         cur.execute("CREATE TABLE answerable (id INTEGER PRIMARY KEY, answered_at TEXT)")
         cur.execute("INSERT INTO answerable (id, answered_at) VALUES (1, NULL)")

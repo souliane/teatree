@@ -45,6 +45,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "agent_route_paid_fallback",
         "anthropic_api_key_pass_paths",
         "anthropic_oauth_pass_paths",
+        "eval_ci_account_allowlist",
         "approved_recipe_sha",
         "architectural_review_after_merge_count",
         "architectural_review_cadence_hours",

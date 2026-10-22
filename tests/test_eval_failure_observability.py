@@ -37,10 +37,11 @@ _MATRIX_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK)
 _UPLOADING_WORKFLOWS = (*_METERED_WORKFLOWS, _GH_PR_HOST)
 
 _SUFFIX_EXPR = "steps.artifact.outputs.suffix"
+_REDACT_IN_PLACE = "artifact_redaction in-place"
 _UPLOAD_ACTION = "actions/upload-artifact"
 _RETRY_ACTION = "nick-fields/retry"
 _LOG_ASSIGNMENT = re.compile(r'LOG="\$RUNNER_TEMP/eval-run-[^"]*\.log"')
-_RUNNER_TEMP_REF = re.compile(r"\$RUNNER_TEMP/(?P<name>[A-Za-z0-9_.$-]+)")
+_RUNNER_TEMP_REF = re.compile(r"\$RUNNER_TEMP/(?P<name>[A-Za-z0-9_.$/*-]+)")
 #: A shell variable, a GitHub expression and a glob are all "the varying part" here;
 #: collapsing them to one placeholder compares the SHAPE of the two filenames without
 #: needing to know each variable's runtime value.
@@ -71,6 +72,16 @@ def _eval_command(workflow: Path) -> str:
     raise AssertionError(msg)
 
 
+def _eval_job_scripts(workflow: Path) -> list[str]:
+    return [
+        script
+        for step in _eval_steps(workflow)
+        if not step.get("uses", "").startswith(_UPLOAD_ACTION)
+        for script in (step.get("run"), step.get("with", {}).get("command"))
+        if script and _REDACT_IN_PLACE not in script
+    ]
+
+
 def _upload_step_named(workflow: Path, name_fragment: str) -> dict[str, Any]:
     for step in _upload_steps(workflow):
         if name_fragment in step["with"]["name"]:
@@ -96,13 +107,13 @@ class TestEveryUploadIsDiagnostic:
         # An `if: always()` upload of a filename nothing writes is worse than no upload:
         # `if-no-files-found: warn` makes it fail silently, so the artifact list reads as
         # complete while the report that would explain the failure was never published.
-        command = _eval_command(workflow)
-        written = {_artifact_shape(match.group("name")) for match in _RUNNER_TEMP_REF.finditer(command)}
+        scripts = "\n".join(_eval_job_scripts(workflow))
+        written = {_artifact_shape(match.group("name")) for match in _RUNNER_TEMP_REF.finditer(scripts)}
         for step in _upload_steps(workflow):
             published = _artifact_shape(step["with"]["path"])
             assert published in written, (
-                f"{workflow.name}: upload step {step.get('name')!r} publishes {published!r}, which the eval "
-                f"command never writes (it renders {sorted(written)})."
+                f"{workflow.name}: upload step {step.get('name')!r} publishes {published!r}, which no eval "
+                f"job step writes (they render {sorted(written)})."
             )
 
 
