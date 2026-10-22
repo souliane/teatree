@@ -7,12 +7,15 @@ model obedience. The only per-harness surface is :class:`SteerableSession`.
 import asyncio
 import hashlib
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import monotonic
 from typing import NotRequired, Protocol, TypedDict, runtime_checkable
+
+from teatree.generation import current_generation
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class RejectCode(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     DROPPED_UNREAD = "dropped_unread"
     RECIPIENT_CANNOT_RECEIVE = "recipient_cannot_receive"
-    STALE_SESSION = "stale_session"
+    STALE_COMMAND = "stale_command"
 
 
 class SteerRejectedError(Exception):
@@ -114,12 +117,8 @@ class SessionFacts(TypedDict):
     open_tool_seconds: float | None
     last_event_age_seconds: float | None
     context_tokens: int | None
-    fence: "LiveFence | None"
-
-
-class LiveFence(TypedDict):
-    claim: str
-    worker_generation: str
+    attempt: str
+    generation: str
 
 
 class PeerIdentity(TypedDict):
@@ -132,13 +131,23 @@ class PeerIdentity(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
+class LiveFence:
+    attempt: str
+    generation: str
+
+    @classmethod
+    def mint(cls) -> "LiveFence":
+        return cls(uuid.uuid4().hex, current_generation())
+
+
+@dataclass(frozen=True, slots=True)
 class LiveTask:
     pk: int
     ticket: int | None
     phase: str
     harness: str
     model: str
-    fence: LiveFence | None = None
+    fence: LiveFence = field(default_factory=LiveFence.mint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +234,7 @@ class LiveSessionController:
         self._pushing = 0
         self._idle: asyncio.Future[FollowUp | None] | None = None
         self._starting: FollowUp | None = None
+        self._follow_up_active = False
         self._turn_running = True
         self._claim_live = claim_live
 
@@ -251,6 +261,7 @@ class LiveSessionController:
 
     def begin_idle(self) -> asyncio.Future[FollowUp | None]:
         self._turn_running = False
+        self._follow_up_active = False
         self._idle = asyncio.get_running_loop().create_future()
         return self._idle
 
@@ -270,7 +281,7 @@ class LiveSessionController:
             return "closed"
         if self.idle:
             return "idle"
-        if self._turn_running and self._capture.result_message is not None and self._starting is not None:
+        if self._turn_running and self._follow_up_active:
             return "busy"
         if self._capture.result_message is not None:
             return "finishing"
@@ -295,7 +306,8 @@ class LiveSessionController:
             "open_tool_seconds": round(now - open_tool[1], 1) if open_tool else None,
             "last_event_age_seconds": round(now - last_event, 1) if last_event is not None else None,
             "context_tokens": self._capture.context_tokens,
-            "fence": self.task.fence,
+            "attempt": self.task.fence.attempt,
+            "generation": self.task.fence.generation,
         }
 
     def known_receipt(self, command_id: str, text: str, kind: str = "steer") -> ControlReceipt | None:
@@ -342,6 +354,7 @@ class LiveSessionController:
         self._idle = None
         self._starting = follow_up
         self._turn_running = True
+        self._follow_up_active = True
         window.set_result(follow_up)
         return follow_up
 
@@ -374,20 +387,30 @@ class LiveSessionController:
             return await asyncio.shield(entry[1])
         if refusal := self._follow_up_refusal(text):
             return ControlReceipt.rejected(command_id, self.task.pk, refusal)
-        if self._claim_live is not None and not await self._claim_live():
-            self.close()
-            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_SESSION)
-        follow_up = self._start_turn(frame_follow_up(text, command_id), wait)
-        if follow_up is None:
+        if not self.idle:
             return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
         settled: asyncio.Future[ControlReceipt] = asyncio.get_running_loop().create_future()
         self._receipts[command_id] = (_digest(text, "follow_up"), settled)
         self._in_flight.add(settled)
         try:
-            receipt = await self._started_receipt(follow_up, command_id)
+            if self._claim_live is not None and not await self._claim_live():
+                self.close()
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
+            elif self._closed:
+                receipt = ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+            else:
+                follow_up = self._start_turn(frame_follow_up(text, command_id), wait)
+                receipt = (
+                    await self._started_receipt(follow_up, command_id)
+                    if follow_up is not None
+                    else ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+                )
         except asyncio.CancelledError:
             settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
             raise
+        except Exception:
+            logger.warning("Task %s: follow-up claim could not be verified", self.task.pk, exc_info=True)
+            receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._in_flight.discard(settled)
         settled.set_result(receipt)
@@ -410,15 +433,7 @@ class LiveSessionController:
         if refusal is not None:
             return ControlReceipt.rejected(command_id, self.task.pk, refusal)
         if self.idle:
-            if self._claim_live is not None and not await self._claim_live():
-                self.close()
-                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_SESSION)
-            follow_up = self._start_turn(
-                f"{framed}\nFinish with your complete result envelope as the last plain JSON object.", wait
-            )
-            if follow_up is None:
-                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.NOT_IDLE)
-            return await self._started_receipt(follow_up, command_id)
+            return await self._push_idle(framed, command_id, wait)
         self._pushing += 1
         try:
             return await self._deliver(framed, command_id, wait)
@@ -427,6 +442,22 @@ class LiveSessionController:
             return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._pushing -= 1
+
+    async def _push_idle(self, framed: str, command_id: str, wait: float) -> ControlReceipt:
+        if self._claim_live is not None:
+            try:
+                claim_holds = await self._claim_live()
+            except Exception:
+                logger.warning("Task %s: peer wake claim could not be verified", self.task.pk, exc_info=True)
+                return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+            if not claim_holds:
+                self.close()
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.STALE_COMMAND)
+        prompt = f"{framed}\nFinish with your complete result envelope as the last plain JSON object."
+        follow_up = self._start_turn(prompt, wait)
+        if follow_up is None:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.SESSION_CLOSED)
+        return await self._started_receipt(follow_up, command_id)
 
     def _session_refusal(self) -> RejectCode | None:
         if self._closed:

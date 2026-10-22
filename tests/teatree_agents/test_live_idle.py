@@ -158,3 +158,125 @@ def test_a_failed_follow_up_start_is_unknown_and_is_not_retried(failure: str) ->
     assert outcome is ControlOutcome.UNKNOWN_DELIVERY
     assert late_code is RejectCode.SESSION_CLOSED
     assert session.starts == 1
+
+
+def test_close_during_follow_up_start_does_not_crash_the_driver() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class SlowStart(_CapableSession):
+        async def follow_up(self, prompt: str) -> None:
+            entered.set()
+            await release.wait()
+
+        async def receive_response(self) -> AsyncIterator[object]:
+            yield result_message(result="second")
+
+    async def run() -> ControlOutcome:
+        capture = StreamCapture()
+        capture.observe(result_message(result="first"))
+        session = SlowStart()
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(session, capture, live, capture.outcome(), budget=IdleWindowBudget(1, None))
+        )
+        await asyncio.sleep(0)
+        requested = asyncio.create_task(live.follow_up("next", command_id="one", wait=1))
+        await entered.wait()
+        live.close()
+        release.set()
+        await held
+        return (await requested).outcome
+
+    assert asyncio.run(run()) is ControlOutcome.UNKNOWN_DELIVERY
+
+
+def test_a_failed_follow_up_drain_is_recorded_as_failed() -> None:
+    class BrokenDrain(_CapableSession):
+        async def receive_response(self) -> AsyncIterator[object]:
+            message = "broken pipe"
+            raise RuntimeError(message)
+            yield result_message()
+
+    async def run() -> str | None:
+        capture = StreamCapture()
+        capture.observe(result_message(result="first"))
+        session = BrokenDrain()
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(session, capture, live, capture.outcome(), budget=IdleWindowBudget(0.1, None))
+        )
+        await asyncio.sleep(0)
+        receipt = await live.follow_up("next", command_id="one", wait=1)
+        assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+        return (await held).stuck_reason
+
+    assert asyncio.run(run()) is not None
+
+
+def test_compaction_stop_in_a_follow_up_prevents_another_idle_window() -> None:
+    stopped = False
+
+    class CompactedTurn(_CapableSession):
+        async def receive_response(self) -> AsyncIterator[object]:
+            nonlocal stopped
+            stopped = True
+            yield result_message(result="second")
+
+    async def run() -> tuple[bool, str]:
+        capture = StreamCapture()
+        capture.observe(result_message(result="first"))
+        session = CompactedTurn()
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(
+                session,
+                capture,
+                live,
+                capture.outcome(),
+                budget=IdleWindowBudget(1, None, lambda: stopped),
+            )
+        )
+        await asyncio.sleep(0)
+        receipt = await live.follow_up("next", command_id="one", wait=1)
+        assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+        outcome = await held
+        return outcome.compaction_stopped, live.state
+
+    assert asyncio.run(run()) == (True, "closed")
+
+
+def test_a_streaming_follow_up_is_busy_and_cannot_reuse_the_first_result() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class ResultlessTurn(_CapableSession):
+        async def receive_response(self) -> AsyncIterator[object]:
+            entered.set()
+            await release.wait()
+            yield assistant_text("partial")
+
+    async def run() -> tuple[str, object, str | None]:
+        capture = StreamCapture()
+        capture.observe(result_message(result="first"))
+        session = ResultlessTurn()
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(session, capture, live, capture.outcome(), budget=IdleWindowBudget(0.1, None))
+        )
+        await asyncio.sleep(0)
+        receipt = await live.follow_up("next", command_id="one", wait=1)
+        assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+        await entered.wait()
+        state, previous_result = live.state, capture.result_message
+        release.set()
+        outcome = await held
+        return state, previous_result, outcome.stuck_reason
+
+    state, previous_result, failure = asyncio.run(run())
+    assert state == "busy"
+    assert previous_result is None
+    assert failure == "follow-up turn ended without a result"

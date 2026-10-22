@@ -35,7 +35,7 @@ class _OperatorCommand:
     command_id: str
     wait: float
     kind: str
-    fence: LiveFence | None
+    fence: LiveFence
 
 
 class LiveSessionRegistry:
@@ -75,14 +75,12 @@ class LiveSessionRegistry:
             entry = self._live.get(task_pk)
         return entry.controller.facts() if entry is not None else None
 
-    async def steer(
-        self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence | None = None
-    ) -> ControlReceipt:
+    async def steer(self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence) -> ControlReceipt:
         """Hand the command to the session's owning loop and await its receipt from any other loop."""
         return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "steer", fence))
 
     async def follow_up(
-        self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence | None = None
+        self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence
     ) -> ControlReceipt:
         return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "follow_up", fence))
 
@@ -90,31 +88,31 @@ class LiveSessionRegistry:
         with self._lock:
             entry = self._live.get(task_pk)
             tombstone = self._closed.get(task_pk)
+            target = entry.controller if entry is not None else tombstone
+            if target is not None and target.task.fence != request.fence:
+                return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.STALE_COMMAND)
         if entry is None:
             if tombstone is None:
                 return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.UNKNOWN_SESSION)
-            if tombstone.task.fence != request.fence:
-                return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.STALE_SESSION)
             known = tombstone.known_receipt(request.command_id, request.text, request.kind)
             return known or ControlReceipt.rejected(request.command_id, task_pk, RejectCode.SESSION_CLOSED)
-        if entry.controller.task.fence != request.fence:
-            return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.STALE_SESSION)
         method = entry.controller.follow_up if request.kind == "follow_up" else entry.controller.steer
         command = method(request.text, command_id=request.command_id, wait=request.wait)
         return await self._on_owner_loop(entry, command, command_id=request.command_id, wait=request.wait)
 
     async def push(
-        self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence | None = None
+        self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence
     ) -> ControlReceipt:
         """A peer message into the session's current turn; a closed session keeps no peer receipt."""
         with self._lock:
             entry = self._live.get(task_pk)
             closed = task_pk in self._closed
+            target = entry.controller if entry is not None else self._closed.get(task_pk)
+            if target is not None and target.task.fence != fence:
+                return ControlReceipt.rejected(command_id, task_pk, RejectCode.STALE_COMMAND)
         if entry is None:
             code = RejectCode.SESSION_CLOSED if closed else RejectCode.UNKNOWN_SESSION
             return ControlReceipt.rejected(command_id, task_pk, code)
-        if entry.controller.task.fence != fence:
-            return ControlReceipt.rejected(command_id, task_pk, RejectCode.STALE_SESSION)
         command = entry.controller.push(framed, command_id=command_id, wait=wait)
         return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
 

@@ -145,7 +145,7 @@ class LiveControlIntegrationTests(TestCase):
                 lambda: any(row["state"] == "idle" for row in shared_registry().sessions()),
                 "idle session",
             )
-            assert self.live.inspect(self.task.pk)["fence"] is not None
+            assert self.live.inspect(self.task.pk)["attempt"]
             idle_steer = self.live.steer(self.task.pk, "wrong turn", command_id="idle-steer", wait=1)
             receipts = []
             for _ in range(2):
@@ -381,8 +381,8 @@ class LiveControlIntegrationTests(TestCase):
 
         def operator() -> tuple[ReceiptPayload, LiveFence]:
             _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
-            fence = self.live.inspect(self.task.pk)["fence"]
-            assert fence is not None
+            facts = self.live.inspect(self.task.pk)
+            fence = LiveFence(facts["attempt"], facts["generation"])
             steering = self.steer_async("last words", command_id="kept-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()

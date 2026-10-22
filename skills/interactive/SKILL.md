@@ -263,7 +263,7 @@ When a running factory task needs something only this session has — a page or 
 3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
 4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
 
-Commands carry the selected session's task-claim token and worker generation. `stale_session` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
+Commands carry the selected session's attempt and worker generation. `stale_command` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 

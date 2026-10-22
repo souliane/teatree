@@ -11659,6 +11659,10 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

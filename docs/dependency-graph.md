@@ -527,5 +527,8 @@ graph TD
     teatree.instance_id
     teatree.generation
     teatree.slack_mrkdwn
+    teatree.webhook_settings
+    teatree.webhook_urls
+    teatree.webhook_wsgi
     teatree.memory_audit
 ```

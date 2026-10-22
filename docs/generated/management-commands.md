@@ -225,7 +225,7 @@ Group root — forces sub-commands to be addressed by name.
 
 ## `live`
 
-Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+Live sessions: list and inspect are passive; steer and follow-up are active.
 
 | Subcommand | Description |
 | --- | --- |

@@ -123,6 +123,83 @@ def test_a_follow_up_during_a_busy_turn_is_not_idle_and_starts_nothing() -> None
     assert session.delivered == []
 
 
+def test_same_id_waits_for_the_first_claim_and_starts_only_one_turn() -> None:
+    session = _FollowUpSession()
+    entered, release = asyncio.Event(), asyncio.Event()
+    claims = 0
+
+    async def claim() -> bool:
+        nonlocal claims
+        claims += 1
+        entered.set()
+        await release.wait()
+        return True
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt]:
+        controller = LiveSessionController(_TASK, _Capture(result_message=object()), claim)
+        controller.bind(session)
+        window = controller.begin_idle()
+        first = asyncio.create_task(controller.follow_up("next", command_id="same", wait=1))
+        await entered.wait()
+        retry = asyncio.create_task(controller.follow_up("next", command_id="same", wait=1))
+        await asyncio.sleep(0)
+        release.set()
+        pending = await controller.wait_idle(window, 1)
+        assert pending is not None
+        pending.started.set_result(None)
+        return await first, await retry
+
+    first, retry = asyncio.run(run())
+    assert first == retry
+    assert first.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert claims == 1
+
+
+def test_busy_follow_up_never_checks_the_claim_or_closes_the_running_turn() -> None:
+    calls = 0
+
+    async def claim() -> bool:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return False
+
+    async def run() -> tuple[ControlReceipt, str]:
+        controller = LiveSessionController(_TASK, _Capture(), claim)
+        controller.bind(_FollowUpSession())
+        receipt = await controller.follow_up("too early", command_id="busy", wait=1)
+        return receipt, controller.state
+
+    receipt, state = asyncio.run(run())
+    assert receipt.code is RejectCode.NOT_IDLE
+    assert state != "closed"
+    assert calls == 0
+
+
+def test_expiry_while_claim_is_pending_replays_closed_to_the_same_id() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def claim() -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt]:
+        controller = LiveSessionController(_TASK, _Capture(result_message=object()), claim)
+        controller.bind(_FollowUpSession())
+        window = controller.begin_idle()
+        first = asyncio.create_task(controller.follow_up("late", command_id="edge", wait=1))
+        await entered.wait()
+        assert await controller.wait_idle(window, 0.001) is None
+        controller.close()
+        release.set()
+        return await first, await controller.follow_up("late", command_id="edge", wait=1)
+
+    first, replay = asyncio.run(run())
+    assert first == replay
+    assert first.code is RejectCode.SESSION_CLOSED
+
+
 def test_an_expired_idle_window_closes_without_starting_a_turn() -> None:
     session = _FollowUpSession()
     controller = _controller(session, _Capture(result_message=object()))
@@ -159,7 +236,7 @@ def test_a_lost_claim_refuses_operator_and_peer_wakeups_before_starting_a_turn()
 
     operator, peer = asyncio.run(run())
 
-    assert (operator.code, peer.code) == (RejectCode.STALE_SESSION, RejectCode.STALE_SESSION)
+    assert (operator.code, peer.code) == (RejectCode.STALE_COMMAND, RejectCode.STALE_COMMAND)
     assert session.delivered == []
 
 
@@ -310,5 +387,6 @@ def test_the_facts_age_every_clock_reading_from_one_now() -> None:
         "open_tool_seconds": 2.5,
         "last_event_age_seconds": 1.5,
         "context_tokens": 52_000,
-        "fence": None,
+        "attempt": _TASK.fence.attempt,
+        "generation": _TASK.fence.generation,
     }

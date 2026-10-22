@@ -40,6 +40,7 @@ from teatree.agents.codex_read_only_executor import (
     executor_availability_reason,
     read_only_executor_refusal,
 )
+from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
 from teatree.agents.sdk_tool_map import phase_bars_write_tools, sdk_disallowed_tools_for_phase
 
@@ -83,7 +84,7 @@ class _StreamFailure:
     error: CodexAppServerError | HarnessFallbackError
 
 
-class CodexAppServerSession:
+class CodexAppServerSession(CodexTurnSteering):
     def __init__(
         self,
         options: CodexAppServerOptions,
@@ -196,15 +197,19 @@ class CodexAppServerSession:
         self.turn_id = str(turn.get("id", "")) if isinstance(turn, dict) else ""
         if not self.turn_id:
             raise CodexAppServerError.missing_turn()
+        self._turn_opened(self.turn_id)
 
     async def receive_response(self) -> AsyncIterator[object]:
-        while True:
-            event = await self._next_event()
-            messages, completed = self.translator.translate(event, thread_id=self.thread_id, model=self.model)
-            for message in messages:
-                yield message
-            if completed:
-                return
+        try:
+            while True:
+                event = await self._next_event()
+                messages, completed = self.translator.translate(event, thread_id=self.thread_id, model=self.model)
+                for message in messages:
+                    yield message
+                if completed:
+                    return
+        finally:
+            self._turn_closed()
 
     async def interrupt(self) -> None:
         if self.thread_id and self.turn_id:
@@ -214,6 +219,7 @@ class CodexAppServerSession:
         if self._closing:
             return
         self._closing = True
+        self._turn_closed(session=True)
         process = self.process
         if process is None:
             return
@@ -388,14 +394,6 @@ class CodexAppServerSession:
                         await self._steer_refusal(thread_id, turn_id, reason)
                 finally:
                     await self._write({"id": message["id"], "result": {"decision": decision}})
-
-    async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
-        steer = {
-            "threadId": thread_id,
-            "expectedTurnId": turn_id,
-            "input": [{"type": "text", "text": f"TeaTree PreToolUse refused the action: {reason}"}],
-        }
-        await asyncio.wait_for(self._request("turn/steer", steer), timeout=5)
 
     async def _drain_stderr(self) -> None:
         process = self.process

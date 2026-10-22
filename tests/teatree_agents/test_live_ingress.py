@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from teatree.agents.live_client import LiveClient
-from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS, LiveTask
+from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS, LiveFence, LiveTask
 from teatree.agents.live_ingress import OperatorIngress, PeerCredentials, PeerRole, classify_peer, peer_credentials
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -106,7 +106,14 @@ def _served_by_an_operator(method: str, request: dict[str, object]) -> object:
         return asyncio.run(ingress.serve(method, {"method": method, **request}, left))
 
 
-_STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds": 5}
+_STEER = {
+    "task": 7,
+    "text": "use docs/x.md",
+    "command_id": "c-1",
+    "wait_seconds": 5,
+    "attempt": "claim",
+    "generation": "",
+}
 
 
 @pytest.mark.parametrize(
@@ -127,8 +134,8 @@ _STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds
         pytest.param("live.steer", {**_STEER, "wait_seconds": "5"}, "wait must be within", id="wait-string"),
         pytest.param(
             "live.steer",
-            {**_STEER, "fence": {"claim": "claim", "worker_generation": 3}},
-            "valid claim and worker-generation fence",
+            {**_STEER, "generation": 3},
+            "attempt and generation fence",
             id="fence-generation-type",
         ),
         pytest.param("live.kill", {"task": 7}, "Unknown live method", id="unknown-verb"),
@@ -169,7 +176,7 @@ def test_a_valid_follow_up_reaches_the_registry() -> None:
 
 
 def test_a_legacy_worker_generation_is_a_valid_fence_value() -> None:
-    request = {**_STEER, "fence": {"claim": "worker|session|time", "worker_generation": ""}}
+    request = {**_STEER, "attempt": "worker|session|time", "generation": ""}
 
     receipt = _served_by_an_operator("live.follow_up", request)
 
@@ -189,21 +196,21 @@ def test_operator_socket_carries_the_claim_and_worker_generation_of_the_selected
             return None
 
     registry = LiveSessionRegistry()
-    task = LiveTask(7, 3, "coding", "claude_sdk", "m", {"claim": "new", "worker_generation": "worker-b"})
+    task = LiveTask(7, 3, "coding", "claude_sdk", "m", LiveFence("new", "worker-b"))
     session = Session()
     ingress = OperatorIngress(lambda: registry, worker_pid=os.getpid())
     with LiveMailboxBroker(runtime_dir=tmp_path, ingress=ingress), OwnerLoop(registry, task, session):
         client = LiveClient(live_dir=tmp_path)
         for old in (
-            {"claim": "old", "worker_generation": "worker-b"},
-            {"claim": "new", "worker_generation": "worker-a"},
+            {"attempt": "old", "generation": "worker-b"},
+            {"attempt": "new", "generation": "worker-a"},
         ):
-            request = {"method": "live.steer", **_STEER, "fence": old}
+            request = {"method": "live.steer", **_STEER, **old}
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connected:
                 connected.connect(str(next(iter(client.workers()))))
                 connected.sendall(json.dumps(request).encode() + b"\n")
                 stale = json.loads(connected.makefile("rb").readline())["result"]
-            assert stale["code"] == "stale_session"
+            assert stale["code"] == "stale_command"
         current = client.steer(task.pk, "current", command_id="current", wait=1)
 
     assert current["outcome"] == "accepted_current_turn"

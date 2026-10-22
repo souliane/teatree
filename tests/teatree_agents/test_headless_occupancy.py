@@ -27,7 +27,7 @@ from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from teatree.agents import runner
-from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode
+from teatree.agents.live_control import ControlOutcome, LiveFence, LiveTask, RejectCode
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_stream import StreamCapture
@@ -413,10 +413,7 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
                 time.sleep(0.005)
             facts = shared_registry().facts(self.task.pk)
             assert facts is not None
-            assert facts["fence"] == {
-                "claim": claim_generation(self.task),
-                "worker_generation": "worker-A",
-            }
+            assert (facts["attempt"], facts["generation"]) == (claim_generation(self.task), "worker-A")
             while Task.objects.get(pk=self.task.pk).lease_expires_at is None:
                 assert time.monotonic() < deadline, "no lease renewal reached the task"
                 time.sleep(0.005)
@@ -469,7 +466,7 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
             Task.objects.filter(pk=self.task.pk).update(claimed_generation="worker-B")
             facts = shared_registry().facts(self.task.pk)
             assert facts is not None
-            fence = facts["fence"]
+            fence = LiveFence(facts["attempt"], facts["generation"])
             receipt = asyncio.run(
                 shared_registry().follow_up(self.task.pk, "stale", command_id="old", wait=1, fence=fence)
             )
@@ -494,5 +491,5 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
         with mock.patch.object(runner, "_run_agent", driver), mock.patch.object(runner, "verify_task_checkout"):
             runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
 
-        assert observed.result(timeout=30) == (ControlOutcome.REJECTED, RejectCode.STALE_SESSION)
+        assert observed.result(timeout=30) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
         assert session.prompts == []

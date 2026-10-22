@@ -454,20 +454,22 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Live agent mailbox
 
-Simultaneously running Claude and Codex tasks on any ticket on the same host
-can exchange targeted messages through the `agent_mailbox_*` tools. Workers
+Simultaneously running tasks on any ticket on the same host can exchange targeted
+messages. A Claude task sends through the `agent_mailbox_*` tools; a Codex task
+without MCP is an addressable, push-only recipient. Workers
 find one another through the shared control-DB live directory. TeaTree assigns
 each task its address and private Unix-socket identity; agents cannot register
 themselves or declare their own harness. `agent_mailbox_self` shows the task's address,
 `agent_mailbox_peers` discovers live peers with ticket, phase, harness and
 receive status, and `agent_mailbox_send` sends to one
 peer and waits up to 20 seconds for its session to accept the message. A busy
-steerable peer (`claude_sdk`) takes it into its running turn, framed as a peer's
-information rather than an operator instruction; any peer also accepts it by
-reading its inbox, and whichever comes first wins. The send returns a receipt:
+steerable peer (`claude_sdk` or `codex_app_server`) takes it into its running turn,
+framed as a peer's information rather than an operator instruction. An MCP-backed
+peer may also accept by reading its inbox; a push-only peer has no inbox copy.
+The send returns a receipt:
 `accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
-`too_large`, `session_closed`, `stale_session`, `dropped_unread` or `recipient_cannot_receive`.
+`too_large`, `session_closed`, `stale_command`, `dropped_unread` or `recipient_cannot_receive`.
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
 remains in the recipient's inbox, including after a current-turn push. Retrying
 the same key waits on the original message instead of sending a second copy, and
@@ -496,27 +498,32 @@ t3 teatree live list                          # every live session on this host'
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
 t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
+t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```
 
 `steer` prints a receipt and exits 0 when the session accepted the input into its
 current turn, 3 when it refused it (`turn_ended`, `not_accepted_in_time`,
-`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`), 4 when the
+`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`, `stale_command`), 4 when the
 answer was lost (`unknown_delivery`), and 5 when no worker on this host runs the
 task. Acceptance is not obedience: the model decides what to do with the input.
 Resending the same `--command-id` with the same text returns the first receipt
-instead of delivering twice. Sessions run by `claude_sdk` are steerable; other
-harnesses list as `steerable: false`. Nothing survives a worker restart.
+instead of delivering twice. The command pins the located session's attempt and
+generation; `--attempt` and `--generation` can name an earlier expected session,
+which the worker rejects as `stale_command`. Sessions run by `claude_sdk` and
+`codex_app_server` are steerable. Codex admits input only on a matching App Server
+`turn/steer` answer; a timeout or turn-end race is `unknown_delivery`.
+Nothing survives a worker restart.
+
 After a clean result, a `claude_sdk` session remains idle for up to 60 seconds
 while the worker renews its task and checkout leases. `follow-up` starts one new
 turn and returns `accepted_new_turn` (exit 0) once the SDK accepts its prompt;
 `not_idle` exits 3. A repeated command id and text returns its first receipt.
-Each request carries the selected session's full claim token and worker generation;
-a replacement attempt or generation rejects an old request as `stale_session`
-before delivery. New-turn admission also verifies the live task claim and checkout.
+Each request carries the selected session's attempt and worker generation; a stale
+request is rejected before delivery. New-turn admission renews the task claim and checkout.
 After expiry or restart, the command exits 5 with the task-list status and the
 durable route; a lost answer exits 4 and is never replayed automatically. A
 parked task resumes only through the task list. At most four follow-up turns can
-start in one session.
+start in one session. A follow-up turn that exceeds the run's runtime ceiling is cancelled and recorded as stuck.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.

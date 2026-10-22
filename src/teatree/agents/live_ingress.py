@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from teatree.agents.live_control import (
     DEFAULT_STEER_WAIT_SECONDS,
@@ -106,20 +106,8 @@ def _task_pk(request: Mapping[str, object]) -> int:
     return task
 
 
-def _live_fence(request: Mapping[str, object]) -> LiveFence | None:
-    raw = request.get("fence")
-    if raw is None:
-        return None
-    invalid = "Live request needs a valid claim and worker-generation fence"
-    if not isinstance(raw, dict) or set(raw) != {"claim", "worker_generation"}:
-        raise ValueError(invalid)
-    if not isinstance(raw["claim"], str) or not raw["claim"] or not isinstance(raw["worker_generation"], str):
-        raise ValueError(invalid)
-    return cast("LiveFence", raw)
-
-
 class OperatorIngress:
-    """``live.list`` / ``live.inspect`` (passive) and ``live.steer`` (active) for operators only."""
+    """Passive list/inspect and active steer/follow-up for operators only."""
 
     def __init__(
         self,
@@ -149,12 +137,10 @@ class OperatorIngress:
             raise IngressRefusedError(RejectCode.UNKNOWN_SESSION, f"Task {task_pk} has no live session on this worker")
         return facts
 
-    async def _steer(self, request: Mapping[str, object]) -> object:
-        return await self._operator_command("live.steer", request)
-
     async def _operator_command(self, method: str, request: Mapping[str, object]) -> object:
         task_pk = _task_pk(request)
         text, command_id = request.get("text"), request.get("command_id")
+        attempt, generation = request.get("attempt"), request.get("generation")
         wait = request.get("wait_seconds", DEFAULT_STEER_WAIT_SECONDS)
         if not isinstance(text, str) or not text:
             msg = f"{method} needs non-empty text"
@@ -162,10 +148,15 @@ class OperatorIngress:
         if not isinstance(command_id, str) or not 0 < len(command_id.encode()) <= _MAX_COMMAND_ID_BYTES:
             msg = f"{method} needs a 1-128 byte command_id"
             raise ValueError(msg)
+        if not isinstance(attempt, str) or not attempt or not isinstance(generation, str):
+            msg = f"{method} needs an attempt and generation fence"
+            raise ValueError(msg)
         if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 < wait <= MAX_STEER_WAIT_SECONDS:
             msg = f"{method} wait must be within (0, {MAX_STEER_WAIT_SECONDS:.0f}] seconds"
             raise ValueError(msg)
         registry = self._registry()
         command = registry.follow_up if method == "live.follow_up" else registry.steer
-        receipt = await command(task_pk, text, command_id=command_id, wait=float(wait), fence=_live_fence(request))
+        receipt = await command(
+            task_pk, text, command_id=command_id, wait=float(wait), fence=LiveFence(attempt, generation)
+        )
         return receipt.as_payload()

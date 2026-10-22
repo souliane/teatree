@@ -15,7 +15,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
+from typing import Any
+from unittest.mock import AsyncMock
 
+from claude_agent_sdk import ClaudeAgentOptions
+
+from teatree.agents.codex_app_server import CodexAppServerSession
+from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.live_control import LiveSessionController, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
@@ -59,6 +65,20 @@ async def _idle_driver(controller: LiveSessionController, session: _IdleSession)
         follow_up.started.set_result(None)
 
 
+def _codex_session() -> CodexAppServerSession:
+    options = CodexAppServerOptions.from_sdk_options(ClaudeAgentOptions(cwd="/tmp", mcp_servers={}))
+    session = CodexAppServerSession(options, resume=None, code_home=Path("/tmp"))
+    session.thread_id = "thread-105"
+    session._turn_opened("turn-105")
+
+    async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"turnId": "turn-105"}
+
+    session._request = AsyncMock(side_effect=request)
+    return session
+
+
 @dataclass
 class _BusyStream:
     """What a driver's stream capture holds while its agent sits in one Bash call."""
@@ -73,18 +93,26 @@ class _BusyStream:
 async def _serve() -> None:
     shared_broker()
     base = int(os.environ.get("T3_HELPER_TASK_BASE", "100"))
-    sessions: list[tuple[int, _Session]] = [
+    sessions: list[tuple[int, _Session | CodexAppServerSession]] = [
         (base + 1, _ScriptedSession("accept")),
         (base + 2, _ScriptedSession("turn_ended")),
         (base + 3, _ScriptedSession("die")),
         (base + 4, _Session()),
-        (base + 5, _IdleSession("accept")),
-        (base + 6, _IdleSession("die")),
+        (base + 5, _codex_session()),
+        (base + 6, _IdleSession("accept")),
+        (base + 7, _IdleSession("die")),
     ]
     idle_drivers: list[asyncio.Task[None]] = []
     async with contextlib.AsyncExitStack() as stack:
         for pk, session in sessions:
-            task = LiveTask(pk=pk, ticket=7, phase="coding", harness="claude_sdk", model="claude-test")
+            codex = pk == base + 5
+            task = LiveTask(
+                pk=pk,
+                ticket=7,
+                phase="coding",
+                harness="codex_app_server" if codex else "claude_sdk",
+                model="codex-test" if codex else "claude-test",
+            )
             controller = await stack.enter_async_context(shared_registry().attach(task, _BusyStream()))
             controller.bind(session)
             if isinstance(session, _IdleSession):

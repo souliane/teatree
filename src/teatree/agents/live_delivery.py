@@ -1,13 +1,12 @@
 """One peer message on its way to a live session: the first acceptance settles it and becomes its receipt."""
 
 import asyncio
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn, TypedDict
 
-from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, LiveFence, RejectCode
+from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, RejectCode
 
 MAX_WAIT_SECONDS = 20
 MAX_KEY_BYTES = 128
@@ -120,6 +119,8 @@ class PeerDelivery:
 
     def receipt(self) -> SendReceipt:
         if not self.settled.done():
+            if self.unknown_reported and not self.queued_in_inbox:
+                return self.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
             return self.as_receipt(ControlOutcome.REJECTED, RejectCode.NOT_ACCEPTED_IN_TIME)
         outcome, code = self.settled.result()
         return self.as_receipt(outcome, code)
@@ -132,21 +133,3 @@ class PeerDelivery:
             "code": code.value if code else None,
             "queued_in_inbox": self.queued_in_inbox,
         }
-
-
-@dataclass(slots=True)
-class MailboxParticipant:
-    address: str
-    token: str
-    room: str
-    harness: str
-    label: str
-    inbox: deque[InboxMessage]
-    phase: str = ""
-    can_receive: bool = True
-    task: int | None = None
-    fence: LiveFence | None = None
-    sent: dict[str, PeerDelivery] = field(default_factory=dict)
-    remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
-    dropped_before: int = 0
-    waiting: int = 0

@@ -9,22 +9,14 @@ import secrets
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable, Generator
-from contextlib import contextmanager, suppress
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, NoReturn, Self, cast
+from typing import NoReturn, Self
 
-from claude_agent_sdk import ClaudeAgentOptions
-
-from teatree.agents.live_control import (
-    ControlOutcome,
-    LiveFence,
-    LiveTask,
-    PeerIdentity,
-    RejectCode,
-    frame_peer_message,
-)
+from teatree.agents.live_control import ControlOutcome, LiveTask, PeerIdentity, RejectCode, frame_peer_message
 from teatree.agents.live_delivery import (
     MAX_WAIT_SECONDS,
     InboxMessage,
@@ -33,11 +25,11 @@ from teatree.agents.live_delivery import (
     MailboxRequest,
     MailboxTextTooLargeError,
     PeerDelivery,
+    RemoteReceipts,
     SendReceipt,
     refused_receipt,
     send_fields,
 )
-from teatree.agents.live_delivery import MailboxParticipant as _Participant
 from teatree.agents.live_federation import (
     FederationRefusedError,
     FederationUnavailableError,
@@ -51,10 +43,6 @@ from teatree.agents.live_federation import (
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 from teatree.config import AgentHarness
-from teatree.utils.agent_spawn_marker import dispatched_agent_env
-
-if TYPE_CHECKING:
-    from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +55,29 @@ MAX_WAITING_SENDS = 4
 
 def _reject(message: str) -> NoReturn:
     raise ValueError(message)
+
+
+@dataclass(slots=True)
+class _Participant:
+    address: str
+    token: str
+    room: str
+    harness: str
+    label: str
+    phase: str = ""
+    can_receive: bool = True
+    task: LiveTask | None = None
+    reads_inbox: bool = True
+    inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
+    sent: dict[str, PeerDelivery] = field(default_factory=dict)
+    remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
+    dropped_before: int = 0
+    waiting: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PushOnlyTask:
+    task: LiveTask
 
 
 class LiveMailboxBroker:
@@ -142,23 +153,30 @@ class LiveMailboxBroker:
         self._stop = None
 
     def register(
-        self, *, room: str, harness: str, label: str, task: LiveTask | int | None = None, phase: str = ""
+        self,
+        *,
+        room: str,
+        harness: str,
+        label: str,
+        task: LiveTask | PushOnlyTask | None = None,
+        phase: str = "",
     ) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
+        push_only = isinstance(task, PushOnlyTask)
+        bound_task = task.task if push_only else task
         participant = _Participant(
             address=str(uuid.uuid4()),
             token=secrets.token_urlsafe(32),
             room=room,
             harness=harness,
             label=label,
-            inbox=deque(maxlen=_MAX_INBOX_MESSAGES),
-            phase=phase,
+            phase=bound_task.phase if bound_task else phase,
             can_receive=harness != AgentHarness.PYDANTIC_AI,
-            task=task.pk if isinstance(task, LiveTask) else task,
-            fence=task.fence if isinstance(task, LiveTask) else None,
+            task=bound_task,
+            reads_inbox=not push_only,
         )
         with self._lock:
             self._by_token[participant.token] = participant
@@ -366,6 +384,9 @@ class LiveMailboxBroker:
             delivery.queued_in_inbox = False
             delivery.settle(ControlOutcome.REJECTED, RejectCode.RECIPIENT_CANNOT_RECEIVE)
             return delivery
+        if not recipient.reads_inbox:
+            delivery.queued_in_inbox = False
+            return delivery
         if len(recipient.inbox) == recipient.inbox.maxlen:
             evicted = recipient.inbox[0]["id"]
             if (unread := self._delivery.get(evicted)) is not None:
@@ -386,11 +407,11 @@ class LiveMailboxBroker:
     async def _accepted(self, delivery: PeerDelivery, recipient: _Participant | None, wait: float) -> SendReceipt:
         """Push into the recipient's running turn while its inbox read can still accept first."""
         deadline = asyncio.get_running_loop().time() + wait
+        if delivery.unknown_reported and not delivery.queued_in_inbox:
+            return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
         if not delivery.settled.done():
             if recipient is not None and recipient.task is not None and delivery.push is None:
-                delivery.push = asyncio.create_task(
-                    self._push_into_turn(delivery, recipient.task, recipient.fence, wait)
-                )
+                delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
             if delivery.push is not None and not delivery.unknown_reported:
                 await asyncio.wait({delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
                 if delivery.push.done() and delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY:
@@ -403,11 +424,16 @@ class LiveMailboxBroker:
             except TimeoutError:
                 if delivery.push is not None and not delivery.push.done():
                     await asyncio.wait({delivery.push})
+        if delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY and not delivery.settled.done():
+            delivery.unknown_reported = True
+            return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
         return delivery.receipt()
 
-    async def _push_into_turn(self, delivery: PeerDelivery, task: int, fence: LiveFence | None, wait: float) -> None:
+    async def _push_into_turn(self, delivery: PeerDelivery, task: LiveTask, wait: float) -> None:
         command_id = f"peer-{delivery.message_id}"
-        receipt = await self._registry().push(task, delivery.framed, command_id=command_id, wait=wait, fence=fence)
+        receipt = await self._registry().push(
+            task.pk, delivery.framed, command_id=command_id, wait=wait, fence=task.fence
+        )
         delivery.push_outcome = receipt.outcome
         if receipt.outcome is not ControlOutcome.UNKNOWN_DELIVERY:
             delivery.settle(receipt.outcome, receipt.code)
@@ -481,50 +507,6 @@ def shared_broker() -> LiveMailboxBroker:
             broker.start()
             _shared_brokers[pid] = broker
         return _shared_brokers[pid]
-
-
-@contextmanager
-def bound_task_mailbox(
-    options: ClaudeAgentOptions,
-    task: LiveTask,
-    *,
-    broker: LiveMailboxBroker | None = None,
-) -> Generator[MailboxIdentity | None]:
-    """Bind a running TeaTree task to its own stdio MCP child; revoke it on exit."""
-    original = options.mcp_servers
-    servers = original if isinstance(original, dict) else {}
-    teatree = servers.get("teatree")
-    if not isinstance(teatree, dict) or not isinstance(teatree.get("command"), str):
-        yield None
-        return
-    teatree_stdio = cast("McpStdioServerConfig", teatree)
-    label = f"{task.phase} task {task.pk}"
-    env = teatree_stdio.get("env")
-    child_env = {**(env if isinstance(env, dict) else {}), **dispatched_agent_env()}
-    options.mcp_servers = cast(
-        "dict[str, McpServerConfig]",
-        {**servers, "teatree": {**teatree_stdio, "env": child_env}},
-    )
-    active: LiveMailboxBroker | None = None
-    identity: MailboxIdentity | None = None
-    try:
-        try:
-            active = broker or shared_broker()
-            identity = active.register(
-                room=str(task.ticket), harness=task.harness, label=label, task=task, phase=task.phase
-            )
-        except Exception:
-            logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
-        if identity is not None:
-            options.mcp_servers = cast(
-                "dict[str, McpServerConfig]",
-                {**servers, "teatree": {**teatree_stdio, "env": {**child_env, **identity.mcp_env()}}},
-            )
-        yield identity
-    finally:
-        options.mcp_servers = original
-        if identity is not None and active is not None:
-            active.unregister(identity.address)
 
 
 def reset_shared_brokers() -> None:
