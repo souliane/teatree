@@ -316,23 +316,20 @@ class AdmittedTextResumeTests(TestCase):
         assert "resumable nonce" in repr(resumed.history)
 
 
-def test_a_stale_command_never_reaches_a_pydantic_session() -> None:
+@pytest.mark.parametrize("stale_field", ["attempt", "generation"])
+def test_a_stale_command_never_reaches_a_pydantic_session(stale_field: str) -> None:
     async def run() -> None:
         registry = LiveSessionRegistry()
         task = LiveTask(pk=9, ticket=1, phase="coding", harness="pydantic_ai", model="function")
         fence = task.fence
-        stale_fences = (
-            replace(fence, attempt="an-older-attempt"),
-            replace(fence, generation=f"{fence.generation}-older"),
-        )
+        stale = replace(fence, **{stale_field: f"{getattr(fence, stale_field)}-older"})
         harness = PydanticAiHarness(model=TestModel(custom_output_text="done"))
         async with harness.open(ClaudeAgentOptions()) as session, registry.attach(task, StreamCapture()) as live:
             live.bind(session)
-            for index, stale in enumerate(stale_fences):
-                steered = await registry.steer(9, "stale steer", command_id=f"s{index}", wait=0.1, fence=stale)
-                pushed = await registry.push(9, "stale push", command_id=f"p{index}", wait=0.1, fence=stale)
-                for receipt in (steered, pushed):
-                    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode("stale_command"))
+            steered = await registry.steer(9, "stale steer", command_id="s", wait=0.1, fence=stale)
+            pushed = await registry.push(9, "stale push", command_id="p", wait=0.1, fence=stale)
+            for receipt in (steered, pushed):
+                assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode("stale_command"))
             facts = registry.facts(9)
             assert facts is not None
             assert facts["pending_inputs"] == 0
