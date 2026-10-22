@@ -1415,12 +1415,23 @@ class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
     def test_a_spent_coding_budget_halts_internally_instead_of_queueing_another_pass(self) -> None:
         task = self._stale_coding_failure()
         for index in range(max_phase_iterations()):
-            _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
+            _add_failed_attempt(task, error=f"result_error: work failure run {'x' * (index + 1)}")
+        _add_failed_attempt(task, error=self._ERROR)
 
         requeue_transient_failed()
 
         assert not task.ticket.tasks.filter(phase="planning").exists()
         assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_plan_stale_audit_rows_leave_the_planning_pass_available(self) -> None:
+        task = self._stale_coding_failure()
+        for index in range(max_phase_iterations()):
+            _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
+
+        requeue_transient_failed()
+
+        assert task.ticket.tasks.filter(phase="planning").count() == 1
+        assert not DeferredQuestion.objects.exists()
 
     def test_a_ticket_that_already_reached_coded_gets_no_planning_pass(self) -> None:
         task = self._stale_coding_failure(state=Ticket.State.CODED)

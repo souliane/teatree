@@ -8,6 +8,7 @@ from django.db.models.functions import Coalesce
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
+from teatree.core.models.task_repair import next_repair_iteration
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
@@ -500,6 +501,4 @@ class TaskAttempt(models.Model):
         if not self.error_fingerprint:
             self.error_fingerprint = terminal_reason_fingerprint(self.error)
         if not self.iteration and self.task_id:
-            from teatree.core.models.task_repair import next_repair_iteration  # noqa: PLC0415 — deferred: import cycle
-
             self.iteration = next_repair_iteration(self)

@@ -66,6 +66,7 @@ from teatree.core.models.ticket_external_review import (
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -241,7 +242,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
 
 
 def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
-    """Whether the latest recorded WORK attempt of *ticket*'s *phase* failed and left nothing behind.
+    """Whether the latest non-capacity attempt of *ticket*'s *phase* failed and left nothing behind.
 
     A failed attempt whose phase output DEMONSTRABLY LANDED is not a failing phase — it
     is the dead artifact of an interrupted run the ticket already advanced past, and the
@@ -256,7 +257,15 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     one for a genuinely deterministic failure would hide a real, reproducible defect from
     this same sweep.
     """
-    attempts = ticket_phase_iterations(ticket.pk, phase)
+    observations = (
+        TaskAttempt.objects.filter(
+            task__ticket_id=ticket.pk,
+            task__phase__in=phase_spellings(normalize_phase(phase)),
+        )
+        .excluding_parks()
+        .order_by("pk")
+    )
+    attempts = [attempt for attempt in observations if recoverable_exhaustion_cause(attempt.error) is None]
     if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
         return False
     latest = attempts[-1]

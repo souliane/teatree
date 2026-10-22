@@ -8,6 +8,9 @@ its module-health LOC cap) — the thin ``Task`` methods delegate here. The
 functions take a ``Task`` so they stay free of model-class state.
 """
 
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
 from django.db.models import Exists, OuterRef
 
 from teatree.core.forge_url import is_synthetic_ticket_url
@@ -19,8 +22,6 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     stall_fingerprints,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
 from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import (
     IterationStalled,
@@ -31,10 +32,18 @@ from teatree.core.repair_loop import (
 )
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
+    from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
 
-def repair_iterations(attempts: TaskAttemptQuerySet) -> list[TaskAttempt]:
+
+def _attempt_model() -> "type[TaskAttempt]":
+    return cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+
+
+def repair_iterations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
     """Executed work attempts in a queryset, oldest first."""
-    successor = TaskAttempt.objects.filter(fallback_from_attempt_id=OuterRef("pk"))
+    successor = _attempt_model().objects.filter(fallback_from_attempt_id=OuterRef("pk"))
     work = (
         attempts.excluding_parks()
         .exclude(failure_kind__in=NON_REPAIR_KINDS)
@@ -45,21 +54,21 @@ def repair_iterations(attempts: TaskAttemptQuerySet) -> list[TaskAttempt]:
     return [attempt for attempt in work if recoverable_exhaustion_cause(attempt.error) is None]
 
 
-def ticket_phase_iterations(ticket_id: int, phase: str) -> list[TaskAttempt]:
+def ticket_phase_iterations(ticket_id: int, phase: str) -> list["TaskAttempt"]:
     """Work attempts for a ticket and normalized phase, across re-queued task rows."""
-    attempts = TaskAttempt.objects.filter(
+    attempts = _attempt_model().objects.filter(
         task__ticket_id=ticket_id,
         task__phase__in=phase_spellings(normalize_phase(phase)),
     )
     return repair_iterations(attempts)
 
 
-def phase_attempts(task: Task) -> list[TaskAttempt]:
+def phase_attempts(task: "Task") -> list["TaskAttempt"]:
     """Work attempts for the task's ticket and phase."""
     return ticket_phase_iterations(task.ticket_id, task.phase)
 
 
-def next_repair_iteration(attempt: TaskAttempt) -> int:
+def next_repair_iteration(attempt: "TaskAttempt") -> int:
     """Stamp a pending attempt against the rows the repair budget will count."""
     if (
         attempt.error.startswith(PARK_ERROR_PREFIXES)
@@ -74,7 +83,7 @@ def next_repair_iteration(attempt: TaskAttempt) -> int:
     return 1 + sum(row.pk != source_id for row in prior)
 
 
-def check_requeue_allowed(task: Task) -> None:
+def check_requeue_allowed(task: "Task") -> None:
     """Raise if *task*'s ticket-phase may NOT be re-queued; escalate on a terminal verdict.
 
     Applies the pure :func:`~teatree.core.repair_loop.requeue_verdict` to the
@@ -133,7 +142,7 @@ def check_requeue_allowed(task: Task) -> None:
         raise
 
 
-def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
+def _escalate_reoffers(task: "Task", *, phase: str, reoffers: int) -> None:
     """Record a durable ``DeferredQuestion`` for an exhausted re-offer budget.
 
     The signal the re-offer loop had none of: a unit whose outcome nothing records
@@ -155,7 +164,7 @@ def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
     )
 
 
-def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
+def _escalate_stall(task: "Task", *, phase: str, iterations: int) -> None:
     """Record a durable ``DeferredQuestion`` for an ``IterationStalled``.
 
     Reuses the §17.1 invariant 9 away-mode escalation queue — surfaced via the
@@ -178,7 +187,7 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
     )
 
 
-def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
+def _escalate_cap(task: "Task", *, phase: str, iterations: int) -> None:
     """Record a durable, deduped ``DeferredQuestion`` for a ``MaxIterationsExceeded``.
 
     The iteration-cap verdict previously dropped the row from the re-queue set
