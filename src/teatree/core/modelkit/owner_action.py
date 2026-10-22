@@ -19,6 +19,7 @@ class ActionRequest(TypedDict):
     binding: str
     note: NotRequired[str]
     host_evidence: NotRequired[bool]
+    task_id: NotRequired[int]
     scope: NotRequired[dict[str, str]]
 
 
@@ -30,6 +31,8 @@ def action_marker(action: ActionRequest) -> str:
     parts = [action["kind"], action["target"], action["binding"]]
     if "host_evidence" in action:
         parts.append(f"host_evidence:{action['host_evidence']}")
+    if "task_id" in action:
+        parts.append(f"task:{action['task_id']}")
     identity = "\0".join(parts)
     digest = hashlib.sha256(identity.encode()).hexdigest()[:40]
     return f"{MARKER_PREFIX}{action['kind']}:{digest}"
@@ -46,7 +49,9 @@ def read_action(evidence: object) -> ActionRequest | None:
         return None
     if not all(isinstance(action.get(key), str) and action[key] for key in ("target", "binding")):
         return None
-    if "note" in action and not isinstance(action["note"], str):
+    if ("note" in action and not isinstance(action["note"], str)) or (
+        "host_evidence" in action and not isinstance(action["host_evidence"], bool)
+    ):
         return None
     scope = action.get("scope")
     scope_valid = "scope" not in action
@@ -56,6 +61,6 @@ def read_action(evidence: object) -> ActionRequest | None:
             and set(scope) == ESCAPE_SCOPE_FIELDS
             and all(isinstance(value, str) for value in scope.values())
         )
-    if ("host_evidence" in action and not isinstance(action["host_evidence"], bool)) or not scope_valid:
+    if ("task_id" in action and (type(action["task_id"]) is not int or action["task_id"] < 1)) or not scope_valid:
         return None
     return action

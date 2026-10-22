@@ -20,7 +20,13 @@ from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, read_attestation
+from teatree.core.worktree.checkout_attest import (
+    AttestRefusedError,
+    CheckoutAttestation,
+    declined_attest_tasks,
+    read_attestation,
+    retire_card,
+)
 
 logger = logging.getLogger(__name__)
 _RETRY_AFTER = timedelta(minutes=5)
@@ -69,7 +75,18 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
     def write() -> str:
         attestation = read()
         attestation.record()
-        for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
+        with transaction.atomic():
+            other_cards = (
+                DeferredQuestion.owner_pending()
+                .select_for_update()
+                .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
+                .exclude(pk=row.pk)
+            )
+            for other in other_cards:
+                retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
+        declined = declined_attest_tasks(worktree, attestation.state.digest)
+        parked_tasks = Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False)
+        for parked in parked_tasks.exclude(pk__in=declined):
             latest = parked.attempts.order_by("-pk").values("result").first()
             result = latest["result"] if latest is not None else {}
             checkout_id = result.get("checkout_worktree_id") if isinstance(result, dict) else None
