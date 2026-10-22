@@ -283,7 +283,17 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
 
     def test_a_peer_send_to_an_idle_claude_session_wakes_it_once(self) -> None:
         with tempfile.TemporaryDirectory(prefix="t3-peer-idle-") as directory:
-            self._prepare_runs(Path(directory))
+            root = Path(directory)
+            self._prepare_runs(root)
+            script = root / "mailbox_mcp_child.py"
+            script.write_text(
+                "from mcp.server.mcpserver import MCPServer\n"
+                "from teatree.mcp.agent_mailbox import register\n"
+                "server = MCPServer('teatree-mailbox-test')\n"
+                "assert register(server)\n"
+                "server.run('stdio')\n",
+                encoding="utf-8",
+            )
             with (
                 patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
                 patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
@@ -296,29 +306,49 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             ):
                 sender = _in_background(lambda: self._dispatch("sender"))
 
-                def wake() -> SendReceipt:
-                    wait_until(lambda: self.runs["recipient"].saw("holding_tool"), "recipient's first turn")
-                    self.runs["recipient"].release_tool.touch()
-                    task_pk = self.tasks["recipient"].pk
-                    wait_until(
-                        lambda: (facts := shared_registry().facts(task_pk)) is not None and facts["state"] == "idle",
-                        "recipient's idle window",
+                async def wake() -> tuple[SendReceipt, SendReceipt]:
+                    sender_client = self.clients["sender"]
+                    child = StdioServerParameters(
+                        command=sys.executable,
+                        args=[str(script)],
+                        env={
+                            "T3_AGENT_MAILBOX_SOCKET": str(sender_client.socket_path),
+                            "T3_AGENT_MAILBOX_TOKEN": sender_client.token,
+                        },
                     )
-                    peers = asyncio.run(self.clients["sender"].peers())
-                    [target] = [peer for peer in peers if peer["ticket"] == str(self.tasks["recipient"].ticket_id)]
-                    return asyncio.run(self.clients["sender"].send(target["address"], "new schema", "wake-1"))
+                    async with stdio_client(child) as (reader, writer), ClientSession(reader, writer) as client:
+                        await client.initialize()
+                        await asyncio.to_thread(
+                            wait_until, lambda: self.runs["recipient"].saw("holding_tool"), "recipient's first turn"
+                        )
+                        self.runs["recipient"].release_tool.touch()
+                        task_pk = self.tasks["recipient"].pk
+                        await asyncio.to_thread(
+                            wait_until,
+                            lambda: (
+                                (facts := shared_registry().facts(task_pk)) is not None and facts["state"] == "idle"
+                            ),
+                            "recipient's idle window",
+                        )
+                        peers = structured(await client.call_tool("agent_mailbox_peers", {}))
+                        [target] = [peer for peer in peers if peer["ticket"] == str(self.tasks["recipient"].ticket_id)]
+                        request = {"to": target["address"], "text": "new schema", "key": "wake-1"}
+                        first = structured(await client.call_tool("agent_mailbox_send", request))
+                        duplicate = structured(await client.call_tool("agent_mailbox_send", request))
+                        return cast("SendReceipt", first), cast("SendReceipt", duplicate)
 
                 try:
                     wait_until(lambda: self.runs["sender"].saw("holding_tool"), "sender's first turn")
-                    sending = _in_background(wake)
+                    sending = _in_background(lambda: asyncio.run(wake()))
                     recipient_attempt = self._dispatch("recipient")
-                    receipt = sending.result(timeout=30)
+                    receipt, duplicate = sending.result(timeout=30)
                 finally:
                     self.runs["sender"].release_tool.touch()
                     self.runs["recipient"].release_tool.touch()
                 sender.result(timeout=30)
 
             assert (receipt["outcome"], receipt["code"]) == ("accepted_new_turn", None)
+            assert duplicate == receipt
             assert self.runs["recipient"].user_turns() == 2
             assert "new schema" in json.dumps(self.runs["recipient"].events())
             assert recipient_attempt.exit_code == 0
