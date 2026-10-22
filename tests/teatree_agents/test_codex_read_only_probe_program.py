@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -309,6 +310,146 @@ def test_worker_repairs_recreated_git_metadata_before_the_next_probe(layout: Pat
         git = shutil.which("git")
         assert git is not None
         assert subprocess.run([git, "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, check=True).stdout
+
+
+def test_packed_only_worktree_branch_resolves_as_uid_65534_after_repair(layout: Path) -> None:
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is unavailable")
+    image = "teatree-ro-executor:local"
+    available = subprocess.run([docker, "image", "inspect", image], capture_output=True, check=False)
+    if available.returncode != 0:
+        pytest.skip("read-only executor image is unavailable")
+
+    clone, worktree = _clone_with_worktree(layout)
+    _git("-C", str(clone), "pack-refs", "--all")
+    assert not (clone / ".git" / "refs" / "heads" / "ticket").exists()
+    packed_refs = clone / ".git" / "packed-refs"
+    packed_refs.chmod(0o600)
+    layout.chmod(0o755)
+    probe_file = layout / "probe_program.py"
+    probe_file.write_text(codex_read_only_executor._PROBE_PROGRAM, encoding="utf-8")
+    probe_code = (
+        "import sys; ns={'__name__': 'git_probe'}; "
+        "exec(compile(open(sys.argv[1]).read(), 'git_probe', 'exec'), ns); "
+        "print(ns['git_readable'](sys.argv[2]))"
+    )
+
+    def in_executor(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as bundle:
+            bundle.add(layout, arcname=str(layout).lstrip("/"))
+        return subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--pull=never",
+                "--interactive",
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "sh",
+                image,
+                "-c",
+                'tar -xf - -C / && exec setpriv --reuid=65534 --regid=65534 --clear-groups "$@"',
+                "sh",
+                *command,
+            ],
+            input=archive.getvalue(),
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+    def probe() -> subprocess.CompletedProcess[bytes]:
+        return in_executor(["python3", "-c", probe_code, str(probe_file), str(worktree)])
+
+    def head() -> subprocess.CompletedProcess[bytes]:
+        return in_executor(["git", "-c", "safe.directory=*", "-C", str(worktree), "rev-parse", "HEAD"])
+
+    before = probe()
+    assert before.returncode == 0, before.stderr
+    assert str(packed_refs).encode() in before.stdout
+    assert head().returncode != 0
+
+    codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    after = probe()
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.strip() == b"OK"
+    git = shutil.which("git")
+    assert git is not None
+    expected = subprocess.run(
+        [git, "-C", str(worktree), "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+    )
+    resolved = head()
+    assert resolved.returncode == 0, resolved.stderr
+    assert resolved.stdout.strip() == expected.stdout.strip().encode()
+
+
+def test_repair_skips_chmod_on_already_readable_directories(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    original_chmod = Path.chmod
+
+    def chmod(path: Path, mode: int, *args: object, **kwargs: object) -> None:
+        if path.is_dir() and path.is_relative_to(clone / ".git"):
+            msg = "readable directory is owned by another user"
+            raise PermissionError(msg)
+        original_chmod(path, mode, *args, **kwargs)
+
+    with patch.object(Path, "chmod", chmod):
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert git_readable(str(worktree)) == "OK"
+
+
+def test_repair_accepts_a_permission_race_when_the_file_became_readable(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    packed_refs = clone / ".git" / "packed-refs"
+    packed_refs.chmod(0o600)
+    original_chmod = Path.chmod
+
+    def chmod(path: Path, mode: int, *args: object, **kwargs: object) -> None:
+        original_chmod(path, mode, *args, **kwargs)
+        if path == packed_refs:
+            msg = "another writer already made it readable"
+            raise PermissionError(msg)
+
+    with patch.object(Path, "chmod", chmod):
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert git_readable(str(worktree)) == "OK"
+
+
+def test_repair_ignores_a_file_pruned_after_directory_listing(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    vanished = clone / ".git" / "packed-refs"
+    original_lstat = Path.lstat
+
+    def lstat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == vanished:
+            raise FileNotFoundError(str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    with patch.object(Path, "lstat", lstat):
+        codex_read_only_executor.repair_git_metadata(worktree, allowed_roots=(clone.parent, worktree.parent))
+
+    assert git_readable(str(worktree)) == "OK"
+
+
+def test_probe_ignores_a_file_pruned_after_directory_listing(layout: Path) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    vanished = clone / ".git" / "packed-refs"
+    original_lstat = Path.lstat
+
+    def lstat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == vanished:
+            raise FileNotFoundError(str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    with patch.object(Path, "lstat", lstat):
+        assert git_readable(str(worktree)) == "OK"
 
 
 def test_worker_leaves_an_already_readable_hardlink_unchanged(layout: Path) -> None:

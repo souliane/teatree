@@ -65,7 +65,7 @@ def restore_unconsumed_resume_thread(harness: Harness) -> None:
         restore()
 
 
-def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str]:
+def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str, str]:
     """The task prompt and system context; the read-only executor gets its facts inline or the run is refused."""
     skills, stage_skills = preflight.skills, preflight.stage_skills
     if preflight.dispatch.harness.capabilities.read_only_venue:
@@ -76,12 +76,12 @@ def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: P
         context, continued_skills = fit_read_only_context(context)
         if continued_skills:
             prompt = f"Required skills continued from the system context:\n\n{continued_skills}\n\n{prompt}"
-        return prompt, context
+        return prompt, context, continued_skills
     prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
     context = build_system_context(
         task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills, handoff=handoff
     )
-    return prompt, context
+    return prompt, context, ""
 
 
 def prepare_run(
@@ -94,12 +94,11 @@ def prepare_run(
 ) -> PreparedRun:
     """Refuse an undelivered mandatory skill before creating billable options."""
     skills = preflight.skills
-    stage_skills = preflight.stage_skills
     dispatch = preflight.dispatch
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
-    prompt, system_context = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
+    prompt, system_context, continued_skills = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
     read_only_venue = dispatch.harness.capabilities.read_only_venue
-    stage_present = stage_skills_present(task, skills, configured=stage_skills)
+    stage_present = stage_skills_present(task, skills, configured=preflight.stage_skills)
     if read_only_venue:
         handoff = None
         required_inline = read_only_required_skills(
@@ -125,6 +124,8 @@ def prepare_run(
     )
     if read_only_venue:
         system_context = read_only_system_context(system_context)
+        if continued_skills:
+            prompt = prompt.replace(continued_skills, read_only_system_context(continued_skills, max_bytes=None), 1)
     guard = CompactionGuard()
     options = _build_options(
         task,

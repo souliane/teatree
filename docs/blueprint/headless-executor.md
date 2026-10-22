@@ -6,9 +6,10 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 
 For a read-only Codex phase, the worker gathers forge and survey facts before opening the executor.
 Pull request URLs use the PR body and conversation APIs. A manually queued planning task records a
-missing landscape survey with its ticket overlay before creation. If required skill text exceeds the
-96 KiB system-context cap, complete skill blocks continue in the task message; skill assurance checks
-both surfaces. Before each live attestation, the writable worker repairs Git metadata permissions only
+missing landscape survey with its ticket overlay before creation; the worker records one before an
+automatically queued planner's read-only brief if needed. If required skill text exceeds the 96 KiB
+system-context cap, complete skill blocks continue in the task message; skill assurance checks the
+source text on both surfaces before command spans are rewritten. Before each live attestation, the writable worker repairs Git metadata permissions only
 inside the checkout mounts shared with the executor, and the isolated probe reports every remaining
 unreadable path.
 

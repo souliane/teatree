@@ -185,7 +185,7 @@ def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
 
 
 def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> LandscapeReport:
-    """Gather and render the intake landscape survey for the active overlay.
+    """Gather and render the intake landscape survey for the selected overlay.
 
     Resolves the overlay code host, enumerates the workspace worktrees and
     in-scope open issues, then delegates classification to

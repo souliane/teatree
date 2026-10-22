@@ -94,6 +94,41 @@ def test_deploy_git_is_repaired_only_when_both_mounts_name_the_same_source(tmp_p
         repair.assert_not_called()
 
 
+def test_checkout_git_repair_requires_matching_clone_and_worktree_mounts(tmp_path: Path) -> None:
+    root = tmp_path / "clones"
+    worktrees = tmp_path / "worktrees"
+    checkout = root / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    worker = worker_fixture()
+    executor = executor_fixture("pass")
+    for target in (root, worktrees):
+        worker["Mounts"].append({"Type": "bind", "Source": str(target), "Destination": str(target), "RW": True})
+        executor["Mounts"].append({"Type": "bind", "Source": str(target), "Destination": str(target), "RW": False})
+    with (
+        patch.object(codex_read_only_executor, "CLONE_ROOT", str(root)),
+        patch.object(codex_read_only_executor, "WORKTREE_ROOT", str(worktrees)),
+        patch("teatree.agents.codex_read_only_executor.repair_git_metadata") as repair,
+    ):
+        codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
+        repair.assert_called_once()
+        repair.reset_mock()
+        executor["Mounts"][-1]["Source"] = str(tmp_path / "other")
+        codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
+        repair.assert_called_once()
+        repair.reset_mock()
+        executor["Mounts"][-2]["Source"] = str(tmp_path / "other")
+        codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
+        repair.assert_not_called()
+
+
+def test_attest_repairs_mounted_git_before_the_probe(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
+    _applied(fake, monkeypatch)
+    with patch("teatree.agents.codex_read_only_executor._repair_mounted_git") as repair:
+        attest("planning", [EXAMPLE_ROOT])
+
+    repair.assert_called_once_with(fake.worker, fake.executor, [EXAMPLE_ROOT])
+
+
 def test_writable_mount_refuses_with_named_reason_and_starts_nothing(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
 ) -> None:

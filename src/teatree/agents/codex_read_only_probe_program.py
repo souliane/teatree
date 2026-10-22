@@ -231,6 +231,8 @@ def _internal_git_link(path: Path, tops: list[Path]) -> bool:
 def _git_path_readable(path: Path, tops: list[Path], *, directory: bool) -> bool:
     try:
         mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
     if stat.S_ISLNK(mode):

@@ -206,34 +206,59 @@ def executor_availability_reason(phase: str) -> str | None:
     return refusal_reason(phase, refusal) if refusal else None
 
 
+def _grant_git_read(path: Path, mode: int, required: int) -> None:
+    if mode & required == required:
+        return
+    try:
+        path.chmod(mode | required)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        try:
+            current = path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if current & required != required:
+            raise
+
+
 def _readable_git_file(path: Path) -> None:
-    info = path.lstat()
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
     if info.st_mode & stat.S_IROTH:
         return
     if info.st_nlink > 1:
         msg = f"Git metadata {path} has links outside its checkout"
         raise ExecutorRefusalError(msg)
-    path.chmod(info.st_mode | stat.S_IROTH)
+    _grant_git_read(path, info.st_mode, stat.S_IROTH)
 
 
 def _readable_git_tree(gitdir: Path) -> None:
     pending = [gitdir]
     while pending:
         path = pending.pop()
-        mode = path.lstat().st_mode
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            continue
         if not stat.S_ISDIR(mode):
             continue
-        path.chmod(mode | stat.S_IROTH | stat.S_IXOTH)
-        with os.scandir(path) as entries:
-            children = list(entries)
-        pending.extend(
-            Path(entry.path)
-            for entry in children
-            if entry.is_dir(follow_symlinks=False) and not Path(entry.path).is_mount()
-        )
+        _grant_git_read(path, mode, stat.S_IROTH | stat.S_IXOTH)
+        try:
+            with os.scandir(path) as entries:
+                children = list(entries)
+        except FileNotFoundError:
+            continue
         for entry in children:
-            if entry.is_file(follow_symlinks=False):
-                _readable_git_file(Path(entry.path))
+            try:
+                if entry.is_dir(follow_symlinks=False) and not Path(entry.path).is_mount():
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    _readable_git_file(Path(entry.path))
+            except FileNotFoundError:
+                continue
 
 
 def repair_git_metadata(checkout: Path, *, allowed_roots: Sequence[Path]) -> None:

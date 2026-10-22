@@ -11,6 +11,7 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.intake.landscape_persist import ensure_planning_landscape
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
@@ -59,17 +60,26 @@ class ReadOnlyFacts:
         """Read everything the brief inlines in the worker, or refuse: nothing is truncated on this venue."""
         issue_body, issue_comments = _issue(task.ticket)
         review_head, review_diff, review_checks = _review_diff(task)
+        planning = normalize_phase(task.phase) == "planning"
+        survey = intake_survey_json(task) if planning else ""
+        if planning and not survey:
+            try:
+                ensure_planning_landscape(task.ticket)
+            except Exception as exc:
+                reason = f"no intake landscape survey is recorded for this ticket ({type(exc).__name__})"
+                raise _refused(reason) from exc
+            survey = intake_survey_json(task)
         facts = cls(
             issue_body=issue_body,
             issue_comments=issue_comments,
             ticket_context=task.ticket.context.strip(),
             handoff=handoff.read_text(encoding="utf-8") if handoff is not None else "",
-            survey=intake_survey_json(task) if normalize_phase(task.phase) == "planning" else "",
+            survey=survey,
             review_head=review_head,
             review_diff=review_diff,
             review_checks=review_checks,
         )
-        if normalize_phase(task.phase) == "planning" and not facts.survey:
+        if planning and not facts.survey:
             reason = "no intake landscape survey is recorded for this ticket"
             raise _refused(reason)
         for name, text, cap in (
@@ -107,8 +117,7 @@ def read_only_system_context(context: str, *, max_bytes: int | None = MAX_APPEND
 
 def fit_read_only_context(context: str) -> tuple[str, str]:
     """Move whole mandatory skill bodies to the task message until the system append fits."""
-    context = read_only_system_context(context, max_bytes=None)
-    if len(context.encode()) <= MAX_APPEND_BYTES:
+    if len(read_only_system_context(context, max_bytes=None).encode()) <= MAX_APPEND_BYTES:
         return context, ""
     header = "\n\n# Loaded Skills\n\n"
     tail = "\n\n# Context Budget"
@@ -128,9 +137,10 @@ def fit_read_only_context(context: str) -> tuple[str, str]:
     def assembled() -> str:
         return prefix + header + "\n\n".join((reach, *kept)) + stage_line + tail + suffix
 
-    while kept and len(assembled().encode()) > MAX_APPEND_BYTES:
+    while kept and len(read_only_system_context(assembled(), max_bytes=None).encode()) > MAX_APPEND_BYTES:
         moved.insert(0, kept.pop())
-    fitted = read_only_system_context(assembled())
+    fitted = assembled()
+    read_only_system_context(fitted)
     return fitted, "\n\n".join(moved)
 
 

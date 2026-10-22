@@ -230,6 +230,15 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
         assert "s" * (MAX_APPEND_BYTES + 1024) in prepared.prompt
 
+    def test_a_moved_skill_has_its_teatree_command_rewritten_after_assurance(self) -> None:
+        self._stack_skill("Before planning, run `t3 placeholder check`.\n" + "s" * (MAX_APPEND_BYTES + 1024))
+
+        prepared = self._prepare(self._task())
+
+        assert "fastapi" in prepared.skill_assurance["injected"]
+        assert f"Before planning, run {ABSENT_TOOL}." in prepared.prompt
+        assert "`t3 placeholder check`" not in prepared.prompt
+
     def test_planning_brief_in_the_executor_names_no_t3_command(self) -> None:
         prepared = self._prepare(self._task())
         context = self._system_context(prepared)
@@ -332,7 +341,26 @@ class TestTheReadOnlyVenueBrief(TestCase):
     def test_a_ticket_without_a_survey_refuses_the_executor_run(self) -> None:
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}0")
 
-        assert "no intake landscape survey" in str(self._refusal(self._task(ticket)))
+        with patch("teatree.agents.read_only_venue_brief.ensure_planning_landscape", side_effect=RuntimeError("down")):
+            refusal = self._refusal(self._task(ticket))
+
+        assert "no intake landscape survey" in str(refusal)
+        assert "RuntimeError" in str(refusal)
+
+    def test_auto_planning_recovers_a_missing_survey_before_the_read_only_brief(self) -> None:
+        ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}47", overlay="test")
+        task = ticket.begin_planning()
+        survey = {"worktrees": [], "open_prs": [], "recommendations": [], "warnings": []}
+
+        with patch("teatree.core.intake.landscape_persist.run_landscape", return_value=survey) as gather:
+            prepared = self._prepare(task)
+
+        artifact = LandscapeArtifact.latest_for(ticket)
+        assert artifact is not None
+        assert artifact.recorded_by == "t3:planning"
+        assert json.dumps(survey, sort_keys=True) in prepared.prompt
+        gather.assert_called_once()
+        assert gather.call_args.kwargs["overlay_name"] == "test"
 
     def test_review_brief_needs_no_planning_survey(self) -> None:
         self.skills = self._phase_bundle("reviewing")
@@ -376,6 +404,23 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "critic_reviewing" in self._system_context(prepared)
         assert "--- SKILL: review ---" in self._system_context(prepared)
         assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+
+    def test_real_review_bundles_deliver_required_skills_without_file_loads(self) -> None:
+        for phase in ("reviewing", "critic_reviewing"):
+            with self.subTest(phase=phase):
+                self.skills = self._phase_bundle(phase)
+                task = self._task(Ticket.objects.create(issue_url=f"{_ISSUE_URL}-{phase}"))
+                task.phase = phase
+                task.save(update_fields=["phase"])
+
+                prepared = self._prepare(task)
+                delivered = f"{self._system_context(prepared)}\n{prepared.prompt}"
+
+                assert {"rules", "review"} <= set(prepared.skill_assurance["injected"])
+                assert prepared.skill_assurance["explicit_load"] == []
+                assert "REQUIRED: Load /rules" not in delivered
+                assert "Read /home/" not in delivered
+                assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
 
     def test_remote_review_gets_the_dispatched_head_and_full_diff_from_the_worker(self) -> None:
         head = "a" * 40
