@@ -81,6 +81,9 @@ class TestHarnessOptionsFromSdk:
         neutral = HarnessOptions.from_sdk_options(options)
         assert neutral.mailbox is not None
         assert neutral.mailbox.token == "private-token"
+        assert "private-token" not in repr(neutral)
+        assert "T3_AGENT_MAILBOX_TOKEN" not in neutral.env
+        assert "T3_AGENT_MAILBOX_SOCKET" not in neutral.env
         assert "T3_AGENT_MAILBOX_TOKEN" not in LaneBToolConfig.from_options(neutral, phase="coding").shell_env
 
     def test_defaults_are_empty_and_neutral(self) -> None:

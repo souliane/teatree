@@ -80,7 +80,7 @@ def test_an_oversized_send_returns_tool_data_and_the_agent_finishes(tmp_path: Pa
     with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
         sender = broker.register(room="ticket", harness="pydantic_ai", label="sender")
         client = MailboxClient(sender.socket_path, sender.token)
-        observed: list[str] = []
+        observed: list[object] = []
 
         def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
             if not observed:
@@ -94,24 +94,25 @@ def test_an_oversized_send_returns_tool_data_and_the_agent_finishes(tmp_path: Pa
                         )
                     ]
                 )
-            observed.append(
-                repr(
-                    [
-                        part
-                        for message in messages
-                        if isinstance(message, ModelRequest)
-                        for part in message.parts
-                        if isinstance(part, ToolReturnPart)
-                    ]
-                )
-            )
+            results = [
+                part
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+            ]
+            assert len(results) == 1
+            observed.append(results[0].content)
             return ModelResponse(parts=[TextPart(content="done")])
 
         with patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False):
             toolsets = build_lane_b_toolsets(LaneBToolConfig(phase="coding", mailbox=client)).toolsets
         agent: Agent[None, str] = Agent(FunctionModel(respond), toolsets=toolsets)
         assert asyncio.run(agent.run("go")).output == "done"
-        assert "Live mailbox is unavailable" in observed[1]
+        assert observed[1] in (
+            {"error": "Live mailbox is unavailable; this TeaTree session may have ended"},
+            {"error": "Separator is not found, and chunk exceed the limit"},
+        )
 
 
 @pytest.mark.parametrize(

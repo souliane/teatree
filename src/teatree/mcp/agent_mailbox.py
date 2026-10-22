@@ -25,7 +25,7 @@ INSTRUCTIONS = (
     "- agent_mailbox_peers(): live TeaTree tasks on this host, with ticket, phase, harness and receive status.\n"
     "- agent_mailbox_send(to, text, key): send and wait up to 20 seconds for the peer's session to accept it; "
     "acceptance is not obedience; retry with the same key, never a new one.\n"
-    "- A peer without an MCP session receives only by push into its running turn; it has no inbox copy.\n"
+    "- A push-only peer has no inbox copy; a pydantic_ai peer uses native inbox tools without an MCP session.\n"
     "- agent_mailbox_inbox(after_id, limit): read your messages in order, acknowledge them, advance the cursor.\n"
     "- agent_mailbox_wait(after_id, timeout_seconds): wait at most 20 seconds; a parked task is never woken.\n"
     "- An idle claude_sdk peer can be woken once during its bounded live window; send returns accepted_new_turn.\n"

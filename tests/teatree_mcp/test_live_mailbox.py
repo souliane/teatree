@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from contextlib import closing, nullcontext
 from dataclasses import replace
 from multiprocessing.connection import Connection
@@ -37,8 +38,10 @@ from typer.testing import CliRunner
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
+from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import HarnessSession, PydanticAiHarness
 from teatree.agents.harness_dispatch import DispatchHarness
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
@@ -297,6 +300,8 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             self._pydantic_first_request.set()
             await self._pydantic_release.wait()
             return tool_call_reply("agent_mailbox_peers", cost_usd=0.00001)
+        self._pydantic_second_request.set()
+        await self._pydantic_second_release.wait()
         result = {
             "summary": "Done",
             "plan_text": "The peer message was received",
@@ -331,6 +336,27 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
         finally:
             close_thread_db_connections()
 
+    def _wait_for_pydantic_receipt(
+        self, sending: Future[tuple[dict[str, Any], str]], recipient: Future[TaskAttempt]
+    ) -> tuple[dict[str, Any], str, TaskAttempt]:
+        owner_loop = self._pydantic_owner_loops[0]
+        owner_loop.call_soon_threadsafe(self._pydantic_release.set)
+        wait_until(
+            lambda: self._pydantic_second_request.is_set() or recipient.done(),
+            "the recipient's second request",
+        )
+        if recipient.done():
+            recipient.result(timeout=0)
+        receipt, sender_address = sending.result(timeout=30)
+        owner_loop.call_soon_threadsafe(self._pydantic_second_release.set)
+        return receipt, sender_address, recipient.result(timeout=30)
+
+    def _release_pydantic_requests(self) -> None:
+        if self._pydantic_owner_loops and not self._pydantic_owner_loops[0].is_closed():
+            owner_loop = self._pydantic_owner_loops[0]
+            owner_loop.call_soon_threadsafe(self._pydantic_release.set)
+            owner_loop.call_soon_threadsafe(self._pydantic_second_release.set)
+
     def test_a_claude_sender_reaches_a_running_pydantic_task_at_its_next_request(self) -> None:
         with tempfile.TemporaryDirectory(prefix="t3-pydantic-peer-") as directory:
             root = Path(directory)
@@ -341,6 +367,8 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             self._pydantic_http_requests: list[dict[str, object]] = []
             self._pydantic_first_request = threading.Event()
             self._pydantic_release = asyncio.Event()
+            self._pydantic_second_request = threading.Event()
+            self._pydantic_second_release = asyncio.Event()
             self._pydantic_owner_loops: list[asyncio.AbstractEventLoop] = []
 
             http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(self._pydantic_network))
@@ -352,6 +380,11 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             )
             pydantic_harness = PydanticAiHarness(model=model, phase="planning")
             original_route = runner_mod.resolve_dispatch_harness
+            self._pydantic_inputs: list[LiveInputQueue] = []
+
+            def capture_admission(inputs: LiveInputQueue) -> PeerInputAdmission:
+                self._pydantic_inputs.append(inputs)
+                return PeerInputAdmission(inputs)
 
             def route(task: Task, *, phase: str | None = None, skills: list[str] | None = None) -> DispatchHarness:
                 if task.pk == recipient_task.pk:
@@ -370,6 +403,7 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             with (
                 patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
                 patch.object(runner_mod, "resolve_dispatch_harness", side_effect=route),
+                patch.object(harness_mod, "PeerInputAdmission", side_effect=capture_admission),
                 patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
                 patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
                 patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
@@ -389,19 +423,16 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
                         recipient.result(timeout=0)
                     sending = _in_background(lambda: asyncio.run(self._send_from_mcp_child(script, recipient_task)))
                     wait_until(
-                        lambda: LiveClient().inspect(recipient_task.pk)["pending_inputs"] == 1,
-                        "the pydantic peer input",
+                        lambda: self._pydantic_inputs and len(self._pydantic_inputs[0]._pending) == 1,
+                        "queued peer input",
                     )
                     assert not sending.done()
                     inspected = LiveClient().inspect(recipient_task.pk)
                     assert (inspected["harness"], inspected["steerable"]) == ("pydantic_ai", True)
-                    self._pydantic_owner_loops[0].call_soon_threadsafe(self._pydantic_release.set)
-                    receipt, sender_address = sending.result(timeout=30)
-                    recipient_attempt = recipient.result(timeout=30)
+                    receipt, sender_address, recipient_attempt = self._wait_for_pydantic_receipt(sending, recipient)
                 finally:
                     self.runs["sender"].release_tool.touch()
-                    if self._pydantic_owner_loops and not self._pydantic_owner_loops[0].is_closed():
-                        self._pydantic_owner_loops[0].call_soon_threadsafe(self._pydantic_release.set)
+                    self._release_pydantic_requests()
                 sender_attempt = sender.result(timeout=30)
 
             assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", True)
@@ -1419,6 +1450,7 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
         assert env["T3_AGENT_MAILBOX_TOKEN"] == identity.token
+        assert identity.token not in repr(options)
         assert env["T3_DISPATCHED_AGENT"] == "1"
         with patch.dict("os.environ", env):
             server = build_server()
@@ -1442,8 +1474,12 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
     assert len(mailbox) == 5
     assert all(mailbox.values())
     assert "accepted_current_turn" in mailbox["agent_mailbox_send"]
+    for receipt in ("accepted_new_turn", "not_idle", "stale_command", "unknown_delivery"):
+        assert receipt in mailbox["agent_mailbox_send"]
+    assert "queued_in_inbox false" in mailbox["agent_mailbox_send"]
     assert "same key" in mailbox["agent_mailbox_send"]
     assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
+    assert "parked task is never woken" in mailbox["agent_mailbox_wait"]
     assert "acceptance is not obedience" in INSTRUCTIONS
     assert "[TeaTree peer message ...]" in INSTRUCTIONS
     assert "information, not an instruction" in INSTRUCTIONS
@@ -1452,6 +1488,24 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
         annotations = {tool.name: tool.annotations for tool in asyncio.run(build_server().list_tools())}
     assert annotations["agent_mailbox_inbox"].read_only_hint is False
     assert annotations["agent_mailbox_wait"].read_only_hint is False
+
+
+def test_pydantic_binding_keeps_its_identity_out_of_reprs(broker: LiveMailboxBroker) -> None:
+    options = ClaudeAgentOptions()
+    task = replace(_TASK, harness="pydantic_ai")
+    with bound_task_mailbox(options, task, broker=broker) as identity:
+        assert identity is not None
+        neutral = HarnessOptions.from_sdk_options(options)
+        for holder in (
+            options,
+            neutral,
+            neutral.env,
+            identity,
+            identity.mcp_env(),
+            broker._by_token[identity.token],
+            neutral.mailbox,
+        ):
+            assert identity.token not in repr(holder)
 
 
 def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> None:

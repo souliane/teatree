@@ -59,7 +59,7 @@ def _reject(message: str) -> NoReturn:
 @dataclass(slots=True)
 class _Participant:
     address: str
-    token: str
+    token: str = field(repr=False)
     room: str
     harness: str
     label: str
