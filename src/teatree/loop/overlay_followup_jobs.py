@@ -115,7 +115,7 @@ def overlay_followup_jobs(backend: OverlayBackends, reserved_names: Iterable[str
         return []
     review = backend.overlay.review
     hook = getattr(review, "get_followup_scanners", None)
-    if hook is None or getattr(hook, "__func__", hook) is _DEFAULT_FOLLOWUP_HOOK:
+    if getattr(hook, "__func__", hook) is _DEFAULT_FOLLOWUP_HOOK:
         return []
     tag = backend.name
     if (skipped := _SKIPPED_HOOKS.get()) is not None:

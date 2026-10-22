@@ -175,6 +175,19 @@ class TestOverlayFollowupScanners(TestCase):
         }
         assert TeatreeOverlay().review.get_followup_scanners(backend) == []
 
+    def test_missing_review_hook_is_reported_as_a_refusal(self) -> None:
+        class MissingHookReview:
+            pass
+
+        overlay = TeatreeOverlay()
+        overlay.review = cast("OverlayReview", MissingHookReview())
+        backend = OverlayBackends(name="alpha", overlay=overlay, messaging=NoopMessagingBackend())
+
+        jobs = overlay_followup_jobs_module.overlay_followup_jobs(backend)
+        refused = [job for job in jobs if job.scanner.name == "overlay_followup_scanners"]
+        errors = scan_phase(refused).errors
+        assert "get_followup_scanners" in errors["overlay_followup_scanners[alpha]"]
+
     def test_a_raising_hook_is_isolated_to_its_overlay(self) -> None:
         raising = self._backend("alpha", _HookReview(ValueError("bad hook")))
         healthy_scanner = _ExtraScanner()
