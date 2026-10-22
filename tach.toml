@@ -1188,6 +1188,21 @@ layer = "platform"
 depends_on = ["teatree.config", "teatree.paths", "teatree.timeouts"]
 
 [[modules]]
+path = "teatree.webhook_settings"
+layer = "interface"
+depends_on = []
+
+[[modules]]
+path = "teatree.webhook_urls"
+layer = "interface"
+depends_on = []
+
+[[modules]]
+path = "teatree.webhook_wsgi"
+layer = "interface"
+depends_on = []
+
+[[modules]]
 path = "teatree.cli_reference"
 layer = "interface"
 depends_on = ["teatree.cli"]
