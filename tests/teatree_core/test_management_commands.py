@@ -27,7 +27,7 @@ from teatree.core.agent_admission import AgentAdmission
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
@@ -1101,6 +1101,21 @@ class TestTicketCommand(TestCase):
 
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
+
+    def test_planning_create_records_a_missing_landscape(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        survey = {"open_prs": [], "worktrees": [], "warnings": []}
+        with patch("teatree.core.intake.landscape_persist.run_landscape", return_value=survey) as gather:
+            result = cast(
+                "dict[str, object]",
+                call_command("tasks", "create", ticket.pk, phase="planning", reason="Plan X."),
+            )
+
+        assert Task.objects.get(pk=result["task_id"]).ticket_id == ticket.pk
+        artifact = LandscapeArtifact.latest_for(ticket)
+        assert artifact is not None
+        assert artifact.survey == survey
+        gather.assert_called_once()
 
     def test_create_records_a_free_form_phase_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
