@@ -11,6 +11,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
 from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
+from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._task_cancel_auth import direct_owner_action
@@ -26,7 +27,6 @@ from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_env
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
-from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
 from teatree.core.worktree.occupancy import recording_task_checkout

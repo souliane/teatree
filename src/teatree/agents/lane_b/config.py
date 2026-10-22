@@ -15,6 +15,8 @@ from typing import Final
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
+from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.config import cold_reader
 from teatree.config.resolution import effective_default
 
@@ -91,6 +93,7 @@ class LaneBToolConfig:
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
     shell_env: dict[str, str] = field(default_factory=dict)
     shell_max_output_bytes: int = field(default_factory=_declared_output_cap)
+    mailbox: MailboxClient | None = None
 
     @property
     def shell_tool_retries(self) -> int | None:
@@ -130,12 +133,19 @@ class LaneBToolConfig:
         cwd = options.cwd
         fs_root = Path(cwd) if cwd else None
         overrides = dict(options.env or {})
-        shell_env = {**os.environ, **overrides} if overrides else {}
+        resolved_env = {**os.environ, **overrides}
+        identity_names = {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV}
+        shell_env = (
+            {name: value for name, value in resolved_env.items() if name not in identity_names}
+            if overrides or identity_names.intersection(resolved_env)
+            else {}
+        )
         read_roots = tuple(Path(directory) for directory in options.add_dirs if directory != cwd)
         return cls(
             fs_root=fs_root,
             read_roots=read_roots,
             phase=phase,
+            mailbox=options.mailbox,
             shell_env=shell_env,
             shell_max_output_bytes=cold_reader.int_setting(_SHELL_MAX_OUTPUT_BYTES_KEY, minimum=0),
         )

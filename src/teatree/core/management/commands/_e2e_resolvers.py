@@ -43,6 +43,15 @@ def resolve_spec_target(resolved_target: str) -> str:
     return "local" if resolved_target == "stack" else resolved_target
 
 
+def resolve_visual_qa_base_url(worktree: Worktree) -> str:
+    port = _disc.compose_frontend_port(compose_project(worktree))
+    if port is None:
+        message = "no server for this branch"
+        raise RuntimeError(message)
+    host = _disc.detect_local_address(port) or host_published_port_host()
+    return f"http://{host}:{port}"
+
+
 def _stack_frontend_url(e2e_config: Mapping[str, str], *, write: Write) -> str:
     """Resolve and probe an overlay-declared host-published stack frontend."""
     raw_port = e2e_config.get("stack_frontend_port", "")

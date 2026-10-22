@@ -29,6 +29,7 @@ from pathlib import Path
 from django.db import connection
 
 from teatree.paths import _sqlite_snapshot, get_data_dir
+from teatree.sqlite_integrity import quick_check_problems
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +127,9 @@ def hours_since_last_backup(backup_dir: Path, *, now: datetime) -> float | None:
 def _quick_check_problems(snapshot: Path) -> list[str]:
     connection = sqlite3.connect(snapshot)
     try:
-        rows = [str(row[0]) for row in connection.execute("PRAGMA quick_check")]
-    except sqlite3.DatabaseError as damaged:
-        return [str(damaged)]
+        return quick_check_problems(connection)
     finally:
         connection.close()
-    return [] if rows == ["ok"] else rows
 
 
 def create_backup(*, source: Path, backup_dir: Path, now: datetime) -> Path:
