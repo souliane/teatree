@@ -63,7 +63,7 @@ class TestChangedScenarios:
         result = CliRunner().invoke(app, ["eval", "changed-scenarios"], input="\n".join(all_files) + "\n")
         assert result.exit_code == 0, result.output
         assert "capped to" in result.stderr
-        assert "weekly sharded lane" in result.stderr
+        assert "nightly owed batch" in result.stderr
         assert len([line for line in result.stdout.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
 
     def test_deferred_out_writes_the_tail_without_changing_stdout(
@@ -72,10 +72,9 @@ class TestChangedScenarios:
         core_specs = specs_under(discover_specs(), SCENARIOS_DIR)
         all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in core_specs})
         deferred = tmp_path / "deferred.txt"
-        monkeypatch.setenv("TEATREE_EVAL_DEFERRED_OUT", str(deferred))
         result = CliRunner().invoke(
             app,
-            ["eval", "changed-scenarios"],
+            ["eval", "changed-scenarios", "--deferred-out", str(deferred)],
             input="\n".join(all_files) + "\n",
         )
         assert result.exit_code == 0, result.output
@@ -86,19 +85,22 @@ class TestChangedScenarios:
         assert set(selected).isdisjoint(tail)
         assert set(selected) | set(tail) == {spec.name for spec in core_specs}
 
-        monkeypatch.setenv("EVAL_TEST_TOKEN", tail[0])
-        result = CliRunner().invoke(app, ["eval", "changed-scenarios"], input="\n".join(all_files) + "\n")
+        secret_name = next(name for name in tail if len(name) >= 16)
+        monkeypatch.setenv("EVAL_TEST_TOKEN", secret_name)
+        result = CliRunner().invoke(
+            app, ["eval", "changed-scenarios", "--deferred-out", str(deferred)], input="\n".join(all_files) + "\n"
+        )
         assert result.exit_code == 0, result.output
-        assert tail[0] not in deferred.read_text(encoding="utf-8")
+        assert secret_name not in deferred.read_text(encoding="utf-8")
+        assert "[REDACTED]" in deferred.read_text(encoding="utf-8")
 
     def test_deferred_out_is_empty_when_no_scenario_changed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         deferred = tmp_path / "deferred.txt"
-        monkeypatch.setenv("TEATREE_EVAL_DEFERRED_OUT", str(deferred))
         result = CliRunner().invoke(
             app,
-            ["eval", "changed-scenarios", "--skip-code", "3"],
+            ["eval", "changed-scenarios", "--skip-code", "3", "--deferred-out", str(deferred)],
             input="src/teatree/cli/eval/app.py\n",
         )
         assert result.exit_code == 3

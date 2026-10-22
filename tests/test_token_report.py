@@ -260,6 +260,11 @@ def _stored(
 
 
 class EvalReserveTest(TestCase):
+    def test_eval_reserve_api_is_exported(self) -> None:
+        assert {"EvalReserveDecision", "local_eval_reserve_decision", "ci_eval_reserve_decision"} <= set(
+            token_report.__all__
+        )
+
     def test_fresh_allowlisted_oauth_account_serves_eval(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/spent", "anthropic/oauth/healthy"])
         _stored("anthropic/oauth/spent", org="org-spent", u7d=0.85)
@@ -313,8 +318,10 @@ class EvalReserveGateTest(TestCase):
         assert ci_eval_reserve_decision().met is False
 
     def test_the_ci_gate_reads_only_the_allowlisted_pool(self) -> None:
-        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
-        assert ci_eval_reserve_decision().met is True
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/limited"])
+        _stored("anthropic/oauth/limited", org="org-limited", u7d=0.85)
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/limited"])
+        assert ci_eval_reserve_decision().met is False
 
     def test_low_five_hour_headroom_parks_local_and_ci_gates(self) -> None:
         AnthropicTokenUsage.objects.record(
@@ -482,6 +489,19 @@ class CachedRoutingViewTest(TestCase):
         assert secrets.calls == []
         assert row.organization_id == "org-stored"
         assert row.status is TokenStatus.EXHAUSTED
+
+    def test_cached_reserve_row_never_refreshes_stale_health(self) -> None:
+        account = "anthropic/oauth/acct"
+        _stored(account, org="org-stale", now=timezone.now() - dt.timedelta(hours=1))
+        secrets = RecordingSecretReader({account: "TOK-live"})
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+
+        row, was_stale = TokenReport(reader=reader, secret_reader=secrets, from_cache=True).reserve_row(account)
+
+        assert was_stale is True
+        assert row.status.is_measured is False
+        assert reader.calls == []
+        assert secrets.calls == []
 
     def test_an_account_the_router_has_no_verdict_for_is_uncached(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/never-probed"])

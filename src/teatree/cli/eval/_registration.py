@@ -14,7 +14,7 @@ import typer
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
-from teatree.cli.eval.changed_scenarios import changed_scenarios
+from teatree.cli.eval.changed_scenarios import ChangedScenarios
 from teatree.cli.eval.ci_account import ci_account_app
 from teatree.cli.eval.ci_heal import ci_heal_app
 from teatree.cli.eval.ci_status import ci_status
@@ -53,7 +53,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("reachability")(reachability)
     eval_app.command("skill-prose-judge")(skill_prose_judge)
     eval_app.command("audit")(audit)
-    eval_app.command("changed-scenarios")(changed_scenarios)
+    eval_app.command("changed-scenarios")(ChangedScenarios)
     eval_app.command("ci-trigger")(ci_trigger)
     eval_app.command("ci-status")(ci_status)
     eval_app.add_typer(ci_heal_app, name="ci-heal")

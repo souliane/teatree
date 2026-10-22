@@ -1,6 +1,6 @@
 r"""Per-account Anthropic token-health report (``t3 tokens``).
 
-A read-oriented diagnostic over the SAME routing state the per-account selector
+A diagnostic over the SAME routing state the per-account selector
 (``teatree.credential_config``) drives: it enumerates every configured ``pass``
 entry — the per-overlay OAuth + API-key candidate lists across all scopes plus
 global — and reports each account's org id + health status, rendered per credential
@@ -21,7 +21,9 @@ for token health is asking what is true NOW, and a cached row can be wrong in ev
 was sticky at the time. ``from_cache`` (``t3 tokens --cached``) is the opt-in inverse:
 render the stored verdict, probe nothing, and say so — the view of what the ROUTER
 believes. An account with no stored verdict renders :attr:`TokenStatus.UNCACHED`, never a
-fabricated zero.
+fabricated zero. The eval reserve reader reuses a fresh stored OAuth row or probes a stale
+one and refreshes the shared cache; ``from_cache`` makes that reader return an unmeasured
+row instead of probing stale health.
 
 Rows are ordered best-account-first (:func:`_routing_preference`) so the top row is the
 one a new task should run on. Probes are independent and network-bound, so they run
@@ -85,12 +87,15 @@ from teatree.token_rows import (
 from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
 
 __all__ = [
+    "EvalReserveDecision",
     "RowIdentity",
     "TokenAccountPayload",
     "TokenAccountRow",
     "TokenReport",
     "TokenSource",
     "TokenStatus",
+    "ci_eval_reserve_decision",
+    "local_eval_reserve_decision",
     "render_table",
 ]
 
@@ -145,12 +150,15 @@ class TokenReport:
         return sorted(self._pass_rows(now), key=_routing_preference) + ad_hoc
 
     def reserve_row(self, account: str) -> tuple[TokenAccountRow, bool]:
+        """Reuse fresh OAuth health or probe and cache it; cached mode never probes stale health."""
         identity = RowIdentity(account, TokenKind.OAUTH, TokenSource.STORE, ())
         cached = _cached_row(identity)
         now = timezone.now()
         if cached.checked_at is not None and dt.timedelta() <= now - cached.checked_at <= HEALTH_TTL:
             return cached, False
         was_stale = cached.checked_at is not None
+        if self._from_cache:
+            return blank_row(identity, TokenStatus.UNCACHED), was_stale
         try:
             outcome, fingerprint = self._probe(TokenKind.OAUTH, account)
         except SecretStoreError:

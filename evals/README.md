@@ -243,7 +243,7 @@ t3 eval label add <session-id>                # scaffold a corpus entry from an 
 t3 eval label review                          # validate every label loads + every matcher oracle is independent (non-zero on failure)
 t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
 t3 eval changed-scenarios --diff-file changed.diff < changed-files.txt  # …plus the same range's `git diff --unified=0`, so a spec pinned to `agent_sections` is selected only when ITS section moved
-TEATREE_EVAL_DEFERRED_OUT=deferred.txt t3 eval changed-scenarios < changed-files.txt  # reusable PR lane: record the over-cap tail as owed work
+t3 eval changed-scenarios --deferred-out deferred.txt < changed-files.txt  # reusable PR lane: record the over-cap tail as owed work
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly dashboard publish when any collected eval-benchmark-*.html shard records graded verdicts at $0.0000 (an exhausted OAuth window); exit 1 naming the shard + zero-cost models
@@ -257,9 +257,9 @@ t3 eval owed settle --out eval-owed-ledger.json --passed-file passed.txt  # full
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); 1 on any red or an empty run, 75 when a leg parked or the usage limit skipped a scenario
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
-t3 eval ci-heal open --ref <pr-branch>        # CI heal loop (observe-only, default-OFF): open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
+t3 eval ci-heal open --ref <pr-branch>        # CI heal loop: open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
 t3 eval ci-heal list                          # CI heal loop: list recent heal sessions and their FSM state (--json)
-t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN, park on the eval reserve, or HALT+escalate; never a fix
+t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (reaches gh) — GREEN, reserve park, bounded fix, or HALT+escalate
 ```
 
 `changed-scenarios`, `merged-prs-since`, `merge-summaries`, and

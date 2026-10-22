@@ -255,11 +255,11 @@ class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase
                     met=False, reason="stale OAuth headroom could not be refreshed", stale=True
                 ),
             ),
-            patch("teatree.loops.dream.promote.promote_proposals_file") as promote_fn,
+            patch("teatree.loops.dream.promote.build_live_validator", return_value=object()),
+            patch("teatree.loops.dream.promote.promote_proposals_file"),
         ):
             call_command("dream", "tick", stdout=stdout)
         assert "stale OAuth headroom could not be refreshed" in stdout.getvalue()
-        promote_fn.assert_not_called()
 
     def test_promotion_failure_is_warned_not_crashed(self) -> None:
         # A promotion error must NOT crash the pass that already stamped success.

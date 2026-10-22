@@ -79,20 +79,18 @@ def test_weekly_verdict_record_handles_zero_downloaded_summaries() -> None:
 
 
 def test_oauth_selector_steps_receive_repository_reserve_overrides() -> None:
+    selectors = 0
     for workflow in _WORKFLOWS.glob("eval*.yml"):
         jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
         for job in jobs.values():
             for step in job.get("steps", []):
                 if "scripts/eval/select_oauth.py" not in step.get("run", ""):
                     continue
+                selectors += 1
                 env = step["env"]
                 assert env["EVAL_RESERVE_5H_FREE"] == "${{ vars.EVAL_RESERVE_5H_FREE }}", workflow
                 assert env["EVAL_RESERVE_7D_FREE"] == "${{ vars.EVAL_RESERVE_7D_FREE }}", workflow
-                resolved = {
-                    name: render(env[name], {"vars": {"EVAL_RESERVE_5H_FREE": "0.55", "EVAL_RESERVE_7D_FREE": "0.45"}})
-                    for name in ("EVAL_RESERVE_5H_FREE", "EVAL_RESERVE_7D_FREE")
-                }
-                assert resolved == {"EVAL_RESERVE_5H_FREE": "0.55", "EVAL_RESERVE_7D_FREE": "0.45"}, workflow
+    assert selectors > 0
 
 
 def test_benchmark_caller_grants_prepare_read_permissions() -> None:
@@ -468,7 +466,7 @@ def test_reusable_pr_deferred_tail_reaches_the_owed_record_step() -> None:
     detect = jobs["detect"]
     select = next(step for step in detect["steps"] if step.get("id") == "select")
     record = next(step for step in jobs["eval"]["steps"] if step.get("name") == "Record owed scenarios")
-    assert select["env"]["TEATREE_EVAL_DEFERRED_OUT"] == "deferred.txt"
+    assert "--deferred-out deferred.txt" in select["run"]
     assert 'echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"' in select["run"]
     assert detect["outputs"]["deferred"] == "${{ steps.select.outputs.deferred }}"
     assert record["env"]["DEFERRED"] == "${{ needs.detect.outputs.deferred }}"

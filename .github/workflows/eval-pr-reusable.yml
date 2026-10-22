@@ -154,13 +154,12 @@ jobs:
         id: select
         env:
           BASE_REF: ${{ github.base_ref }}
-          TEATREE_EVAL_DEFERRED_OUT: deferred.txt
         run: |
           git fetch --no-tags origin "$BASE_REF"
           git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
           git diff --unified=0 "origin/$BASE_REF...HEAD" > changed.diff
           rc=0
-          uv run t3 eval changed-scenarios --skip-code 3 --diff-file changed.diff \
+          uv run t3 eval changed-scenarios --skip-code 3 --diff-file changed.diff --deferred-out deferred.txt \
             < changed-files.txt > names.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "t3 eval changed-scenarios failed (exit $rc) — failing the check rather than silently skipping the eval." >&2

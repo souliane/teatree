@@ -32,6 +32,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.changed_scenarios import REPO_ROOT, names_for_changed, select_changed_scenarios
 from teatree.eval.changed_sections import changed_sections_by_path
 
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         sections = changed_sections_by_path(args.diff_file.read_text(encoding="utf-8"), repo_root=args.repo_root)
     selection = select_changed_scenarios(sys.stdin, repo_root=args.repo_root, changed_sections=sections)
     if args.deferred_out is not None:
-        args.deferred_out.write_text("".join(f"{name}\n" for name in selection.deferred_names), encoding="utf-8")
+        write_artifact(args.deferred_out, "".join(f"{name}\n" for name in selection.deferred_names))
     if args.metadata_env is not None:
         args.metadata_env.write_text(f"EVAL_DEFERRED={selection.deferred}\n", encoding="utf-8")
     # Surface the cap when it bites (#2737) so the CI log shows a corpus-wide PR's

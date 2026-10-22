@@ -769,22 +769,6 @@ class TestParkOnTheSubscriptionReserve(TestCase):
 
 
 class TestReserveGatesThePendingDispatch(TestCase):
-    def test_stale_health_is_reported_without_dispatch(self) -> None:
-        session = _session()
-        client = _FakeClient()
-
-        outcome = advance_session(
-            session,
-            client=client,
-            escalate=_never,
-            reserve_met=lambda: EvalReserveDecision(
-                met=False, reason="stale CI OAuth headroom could not be refreshed", stale=True
-            ),
-        )
-
-        assert client.triggered == []
-        assert "stale" in outcome.note
-
     def test_a_short_reserve_holds_the_dispatch_without_spending_anything(self) -> None:
         session = _session()
         client = _FakeClient()

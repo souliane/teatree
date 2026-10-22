@@ -30,8 +30,9 @@ in ONE job at a single trial, so the selection is capped at
 file (a ``model:``→``tier:`` backfill, a mass rename) would otherwise select the
 whole ~210-scenario catalog and blow past the 80-min step cap — the cancellation
 that reddened PR #2726's eval job. Full coverage of a corpus-wide change is the
-WEEKLY sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
-budget-safe shards via :mod:`teatree.eval.lane_shard`); the PR lane stays "bounded
+weekly sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
+budget-safe shards via :mod:`teatree.eval.lane_shard`); the deferred tail is owed
+to the nightly batch. The PR lane stays "bounded
 by what changed" (BLUEPRINT §"Selective-PR eval") by capping at this ceiling.
 
 A scenario listed in the known-red QUARANTINE (:mod:`teatree.eval.quarantine`) is
@@ -66,7 +67,7 @@ REPO_ROOT = SCENARIOS_DIR.parents[1]
 #: sequential single-trial run of this many finishes well inside the 80-min step
 #: cap. A diff that selects MORE than this (a corpus-wide mechanical edit) is
 #: truncated to a deterministic sorted-name prefix; the deferred tail is owed to the
-#: weekly sharded lane (teatree's nightly runs it first), never silently dropped.
+#: nightly owed batch, never silently dropped.
 MAX_SELECTIVE_PR_SCENARIOS = MAX_SCENARIOS_PER_SHARD
 
 
@@ -76,13 +77,13 @@ class ScenarioSelection:
 
     ``names`` is the bounded subset the lane runs; ``total_matched`` is how many the
     diff selected BEFORE the cap. When ``total_matched`` exceeds the cap the extra
-    scenarios are deferred to the weekly sharded lane — :meth:`truncation_note` renders
+    scenarios are deferred to the nightly owed batch — :meth:`truncation_note` renders
     the one-line signal so a corpus-wide PR's truncated coverage is visible in the CI
     log instead of hidden.
 
     ``quarantined`` is the disjoint set the diff matched but the known-red registry
     suppressed (#4173). It is kept OUT of ``total_matched`` because "suppressed" and
-    "deferred to the weekly lane" are different claims, and rendered by
+    "deferred to the nightly owed batch" are different claims, and rendered by
     :meth:`quarantine_note` so a suppression is visible in the same CI log rather than
     silently shrinking the lane.
     """
@@ -107,7 +108,7 @@ class ScenarioSelection:
         return (
             f"coverage incomplete: {self.deferred} deferred; "
             f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
-            f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
+            f"selective-PR lane; deferred {self.deferred} to the nightly owed batch"
         )
 
     def quarantine_note(self) -> str | None:

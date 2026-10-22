@@ -444,7 +444,7 @@ class TestThePrLaneRecordsWhatItOwes:
         assert OwedLedger.from_json(ledger.read_text(encoding="utf-8")) == OwedLedger()
 
 
-def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
+def _run_reusable_pr_record(tmp_path: Path, *, limit: tuple[str, ...] = (), deferred: str = "") -> OwedLedger:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "uv"
@@ -452,7 +452,8 @@ def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
     temp = tmp_path / "runner-temp"
     temp.mkdir()
-    (temp / "eval-owed-limit.txt").write_text("limited\n", encoding="utf-8")
+    if limit:
+        (temp / "eval-owed-limit.txt").write_text("".join(f"{name}\n" for name in limit), encoding="utf-8")
     script = _script("eval-pr-reusable.yml", "eval", "Record owed scenarios")
     script = script.replace("${{ github.event.pull_request.number }}", "7").replace(
         "${{ github.event.pull_request.head.sha }}", "abc123"
@@ -464,6 +465,7 @@ def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(temp),
             "XDG_DATA_HOME": str(tmp_path / "xdg"),
+            "DEFERRED": deferred,
         },
         capture_output=True,
         text=True,
@@ -471,38 +473,16 @@ def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
         cwd=_WORKFLOWS.parents[1],
     )
     assert result.returncode == 0, result.stderr
-    ledger = OwedLedger.from_json((temp / "eval-owed.json").read_text(encoding="utf-8"))
+    return OwedLedger.from_json((temp / "eval-owed.json").read_text(encoding="utf-8"))
+
+
+def test_reusable_pr_record_step_writes_limit_debt(tmp_path: Path) -> None:
+    ledger = _run_reusable_pr_record(tmp_path, limit=("limited",))
     assert ledger.names == ("limited",)
 
 
 def test_reusable_pr_record_step_writes_deferred_debt(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    stub = bin_dir / "uv"
-    stub.write_text(_REAL_T3_UV, encoding="utf-8")
-    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-    temp = tmp_path / "runner-temp"
-    temp.mkdir()
-    script = _script("eval-pr-reusable.yml", "eval", "Record owed scenarios")
-    script = script.replace("${{ github.event.pull_request.number }}", "7").replace(
-        "${{ github.event.pull_request.head.sha }}", "abc123"
-    )
-    result = subprocess.run(
-        [_BASH, "-c", script],
-        env={
-            **{key: value for key, value in os.environ.items() if key != "T3_REPO"},
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-            "RUNNER_TEMP": str(temp),
-            "XDG_DATA_HOME": str(tmp_path / "xdg"),
-            "DEFERRED": "deferred-a,deferred-b",
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=_WORKFLOWS.parents[1],
-    )
-    assert result.returncode == 0, result.stderr
-    ledger = OwedLedger.from_json((temp / "eval-owed.json").read_text(encoding="utf-8"))
+    ledger = _run_reusable_pr_record(tmp_path, deferred="deferred-a,deferred-b")
     assert ledger.names == ("deferred-a", "deferred-b")
 
 
