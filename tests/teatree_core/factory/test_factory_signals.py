@@ -14,9 +14,11 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from django.db.models.signals import post_save
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.factory import factory_signal_queries
 from teatree.core.factory.factory_signals import (
     SIGNALS,
     VISIBILITY_SIGNALS,
@@ -29,21 +31,26 @@ from teatree.core.factory.factory_signals import (
     first_try_green_rate,
     merge_latency,
     net_hand_written_loc,
+    pr_start_to_merged,
     repair_iteration_burn,
     review_catch_rate,
 )
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.signals import _auto_enqueue_task
 from teatree.quality.hand_written_loc import LocDelta
 from teatree.utils.run import CommandFailedError
 from tests.factories import (
     MergeAuditFactory,
     MergeClearFactory,
+    PullRequestFactory,
     RedCardSignalFactory,
     RedMrFixAttemptFactory,
     ReviewVerdictFactory,
@@ -127,6 +134,118 @@ class FactorySignalsTestBase(TestCase):
         task = TaskFactory(ticket=ticket, session=session, phase=phase)
         att = TaskAttemptFactory(task=task, iteration=iteration, exit_code=exit_code, error=error)
         TaskAttempt.objects.filter(pk=att.pk).update(started_at=self.now - timedelta(days=days_ago))
+
+
+class PullRequestFlowSignalTests(FactorySignalsTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _pr(self, *, age_hours: float, state: str = PullRequest.State.OPEN) -> PullRequest:
+        ticket = TicketFactory()
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
+        Task.objects.filter(pk=task.pk).update(admitted_at=self.now - timedelta(hours=age_hours))
+        row = PullRequestFactory(ticket=ticket, state=state)
+        return PullRequest.objects.get(pk=row.pk)
+
+    def test_oldest_open_pull_request_trips_red_without_merges(self) -> None:
+        self._pr(age_hours=10)
+        older = self._pr(age_hours=80)
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.verdict == SignalVerdict.RED
+        assert row.evidence["oldest_open_pr"] == older.url
+        assert row.evidence["oldest_open_hours"] == pytest.approx(80, abs=0.1)
+
+    def test_red_reason_uses_open_pull_request_age_limit(self) -> None:
+        self._pr(age_hours=factory_signal_queries.OPEN_PR_RED_HOURS)
+        window = factory_signal_queries.current_window(self.now, 7)
+
+        result = factory_signal_queries.compute_s6(window, "t3-teatree", self.now)
+
+        assert result.hard_red is True
+        assert result.hard_red_reason == (
+            f"oldest open pull request is at least {factory_signal_queries.OPEN_PR_RED_HOURS:g}h old"
+        )
+
+    def test_young_open_pull_request_is_not_red(self) -> None:
+        self._pr(age_hours=10)
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.verdict == SignalVerdict.INSUFFICIENT_DATA
+
+    def test_unmeasured_open_pull_request_fails_loud(self) -> None:
+        PullRequestFactory(ticket=Ticket.objects.create())
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.INSTRUMENTATION_GAP
+        assert row.evidence["unmeasured_open"] == 1
+
+    def test_old_open_pull_request_stays_red_with_an_unmeasured_peer(self) -> None:
+        self._pr(age_hours=80)
+        PullRequestFactory(ticket=Ticket.objects.create())
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+        assert row.verdict == SignalVerdict.RED
+        assert row.evidence["unmeasured_open"] == 1
+
+    def test_open_pull_request_without_a_ticket_clock_ages_from_its_creation(self) -> None:
+        PullRequestFactory(ticket=Ticket.objects.create(), create_verified_at=self.now - timedelta(hours=30))
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+        assert row.evidence["unmeasured_open"] == 0
+        assert row.evidence["oldest_open_hours"] == pytest.approx(30, abs=0.1)
+
+    def test_merged_pull_requests_report_median_from_first_admission(self) -> None:
+        for hours in (1, 2, 3, 4, 100):
+            pr = self._pr(age_hours=hours, state=PullRequest.State.MERGED)
+            edge = TicketTransitionFactory(
+                ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now - timedelta(seconds=1))
+
+        row = _row(compute_factory_signals(now=self.now), "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.OK
+        assert row.reading.value == pytest.approx(3, abs=0.1)
+
+    def test_merged_median_above_red_floor_trips_without_old_open_pull_requests(self) -> None:
+        for _ in range(5):
+            pr = self._pr(age_hours=50, state=PullRequest.State.MERGED)
+            edge = TicketTransitionFactory(
+                ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now - timedelta(seconds=1))
+
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "pr_start_to_merged")
+
+        assert row.reading.status == SignalStatus.OK
+        assert row.reading.value == pytest.approx(50, abs=0.1)
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+        assert report.verdict == SignalVerdict.RED
+
+    def test_pull_request_provider_reads_the_merge_flow(self) -> None:
+        for hours in (1, 2, 3, 4, 100):
+            pr = self._pr(age_hours=hours, state=PullRequest.State.MERGED)
+            edge = TicketTransitionFactory(
+                ticket=pr.ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=edge.pk).update(created_at=self.now - timedelta(seconds=1))
+
+        reading = pr_start_to_merged(now=self.now)
+
+        assert reading.status == SignalStatus.OK
+        assert reading.value == pytest.approx(3, abs=0.1)
 
 
 class S1FirstTryGreenTests(FactorySignalsTestBase):
@@ -693,6 +812,7 @@ class ReportShapeTests(FactorySignalsTestBase):
             defect_escape_rate,
             review_catch_rate,
             merge_latency,
+            pr_start_to_merged,
             repair_iteration_burn,
         ):
             reading = provider(now=self.now)

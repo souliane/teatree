@@ -231,8 +231,21 @@ class Task(models.Model):
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
         return role_phase & not_under_external_delivery_q()
 
-    def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
-        _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
+    def claim(
+        self,
+        *,
+        claimed_by: str,
+        claimed_by_session: str = "",
+        lease_seconds: int = 300,
+        cleanup_unknown_overlay: bool = False,
+    ) -> None:
+        _claim_task(
+            self,
+            claimed_by=claimed_by,
+            claimed_by_session=claimed_by_session,
+            lease_seconds=lease_seconds,
+            cleanup_unknown_overlay=cleanup_unknown_overlay,
+        )
         self.observe_transition("task.claimed")
 
     def observe_transition(self, kind: str, cause: str = "none") -> None:
