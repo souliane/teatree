@@ -14116,9 +14116,9 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
 
  Print the resolved value for *key* and name its source (DB vs env/default).
 
- When a ``ConfigSetting`` row exists in the requested scope it is reported as
- the ``db`` source; otherwise the value falls through to the code layer: a
- cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+ The shared resolver reads overlay aliases and global fallback rows.
+ A selected DB row reports ``db``. Without one, a cold-hook gate key
+ (``COLD_HOOK_SETTINGS``) reports its in-code
  ``ColdHookSetting`` default, every other key its ``UserSettings``
  env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
  an unknown key — a typo is loud, not a silent answer for a non-setting — but

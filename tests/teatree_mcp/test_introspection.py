@@ -28,6 +28,22 @@ class TestQuestionList(TestCase):
 
 
 class TestConfigSettingGet(TestCase):
+    def test_alias_scope_reads_the_stored_value(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 7, scope="teatree")
+
+        row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
+
+        assert row["value"] == 7
+        assert row["source"] == "db"
+
+    def test_overlay_reads_a_global_stored_value(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 7)
+
+        row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
+
+        assert row["value"] == 7
+        assert row["source"] == "db"
+
     def test_db_override_reports_db_source(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", value=400)
 

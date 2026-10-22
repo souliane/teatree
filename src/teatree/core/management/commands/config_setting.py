@@ -46,6 +46,7 @@ from teatree.config import (
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.feature_flags import render_flags_audit
 from teatree.config.known_settings import config_key_hint
+from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.setting_groups import group_outline
 from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
@@ -343,9 +344,9 @@ class Command(TyperCommand):
     ) -> None:
         """Print the resolved value for *key* and name its source (DB vs env/default).
 
-        When a ``ConfigSetting`` row exists in the requested scope it is reported as
-        the ``db`` source; otherwise the value falls through to the code layer: a
-        cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+        The shared resolver reads overlay aliases and global fallback rows.
+        A selected DB row reports ``db``. Without one, a cold-hook gate key
+        (``COLD_HOOK_SETTINGS``) reports its in-code
         ``ColdHookSetting`` default, every other key its ``UserSettings``
         env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
         an unknown key — a typo is loud, not a silent answer for a non-setting — but
@@ -356,11 +357,12 @@ class Command(TyperCommand):
             return
         if key not in _ALLOWED_SETTINGS:
             self._refuse_unknown_key(key)
-        stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        if stored is not None:
+        resolved = resolve_settings((key,), scope=overlay)[key]
+        if resolved.source in {ValueSource.DB_OVERLAY, ValueSource.DB_GLOBAL}:
+            stored_scope = resolved.scope or ""
             self.stdout.write(
-                f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]"
-                f"{_governance_suffix(key)}{_decider_suffix(key, overlay)}"
+                f"  {key} = {resolved.value!r}  [source: db, {scope_label(stored_scope)}]"
+                f"{_governance_suffix(key)}{_decider_suffix(key, stored_scope)}"
             )
             return
         cold_hook = COLD_HOOK_SETTINGS.get(key)

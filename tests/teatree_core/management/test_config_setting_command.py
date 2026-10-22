@@ -483,6 +483,27 @@ class TestConfigSettingOverlayScope(TestCase):
         assert "db" in rendered
         assert "ov" in rendered
 
+    def test_get_resolves_an_alias_row_and_names_its_decider(self) -> None:
+        ConfigSetting.objects.set_value(
+            "issue_implementer_max_concurrent", 7, scope="teatree", authorized_by="operator"
+        )
+        out = StringIO()
+
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", "--overlay", "t3-teatree", stdout=out)
+
+        assert "issue_implementer_max_concurrent = 7" in out.getvalue()
+        assert "[source: db, overlay 'teatree']" in out.getvalue()
+        assert "[decided by operator]" in out.getvalue()
+
+    def test_get_resolves_global_row_for_an_overlay(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 7)
+        out = StringIO()
+
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", "--overlay", "t3-teatree", stdout=out)
+
+        assert "issue_implementer_max_concurrent = 7" in out.getvalue()
+        assert "[source: db, global]" in out.getvalue()
+
     def test_list_names_each_rows_scope(self) -> None:
         call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         call_command("config_setting", "set", "issue_implementer_label", '"ready"', "--overlay", "ov")

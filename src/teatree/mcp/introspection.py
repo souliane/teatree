@@ -11,7 +11,8 @@ Same contract as ``search``: synchronous, JSON-safe, never mutates.
 from typing import Any
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
-from teatree.core.models import ConfigSetting, DeferredQuestion
+from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.core.models import DeferredQuestion
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.mcp import command_catalogue
@@ -88,7 +89,7 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
     set the CLI consults (``ALL_KNOWN_CONFIG_SETTINGS`` — the ``UserSettings``
     partition, the injected registries, the cold-read keys, and the cold-hook
     gate flags), so a key the CLI can ``set`` is never reported unknown here. A
-    ``ConfigSetting`` row in the requested scope is reported as
+    ``ConfigSetting`` row selected by the shared alias-tolerant resolver is reported as
     ``source == "db"``; a cold-hook key with no row reports its in-code default
     (``source == "code default"``, the CLI ``get`` fallback); every other key
     falls through to the file/env layer (``source == "file/env"``). ``overlay``
@@ -111,9 +112,16 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
         }
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
-    stored = ConfigSetting.objects.get_effective(key, scope=scope)
-    if stored is not None:
-        return {"key": key, "known": True, "value": _jsonable(stored), "source": "db", "scope": label, "overlay": scope}
+    resolved = resolve_settings((key,), scope=scope)[key]
+    if resolved.source in {ValueSource.DB_OVERLAY, ValueSource.DB_GLOBAL}:
+        return {
+            "key": key,
+            "known": True,
+            "value": _jsonable(resolved.value),
+            "source": "db",
+            "scope": label,
+            "overlay": scope,
+        }
     cold_hook = COLD_HOOK_SETTINGS.get(key)
     if cold_hook is not None:
         return {
