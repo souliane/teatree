@@ -36,6 +36,7 @@ from teatree.core.worktree.branch_classification import reset_forge_probe_cache,
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
+from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
@@ -465,6 +466,13 @@ def _restore_django_settings_module() -> Iterator[None]:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
         os.environ["DJANGO_SETTINGS_MODULE"] = before
+
+
+@pytest.fixture(autouse=True)
+def _reset_overlay_followup_hook_cache() -> Iterator[None]:
+    reset_inflight_hooks()
+    yield
+    reset_inflight_hooks()
 
 
 @pytest.fixture(autouse=True)
