@@ -38,6 +38,8 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
         scope = match.group(1).lower()
+        if scope.lstrip().startswith("forget to "):
+            continue
         for kind, pattern in (
             ("no_migration", r"\bmigrations?\b"),
             ("no_setting", r"\bsettings?\b"),
@@ -62,8 +64,6 @@ def _public_names(source: str) -> set[str]:
             names.update(target.id for target in node.targets if isinstance(target, ast.Name))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
-        elif isinstance(node, ast.Import | ast.ImportFrom):
-            names.update(alias.asname or alias.name.split(".", maxsplit=1)[0] for alias in node.names)
     return {name for name in names if not name.startswith("_")}
 
 

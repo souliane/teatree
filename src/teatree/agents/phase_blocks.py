@@ -32,7 +32,6 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
-from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.live_head import live_head_at
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -79,7 +78,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         '                     "blast_class": "substrate"|"logic"|"docs",',
         '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
         '                                   "summary": "...", "file": "...", "line": 0}]}',
-        f"Finding standard: {FINDING_STANDARD}",
+        "Classify BLOCKING/NIT using skills/review/references/nit-lane.md before returning a finding.",
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
         (

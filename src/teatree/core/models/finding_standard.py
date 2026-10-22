@@ -18,8 +18,8 @@ FINDING_STANDARD = (
 
 def normalize_finding_kind(kind: str, severity: str) -> str:
     normalized = kind.strip().lower()
+    if severity.strip().lower() in {"blocker", "major", "high", "critical"}:
+        return FindingKind.BLOCKING
     if normalized == FindingKind.NIT:
         return FindingKind.NIT
-    if normalized:
-        return FindingKind.BLOCKING
-    return FindingKind.NIT if severity.strip().lower() == "nit" else FindingKind.BLOCKING
+    return FindingKind.BLOCKING

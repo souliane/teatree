@@ -141,11 +141,11 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
         return refusal
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
-    envelope = normalize_review_envelope(envelope, ticket)
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
         return evidence_error
+    envelope = normalize_review_envelope(envelope, ticket)
     returned = envelope.get("rubric_grades")
     try:
         # Scoped to a rubric that EXISTS, like both refusals below — with none, nothing is stamped.
@@ -286,6 +286,21 @@ def _publish_review_nits(ticket: "Ticket", target: ReviewTarget, findings: list[
     publish_nits(ticket, pr_url, target.head_sha, points)
 
 
+def _publish_review_nits_with_recovery(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> str:
+    if not review_nits(findings):
+        return ""
+    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "pending"}}})
+    try:
+        _publish_review_nits(ticket, target, findings)
+    except NitLaneError as exc:
+        ticket.merge_extra(
+            merge_into_dicts={"nit_publication": {target.head_sha: {"status": "failed", "error": str(exc)}}}
+        )
+        return f"review NIT publication refused: {exc}"
+    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "published"}}})
+    return ""
+
+
 def _record_verdict_and_grades(
     task: Task,
     result: AgentResultBlob,
@@ -347,7 +362,6 @@ def _record_verdict_and_grades(
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
-            _publish_review_nits(ticket or task.ticket, target, findings)
             if (
                 ticket is not None
                 and len(distinct_repos(ticket)) >= _MIN_INTEGRATION_REPOS
@@ -375,7 +389,7 @@ def _record_verdict_and_grades(
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
     except ReviewEvidenceError as exc:
         return f"integration review recording refused: {exc}"
-    return ""
+    return _publish_review_nits_with_recovery(ticket or task.ticket, target, findings)
 
 
 def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:

@@ -352,7 +352,7 @@ class TestProductionRecordingPath(TestCase):
         first_task = dispatch.task
         assert first_task is not None
         result = {
-            "summary": "Could not read the diff with the available tools",
+            "summary": "The critic could not produce a grade",
             "critic_verdict": {
                 "grader_identity": "critic-agent-7",
                 "items": [
@@ -510,7 +510,7 @@ class TestMergeNitPublication(TestCase):
         ticket.refresh_from_db()
         assert has_nit_receipts(ticket, pr_url, _FORTY_HEX, (point,))
 
-    def test_failed_nit_publication_rolls_back_verdict_and_claim(self) -> None:
+    def test_failed_nit_publication_keeps_a_recoverable_verdict_and_receipt_gap(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr_url = "https://github.com/souliane/teatree/pull/4040"
         PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=pr_url, repo="souliane/teatree", iid="4040")
@@ -520,12 +520,13 @@ class TestMergeNitPublication(TestCase):
             "critic_verdict": {
                 "grader_identity": "critic-agent-7",
                 "items": [
+                    {"slug": "test_value", "status": "pass", "citation": "tests/test_example.py::test_behavior"},
                     {
                         "slug": "cleanliness",
                         "status": "pass",
                         "citation": "src/example.py:8",
                         "points": [{"kind": "nit", "summary": "Rename helper", "file": "src/example.py", "line": 8}],
-                    }
+                    },
                 ],
             }
         }
@@ -537,8 +538,22 @@ class TestMergeNitPublication(TestCase):
             provider.return_value.get_code_host_for_url.return_value = object()
             assert "forge readback failed" in record_returned_critic_verdict(dispatch.task, result)
         dispatch.refresh_from_db()
-        assert dispatch.state != CriticDispatch.State.RESOLVED
-        assert not CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
+        assert dispatch.state == CriticDispatch.State.RESOLVED
+        assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is not None
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "failed"
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _FORTY_HEX),
+            ),
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            assert record_returned_critic_verdict(dispatch.task, result) == ""
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "published"
 
 
 class TestTransitionScoping(TestCase):

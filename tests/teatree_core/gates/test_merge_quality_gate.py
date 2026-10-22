@@ -18,6 +18,7 @@ critic, so the gate is satisfiable.
 """
 
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -48,6 +49,7 @@ from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.review.nit_lane import NitPoint, nit_point_marker
+from teatree.quality.brief_constraints import ConstraintViolation
 from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 
@@ -126,6 +128,25 @@ class TestDirectiveDetection(TestCase):
 
 class TestVerdictGate(TestCase):
     """The fail-closed row-check — no verdict / any unmet item refuses; a clean verdict passes."""
+
+    def test_merge_rechecks_brief_constraints_after_the_push_gate(self) -> None:
+        ticket = _ordinary_ticket()
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
+        with (
+            patch(
+                "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                return_value=SimpleNamespace(plan_text="No migration."),
+            ),
+            patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value="/tmp/review"),
+            patch(
+                "teatree.core.gates.merge_quality_gate.run_brief_constraints",
+                return_value=(
+                    ConstraintViolation("no_migration", "src/teatree/core/migrations/0001.py", "migration changed"),
+                ),
+            ),
+            pytest.raises(MergeQualityVerdictError, match="brief constraint"),
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_missing_verdict_names_quiescing_worker_and_recovery(self) -> None:
         ticket = _ordinary_ticket()
@@ -246,16 +267,20 @@ class TestRatifiedTestStrategyAnchor(TestCase):
         )
         with (
             patch("teatree.core.review.critic_continuity.dispatch_worktree_path", return_value="/tmp/review"),
+            patch("teatree.core.review.critic_continuity.read_review_evidence", return_value=None),
             patch(
-                "teatree.core.review.critic_continuity.git.run_strict", return_value="@@ -9 +9 @@\n-old\n+new"
+                "teatree.core.review.critic_continuity.git.run_strict",
+                side_effect=["@@ -9 +9 @@\n-old\n+old-pr", "@@ -9 +9 @@\n-old\n+new"],
             ) as diff,
         ):
             contract = build_merge_quality_contract(ticket, _FORTY_HEX)
         assert _OTHER_HEX in contract
         assert "tests/test_value.py:9 misses edge" in contract
-        assert "@@ -9 +9 @@" in contract
+        assert "current PR diff" in contract
+        assert "+new" in contract
         assert "fixed or not fixed" in contract
-        diff.assert_any_call(repo="/tmp/review", args=["diff", "--unified=0", f"{_OTHER_HEX}..{_FORTY_HEX}", "--"])
+        diff.assert_any_call(repo="/tmp/review", args=["diff", "--unified=0", f"origin/main...{_OTHER_HEX}", "--"])
+        diff.assert_any_call(repo="/tmp/review", args=["diff", "--unified=0", f"origin/main...{_FORTY_HEX}", "--"])
 
     def test_merge_critic_contract_names_the_shared_finding_standard(self) -> None:
         contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)

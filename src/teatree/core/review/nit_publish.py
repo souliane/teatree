@@ -79,6 +79,9 @@ def has_nit_receipts(ticket: "Ticket", pr_url: str, head_sha: str, points: tuple
 def publish_nits(ticket: "Ticket", pr_url: str, head_sha: str, points: tuple[NitPoint, ...]) -> None:
     if has_nit_receipts(ticket, pr_url, head_sha, points):
         return
+    if not pr_url or pr_ref_from_url(pr_url) is None:
+        message = "NIT pull request URL is missing or unrecognized"
+        raise NitLaneError(message)
     host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), pr_url)
     if host is None:
         message = "NIT pull request host is unavailable"

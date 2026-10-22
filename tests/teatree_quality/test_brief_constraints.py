@@ -28,6 +28,22 @@ def test_describing_the_constraint_grammar_does_not_activate_its_examples() -> N
     assert {item.kind for item in extract_constraints("Constraints: (no migration)")} == {"no_migration"}
 
 
+def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
+    assert extract_constraints("Do not forget to update the settings docs.") == ()
+
+
+def test_an_import_is_not_a_new_public_definition() -> None:
+    path = "src/teatree/core/example.py"
+    changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
+    violations = check_constraints(
+        extract_constraints("No new public name."),
+        changes,
+        before={path: "def existing() -> None: pass\n"},
+        after={path: "import collections\nfrom pathlib import Path\ndef existing() -> None: pass\n"},
+    )
+    assert violations == ()
+
+
 def test_blocks_migration_and_named_file_change(tmp_path: Path) -> None:
     changes = ChangedSet(
         (

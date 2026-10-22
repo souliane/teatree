@@ -103,7 +103,10 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
     findings = (
         tuple(
             f"  - {item.slug}: {item.status}; {item.citation}; "
-            + "; ".join(f"{point.kind} {point.file}:{point.line} {point.summary}" for point in item.points)
+            + (
+                "; ".join(f"{point.id} {point.kind} {point.file}:{point.line} {point.summary}" for point in item.points)
+                or (f"{previous.head_sha}:{item.slug}:0" if item.is_fail() else "no findings")
+            )
             for item in previous.item_verdicts()
         )
         if previous is not None
@@ -131,7 +134,7 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
         "Prior merge critic findings:",
         *findings,
         measured,
-        f"Run `{command}` on a clean committed head before the report and critic dispatch.",
+        f"Optional measurement: `{command}` on a clean committed head; a missing receipt is report-only.",
         "The coder report must show the matrix result for each new or changed test.",
     )
 

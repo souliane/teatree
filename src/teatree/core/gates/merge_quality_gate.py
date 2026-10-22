@@ -29,6 +29,7 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 """
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
@@ -39,10 +40,16 @@ from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.directive import Directive
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.task import Task
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, review_nits
+from teatree.quality.brief_constraints import extract_constraints
+from teatree.quality.changed_set import ChangedSetError
+from teatree.quality.push_gate import run_brief_constraints
+from teatree.utils.run import CommandFailedError
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 if TYPE_CHECKING:
@@ -141,7 +148,7 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f"Finding standard: {FINDING_STANDARD} Every point carries kind: "
         f'"kind": "blocking"|"nit". A NIT alone cannot fail an item.\n\n'
         f"{continuity}\n\n{evidence}\n\nAnchor for `test_value` — {strategy}\n\n"
-        f"On a later head, each item's resolutions array must name every prior finding under that item, "
+        f"On a later head, each item's resolutions array must name every prior finding ID under that item, "
         f"state fixed or not_fixed, and cite the current artifact. "
         f"A not_fixed BLOCKING point keeps its item failed.\n\n"
         f"`test_value` is BOTH directions: a VACUOUS test (asserts nothing that could fail — a tautology, the "
@@ -156,7 +163,7 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f'"citation": "<test node id or file:line naming WHY — an uncited pass records as a FAIL>", '
         f'"points": [{{"kind": "blocking"|"nit", "summary": "<specific finding>", '
         f'"citation": "<file:line>", "file": "<changed path>", "line": <line>}}], '
-        f'"resolutions": [{{"finding": "<prior point summary or failed item slug>", '
+        f'"resolutions": [{{"finding_id": "<prior point id or failed item id>", '
         f'"status": "fixed"|"not_fixed", "citation": "<current file:line>"}}]}}]}}`. '
         f"One item per question — judge BOTH."
     )
@@ -238,6 +245,7 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
     affirmatively passed → proceed.
     """
     head = head_sha.strip().lower()
+    _check_brief_constraints(ticket)
     verdict = covering_verdict(ticket, head)
     if verdict is None:
         _arm_merge_quality_critic(ticket, head)
@@ -271,6 +279,33 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
         )
         raise MergeQualityVerdictError(msg)
     _assert_nit_receipts(ticket, head, verdict)
+
+
+def _check_brief_constraints(ticket: "Ticket") -> None:
+    plan = latest_plan_artifact(ticket)
+    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
+    brief = "\n".join(
+        part
+        for part in (
+            plan.plan_text if plan is not None else "",
+            task.execution_reason if task is not None else "",
+        )
+        if part
+    )
+    if not extract_constraints(brief):
+        return
+    worktree = dispatch_worktree_path(ticket)
+    if not worktree:
+        message = "brief constraints cannot be verified: ticket worktree is missing"
+        raise MergeQualityVerdictError(message)
+    try:
+        violations = run_brief_constraints(Path(worktree), base_ref="origin/main", brief=brief)
+    except (ChangedSetError, CommandFailedError, OSError) as exc:
+        message = f"brief constraints could not be verified: {exc}"
+        raise MergeQualityVerdictError(message) from exc
+    if violations:
+        message = f"brief constraint failed: {violations[0].detail}"
+        raise MergeQualityVerdictError(message)
 
 
 def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdict") -> None:

@@ -20,6 +20,7 @@ CRITIC_VERDICT_SCHEMA_PROPERTY = {
                             "type": "object",
                             "properties": {
                                 "kind": {"type": "string", "enum": ["blocking", "nit"]},
+                                "severity": {"type": "string"},
                                 "summary": {"type": "string"},
                                 "citation": {"type": "string"},
                                 "file": {"type": "string"},
@@ -32,7 +33,7 @@ CRITIC_VERDICT_SCHEMA_PROPERTY = {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "finding": {"type": "string"},
+                                "finding_id": {"type": "string"},
                                 "status": {"type": "string", "enum": ["fixed", "not_fixed"]},
                                 "citation": {"type": "string"},
                             },

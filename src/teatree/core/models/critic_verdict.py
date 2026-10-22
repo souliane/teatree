@@ -66,6 +66,7 @@ class CriticItemVerdict:
     verified: bool = True
     points: tuple[CriticPoint, ...] = ()
     resolutions: tuple[PriorFindingResolution, ...] = ()
+    legacy_status: str = ""
 
     OK: ClassVar[str] = "pass"  # the clean status VALUE the LLM returns; named OK to avoid the S105 name heuristic
     FAIL: ClassVar[str] = "fail"
@@ -76,6 +77,7 @@ class CriticItemVerdict:
     def coerce(cls, raw: dict, *, nit_follow_up: bool = False) -> "CriticItemVerdict":
         slug = str(raw.get("slug") or "").strip()
         status = str(raw.get("status") or "").strip().lower()
+        legacy_status = str(raw.get("legacy_status") or status).strip().lower()
         citation = str(raw.get("citation") or "").strip()
         verified = raw.get("verified", True) is True
         raw_points = raw.get("points")
@@ -109,6 +111,7 @@ class CriticItemVerdict:
                 verified=False,
                 points=points,
                 resolutions=resolutions,
+                legacy_status=legacy_status,
             )
         if status not in {cls.OK, cls.FAIL, cls.INSTRUMENTATION_GAP}:
             status = cls.INSTRUMENTATION_GAP  # an unknown/blank status is inconclusive, never a silent pass
@@ -118,7 +121,15 @@ class CriticItemVerdict:
             status = cls.FAIL
         elif points and status == cls.FAIL:
             status = cls.OK if citation else cls.INSTRUMENTATION_GAP
-        return cls(slug=slug, status=status, citation=citation, verified=True, points=points, resolutions=resolutions)
+        return cls(
+            slug=slug,
+            status=status,
+            citation=citation,
+            verified=True,
+            points=points,
+            resolutions=resolutions,
+            legacy_status=legacy_status,
+        )
 
     def is_fail(self) -> bool:
         return self.status in {self.FAIL, self.INSTRUMENTATION_GAP}
@@ -131,6 +142,7 @@ class CriticItemVerdict:
             "verified": self.verified,
             "points": [point.as_dict() for point in self.points],
             "resolutions": [resolution.as_dict() for resolution in self.resolutions],
+            "legacy_status": self.legacy_status or self.status,
         }
 
 
@@ -174,7 +186,18 @@ class CriticVerdict(models.Model):
         return f"critic-verdict<ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"
 
     def item_verdicts(self) -> list[CriticItemVerdict]:
-        return [CriticItemVerdict.coerce(item) for item in self.items if isinstance(item, dict)]
+        return [
+            replace(
+                coerced,
+                points=tuple(
+                    replace(point, id=point.id or f"{self.head_sha}:{coerced.slug}:{index}")
+                    for index, point in enumerate(coerced.points, 1)
+                ),
+            )
+            for item in self.items
+            if isinstance(item, dict)
+            for coerced in (CriticItemVerdict.coerce(item),)
+        ]
 
     def failed_items(self) -> list[CriticItemVerdict]:
         """Every item the verdict FAILED — a genuine fail OR an uncited/inconclusive one."""
@@ -196,19 +219,17 @@ class CriticVerdict(models.Model):
             return
         current_items = {item.slug: item for item in items}
         for old in previous.item_verdicts():
-            findings = tuple(point.summary for point in old.points)
+            findings = tuple(point.id for point in old.points)
             if not findings and old.is_fail():
-                findings = (old.slug,)
+                findings = (f"{previous.head_sha}:{old.slug}:0",)
             current = current_items.get(old.slug)
-            resolutions = {item.finding: item for item in current.resolutions} if current is not None else {}
+            resolutions = {item.finding_id: item for item in current.resolutions} if current is not None else {}
             for finding in findings:
                 resolution = resolutions.get(finding)
                 if resolution is None or resolution.status not in {"fixed", "not_fixed"} or not resolution.citation:
                     msg = f"previous findings need a cited fixed/not_fixed resolution: {old.slug}/{finding}"
                     raise CriticEvidenceUnavailableError(msg)
-                was_blocking = any(
-                    point.summary == finding and point.kind == FindingKind.BLOCKING for point in old.points
-                )
+                was_blocking = any(point.id == finding and point.kind == FindingKind.BLOCKING for point in old.points)
                 if resolution.status == "not_fixed" and was_blocking and current is not None and not current.is_fail():
                     msg = f"unfixed blocking previous finding must fail its item: {old.slug}/{finding}"
                     raise CriticEvidenceUnavailableError(msg)
@@ -255,6 +276,16 @@ class CriticVerdict(models.Model):
             msg = "one or more critic items were not graded from the change; retry the critic with diff-reading tools"
             raise CriticEvidenceUnavailableError(msg)
         normalized_head = head_sha.strip().lower()
+        items = [
+            replace(
+                item,
+                points=tuple(
+                    replace(point, id=f"{normalized_head}:{item.slug}:{index}")
+                    for index, point in enumerate(item.points, 1)
+                ),
+            )
+            for item in items
+        ]
         with transaction.atomic():
             cls._require_previous_resolutions(
                 ticket=ticket, transition=transition, head_sha=normalized_head, items=items

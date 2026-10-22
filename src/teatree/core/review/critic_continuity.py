@@ -1,5 +1,6 @@
 """Carry prior merge judgments and the changed-line delta into a new critic claim."""
 
+from difflib import unified_diff
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,15 +20,15 @@ _MAX_DELTA_CHARS = 24000
 def review_evidence_contract(ticket: "Ticket", head_sha: str) -> str:
     worktree = dispatch_worktree_path(ticket)
     if not worktree:
-        return "DETERMINISTIC EVIDENCE UNAVAILABLE: ticket worktree missing; return test_value unverified."
+        return "DETERMINISTIC EVIDENCE REPORT ONLY: ticket worktree missing; judge test_value from the PR diff."
     try:
         evidence = read_review_evidence(Path(worktree), head_sha)
     except ReviewEvidenceError as exc:
-        return f"DETERMINISTIC EVIDENCE UNAVAILABLE: {exc}; return test_value unverified."
+        return f"DETERMINISTIC EVIDENCE REPORT ONLY: {exc}; judge test_value from the PR diff."
     if evidence is None:
-        return "DETERMINISTIC EVIDENCE UNAVAILABLE: no receipt for this head; return test_value unverified."
+        return "DETERMINISTIC EVIDENCE REPORT ONLY: no receipt for this head; judge test_value from the PR diff."
     if any(not row.measured for row in evidence.matrix.rows):
-        return f"DETERMINISTIC EVIDENCE INCOMPLETE: return test_value unverified.\n{evidence.render()}"
+        return f"DETERMINISTIC EVIDENCE REPORT ONLY: measurement incomplete.\n{evidence.render()}"
     return f"DETERMINISTIC EVIDENCE AT {head_sha}:\n{evidence.render()}"
 
 
@@ -45,7 +46,7 @@ def merge_critic_continuity(ticket: "Ticket", head_sha: str) -> str:
         )
     prior = "\n".join(
         f"- {item.slug}: {item.status}; {item.citation}; points: "
-        + "; ".join(f"{point.kind} {point.file}:{point.line} {point.summary}" for point in item.points)
+        + "; ".join(f"{point.id} {point.kind} {point.file}:{point.line} {point.summary}" for point in item.points)
         for item in previous.item_verdicts()
     )
     worktree = dispatch_worktree_path(ticket)
@@ -53,8 +54,18 @@ def merge_critic_continuity(ticket: "Ticket", head_sha: str) -> str:
         delta = "UNAVAILABLE: the ticket worktree is missing; return unverified, not pass or fail."
     else:
         try:
-            delta = git.run_strict(
-                repo=worktree, args=["diff", "--unified=0", f"{previous.head_sha}..{head_sha}", "--"]
+            old_pr_diff = git.run_strict(
+                repo=worktree, args=["diff", "--unified=0", f"origin/main...{previous.head_sha}", "--"]
+            )
+            new_pr_diff = git.run_strict(repo=worktree, args=["diff", "--unified=0", f"origin/main...{head_sha}", "--"])
+            delta = "\n".join(
+                unified_diff(
+                    old_pr_diff.splitlines(),
+                    new_pr_diff.splitlines(),
+                    fromfile="prior PR diff",
+                    tofile="current PR diff",
+                    lineterm="",
+                )
             )
         except (OSError, CommandFailedError):
             delta = "UNAVAILABLE: the prior-to-current diff could not be read; return unverified, not pass or fail."

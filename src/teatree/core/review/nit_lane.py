@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, PrReviewComment
 from teatree.core.issue_hygiene import IssueDraft, create_or_extend_by_marker, open_candidates
 from teatree.core.on_behalf_gate_recorded import OnBehalfPartialPublishError, require_on_behalf_approval
+from teatree.core.review.comment_checks import added_lines, comment_refusal, review_refusal
 from teatree.core.review.review_candidate import is_self_authored
 from teatree.core.self_forge_identities import confirmed_self_identity_set, require_self_authored_issue
 from teatree.core.send_proxy import route_forge_write
@@ -114,6 +115,9 @@ def _post_missing(
         for point in points
     )
     review = PrReview(commit_sha=head_sha, body="", comments=comments, marker="")
+    if refusal := review_refusal(review, file_diffs=lambda: host.get_pr_file_diffs(repo=ref.slug, pr_iid=ref.pr_id)):
+        message = f"comment check — {refusal}"
+        raise NitLaneError(message)
 
     def publish() -> "RawAPIDict":
         try:
@@ -138,8 +142,8 @@ def _target(host: "CodeHostBackend", pr_url: str, head_sha: str, points: tuple[N
     if ref is None:
         message = "NIT pull request URL is unrecognized"
         raise NitLaneError(message)
-    if not points or any(not point.file or point.line <= 0 or not point.summary.strip() for point in points):
-        message = "Every NIT needs a file, line, and summary"
+    if not points or any(not point.summary.strip() for point in points):
+        message = "Every NIT needs a summary"
         raise NitLaneError(message)
     if host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id) != head_sha:
         message = "NIT review head moved before publication"
@@ -156,10 +160,19 @@ def _paired_comments(
     host: "CodeHostBackend", context: _NitContext, points: tuple[NitPoint, ...]
 ) -> tuple[tuple[NitPoint, ...], tuple[str, ...]]:
     ref, pr_url, head_sha = context.ref, context.pr_url, context.head_sha
+    diffs = host.get_pr_file_diffs(repo=ref.slug, pr_iid=ref.pr_id)
+    inline = tuple(
+        point
+        for point in points
+        if point.file
+        and point.line > 0
+        and isinstance(diffs.get(point.file), str)
+        and point.line in added_lines(diffs[point.file] or "")
+    )
     threads = host.list_review_threads(repo=ref.slug, pr_iid=ref.pr_id)
     missing = tuple(
         point
-        for point in points
+        for point in inline
         if _thread_for_marker(threads, nit_point_marker(pr_url, head_sha, point), pr_url) is None
     )
     if missing:
@@ -168,6 +181,10 @@ def _paired_comments(
     paired: list[NitPoint] = []
     thread_ids: list[str] = []
     for point in points:
+        if point not in inline:
+            paired.append(NitPoint(point.file or "PR", point.line, point.summary, pr_url))
+            thread_ids.append("issue-only")
+            continue
         found = _thread_for_marker(threads, nit_point_marker(pr_url, head_sha, point), pr_url)
         if found is None:
             message = "Inline NIT comment did not read back"
@@ -281,17 +298,18 @@ def _canonical_follow_up_body(*, pr_url: str, marker: str, existing: str, new: t
     if not existing.splitlines() or existing.splitlines()[0] != header:
         message = "Existing NIT follow-up issue has an unexpected header"
         raise NitLaneError(message)
-    points: dict[str, NitPoint] = {}
+    points: dict[tuple[str, int, str, str], NitPoint] = {}
     for line in existing.splitlines()[1:]:
         match = _NIT_ROW.fullmatch(line)
         if match:
             file, number, permalink, summary = match.groups()
-            points[permalink] = NitPoint(file, int(number), summary, permalink)
+            point = NitPoint(file, int(number), summary, permalink)
+            points[point.file, point.line, point.summary, point.permalink] = point
         elif line and line not in {closing, header} and not line.startswith(("## Request added", "<!-- t3-hygiene:")):
             message = "Existing NIT follow-up issue has content outside its tracked points"
             raise NitLaneError(message)
     for point in new:
-        points[point.permalink] = point
+        points[point.file, point.line, point.summary, point.permalink] = point
     return render_follow_up_body(pr_url=pr_url, marker=marker, points=tuple(points.values()))
 
 
@@ -317,8 +335,12 @@ def _create_follow_up_issue(
         labels=("nit", "t3-auto"),
         action="nit_follow_up_create",
         forge=ref.host_kind,
-        merge_request_to_resolve_discussions_of=ref.pr_id if ref.host_kind == "gitlab" else None,
-        discussion_to_resolve=thread_ids[0] if ref.host_kind == "gitlab" and len(thread_ids) == 1 else "",
+        merge_request_to_resolve_discussions_of=ref.pr_id
+        if ref.host_kind == "gitlab" and len(thread_ids) == 1 and thread_ids[0] != "issue-only"
+        else None,
+        discussion_to_resolve=thread_ids[0]
+        if ref.host_kind == "gitlab" and len(thread_ids) == 1 and thread_ids[0] != "issue-only"
+        else "",
     )
     outcome = create_or_extend_by_marker(host=host, draft=draft, marker=marker)
     if outcome.kind not in {"created_new", "extended_existing"} or not outcome.issue_url:
@@ -330,6 +352,8 @@ def _create_follow_up_issue(
 def _resolve_threads(host: "CodeHostBackend", context: _NitContext, thread_ids: tuple[str, ...]) -> None:
     ref = context.ref
     for thread_id in thread_ids:
+        if thread_id == "issue-only":
+            continue
         current = host.list_review_threads(repo=ref.slug, pr_iid=ref.pr_id)
         if any(thread.get("id") == thread_id and not _resolved(thread) for thread in current):
 
@@ -348,12 +372,16 @@ def _resolve_threads(host: "CodeHostBackend", context: _NitContext, thread_ids: 
             )
     current = host.list_review_threads(repo=ref.slug, pr_iid=ref.pr_id)
     states = {str(thread.get("id")): _resolved(thread) for thread in current}
-    if any(states.get(thread_id) is not True for thread_id in thread_ids):
+    if any(states.get(thread_id) is not True for thread_id in thread_ids if thread_id != "issue-only"):
         message = "NIT review thread resolution did not read back"
         raise NitLaneError(message)
 
 
 def track_nits(*, host: "CodeHostBackend", pr_url: str, head_sha: str, points: tuple[NitPoint, ...]) -> NitReceipt:
+    for point in points:
+        if refusal := comment_refusal(f"Nit: {point.summary}", general=False):
+            message = f"comment check — {refusal}"
+            raise NitLaneError(message)
     context = _target(host, pr_url, head_sha, points)
     paired, thread_ids = _paired_comments(host, context, points)
     issue_url = _follow_up_issue(host, context, paired=paired, thread_ids=thread_ids)

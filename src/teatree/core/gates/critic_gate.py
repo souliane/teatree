@@ -32,8 +32,6 @@ Rollback safety
 import logging
 from typing import TYPE_CHECKING
 
-from django.db import transaction
-
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.attachment_manifest import AttachmentManifest
@@ -214,6 +212,22 @@ def _publish_critic_nits(ticket: "Ticket", verdict: CriticVerdict, transition: s
     publish_nits(ticket, pr_url, head_sha, points)
 
 
+def _publish_recorded_critic_nits(dispatch: CriticDispatch, verdict: CriticVerdict) -> None:
+    points = critic_nits(verdict.item_verdicts()) if dispatch.transition == "merge" else ()
+    if points:
+        dispatch.ticket.merge_extra(merge_into_dicts={"nit_publication": {dispatch.head_sha: {"status": "pending"}}})
+    try:
+        _publish_critic_nits(dispatch.ticket, verdict, dispatch.transition, dispatch.head_sha)
+    except NitLaneError as exc:
+        if points:
+            dispatch.ticket.merge_extra(
+                merge_into_dicts={"nit_publication": {dispatch.head_sha: {"status": "failed", "error": str(exc)}}}
+            )
+        raise
+    if points:
+        dispatch.ticket.merge_extra(merge_into_dicts={"nit_publication": {dispatch.head_sha: {"status": "published"}}})
+
+
 def record_returned_critic_verdict(task: object, result: dict) -> str:
     """Record a headless critic task's returned ``critic_verdict`` envelope (corr-11).
 
@@ -258,14 +272,17 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
             )
     ticket = dispatch_row.ticket
     try:
-        with transaction.atomic():
+        verdict = CriticVerdict.objects.latest_for(
+            ticket=ticket, transition=dispatch_row.transition, head_sha=dispatch_row.head_sha
+        )
+        if verdict is None:
             verdict = CriticVerdict.record_from_envelope(
                 ticket=ticket,
                 transition=dispatch_row.transition,
                 head_sha=dispatch_row.head_sha,
                 envelope=raw_envelope,
             )
-            _publish_critic_nits(ticket, verdict, dispatch_row.transition, dispatch_row.head_sha)
+        _publish_recorded_critic_nits(dispatch_row, verdict)
     except CriticEvidenceUnavailableError as exc:
         return f"{CRITIC_EVIDENCE_UNAVAILABLE_PREFIX} {exc}"
     except (CriticVerdictError, NitLaneError) as exc:

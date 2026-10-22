@@ -25,7 +25,7 @@ def _git(repo: Path, *args: str) -> None:
 
 
 def test_receipt_is_read_only_for_its_measured_head(tmp_path: Path) -> None:
-    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "init", "-q", "-b", "main")
     (tmp_path / "file.txt").write_text("one")
     _git(tmp_path, "add", "file.txt")
     _git(tmp_path, "-c", "user.name=Test", "-c", "user.email=fixture.invalid", "commit", "-qm", "one")
@@ -48,7 +48,7 @@ def test_receipt_is_read_only_for_its_measured_head(tmp_path: Path) -> None:
 
 
 def test_measurement_scans_diff_and_passes_exact_changed_test_nodes(tmp_path: Path) -> None:
-    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "init", "-q", "-b", "main")
     _git(tmp_path, "config", "user.name", "Test")
     _git(tmp_path, "config", "user.email", "fixture.invalid")
     source = tmp_path / "src" / "teatree" / "sample.py"

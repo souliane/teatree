@@ -1,11 +1,20 @@
 """NIT comments and their issue are tied to the same pull request."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from teatree.core.backend_protocols import PrReview
-from teatree.core.review.nit_lane import NitLaneError, NitPoint, render_follow_up_body, track_nits
+from teatree.core.review.nit_lane import (
+    NitLaneError,
+    NitPoint,
+    _create_follow_up_issue,
+    _post_missing,
+    render_follow_up_body,
+    track_nits,
+)
+from teatree.utils.url_slug import pr_ref_from_url
 
 
 class _Host:
@@ -23,6 +32,9 @@ class _Host:
         if self.drop_threads_after_issue and self.issues:
             return []
         return self.threads
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        return {"x.py": "@@ -1 +1,3 @@\n+one\n+two\n+three", "y.py": "@@ -1 +1,3 @@\n+one\n+two\n+three"}
 
     def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> dict[str, object]:
         self.review_posts.append(review)
@@ -194,3 +206,68 @@ def test_inline_review_never_posts_when_privacy_scan_refuses() -> None:
         )
     assert host.review_posts == []
     assert host.issues == {}
+
+
+def test_missing_or_off_diff_anchor_becomes_issue_only() -> None:
+    host = _Host()
+    points = (
+        NitPoint(file="", line=0, summary="Rename helper"),
+        NitPoint(file="x.py", line=99, summary="Move comment"),
+    )
+    with (
+        patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+        patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+        patch("teatree.core.issue_hygiene.route_forge_write", side_effect=lambda **kw: kw["text"]),
+        patch(
+            "teatree.core.on_behalf_gate_recorded.require_on_behalf_approval", side_effect=lambda **kw: kw["publish"]()
+        ),
+    ):
+        receipt = track_nits(host=host, pr_url="https://github.com/o/r/pull/9", head_sha="a" * 40, points=points)
+    assert host.review_posts == []
+    assert len(host.issues) == 1
+    assert len(receipt.thread_ids) == 2
+
+
+def test_nit_comment_checks_refuse_unbacked_claim_before_posting() -> None:
+    host = _Host()
+    with (
+        patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+        patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+        pytest.raises(NitLaneError, match="unbacked claim"),
+    ):
+        track_nits(
+            host=host,
+            pr_url="https://github.com/o/r/pull/9",
+            head_sha="a" * 40,
+            points=(NitPoint(file="x.py", line=2, summary="This is missing a test"),),
+        )
+    assert host.review_posts == []
+
+
+def test_gitlab_multi_thread_issue_does_not_resolve_unrelated_discussions() -> None:
+    ref = pr_ref_from_url("https://gitlab.com/group/repo/-/merge_requests/9")
+    assert ref is not None
+    with patch(
+        "teatree.core.review.nit_lane.create_or_extend_by_marker",
+        return_value=SimpleNamespace(kind="created_new", issue_url="https://gitlab.com/group/repo/-/issues/10"),
+    ) as create:
+        _create_follow_up_issue(_Host(), ref, thread_ids=("thread-1", "thread-2"), body="body", marker="marker")
+    draft = create.call_args.kwargs["draft"]
+    assert draft.merge_request_to_resolve_discussions_of is None
+    assert draft.discussion_to_resolve == ""
+
+
+def test_gitlab_nit_comment_uses_gitlab_scrub_policy() -> None:
+    host = _Host()
+    with (
+        patch("teatree.core.review.nit_lane.route_forge_write", side_effect=lambda **kw: kw["text"]) as scrub,
+        patch("teatree.core.review.nit_lane.require_on_behalf_approval", side_effect=lambda **kw: kw["publish"]()),
+    ):
+        _post_missing(
+            host,
+            pr_url="https://gitlab.com/group/repo/-/merge_requests/9",
+            head_sha="a" * 40,
+            points=(NitPoint("x.py", 2, "Rename helper"),),
+            own_pr=True,
+        )
+    assert scrub.call_args.kwargs["forge"] == "gitlab"

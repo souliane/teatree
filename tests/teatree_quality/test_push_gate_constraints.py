@@ -16,7 +16,7 @@ def _git(repo: Path, *args: str) -> None:
 
 
 def test_new_setting_named_by_plan_fails_push_check(tmp_path: Path) -> None:
-    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "init", "-q", "-b", "main")
     _git(tmp_path, "config", "user.name", "Test")
     _git(tmp_path, "config", "user.email", "fixture.invalid")
     source = tmp_path / "src" / "teatree" / "config" / "settings.py"

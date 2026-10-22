@@ -6,7 +6,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket
-from teatree.core.review.nit_lane import NitPoint, NitReceipt
+from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
 from teatree.core.review.nit_publish import has_nit_receipts, publish_nits
 
 _PR_URL = "https://github.com/souliane/teatree/pull/9"
@@ -15,6 +15,15 @@ _POINT = NitPoint("src/example.py", 8, "Rename the helper")
 
 
 class TestNitPublish(TestCase):
+    def test_empty_pr_url_is_refused_before_host_resolution(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        with (
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            pytest.raises(NitLaneError, match="pull request URL"),
+        ):
+            publish_nits(ticket, "", _HEAD, (_POINT,))
+        provider.assert_not_called()
+
     def test_publish_records_a_receipt_only_after_forge_readback(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         host = object()
