@@ -308,7 +308,12 @@ class LiveControlIntegrationTests(TestCase):
         accepted = self.dispatch(run, operator)
 
         assert self.live.sessions() == []
-        replay = asyncio.run(shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1))
-        late = asyncio.run(shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1))
+        fence = shared_registry()._closed[self.task.pk].task.fence
+        replay = asyncio.run(
+            shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1, fence=fence)
+        )
+        late = asyncio.run(
+            shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1, fence=fence)
+        )
         assert replay.as_payload() == accepted
         assert (late.outcome, late.code) == ("rejected", "session_closed")
