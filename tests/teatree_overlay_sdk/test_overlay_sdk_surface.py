@@ -162,6 +162,7 @@ EXPECTED_RUNTIME_SIGNATURES: dict[str, str] = {
     "run_commands": "(self, worktree: 'Worktree') -> RunCommands",
     "test_command": "(self, worktree: 'Worktree') -> list[str] | teatree.types.RunCommand",
     "verify_endpoints": "(self, worktree: 'Worktree') -> dict[str, str]",
+    "visual_qa_server": "(self, worktree: 'Worktree') -> teatree.types.RunCommand | None",
 }
 
 EXPECTED_E2E_SIGNATURES: dict[str, str] = {
