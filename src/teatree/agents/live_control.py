@@ -7,11 +7,14 @@ model obedience. The only per-harness surface is :class:`SteerableSession`.
 import asyncio
 import hashlib
 import logging
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import monotonic
 from typing import NotRequired, Protocol, TypedDict, runtime_checkable
+
+from teatree.generation import current_generation
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class RejectCode(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     DROPPED_UNREAD = "dropped_unread"
     RECIPIENT_CANNOT_RECEIVE = "recipient_cannot_receive"
+    STALE_COMMAND = "stale_command"
 
 
 class SteerRejectedError(Exception):
@@ -103,6 +107,8 @@ class SessionFacts(TypedDict):
     open_tool_seconds: float | None
     last_event_age_seconds: float | None
     context_tokens: int | None
+    attempt: str
+    generation: str
 
 
 class PeerIdentity(TypedDict):
@@ -115,12 +121,23 @@ class PeerIdentity(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
+class LiveFence:
+    attempt: str
+    generation: str
+
+    @classmethod
+    def mint(cls) -> "LiveFence":
+        return cls(uuid.uuid4().hex, current_generation())
+
+
+@dataclass(frozen=True, slots=True)
 class LiveTask:
     pk: int
     ticket: int | None
     phase: str
     harness: str
     model: str
+    fence: LiveFence = field(default_factory=LiveFence.mint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +249,8 @@ class LiveSessionController:
             "open_tool_seconds": round(now - open_tool[1], 1) if open_tool else None,
             "last_event_age_seconds": round(now - last_event, 1) if last_event is not None else None,
             "context_tokens": self._capture.context_tokens,
+            "attempt": self.task.fence.attempt,
+            "generation": self.task.fence.generation,
         }
 
     def known_receipt(self, command_id: str, text: str) -> ControlReceipt | None:

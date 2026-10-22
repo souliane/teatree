@@ -21,8 +21,19 @@ from teatree.core.cycle_time.pull_request_flow import (
 )
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets, spans_since
 from teatree.core.cycle_time.timeline import PhaseSegment, TicketTimeline, build_ticket_timeline, build_ticket_timelines
+from teatree.core.cycle_time.waits import (
+    WAIT_CAUSES,
+    WAIT_LABELS,
+    MergeWaitBreakdown,
+    WaitBlock,
+    WaitCause,
+    build_merge_wait_breakdowns,
+)
 
 __all__ = [
+    "WAIT_CAUSES",
+    "WAIT_LABELS",
+    "MergeWaitBreakdown",
     "OpenPullRequestAge",
     "PhaseSegment",
     "PhaseSpan",
@@ -30,6 +41,9 @@ __all__ = [
     "TransitionStat",
     "TransitionTrend",
     "TrendPoint",
+    "WaitBlock",
+    "WaitCause",
+    "build_merge_wait_breakdowns",
     "build_ticket_timeline",
     "build_ticket_timelines",
     "merged_pull_request_seconds",

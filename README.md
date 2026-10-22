@@ -454,20 +454,22 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Live agent mailbox
 
-Simultaneously running Claude and Codex tasks on any ticket on the same host
-can exchange targeted messages through the `agent_mailbox_*` tools. Workers
+Simultaneously running tasks on any ticket on the same host can exchange targeted
+messages. A Claude task sends through the `agent_mailbox_*` tools; a Codex task
+without MCP is an addressable, push-only recipient. Workers
 find one another through the shared control-DB live directory. TeaTree assigns
 each task its address and private Unix-socket identity; agents cannot register
 themselves or declare their own harness. `agent_mailbox_self` shows the task's address,
 `agent_mailbox_peers` discovers live peers with ticket, phase, harness and
 receive status, and `agent_mailbox_send` sends to one
 peer and waits up to 20 seconds for its session to accept the message. A busy
-steerable peer (`claude_sdk`) takes it into its running turn, framed as a peer's
-information rather than an operator instruction; any peer also accepts it by
-reading its inbox, and whichever comes first wins. The send returns a receipt:
+steerable peer (`claude_sdk` or `codex_app_server`) takes it into its running turn,
+framed as a peer's information rather than an operator instruction. An MCP-backed
+peer may also accept by reading its inbox; a push-only peer has no inbox copy.
+The send returns a receipt:
 `accepted_current_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
-`too_large`, `session_closed`, `dropped_unread` or `recipient_cannot_receive`.
+`too_large`, `session_closed`, `stale_command`, `dropped_unread` or `recipient_cannot_receive`.
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
 remains in the recipient's inbox, including after a current-turn push. Retrying
 the same key waits on the original message instead of sending a second copy, and
@@ -494,16 +496,21 @@ cannot use these verbs.
 t3 teatree live list                          # every live session on this host's workers (passive)
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```
 
 `steer` prints a receipt and exits 0 when the session accepted the input into its
 current turn, 3 when it refused it (`turn_ended`, `not_accepted_in_time`,
-`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`), 4 when the
+`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`, `stale_command`), 4 when the
 answer was lost (`unknown_delivery`), and 5 when no worker on this host runs the
 task. Acceptance is not obedience: the model decides what to do with the input.
 Resending the same `--command-id` with the same text returns the first receipt
-instead of delivering twice. Sessions run by `claude_sdk` are steerable; other
-harnesses list as `steerable: false`. Nothing survives a worker restart.
+instead of delivering twice. The command pins the located session's attempt and
+generation; `--attempt` and `--generation` can name an earlier expected session,
+which the worker rejects as `stale_command`. Sessions run by `claude_sdk` and
+`codex_app_server` are steerable. Codex admits input only on a matching App Server
+`turn/steer` answer; a timeout or turn-end race is `unknown_delivery`.
+Nothing survives a worker restart.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.

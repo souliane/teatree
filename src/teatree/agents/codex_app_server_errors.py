@@ -3,6 +3,7 @@
 from teatree.agents.codex_app_server_options import CodexAppServerError
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
+from teatree.agents.live_control import RejectCode, SteerRejectedError
 
 _STRING_KINDS = {
     "unauthorized": HarnessFallbackKind.AUTH,
@@ -28,6 +29,8 @@ _HTTP_STATUS_KINDS = {
     429: HarnessFallbackKind.QUOTA,
 }
 _SERVER_ERROR_STATUS_CLASS = 5
+METHOD_NOT_FOUND = -32601
+_INVALID_REQUEST = -32600
 
 
 def request_error(
@@ -36,9 +39,16 @@ def request_error(
     *,
     side_effects_started: bool = False,
     agent_session_id: str = "",
-) -> CodexAppServerError | HarnessFallbackError:
+) -> CodexAppServerError | HarnessFallbackError | SteerRejectedError:
     """Classify a JSON-RPC error without copying its server-controlled message."""
     info = _codex_error_info(payload)
+    if method == "turn/steer" and isinstance(payload, dict):
+        if isinstance(info, dict) and "activeTurnNotSteerable" in info:
+            return SteerRejectedError(RejectCode.NOT_STEERABLE)
+        if payload.get("code") == METHOD_NOT_FOUND:
+            return SteerRejectedError(RejectCode.NOT_STEERABLE)
+        if payload.get("code") == _INVALID_REQUEST and info is None:
+            return SteerRejectedError(RejectCode.TURN_ENDED)
     fallback = provider_fallback(
         info,
         context=method,
