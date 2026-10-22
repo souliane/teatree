@@ -448,6 +448,27 @@ class TestHeadlessAdmissionStatus(TestCase):
             f"retiring denied: {quiescing}" in status.line()
         )
 
+    def test_full_review_and_cheap_lanes_keep_distinct_status_denials(self) -> None:
+        for _ in range(4):
+            self._claimed("coding")
+        self._claimed("reviewing")
+        self._claimed("reviewing")
+        self._claimed("shipping")
+
+        status = self._status(_healthy_quota())
+
+        expensive = "expensive lane occupancy 4 at/over the expensive ceiling 4"
+        cheap = "cheap lane occupancy 3 at/over the cheap ceiling 3"
+        review = "review lane occupancy 2 at/over the review ceiling 2"
+        parts = status.as_json()
+        assert parts["expensive_denied"] == expensive
+        assert parts["cheap_denied"] == cheap
+        assert parts["review_denied"] == review
+        assert parts["retiring_denied"] is None
+        line = status.line()
+        assert line.endswith(f"; expensive denied: {expensive}; cheap denied: {cheap}; review denied: {review}")
+        assert "retiring denied" not in line
+
     def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
         unread = QuotaSignal(
             fresh=False,
