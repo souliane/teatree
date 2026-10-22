@@ -32,15 +32,15 @@ CANDIDATE_FAULT_KINDS = frozenset(
 )
 
 
-_PARK_ERROR = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
+PARK_ERROR_Q = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
     def parks(self) -> "TaskAttemptQuerySet":
-        return self.filter(_PARK_ERROR)
+        return self.filter(PARK_ERROR_Q)
 
     def excluding_parks(self) -> "TaskAttemptQuerySet":
-        return self.exclude(_PARK_ERROR)
+        return self.exclude(PARK_ERROR_Q)
 
     def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
         """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""

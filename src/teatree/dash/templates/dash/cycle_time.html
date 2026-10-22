@@ -27,7 +27,7 @@
                 {% for wait in row.waits %}<td class="num">{{ wait }}</td>{% endfor %}
                 <td>{{ row.longest_wait }}{% if row.longest_wait_start %} ({{ row.longest_wait_duration }} from <time datetime="{{ row.longest_wait_start|date:'c' }}">{{ row.longest_wait_start|date:"M j H:i" }}</time>){% endif %}{% if not row.parks_retained %} (park history incomplete){% endif %}</td>
               {% else %}
-                <td class="num muted" colspan="10">unmeasured — task admission history is missing or overwritten</td>
+                <td class="num muted" colspan="{{ view.wait_headers|length|add:3 }}">unmeasured — task admission history is missing or overwritten</td>
               {% endif %}
               <td class="num">{{ row.hand_cancels }}</td><td class="num">{{ row.inferred_hand_tasks }}</td>
             </tr>

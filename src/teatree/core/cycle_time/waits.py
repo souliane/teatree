@@ -23,7 +23,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_cancel_source import CANCEL_SOURCE_KEY, count_recorded_cancels
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ATTEMPT_RETENTION_DAYS, PARK_ERROR_PREFIXES
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ATTEMPT_RETENTION_DAYS
 from teatree.core.models.worktree_occupancy import task_holder_id
 
 
@@ -98,10 +98,7 @@ class _Attempt:
     holder: str | None
     cancel: str | None
     billed: bool
-
-    @property
-    def parked(self) -> bool:
-        return self.error.startswith(PARK_ERROR_PREFIXES)
+    parked: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,8 +192,9 @@ def _attempts_for_tickets(ticket_ids: Sequence[int]) -> dict[int, list[_Attempt]
         "result__occupied_by__holder",
         f"result__{CANCEL_SOURCE_KEY}",
         "billed",
+        "parked",
     ):
-        started_at, ended_at, error, holder, cancel, billed = fields
+        started_at, ended_at, error, holder, cancel, billed, parked = fields
         attempts[task_id].append(
             _Attempt(
                 started_at=started_at,
@@ -205,6 +203,7 @@ def _attempts_for_tickets(ticket_ids: Sequence[int]) -> dict[int, list[_Attempt]
                 holder=holder if isinstance(holder, str) else None,
                 cancel=cancel if isinstance(cancel, str) else None,
                 billed=billed,
+                parked=parked,
             )
         )
     return attempts

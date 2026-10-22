@@ -24,10 +24,9 @@ from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets
 from teatree.core.cycle_time.work_intervals import Engagement, merged_seconds
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import BILLED_COLUMNS, TaskAttempt
+from teatree.core.models.task_attempt import BILLED_COLUMNS, PARK_ERROR_Q, TaskAttempt
 from teatree.core.models.task_cancel_source import CANCEL_SOURCE_KEY
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +153,6 @@ def _segment(
         if ended_at is not None and span.entered_at <= ended_at <= span.left_at
     ]
     priced = [usage for usage, _park in in_span]
-    # An agent ran here iff a non-park attempt ENDED here; with no measured engagement the split is unknown, not zero.
     ran = any(not park for _usage, park in in_span)
     measured = work > 0.0 or not ran
     breakdown = CostBreakdown.from_usages(priced)
@@ -194,7 +192,7 @@ def engagements_for_tickets(ticket_ids: Sequence[int]) -> dict[tuple[int, str], 
 
 
 def ticket_attempts(ticket_ids: Sequence[int]) -> models.QuerySet[TaskAttempt]:
-    """The tickets' attempts with ``billed`` and ``cancelled`` computed in SQL, so no result JSON is loaded."""
+    """The tickets' attempts with ``billed``, ``cancelled`` and ``parked`` computed in SQL."""
     return TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids).annotate(
         billed=models.ExpressionWrapper(
             reduce(or_, (models.Q(**{f"{column}__isnull": False}) for column in BILLED_COLUMNS)),
@@ -203,16 +201,16 @@ def ticket_attempts(ticket_ids: Sequence[int]) -> models.QuerySet[TaskAttempt]:
         cancelled=models.ExpressionWrapper(
             models.Q(result__has_key=CANCEL_SOURCE_KEY), output_field=models.BooleanField()
         ),
+        parked=models.ExpressionWrapper(PARK_ERROR_Q, output_field=models.BooleanField()),
     )
 
 
 def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
     real_ends: dict[int, datetime] = {}
     first_stops: dict[int, datetime] = {}
-    for task_id, started_at, ended_at, error, billed, cancelled in ticket_attempts(ticket_ids).values_list(
-        "task_id", "started_at", "ended_at", "error", "billed", "cancelled"
+    for task_id, started_at, ended_at, park, billed, cancelled in ticket_attempts(ticket_ids).values_list(
+        "task_id", "started_at", "ended_at", "parked", "billed", "cancelled"
     ):
-        park = error.startswith(PARK_ERROR_PREFIXES)
         if ended_at is not None and not cancelled and (not park or billed):
             known = real_ends.get(task_id)
             real_ends[task_id] = ended_at if known is None or ended_at > known else known
@@ -243,7 +241,7 @@ def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple
         "output_tokens",
         "cache_read_tokens",
         "cache_write_tokens",
-        "error",
+        "parked",
         "cancelled",
     )
     grouped: dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]] = {}
@@ -259,7 +257,7 @@ def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple
         out,
         cache_read,
         cache_write,
-        error,
+        parked,
         cancelled,
     ) in rows:
         normalized = normalize_phase(phase)
@@ -274,7 +272,5 @@ def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple
             estimated=estimated,
             phase=normalized,
         )
-        grouped.setdefault((ticket_id, normalized), []).append(
-            (ended_at, usage, error.startswith(PARK_ERROR_PREFIXES) or cancelled)
-        )
+        grouped.setdefault((ticket_id, normalized), []).append((ended_at, usage, parked or cancelled))
     return grouped

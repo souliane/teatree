@@ -64,6 +64,25 @@ class RecentMergeBreakdownTestCase(TestCase):
         TaskAttempt.objects.filter(pk=row.pk).update(started_at=self.at(minutes))
         return row
 
+    def test_default_limit_keeps_ten_recent_merges(self) -> None:
+        for index in range(10):
+            ticket = Ticket.objects.create(state=Ticket.State.MERGED, issue_url=f"https://example.test/issues/{index}")
+            PullRequest.objects.create(
+                ticket=ticket,
+                url=f"https://example.test/pr/{index}",
+                repo="example/repo",
+                iid=str(index),
+                state=PullRequest.State.MERGED,
+            )
+            row = TicketTransition.objects.create(
+                ticket=ticket, from_state=Ticket.State.PR_OPENED, to_state=Ticket.State.MERGED
+            )
+            TicketTransition.objects.filter(pk=row.pk).update(created_at=self.at(231 + index))
+
+        rows = build_merge_wait_breakdowns()
+        assert len(rows) == 10
+        assert self.ticket.pk not in {row.ticket_id for row in rows}
+
     def test_exact_wait_split_and_longest_cause(self) -> None:
         self.task("planning", 0, 0, 30)
         coding = self.task("coding", 30, 100, 130)
@@ -174,6 +193,14 @@ class RecentMergeBreakdownTestCase(TestCase):
     def test_no_admission_is_unmeasured_instead_of_all_zero(self) -> None:
         row = build_merge_wait_breakdowns()[0]
         assert row.measured is False
+
+    def test_obscured_time_split_still_counts_recorded_cancel_after_surviving_admission(self) -> None:
+        task = self.task("coding", 0, 100, 20)
+        TaskAttempt.objects.create(task=task, ended_at=self.at(110), result={"cancel_source": "owner"})
+
+        row = build_merge_wait_breakdowns()[0]
+        assert row.measured is False
+        assert row.hand_cancels == 1
 
     def test_cancel_without_any_admission_is_not_in_intervention_count(self) -> None:
         task = self.task("planning", 0, None, None)

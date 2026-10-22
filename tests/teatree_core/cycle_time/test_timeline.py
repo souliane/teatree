@@ -264,14 +264,20 @@ class ParkDoesNotImplyWorkTestCase(TestCase):
         assert segment.work_seconds == 5 * MINUTE
         assert segment.queue_seconds == 95 * MINUTE
 
-    def test_park_only_completed_task_stops_at_first_park_not_phase_end(self) -> None:
+    def _only_attempt_segment(self, **attempt_fields: object) -> PhaseSegment:
         ticket = Ticket.objects.create(state=State.CODED)
         record_transition(ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
         record_transition(ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
-        task = record_task(ticket, phase="coding", queued=0, admitted=10)
-        Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
-        park = record_attempt(task, ended=80, row_written=20, error="checkout_parked: repeated")
-        TaskAttempt.objects.filter(pk=park.pk).update(park_repeats=3)
+        task = record_task(ticket, phase="coding", queued=0, admitted=None)
+        record_attempt(task, ended=50, **attempt_fields)
+        return build_ticket_timeline(ticket.pk).segments[0]
 
-        segment = build_ticket_timeline(ticket.pk).segments[0]
-        assert segment.work_seconds == 10 * MINUTE
+    def test_park_only_span_keeps_its_queue_split_measured(self) -> None:
+        segment = self._only_attempt_segment(error="checkout_parked: refused")
+        assert segment.work_measured
+        assert segment.queue_seconds == 100 * MINUTE
+
+    def test_cancel_only_span_keeps_its_queue_split_measured(self) -> None:
+        segment = self._only_attempt_segment(result={"cancel_source": "owner"})
+        assert segment.work_measured
+        assert segment.queue_seconds == 100 * MINUTE

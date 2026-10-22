@@ -304,7 +304,7 @@ class MergeWaitDisplayTestCase(TestCase):
         assert "No merged pull requests to measure yet." in body
         assert "at least unmeasured" not in body
 
-    def test_merge_summary_uses_only_reliable_windows_and_recorded_actions(self) -> None:
+    def test_merge_summary_uses_reliable_time_splits_and_all_recorded_actions(self) -> None:
         base = build_merge_wait_breakdowns()[0]
         unmeasured = replace(
             base,
@@ -338,6 +338,18 @@ class MergeWaitDisplayTestCase(TestCase):
         Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(days=8))
         body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
         assert "park history incomplete" in body
+
+    def test_unmeasured_merge_row_spans_all_table_columns(self) -> None:
+        task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        section = body.split('id="merge-waits"', 1)[1].split("</section>", 1)[0]
+        headers = re.findall(r"<th\b[^>]*>", section)
+        row = re.findall(r"<tr>(.*?)</tr>", section, re.DOTALL)[1]
+        cells = re.findall(r"<td\b([^>]*)>", row)
+        assert sum(
+            int(re.search(r'colspan="(\d+)"', cell).group(1)) if "colspan=" in cell else 1 for cell in cells
+        ) == len(headers)
 
     def test_intervention_line_separates_recorded_and_inferred_actions(self) -> None:
         task = Task.objects.get(ticket__issue_url="https://example.test/issues/5313")
