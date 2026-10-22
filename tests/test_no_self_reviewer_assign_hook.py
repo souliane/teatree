@@ -119,8 +119,13 @@ class TestAllowsNonReviewerSurfaces:
 
 
 class TestNeverLockout:
-    def test_per_call_token_allows(self, capsys: pytest.CaptureFixture[str]) -> None:
-        command = "glab mr update 9120 --reviewer reviewer-a  # [reviewer-ok: colleague MR, vetted]"
+    def test_per_call_token_allows(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+        command = (
+            "glab mr update 9120 --reviewer reviewer-a  # [gate-escape:no_self_reviewer_assign: colleague MR, vetted]"
+        )
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "no_self_reviewer_assign"
+        )
         assert router.handle_block_self_reviewer_assign(_bash(command)) is False
         assert _parse_deny(capsys) is None
 
@@ -237,10 +242,15 @@ class TestRawCurlIsNotABypass:
         assert router.handle_block_self_reviewer_assign(_bash(command)) is False
         assert _parse_deny(capsys) is None
 
-    def test_the_per_call_token_still_waives_a_curl_write(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_the_per_call_token_still_waives_a_curl_write(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         command = (
             "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/76 "
-            "-d '{\"reviewer_ids\": [42]}'  # [reviewer-ok: vetted colleague MR]"
+            "-d '{\"reviewer_ids\": [42]}'  # [gate-escape:no_self_reviewer_assign: vetted colleague MR]"
+        )
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "no_self_reviewer_assign"
         )
         assert router.handle_block_self_reviewer_assign(_bash(command)) is False
         assert _parse_deny(capsys) is None

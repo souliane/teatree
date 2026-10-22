@@ -20,7 +20,7 @@ a repository whose ``glab-base`` remote points somewhere ELSE. A matching
 ``glab-base``, an absent one, a non-git cwd, an unreadable remote, or any other
 command all ALLOW.
 
-Never-lockout: a per-call ``[glab-base-ok: <reason>]`` token and the
+Never-lockout: a per-call ``[gate-escape:glab_stale_base_remote: <reason>]`` token and the
 ``glab_stale_base_remote_gate_enabled`` kill-switch
 (``t3 <overlay> gate glab-base-remote disable``) both ALLOW, the deny routes
 through ``_fail_open_or_deny`` so the self-rescue allowlist + master fail-open
@@ -56,8 +56,6 @@ _GLAB_MR_CREATE_RE = re.compile(r"\bglab\s+mr\s+create\b")
 # A leading ``cd <dir> &&`` / ``cd <dir>;`` — the sanctioned prefix on an
 # otherwise-bare forge call, and the directory glab would actually run in.
 _LEADING_CD_RE = re.compile(r"^\s*cd\s+(?P<dir>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;)")
-# Per-call escape, mirroring the other gates' ``[…-ok: <reason>]`` tokens.
-_GLAB_BASE_OK_RE = re.compile(r"\[glab-base-ok:\s*(\S[^\]]*?)\s*\]")
 
 
 def _gate_enabled() -> bool:
@@ -70,18 +68,6 @@ def _gate_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("glab_stale_base_remote_gate_enabled", default=True)
-
-
-def _glab_base_ok_token(command: str) -> str | None:
-    """Return the reason from a ``[glab-base-ok: <reason>]`` token, else None.
-
-    Scanned within the first 512 chars (mirroring the other per-call escapes);
-    an empty reason returns None so a bare ``[glab-base-ok: ]`` never allows.
-    """
-    match = _GLAB_BASE_OK_RE.search(command[:512])
-    if not match:
-        return None
-    return match.group(1).strip() or None
 
 
 def command_working_dir(command: str, harness_cwd: str) -> Path | None:
@@ -143,14 +129,14 @@ def _reason(remote_url: str, target_slug: str, work_dir: Path) -> str:
         f"clone of `{target_slug}`, then re-issue the same command), or rename/remove "
         f"that remote (`git -C {work_dir} remote rename {BASE_REMOTE} <name>`). "
         f"If you have verified this specific call really does reach GitLab, append "
-        f"`[glab-base-ok: <reason>]` to the command."
+        f"`[gate-escape:glab_stale_base_remote: <reason>]` to the command."
     )
 
 
 def handle_block_glab_stale_base_remote(data: dict) -> bool:
     """Block a ``glab mr create`` whose cwd has a mismatched ``glab-base`` remote.
 
-    Fires only when the gate is enabled, no per-call ``[glab-base-ok: <reason>]``
+    Fires only when the gate is enabled, no per-call ``[gate-escape:glab_stale_base_remote: <reason>]``
     token is present, the command really invokes ``glab mr create`` with an
     explicit ``-R``/``--repo`` target, and the directory it would run in has a
     ``glab-base`` remote for a DIFFERENT project. Everything else ALLOWS, and any
@@ -164,10 +150,6 @@ def handle_block_glab_stale_base_remote(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command or not _GLAB_MR_CREATE_RE.search(strip_quoted_and_heredoc(command)):
         return False
-    if reason := _glab_base_ok_token(command):
-        sys.stderr.write(f"NOTE: stale `{BASE_REMOTE}` remote gate skipped via [glab-base-ok: {reason}].\n")
-        return False
-
     target_slug = extract_mr_target_repo(command)
     work_dir = command_working_dir(command, data.get("cwd", ""))
     if not target_slug or work_dir is None:

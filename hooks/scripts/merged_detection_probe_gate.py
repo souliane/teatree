@@ -22,15 +22,14 @@ through Python ``subprocess`` inside the worker, and a PreToolUse hook sees only
 agent's own Bash tool calls, so the gate is structurally incapable of firing on its own
 detector or on the pytest run that exercises it.
 
-The per-call ``[merge-detect-ok: <reason>]`` token silences a known legitimate
-probe. A resolver error also stays silent; this advisory never denies work.
+The advisory remains visible when an escape marker appears. A resolver error
+also stays silent; this advisory never denies work.
 
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
 ``teatree`` is importable, so the module top imports only stdlib and dependency-free
 hook siblings; the detection leaf is imported lazily inside the ``src/`` bootstrap.
 """
 
-import re
 import sys
 from typing import Final
 
@@ -41,9 +40,6 @@ from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_pa
 sys.modules.setdefault("merged_detection_probe_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.merged_detection_probe_gate", sys.modules[__name__])
 
-_MERGE_DETECT_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[merge-detect-ok:\s*\S[^\]]*?\s*\]")
-_TOKEN_SCAN_LIMIT: Final[int] = 512
-
 _ADVISORY: Final[str] = (
     "[merged-detection] This looks like a hand-rolled `{shape}` — a squash-merge rewrites the "
     "branch's shas, so a per-commit / ancestor / `--not` test reads landed work as unmerged. "
@@ -53,7 +49,7 @@ _ADVISORY: Final[str] = (
     "verdict, or `t3 <overlay> workspace emit` for the sweep. To verify ONE change landed, read "
     "the content rather than the sha: `git show origin/main:<path> | grep -n '<symbol>'` or "
     "`git log -1 -S'<symbol>' -- <path>`. If this probe is asking something "
-    "else, add `[merge-detect-ok: <reason>]` to the command.\n"
+    "else, ignore this advisory.\n"
 )
 
 
@@ -72,8 +68,7 @@ def _shape_to_nudge(data: dict) -> str | None:
     """The landed-ness probe this call runs and deserves a nudge for, else ``None``.
 
     Silent for a non-Bash tool, a probe against a non-default target (a coder's own
-    upstream, ``repro``'s two-sha ancestry proof), a ``[merge-detect-ok: <reason>]``
-    token, and any internal error.
+    upstream, ``repro``'s two-sha ancestry proof), and any internal error.
     """
     if data.get("tool_name") != "Bash":
         return None
@@ -82,8 +77,6 @@ def _shape_to_nudge(data: dict) -> str | None:
     if not isinstance(command, str) or not command:
         return None
     try:
-        if _MERGE_DETECT_OK_RE.search(command[:_TOKEN_SCAN_LIMIT]):
-            return None
         with _teatree_src_on_path():
             from teatree.hooks import merged_detection_probe  # noqa: PLC0415 — deferred: cold-hook import
 

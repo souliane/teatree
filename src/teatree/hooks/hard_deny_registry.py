@@ -18,7 +18,7 @@ predicate here, iterated by both consumers, closes that class by construction.
 Each predicate is a PURE ``(command) -> reason-or-None`` matcher living in its own
 :mod:`teatree.hooks` leaf (stdlib-only, importable by Lane B and by the cold
 subprocess alike). The predicates carry NO cwd/kill-switch/carve-out context — that
-per-gate context (the raw-merge unmanaged-repo carve-out, the reviewer-ok token,
+per-gate context (the raw-merge unmanaged-repo carve-out, the reviewer-assign escape,
 the config kill-switches) stays in the individual PreToolUse guards, which layer it
 ON TOP of the same pure detectors. The deny-corpus parity test
 (``tests/teatree_agents/lane_b/test_parity.py``) feeds every Lane-A deny fixture

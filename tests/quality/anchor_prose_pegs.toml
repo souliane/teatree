@@ -23,7 +23,7 @@ radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
 "docs/blueprint/admission-governor.md" = ["b7bf92da3aa32c32"]
 # The skill-loading kill-switch has no TaskCreated counterpart.
-"docs/blueprint/configuration.md" = ["fc8f72f58efdba5f"]
+"docs/blueprint/configuration.md" = ["3c19362e6a69fe0f"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
 "docs/blueprint/factory-architecture.md" = ["4563a0158e257724"]
 # 1: the harness's 27-event constant list.
@@ -41,11 +41,10 @@ radius = 400
 # The delegate row is long enough that the window now OPENS inside its own `where the hook
 # reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
-  "08e13b47a9686080",
-  "e7c1d45f2a2b5ad6",
-  "4a7982322b68a925",
-  "4cb202f4e2805c65",
-  "b78b2d0d275023a1"
+  "e1fa4d124be33e99",
+  "b25072382881ae16",
+  "8c60bb3059c07312",
+  "4cb202f4e2805c65"
 ]
 # The TaskCreated event's own hooks.json wiring (no matcher).
 "hooks/hooks.json" = ["662f93f7ad39ec09"]
@@ -60,9 +59,9 @@ radius = 400
 # 6: _NEVER_BLOCKING_EVENTS -- a block here destroys the row the tool persisted.
 # 7: main()'s exit-code contract, where _NEVER_BLOCKING_EVENTS outranks both arms.
 "hooks/scripts/hook_router.py" = [
-  "620c8202979c1318",
-  "8f02e4d597514f9b",
-  "ea376e6c61b7ad2a",
+  "8c68c8a511b2461d",
+  "1bdbc78ddd329070",
+  "01b0c49089e0831e",
   "df0584b2e1507beb",
   "3b12a624d2d272f3",
   "353229f0412f0120",
@@ -89,10 +88,10 @@ radius = 400
 "docs/blueprint/configuration.md" = 811
 "docs/blueprint/factory-architecture.md" = 811
 "docs/claude-code-internals.md" = 3653
-"hooks/CLAUDE.md" = 4055
+"hooks/CLAUDE.md" = 3244
 "hooks/hooks.json" = 1028
 "hooks/scripts/dispatch_admission_gate.py" = 811
-"hooks/scripts/hook_router.py" = 8232
+"hooks/scripts/hook_router.py" = 7946
 "hooks/scripts/run-hook.sh" = 811
 "hooks/scripts/task_created_deny.py" = 3985
 "skills/checking/SKILL.md" = 811

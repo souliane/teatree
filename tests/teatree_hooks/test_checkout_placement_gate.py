@@ -156,11 +156,15 @@ def test_waiver_needs_reason_and_switch_disables_gate(managed_clone: tuple[Path,
     with (
         patch("pathlib.Path.home", return_value=home),
         patch("hooks.scripts.checkout_placement_gate.repo_root_is_teatree_managed", return_value=True),
-        patch("hooks.scripts.hook_router.emit_pretooluse_deny", return_value=True),
+        patch("hooks.scripts.hook_router._gate_escape.escape_allows", side_effect=[False, False, True]),
     ):
-        assert handle_block_worktree_checkout(_event(command + " # [worktree-containment-ok: ]", clone)) is True
+        assert handle_block_worktree_checkout(_event(command + " # [worktree-containment-ok: reviewed]", clone)) is True
         assert (
-            handle_block_worktree_checkout(_event(command + " # [worktree-containment-ok: reviewed]", clone)) is False
+            handle_block_worktree_checkout(_event(command + " # [gate-escape:worktree_containment: ]", clone)) is True
+        )
+        assert (
+            handle_block_worktree_checkout(_event(command + " # [gate-escape:worktree_containment: reviewed]", clone))
+            is False
         )
         with patch("hooks.scripts.checkout_placement_gate._gate_enabled", return_value=False):
             assert handle_block_worktree_checkout(_event(command, clone)) is False
