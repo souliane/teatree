@@ -22,6 +22,23 @@ def _make_db(path: Path, *, rows: list[str]) -> None:
         conn.close()
 
 
+def _make_db_with_a_damaged_index(path: Path) -> None:
+    """Reads of the table still serve; only ``PRAGMA quick_check`` sees the broken index page."""
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE note (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT)")
+        conn.execute("CREATE INDEX note_body ON note (body)")
+        conn.executemany("INSERT INTO note (body) VALUES (?)", [(f"{n:05d}" + "x" * 80,) for n in range(800)])
+        conn.commit()
+        (root,) = conn.execute("SELECT rootpage FROM sqlite_master WHERE name = 'note_body'").fetchone()
+        (page_size,) = conn.execute("PRAGMA page_size").fetchone()
+    finally:
+        conn.close()
+    with path.open("r+b") as handle:
+        handle.seek((root - 1) * page_size)
+        handle.write(b"\xff" * page_size)
+
+
 def _read_rows(path: Path) -> list[str]:
     conn = sqlite3.connect(path)
     try:
@@ -133,6 +150,18 @@ class TestRunBackup:
         assert result.pruned == [expired]
         assert not expired.exists()
         assert result.skipped_reason is None
+
+    def test_a_snapshot_failing_quick_check_is_not_published_and_prunes_nothing(self, tmp_path: Path) -> None:
+        source = tmp_path / "db.sqlite3"
+        _make_db_with_a_damaged_index(source)
+        backups = tmp_path / "backups"
+        now = datetime(2026, 1, 20, 0, 0, 0, tzinfo=UTC)
+        older = _touch_artifact(backups, now - timedelta(days=30))
+
+        with pytest.raises(sqlite3.DatabaseError, match="quick_check"):
+            backup.run_backup(retention_days=7, backup_dir=backups, source=source, now=now)
+
+        assert sorted(path.name for path in backups.iterdir()) == [older.name]
 
     def test_skips_snapshot_when_no_source_but_still_prunes(self, tmp_path: Path) -> None:
         backups = tmp_path / "backups"

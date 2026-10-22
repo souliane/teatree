@@ -30,7 +30,7 @@ class Command(MachineOutputCommand):
             typer.Option("--json", help="Emit the structured report as JSON instead of the human view."),
         ] = False,
     ) -> FactorySignalsReportDict:
-        """Print the five factory signals over the trailing window vs its baseline."""
+        """Print the factory signals over the trailing window vs its baseline."""
         report = compute_factory_signals(
             window_days=window_days,
             overlay=os.environ.get("T3_OVERLAY_NAME", ""),

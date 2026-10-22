@@ -225,4 +225,6 @@ def test_the_facts_age_every_clock_reading_from_one_now() -> None:
         "open_tool_seconds": 2.5,
         "last_event_age_seconds": 1.5,
         "context_tokens": 52_000,
+        "attempt": _TASK.fence.attempt,
+        "generation": _TASK.fence.generation,
     }

@@ -51,9 +51,9 @@ In an image generation the self-update scanner is not built, `reinstall_running_
 1. **Preflight** — the image exists, its label matches, and its code is not behind the applied schema (the roller runs from the target image, so its own process freshness is the target's).
 2. **Register N+1** — a failed, retired or draining row starts again.
 3. **Drain N** — per generation when N is a registered active or draining generation; otherwise the global drain, which reopens before N+1 comes up.
-4. **Stop** N's worker and Slack listener.
+4. **Stop** N's worker, Slack listener and forge webhook listener.
 5. **Init** — run N+1's `init`.
-6. **Up** — N+1's worker, listener, admin and watchdog.
+6. **Up** — N+1's worker, Slack listener, forge webhook listener, admin and watchdog.
 7. **Verify** — every required runtime container carries N+1's label and kept one container start for `--stable-seconds`, the worker activated N+1, the admin answers inside its own container; `--optional-service` declares a service the stack legitimately runs without, never the worker or the admin.
 8. **Promote** — retag the promoted tag, `teatree-headless:latest` by default.
 9. **Retire** N.
@@ -61,7 +61,7 @@ In an image generation the self-update scanner is not built, `reinstall_running_
 ## Failure and rollback
 
 - A failure before N's drain starts marks N+1 failed, leaves N untouched (legacy or generation) and re-raises.
-- After it, any failure — or a SIGTERM/SIGHUP, which the CLI turns into `RollInterruptedError` — rolls back: N+1 is marked failed (a failure to mark it never aborts the restore), N is reinstated (a draining row resumes, a failed or retired one starts again), brought back up from its own image and must pass the same verification N+1 had to (a legacy stack: every runtime container running and the admin answering); a restore that does not verify fails loud.
+- After it, any failure — or a SIGTERM/SIGHUP, which the CLI turns into `RollInterruptedError` — rolls back: N+1 is marked failed (a failure to mark it never aborts the restore), N is reinstated (a draining row resumes, a failed or retired one starts again), brought back up using only the services declared by N's own compose topology, and must pass verification for those services (a legacy stack: every declared runtime container running and the admin answering); a restore that does not verify fails loud.
 - The roller snapshots the applied migrations before N+1's `init`; a failure after that schema moved is never rolled back — N's code would refuse every claim against it (`code_behind_schema`) — so the roll marks N+1 failed, leaves the stack as it is and exits 1 naming the migrations; the fix is a roll forward (or a re-roll of the same sha once it is fixed, which restarts it as above).
 - Promotion (one retry) follows a successful verify and never undoes it: a tag that cannot move leaves N+1 serving and N draining and exits 1; a re-run to the serving sha brings up missing services, verifies, promotes and retires what is left.
 - After the first termination signal a roll ignores further ones until its restore finishes. An interrupted roll says what it left: interrupted before anything moved (exit 1), rolled back (exit 3), stopped before the drain with N still serving (exit 3), or interrupted after N+1 verified, when N+1 serves unpromoted (exit 1, re-run to finish).

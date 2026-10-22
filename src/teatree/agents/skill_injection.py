@@ -10,6 +10,7 @@ the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can
 emit a preamble without bootstrapping Django.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,43 @@ from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, re
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
+_READ_ONLY_SKILL_SECTIONS = {
+    "review": frozenset(
+        {
+            "### Quality Gate Verification (Verify-Fix-Repeat)",
+            "### Receiving Code Review",
+            "### Recording a GIVE-review approval — `t3 review approve` (Mandatory)",
+            "### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)",
+            "## Commands",
+        }
+    ),
+    "slack-formatting": frozenset(
+        {
+            "## Tables — use the formatter, never a hand-rolled pipe table",
+            "## mrkdwn gotchas",
+            "## Line length — wrapped at 90, at the transport",
+            "## CLI tables",
+        }
+    ),
+}
+_HEADING = re.compile(r"^(#{2,6}) ")
+
+
+def _read_only_skill_text(name: str, content: str) -> str:
+    omitted = _READ_ONLY_SKILL_SECTIONS.get(name, frozenset())
+    if not omitted:
+        return content
+    kept: list[str] = []
+    skipped_level = 0
+    for line in content.splitlines(keepends=True):
+        heading = _HEADING.match(line)
+        if heading and skipped_level and len(heading[1]) <= skipped_level:
+            skipped_level = 0
+        if heading and line.rstrip() in omitted:
+            skipped_level = len(heading[1])
+        if not skipped_level:
+            kept.append(line)
+    return "".join(kept)
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
@@ -157,7 +195,7 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
                     missing = f"{bare}/{rules_md.name}"
                     raise SkillDispatchError.missing_document(bare, missing) from exc
                 sections.append(f"--- RULES.md ---\n{rules_text}")
-            sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
+            sections.append(_skill_section(bare, _read_only_skill_text(bare, skill_md.read_text(encoding="utf-8"))))
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."

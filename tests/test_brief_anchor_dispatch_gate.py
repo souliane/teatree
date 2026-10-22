@@ -72,7 +72,8 @@ class TestNeverLockout:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        data = _dispatch(f"[brief-anchor-ok: the sha is in the ticket] {_UNANCHORED}")
+        data = _dispatch(f"[gate-escape:brief_anchor: the sha is in the ticket] {_UNANCHORED}")
+        monkeypatch.setattr(router._gate_escape, "escape_allows", lambda event, gate_id: gate_id == "brief_anchor")
         assert gate.handle_brief_anchor_lint(data) is False
         assert capsys.readouterr().err == ""
 

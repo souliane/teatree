@@ -3304,6 +3304,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ privacy-scan         Scan text for privacy-sensitive patterns (emails, keys, │
 │                      IPs).                                                   │
+│ gate-escape                                                                  │
 │ validate-mr          Validate MR/PR title+description against the active     │
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
@@ -3374,6 +3375,16 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   path      [PATH]  File or '-' for stdin [default: -]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool gate-escape`
+
+```
+Usage: t3 tool gate-escape [OPTIONS]
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -11657,6 +11668,10 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

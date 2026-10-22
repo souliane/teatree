@@ -28,6 +28,23 @@ def test_an_unsettled_message_reads_as_not_accepted_in_time_and_still_queued() -
     }
 
 
+def test_a_reported_unknown_push_only_receipt_remains_unknown() -> None:
+    async def unknown() -> SendReceipt:
+        await asyncio.sleep(0)
+        delivery = _delivery()
+        delivery.queued_in_inbox = False
+        delivery.unknown_reported = True
+        return delivery.receipt()
+
+    assert asyncio.run(unknown()) == {
+        "id": 5,
+        "to": "addr-2",
+        "outcome": "unknown_delivery",
+        "code": None,
+        "queued_in_inbox": False,
+    }
+
+
 def test_the_first_verdict_wins_over_a_later_one() -> None:
     async def settle_twice() -> SendReceipt:
         await asyncio.sleep(0)

@@ -25,6 +25,8 @@ from django.test import TestCase
 
 import hooks.scripts.hook_router as router
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.gate_escape import GateEscape
+from tests._gate_escape_audit import audited_escape
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -161,10 +163,27 @@ class TestLegitimateShellWorkIsNotBlocked(TestCase):
         assert blocked is False
         assert payload is None
 
-    def test_skip_token_in_the_command_allows(self) -> None:
+    def test_legacy_skip_token_no_longer_allows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _started_worktree(Path(tmp))
             command = "sed -i 's/old/new/' src/app/x.py  # [skip-plan-gate: mechanical rename]"
             blocked, payload, _ = _run(_bash_event(toplevel, command))
+        assert blocked is True
+        assert payload is not None
+
+    def test_audited_escape_records_the_action_then_allows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _started_worktree(Path(tmp))
+            command = "sed -i 's/old/new/' src/app/x.py  # [gate-escape:plan_gate: mechanical rename]"
+            event = {**_bash_event(toplevel, command), "session_id": "sess-plan", "tool_use_id": "call-1"}
+            with audited_escape(event, via_cli=True):
+                blocked, payload, _ = _run(event)
         assert blocked is False
         assert payload is None
+        row = GateEscape.objects.get()
+        assert (row.gate, row.session_id, row.call_id, row.reason) == (
+            "plan_gate",
+            "sess-plan",
+            "call-1",
+            "mechanical rename",
+        )

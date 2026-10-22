@@ -4,11 +4,13 @@ import uuid
 from collections.abc import Mapping
 from typing import IO, Annotated, NoReturn, cast
 
+import click
 import typer
 from django.db import DatabaseError
-from django_typer.management import TyperCommand, command
+from django_typer.management import DTCommand, TyperCommand, command
 
 from teatree.agents.live_client import (
+    FenceOverride,
     LiveClient,
     LiveDeliveryUnknownError,
     LiveOfflineError,
@@ -77,6 +79,35 @@ def _render_fields(facts: Mapping[str, object], stream: IO[str]) -> None:
         stream.write(f"{key}: {value}\n")
 
 
+def _capture_attempt(ctx: click.Context, _param: click.Parameter, value: str | None) -> None:
+    ctx.meta["steer_attempt"] = value
+
+
+def _capture_generation(ctx: click.Context, _param: click.Parameter, value: str | None) -> None:
+    ctx.meta["steer_generation"] = value
+
+
+class _SteerCommand(DTCommand):
+    """Expose the target-attempt fence without widening the command callback."""
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [
+            *super().get_params(ctx),
+            click.Option(
+                ["--attempt"],
+                callback=_capture_attempt,
+                expose_value=False,
+                help="Refuse unless the session is this attempt; defaults to the attempt `live list` shows.",
+            ),
+            click.Option(
+                ["--generation"],
+                callback=_capture_generation,
+                expose_value=False,
+                help="Refuse unless the worker runs this generation; defaults to the located session's.",
+            ),
+        ]
+
+
 class Command(TyperCommand):
     """Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active."""
 
@@ -128,7 +159,7 @@ class Command(TyperCommand):
             human=lambda stream: _render_fields(facts, stream),
         )
 
-    @command()
+    @command(cls=_SteerCommand)
     def steer(
         self,
         task: _TaskArgument,
@@ -148,8 +179,10 @@ class Command(TyperCommand):
             self._exit("--text is required\n", 2)
         self._err().write(f"{ACTIVE_LABEL}\n")
         command_id = command_id or uuid.uuid4().hex
+        meta = click.get_current_context().meta
+        fence = FenceOverride(meta.get("steer_attempt"), meta.get("steer_generation"))
         try:
-            receipt = LiveClient().steer(task, text, command_id=command_id, wait=wait)
+            receipt = LiveClient().steer(task, text, command_id=command_id, wait=wait, fence=fence)
         except LiveOfflineError as exc:
             self._exit(_offline_message(task, str(exc)), EXIT_OFFLINE)
         except LiveRefusedError as exc:

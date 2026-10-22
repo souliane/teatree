@@ -15,6 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Ticket
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.transition import TicketTransition, TicketTransitionQuerySet
 
 _OLD = timezone.now() - dt.timedelta(days=120)
@@ -61,6 +62,61 @@ class StateEdgesTestCase(TestCase):
         edge = _transition(ticket=ticket)
         _noop(ticket, created_at=_RECENT)
         assert list(TicketTransition.objects.state_edges().values_list("pk", flat=True)) == [edge.pk]
+
+    def test_recent_merges_deduplicates_remerged_tickets_at_first_merge(self) -> None:
+        first = Ticket.objects.create(state=Ticket.State.MERGED)
+        second = Ticket.objects.create(state=Ticket.State.MERGED)
+        for ticket in (first, second):
+            PullRequest.objects.create(
+                ticket=ticket,
+                url=f"https://example.test/pull/{ticket.pk}",
+                repo="example/repo",
+                iid=str(ticket.pk),
+                state=PullRequest.State.MERGED,
+            )
+        first_stamp = _RECENT - dt.timedelta(hours=2)
+        second_stamp = _RECENT - dt.timedelta(hours=1)
+        _transition(ticket=first, created_at=first_stamp, move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"))
+        _transition(ticket=first, created_at=_RECENT, move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "remerge"))
+        _transition(ticket=second, created_at=second_stamp, move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"))
+        assert list(TicketTransition.objects.recent_merges(10)) == [
+            (second.pk, second_stamp),
+            (first.pk, first_stamp),
+        ]
+
+    def test_recent_merges_excludes_a_ticket_without_a_merged_pr(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        _transition(ticket=ticket, move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"))
+        assert list(TicketTransition.objects.recent_merges(10)) == []
+
+    def test_recent_merges_excludes_a_merged_to_merged_transition(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://example.test/pull/repeat",
+            repo="example/repo",
+            iid="repeat",
+            state=PullRequest.State.MERGED,
+        )
+        _transition(ticket=ticket, move=(Ticket.State.MERGED, Ticket.State.MERGED, "repeat"))
+        assert TicketTransition.objects.recent_merges(10) == []
+
+    def test_recent_merges_respects_the_requested_limit(self) -> None:
+        for index in range(11):
+            ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+            PullRequest.objects.create(
+                ticket=ticket,
+                url=f"https://example.test/pull/limit-{index}",
+                repo="example/repo",
+                iid=f"limit-{index}",
+                state=PullRequest.State.MERGED,
+            )
+            _transition(
+                ticket=ticket,
+                created_at=_RECENT + dt.timedelta(minutes=index),
+                move=(Ticket.State.PR_OPENED, Ticket.State.MERGED, "merge"),
+            )
+        assert len(TicketTransition.objects.recent_merges(10)) == 10
 
 
 class TicketTransitionPrunableGuardTestCase(TestCase):

@@ -61,6 +61,8 @@ class DrainLaneStarvedDoctorCheckTests(TestCase):
         assert "1 reviewing/shipping task(s) queued" in output
         assert "oldest waiting 34m" in output
         assert "cheap_phase_admission_ceiling" in output
+        assert "Cheap work is exempt from the machine brake" in output
+        assert "one seat more than the review width" in output
 
     def test_a_crashed_read_degrades_to_ok(self) -> None:
         # An advisory that cannot read its own state must never redden the doctor run.

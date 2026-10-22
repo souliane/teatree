@@ -11,7 +11,9 @@ from teatree.core.views import GitHubWebhookView, GitLabWebhookView
 
 app_name = "teatree"
 
-urlpatterns: list[URLPattern | URLResolver] = [
+webhook_urlpatterns: list[URLPattern] = [
     path("hooks/gitlab/", GitLabWebhookView.as_view(), name="gitlab_webhook"),
     path("hooks/github/", GitHubWebhookView.as_view(), name="github_webhook"),
 ]
+
+urlpatterns: list[URLPattern | URLResolver] = list(webhook_urlpatterns)
