@@ -42,11 +42,6 @@ def read_mount_table() -> str:
     return _read(_MOUNTINFO) or ""
 
 
-def mount_spellings(path: str | Path, *, mountinfo: str | None = None) -> list[str]:
-    table = mountinfo if mountinfo is not None else read_mount_table()
-    return parsed_mount_table(table).spellings(path)
-
-
 @dataclass(frozen=True, slots=True)
 class _Mount:
     mount_id: str
@@ -146,4 +141,4 @@ def _read(path: Path) -> str | None:
         return None
 
 
-__all__ = ["MountTable", "mount_spellings", "parsed_mount_table", "physical_location", "read_mount_table"]
+__all__ = ["MountTable", "parsed_mount_table", "physical_location", "read_mount_table"]

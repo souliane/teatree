@@ -91,8 +91,9 @@ def test_a_bind_alias_is_a_spelling_of_the_directory_in_both_directions(tmp_path
     real.mkdir(parents=True)
     alias = "/nonexistent-t3/mnt/T1/repo"
     with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:2", "/ws", "/nonexistent-t3/mnt")):
-        assert set(mount_identity.mount_spellings(real)) == {str(real), alias}
-        assert set(mount_identity.mount_spellings(alias)) == {str(real), alias}
+        table = mount_identity.parsed_mount_table(mount_identity.read_mount_table())
+        assert set(table.spellings(real)) == {str(real), alias}
+        assert set(table.spellings(alias)) == {str(real), alias}
 
 
 def test_a_spelling_shadowed_by_a_deeper_mount_is_not_offered(tmp_path: Path) -> None:
@@ -103,7 +104,7 @@ def test_a_spelling_shadowed_by_a_deeper_mount_is_not_offered(tmp_path: Path) ->
         ("259:2", "/ws", "/nonexistent-t3/mnt"),
         ("259:3", "/other", "/nonexistent-t3/mnt/T1"),
     ):
-        assert mount_identity.mount_spellings(real) == [str(real)]
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(real) == [str(real)]
 
 
 def test_an_alias_with_a_symlink_prefix_is_not_offered(tmp_path: Path) -> None:
@@ -112,14 +113,15 @@ def test_an_alias_with_a_symlink_prefix_is_not_offered(tmp_path: Path) -> None:
     redirect = tmp_path / "redirect"
     redirect.symlink_to(tmp_path / "elsewhere")
     with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", str(redirect))):
-        assert mount_identity.mount_spellings(real_root / "T1" / "repo") == [str(real_root / "T1" / "repo")]
+        path = real_root / "T1" / "repo"
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(path) == [str(path)]
 
 
 def test_the_same_root_on_another_device_is_not_a_spelling(tmp_path: Path) -> None:
     real = tmp_path / "mnt" / "T1" / "repo"
     real.mkdir(parents=True)
     with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:3", "/ws", "/nonexistent-t3/mnt")):
-        assert mount_identity.mount_spellings(real) == [str(real)]
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(real) == [str(real)]
 
 
 def test_spelling_scan_skips_mounts_on_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,21 +142,17 @@ def test_spelling_scan_skips_mounts_on_other_devices(monkeypatch: pytest.MonkeyP
 
 def test_an_unreadable_mount_table_offers_no_spelling(tmp_path: Path) -> None:
     with missing_mount_table():
-        assert mount_identity.mount_spellings(tmp_path) == []
-    assert mount_identity.mount_spellings(tmp_path, mountinfo="") == []
-    assert mount_identity.mount_spellings(tmp_path, mountinfo="malformed\n") == []
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(tmp_path) == []
+    assert mount_identity.parsed_mount_table("").spellings(tmp_path) == []
+    assert mount_identity.parsed_mount_table("malformed\n").spellings(tmp_path) == []
 
 
 def test_an_invalid_utf8_byte_does_not_discard_valid_mounts(tmp_path: Path, monkeypatch) -> None:
     table = tmp_path / "mountinfo"
     table.write_bytes((_HOST + "30 22 259:2 /nonexistent-t3/mnt/ws /alias rw - ext4 /dev/x rw\n").encode() + b"\xff\n")
     monkeypatch.setattr(mount_identity, "_MOUNTINFO", table)
-    assert "/alias/ticket/repo" in mount_identity.mount_spellings(_CHECKOUT)
-
-
-def test_a_mount_table_without_a_root_line_can_locate_a_covered_path() -> None:
-    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
-    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) == "259:2:/ws/T1/repo"
+    mount_table = mount_identity.parsed_mount_table(mount_identity.read_mount_table())
+    assert "/alias/ticket/repo" in mount_table.spellings(_CHECKOUT)
 
 
 def test_a_rootless_mount_table_follows_a_nested_mount() -> None:

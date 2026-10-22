@@ -38,7 +38,7 @@ def _worktree_for_path(raw: str) -> Worktree:
         recorded = worktree.worktree_path
         if recorded == str(candidate):
             return worktree
-        if recorded == resolved:
+        if recorded == resolved and resolved_match is None:
             resolved_match = worktree
         if recorded and alias is None and paths_match(recorded, candidate):
             alias = worktree

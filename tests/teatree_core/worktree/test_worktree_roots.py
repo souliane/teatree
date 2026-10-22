@@ -92,6 +92,17 @@ class ProbeCheckoutTest(_RootsTestCase):
 
 
 class WorktreesOutsideCanonicalRootTest(_RootsTestCase):
+    def test_a_symlink_outside_the_root_pointing_inside_stays_outside_without_an_alias(self) -> None:
+        inside = self.canonical / "T1" / "repo"
+        inside.mkdir(parents=True)
+        link = self.tmp / "external-link"
+        link.symlink_to(inside, target_is_directory=True)
+        row = self._register(link, branch="external-link")
+        with missing_mount_table():
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+        with patched_mount_table(("259:2", "/ws", str(self.canonical))):
+            assert [found.pk for found in worktrees_outside_the_canonical_root()] == [row.pk]
+
     def test_a_row_under_another_mount_spelling_of_the_canonical_root_is_inside(self) -> None:
         alias = Path("/nonexistent-t3/alias/T1/repo")
         row_alias = self._register(alias, branch="alias")

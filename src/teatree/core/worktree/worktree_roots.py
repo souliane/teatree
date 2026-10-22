@@ -158,14 +158,13 @@ def worktrees_outside_the_canonical_root() -> list[Worktree]:
     """
     canonical = Path(os.path.normpath(canonical_worktree_root().expanduser()))
     table = parsed_mount_table(read_mount_table())
-    canonical_spellings = table.spellings(canonical)
     outside: list[Worktree] = []
     for worktree in Worktree.objects.all():
         path = worktree.worktree_path
         if not path:
             continue
         checkout = Path(os.path.normpath(Path(path).expanduser()))
-        if path_is_within(checkout, canonical, mount_table=table, root_spellings=canonical_spellings):
+        if path_is_within(checkout, canonical, mount_table=table):
             continue
         outside.append(worktree)
     return outside

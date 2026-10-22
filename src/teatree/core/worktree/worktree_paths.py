@@ -63,8 +63,8 @@ def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> lis
     return list(dict.fromkeys(candidates))
 
 
-def path_spellings(paths: Iterable[str | Path], *, mountinfo: str | None = None) -> set[str]:
-    table = parsed_mount_table(mountinfo if mountinfo is not None else read_mount_table())
+def path_spellings(paths: Iterable[str | Path]) -> set[str]:
+    table = parsed_mount_table(read_mount_table())
     return {spelling for path in paths for spelling in _candidate_paths(str(path), mount_table=table)}
 
 
@@ -73,20 +73,18 @@ def path_is_within(
     root: str | Path,
     *,
     mount_table: MountTable | None = None,
-    root_spellings: Iterable[str] | None = None,
 ) -> bool:
-    table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
-    paths = _candidate_paths(str(path), mount_table=table)
-    local_roots, _ = _local_paths(str(root))
-    if any(Path(candidate).is_relative_to(ancestor) for candidate in paths for ancestor in local_roots):
+    if Path(path).is_relative_to(root):
         return True
-    for alias in root_spellings if root_spellings is not None else table.spellings(str(root)):
-        for candidate in paths:
-            if Path(candidate).is_relative_to(alias):
-                translated = Path(root) / Path(candidate).relative_to(alias)
-                if candidate in _candidate_paths(str(translated), mount_table=table):
-                    return True
-    return False
+    table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
+    resolved = str(Path(path).resolve())
+    local_roots, _ = _local_paths(str(root))
+    return any(
+        Path(alias).is_relative_to(ancestor)
+        for alias in table.spellings(str(path), resolved=resolved)
+        if alias not in {str(path), resolved}
+        for ancestor in local_roots
+    )
 
 
 def paths_match(a: str | Path, b: str | Path) -> bool:
@@ -102,10 +100,5 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
     and mount tolerance. :func:`path_is_within` handles descendants, including
     the idle-stack active-CWD check.
     """
-    raw_a, raw_b = str(a), str(b)
-    local_a, _ = _local_paths(raw_a)
-    local_b, _ = _local_paths(raw_b)
-    if not set(local_a).isdisjoint(local_b):
-        return True
     table = parsed_mount_table(read_mount_table())
-    return not set(_candidate_paths(raw_a, mount_table=table)).isdisjoint(_candidate_paths(raw_b, mount_table=table))
+    return not set(_candidate_paths(str(a), mount_table=table)).isdisjoint(_candidate_paths(str(b), mount_table=table))

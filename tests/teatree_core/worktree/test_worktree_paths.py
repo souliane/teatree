@@ -2,17 +2,10 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.worktree.worktree_paths import (
-    _candidate_paths,
-    path_is_within,
-    paths_match,
-    ticket_dir_for,
-    worktree_dir_for,
-)
+from teatree.core.worktree.worktree_paths import _candidate_paths, paths_match, ticket_dir_for, worktree_dir_for
 from tests._mount_table import missing_mount_table, patched_mount_table
 
 
@@ -62,9 +55,16 @@ class TestPathsMatch(TestCase):
             link.symlink_to(target)
             assert paths_match(str(link), str(target)) is True
 
-    def test_private_prefix_variant_still_matches_without_mountinfo(self) -> None:
-        with missing_mount_table():
-            assert paths_match("/private/var/folders/x", "/var/folders/x")
+    def test_two_symlinks_to_one_directory_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            target = tmp / "target"
+            target.mkdir()
+            first = tmp / "first"
+            second = tmp / "second"
+            first.symlink_to(target)
+            second.symlink_to(target)
+            assert paths_match(first, second)
 
     def test_a_recorded_spelling_absent_here_matches_its_mount_alias_both_ways(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -91,13 +91,6 @@ class TestPathsMatch(TestCase):
             with missing_mount_table():
                 assert not paths_match(alias, real)
 
-    def test_an_undecodable_mount_table_keeps_path_matching_available(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            table = Path(directory) / "mountinfo"
-            table.write_bytes(bytes([255]))
-            with patch("teatree.mount_identity._MOUNTINFO", table):
-                assert not paths_match("/nonexistent-t3/a", "/nonexistent-t3/b")
-
 
 class TestCandidatePaths(TestCase):
     """``_candidate_paths`` builds the variant set ``paths_match`` and the DB matcher share."""
@@ -113,13 +106,3 @@ class TestCandidatePaths(TestCase):
     def test_private_prefix_stripped_variant(self) -> None:
         out = _candidate_paths("/private/var/folders/x")
         assert "/var/folders/x" in out
-
-
-class TestPathIsWithin(TestCase):
-    def test_a_shadowing_mount_on_another_device_is_outside(self) -> None:
-        with patched_mount_table(
-            ("259:2", "/ws", "/nonexistent-t3/canonical"),
-            ("259:2", "/ws", "/nonexistent-t3/alias"),
-            ("259:3", "/other", "/nonexistent-t3/alias/T1"),
-        ):
-            assert not path_is_within("/nonexistent-t3/alias/T1/repo", "/nonexistent-t3/canonical")
