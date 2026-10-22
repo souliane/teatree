@@ -149,6 +149,19 @@ class PathResolutionTests(_CommandCase):
         ):
             assert _worktree_for_path(str(link)).pk == resolved.pk
 
+    def test_the_first_row_wins_when_two_rows_match_only_by_mount_alias(self) -> None:
+        first = f"/nonexistent-t3/first/{self.checkout.name}"
+        second = f"/nonexistent-t3/second/{self.checkout.name}"
+        self.worktree.extra = {"worktree_path": first}
+        self.worktree.save(update_fields=["extra"])
+        WorktreeFactory(ticket=self.ticket, extra={"worktree_path": second})
+        with patched_mount_table(
+            ("259:2", "/ws", str(self.checkout.parent)),
+            ("259:2", "/ws", "/nonexistent-t3/first"),
+            ("259:2", "/ws", "/nonexistent-t3/second"),
+        ):
+            assert _worktree_for_path(str(self.checkout)).pk == self.worktree.pk
+
 
 class AttestTests(_CommandCase):
     def setUp(self) -> None:
