@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from hooks.scripts.hook_router import handle_enforce_orchestrator_boundary
+from tests._gate_escape_audit import audited_escape
 
 _GOLDEN = Path(__file__).resolve().parent / "fixtures" / "never_lockout_offramps.yaml"
 
@@ -53,7 +54,7 @@ def test_golden_has_required_offramp_coverage() -> None:
     names = {row["name"] for row in _rows()}
     required = {
         "agent_run_in_background_true",
-        "agent_fg_ok_token",
+        "agent_audited_escape",
         "agent_subagent_context_foreground",
         "send_message_orchestration",
         "ask_user_question_orchestration",
@@ -68,7 +69,13 @@ def test_golden_has_required_offramp_coverage() -> None:
 @pytest.mark.parametrize("row", _rows(), ids=[row["name"] for row in _rows()])
 def test_offramp_is_allowed_with_gate_default_on(row: dict, capsys: pytest.CaptureFixture[str]) -> None:
     assert row["expect"] == "allow", "this golden only encodes never-lockout allow rows"
-    verdict = handle_enforce_orchestrator_boundary(_payload(row))
+    data = _payload(row)
+    if row["name"] == "agent_audited_escape":
+        with audited_escape(data) as requests:
+            verdict = handle_enforce_orchestrator_boundary(data)
+        assert requests[0]["gate"] == "orchestrator_foreground_dispatch"
+    else:
+        verdict = handle_enforce_orchestrator_boundary(data)
     out = capsys.readouterr().out.strip()
     assert verdict is not True, (
         f"NEVER-LOCKOUT regression — off-ramp {row['name']!r} was DENIED with the gate default-ON.\n"

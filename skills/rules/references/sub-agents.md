@@ -34,7 +34,7 @@ Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_dr
 
 > If the review or this brief contradicts the code, TRUST THE CODE and say I was wrong.
 
-Anchoring the claims to a commit you actually read (`verified at <sha>`) does the same job. The deterministic backstop is the `PreToolUse` brief-anchor gate (`handle_brief_anchor_lint`, detector `teatree.hooks.brief_anchor_scanner`): a dispatch asserting specifics with neither anchor is refused and given the remedy clause. Escapes: `[brief-anchor-ok: <reason>]` per call, `t3 <overlay> gate brief-anchor disable` for self-rescue.
+Anchoring the claims to a commit you actually read (`verified at <sha>`) does the same job. The deterministic backstop is the `PreToolUse` brief-anchor gate (`handle_brief_anchor_lint`, detector `teatree.hooks.brief_anchor_scanner`): a dispatch asserting specifics with neither anchor is refused and given the remedy clause. Escapes: `[gate-escape:brief_anchor: <reason>]` per call, `t3 <overlay> gate brief-anchor disable` for self-rescue.
 
 **A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork. The lane runners' `bound_xdist_workers_to_memory` reads each container's own cgroup cap, so it cannot size an appropriate share across sibling agents. The env var is the per-agent request; the shared pytest worker pool enforces the box-wide bound even for an explicit `-n`. Keep the request in the brief so a run starts with an appropriate share instead of waiting for slots it cannot use.
 

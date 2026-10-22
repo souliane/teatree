@@ -163,7 +163,7 @@ class TestDenyReason:
     def test_git_restore_reason_mentions_uncommitted(self) -> None:
         msg = core.deny_reason(core.ConfigOverwriteFinding(path="~/.appconfig.toml", kind="git-restore"))
         assert "uncommitted" in msg.lower()
-        assert "config-overwrite-ok" in msg
+        assert "gate-escape:config_overwrite" in msg
 
 
 # ── Live hook handler — the router-integration RED/GREEN proof ──────
@@ -338,12 +338,13 @@ class TestHandleBlockConfigOverwrite:
                 "session_id": "sess-7",
                 "tool_input": {
                     "file_path": str(cfg),
-                    "content": "new = true\n[config-overwrite-ok: regenerating from template]\n",
+                    "content": "new = true\n[gate-escape:config_overwrite: regenerating from template]\n",
                 },
             }
             with (
                 patch.object(router, "STATE_DIR", state_dir),
                 patch.object(gate, "_config_overwrite_gate_enabled", return_value=True),
+                patch.object(router._gate_escape, "escape_allows", return_value=True),
                 patch("sys.stderr", StringIO()),
             ):
                 blocked, _ = _capture(data)
@@ -394,3 +395,26 @@ class TestSymlinkReadMatchesTargetOverwrite:
             ):
                 blocked, _ = _capture(data)
         assert blocked is False
+
+
+def test_legacy_config_marker_no_longer_allows_blind_write() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / ".appconfig.toml"
+        cfg.write_text("old = true\n", encoding="utf-8")
+        state_dir = Path(tmp) / "state"
+        state_dir.mkdir()
+        data = {
+            "tool_name": "Write",
+            "session_id": "legacy-config",
+            "tool_input": {
+                "file_path": str(cfg),
+                "content": "new = true\n[config-overwrite-ok: legacy]\n",
+            },
+        }
+        with (
+            patch.object(router, "STATE_DIR", state_dir),
+            patch.object(gate, "_config_overwrite_gate_enabled", return_value=True),
+        ):
+            blocked, payload = _capture(data)
+    assert blocked is True
+    assert payload is not None

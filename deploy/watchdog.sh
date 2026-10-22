@@ -83,7 +83,7 @@ EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-worker teatree-admin}"
 DOCTOR_RETRIES="${TEATREE_WATCHDOG_DOCTOR_RETRIES:-3}"
 DOCTOR_RETRY_DELAY="${TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY:-15}"
 # Services restarted when init has already completed (init excluded — see header).
-read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
+read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-webhooks teatree-watchdog}"
 
 # Stale-temp trim: services to sweep, the disk temp roots to sweep in each, and the
 # minimum age (minutes) a scratch entry must reach before it is trimmed. Runtime

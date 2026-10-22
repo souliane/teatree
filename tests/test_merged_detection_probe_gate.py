@@ -111,11 +111,8 @@ class TestLegitimateShapesAreSilent:
 
 
 class TestAdvisoryEscapes:
-    def test_per_call_token_suppresses_the_advisory(self) -> None:
-        assert _advisory("git cherry origin/main HEAD  # [merge-detect-ok: comparing two forks]") == ""
-
-    def test_an_empty_token_reason_does_not_suppress(self) -> None:
-        assert _advisory("git cherry origin/main HEAD  # [merge-detect-ok: ]") != ""
+    def test_legacy_token_does_not_suppress_the_advisory(self) -> None:
+        assert _advisory("git cherry origin/main HEAD  # [merge-detect-ok: comparing two forks]") != ""
 
     def test_a_raising_detector_fails_open_and_silent(self) -> None:
         with patch(

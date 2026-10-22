@@ -192,6 +192,10 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
 }
 
 
+def phase_writes_checkout(phase: str) -> bool:
+    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
+
+
 def tools_for_phase(phase: str) -> frozenset[str]:
     """Return the capability tool names *phase* may call.
 
