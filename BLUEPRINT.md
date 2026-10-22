@@ -578,7 +578,7 @@ An overlay is a downstream Django project that customizes teatree for a specific
 | `OverlayConfig` | `config` | credentials, URLs, labels, scope — now a **Pydantic model**, fail-closed (typed fields validate on assignment; a wrong-typed setting-module/TOML override raises instead of silently corrupting) |
 | `OverlayMetadata` | `metadata` | PR title/validation, required description sections, CI/E2E config, skill metadata |
 | `OverlayProvisioning` | `provisioning` | `env_extra`, `symlinks`, `services_config`, `compose_file`, `base_images`, `docker_services`, `db_import_strategy`, `db_import`, `post_db_steps`, `reset_passwords_command`, `envrc_lines`, `cleanup_steps`, `health_checks`, `snapshot_warmer_configs`, `reap_external_resources`, `resolve_variant`, `declared_env_keys`/`declared_secret_env_keys` |
-| `OverlayRuntime` | `runtime` | `run_commands`, `pre_run_steps`, `test_command` (→ `run tests`), `lint_command` (→ `run lint`), `verify_endpoints`, `readiness_probes` |
+| `OverlayRuntime` | `runtime` | `run_commands`, `pre_run_steps`, `visual_qa_server` (optional checkout server), `test_command` (→ `run tests`), `lint_command` (→ `run lint`), `verify_endpoints`, `readiness_probes` |
 | `OverlayE2E` | `e2e` | `env_extras`, `run_provenance`, `playwright_args`, `scenarios`, `preflight` |
 | `OverlayReview` | `review` | `visual_qa_targets`, `classify_customer_display_impact`, `can_auto_merge` (→ `MergeGuard`), `merge_candidate_repo_slugs` (§17.4 cross-repo merge probe, [#2323](https://github.com/souliane/teatree/issues/2323)), `repo_owner_for_slug`, `review_exempt_repo_slugs`, `mandatory_e2e_exempt_repo_slugs`, `mandatory_e2e_repo_slugs`, `get_followup_scanners` |
 | `OverlayConnectors` | `connectors` | `preflight`, `mcp_tool_group` |

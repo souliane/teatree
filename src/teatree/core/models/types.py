@@ -52,6 +52,8 @@ class VisualQAPageDetail(TypedDict):
 
 
 class VisualQASummary(TypedDict, total=False):
+    repo_path: str
+    head_sha: str
     targets: list[str]
     skipped_reason: str
     not_run_reason: str
@@ -59,6 +61,9 @@ class VisualQASummary(TypedDict, total=False):
     pages_checked: int
     errors: int
     details: list[VisualQAPageDetail]
+    unchecked_reasons: dict[str, str]
+    report_markdown: str
+    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):

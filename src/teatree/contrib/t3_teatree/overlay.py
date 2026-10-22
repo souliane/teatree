@@ -25,6 +25,8 @@ from teatree.overlay_sdk import (
     reap_compose_project,
     run_checked,
 )
+from teatree.types import RunCommand
+from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
@@ -141,7 +143,7 @@ def _python_env_ready(repo: Path) -> bool:
     return True
 
 
-def _sync_dependencies_step(repo: Path) -> ProvisionStep:
+def _sync_dependencies_step(repo: Path, *, frozen: bool = False) -> ProvisionStep:
     """The ``uv sync`` step, shared by provisioning and by the test run's prerequisites.
 
     ``subprocess_only`` because it is a pure shellout that touches no ORM, so the
@@ -156,7 +158,7 @@ def _sync_dependencies_step(repo: Path) -> ProvisionStep:
                 venv.unlink()
             else:
                 shutil.rmtree(venv)
-        run_checked(["uv", "sync"], cwd=repo)
+        run_checked(["uv", "sync", *(["--frozen"] if frozen else [])], cwd=repo)
 
     def python_env_ready() -> bool:
         return _python_env_ready(repo)
@@ -173,6 +175,15 @@ def _sync_dependencies_step(repo: Path) -> ProvisionStep:
 
 class TeatreeRuntime(OverlayRuntime):
     @override
+    def visual_qa_server(self, worktree: "Worktree") -> RunCommand:
+        repo = Path(worktree.worktree_path or worktree.repo_path)
+        return RunCommand(
+            args=[*runner_prefix(repo, already_synced=True), "e2e/dash/serve.py"],
+            cwd=repo,
+            env={"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"},
+        )
+
+    @override
     def test_command(self, worktree: "Worktree") -> list[str]:
         return ["uv", "run", "pytest"]
 
@@ -186,9 +197,11 @@ class TeatreeRuntime(OverlayRuntime):
         reported uv's bare ``Failed to spawn: pytest`` (souliane/teatree#4746).
         """
         on_disk = worktree.worktree_path
-        if service != "tests" or not on_disk:
+        if service not in {"tests", "visual_qa"} or not on_disk:
             return []
         repo = Path(on_disk)
+        if service == "visual_qa":
+            return [_sync_dependencies_step(repo, frozen=True)]
         return [] if _python_env_ready(repo) else [_sync_dependencies_step(repo)]
 
     @override
@@ -205,7 +218,22 @@ class TeatreeReview(OverlayReview):
             "src/teatree/core/views/**",
             "src/teatree/core/urls.py",
         )
-        return ["/"] if matches_triggers(changed_files, teatree_globs) else []
+        if not matches_triggers(changed_files, teatree_globs):
+            return []
+        return [
+            "/dash/board/",
+            "/dash/live/",
+            "/dash/cycle-time/",
+            "/dash/health/",
+            "/dash/loops/",
+            "/dash/sessions/",
+            "/dash/presets/",
+            "/dash/settings/",
+            "/dash/skills/",
+            "/dash/import-export/",
+            "/admin/",
+            "/admin/login/",
+        ]
 
     @override
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
