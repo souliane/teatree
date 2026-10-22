@@ -30,7 +30,7 @@ def test_visual_qa_syncs_frozen_before_start_even_with_a_ready_venv(tmp_path):
         steps[0].callable()
     run_checked.assert_called_once_with(["uv", "sync", "--frozen"], cwd=tmp_path)
     command = runtime.visual_qa_server(worktree)
-    assert command.args == ["uv", "run", "--no-sync", "python", "e2e/dash/serve.py"]
+    assert command.args == ["uv", "--directory", str(tmp_path), "run", "--no-sync", "python", "e2e/dash/serve.py"]
     assert command.env == {"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"}
 
 

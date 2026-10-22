@@ -37,7 +37,9 @@ def test_spawns_a_detached_worker_with_fixed_argv(monkeypatch: pytest.MonkeyPatc
     assert worker_spawn.spawn_detached_worker() is True
     ((cmd, kwargs),) = calls
     assert cmd == ["/usr/local/bin/t3", "worker"]
-    assert kwargs["stdout"] is worker_spawn.DEVNULL  # detached streams
+    stdio = kwargs["stdio"]
+    assert isinstance(stdio, tuple)
+    assert stdio[:2] == (worker_spawn.DEVNULL, worker_spawn.DEVNULL)
 
 
 def test_the_child_stderr_is_captured_not_discarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -46,8 +48,8 @@ def test_the_child_stderr_is_captured_not_discarded(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(worker_spawn, "SPAWN_LOG_PATH", log)
     monkeypatch.setattr(worker_spawn.shutil, "which", lambda _name: "/usr/local/bin/t3")
 
-    def _fake_spawn(_cmd: list[str], *, stderr: IO[str], **_kwargs: object) -> None:
-        stderr.write("ModuleNotFoundError: No module named 'teatree'\n")
+    def _fake_spawn(_cmd: list[str], *, stdio: tuple[object, object, IO[str]], **_kwargs: object) -> None:
+        stdio[2].write("ModuleNotFoundError: No module named 'teatree'\n")
 
     monkeypatch.setattr(worker_spawn, "spawn_session_leader", _fake_spawn)
     assert worker_spawn.spawn_detached_worker() is True

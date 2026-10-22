@@ -26,6 +26,7 @@ from teatree.overlay_sdk import (
     run_checked,
 )
 from teatree.types import RunCommand
+from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
@@ -175,9 +176,10 @@ def _sync_dependencies_step(repo: Path, *, frozen: bool = False) -> ProvisionSte
 class TeatreeRuntime(OverlayRuntime):
     @override
     def visual_qa_server(self, worktree: "Worktree") -> RunCommand:
+        repo = Path(worktree.worktree_path or worktree.repo_path)
         return RunCommand(
-            args=["uv", "run", "--no-sync", "python", "e2e/dash/serve.py"],
-            cwd=Path(worktree.worktree_path or worktree.repo_path),
+            args=[*runner_prefix(repo, already_synced=True), "e2e/dash/serve.py"],
+            cwd=repo,
             env={"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"},
         )
 
