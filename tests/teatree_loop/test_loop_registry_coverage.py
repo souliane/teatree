@@ -4,7 +4,7 @@ The autonomy layer's recurring failure is *opt-in code that nothing on the live
 per-loop fan-out consumes*: ``Domain.ISSUE_DISPOSITION`` had no MiniLoop and
 ``backlog_sweep`` had no loop package, so their opt-in flags toggled nothing
 (#22); and the two single-overlay messaging builders diverged from
-``_messaging_jobs_for_backend`` (#23). These lanes make each seam structural — a
+``_inbox_jobs_for_overlay`` (#23). These lanes make each seam structural — a
 new ``Domain`` with no consuming MiniLoop, a new ``build_default_jobs`` global
 factory with no MiniLoop, or a MiniLoop with no seed row fails CI instead of
 shipping dead.
@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import teatree.loop.global_scanner_factories as gsf
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.domain_jobs import _messaging_jobs_for_backend, single_overlay_messaging_jobs
+from teatree.loop.domain_jobs import _inbox_jobs_for_overlay, single_overlay_messaging_jobs
 from teatree.loop.global_scanner_factories import build_default_jobs
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
 from teatree.loop.scanners import AskUserQuestionReplyScanner
@@ -146,7 +146,7 @@ class TestSingleOverlayMessagingParity:
 
     The two single-overlay builders (inbox mini-loop, ``build_default_jobs``) had
     each dropped ``AskUserQuestionReplyScanner`` and diverged from
-    ``_messaging_jobs_for_backend``. Now both import the ONE
+    ``_inbox_jobs_for_overlay``. Now both import the ONE
     ``single_overlay_messaging_jobs`` builder, so the sets cannot re-diverge.
     """
 
@@ -158,10 +158,9 @@ class TestSingleOverlayMessagingParity:
         messaging = self._stub_messaging()
         backend = MagicMock()
         backend.messaging = messaging
+        backend.name = ""
         shared = _messaging_scanner_types(single_overlay_messaging_jobs(messaging))
-        per_overlay = _messaging_scanner_types(
-            _messaging_jobs_for_backend(backend, "", include_review_nag=False),
-        )
+        per_overlay = _messaging_scanner_types(_inbox_jobs_for_overlay(backend))
         assert shared == per_overlay, (shared, per_overlay)
         assert AskUserQuestionReplyScanner in shared
 

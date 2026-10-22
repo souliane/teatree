@@ -16,6 +16,12 @@ import typer
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.app_helpers import RunReportPaths
+from teatree.cli.eval.metered_trials import (
+    UsageLimitAfterFailureError,
+    exit_on_usage_limit_or_prior_red,
+    run_pass_at_k_results,
+    run_trials_with_limit_evidence,
+)
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     CostBoundsGate,
@@ -26,7 +32,7 @@ from teatree.cli.eval.run_modes import (
     require_persist_for_history_gates,
     with_model,
 )
-from teatree.eval.api_errors import NEVER_RETRY_ERRORS
+from teatree.eval.api_errors import NEVER_RETRY_ERRORS, UsageLimitReachedError
 from teatree.eval.api_runner import MAX_BUDGET_USD
 from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import ApiRunnerParams, EvalRunner, make_runner
@@ -35,7 +41,6 @@ from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_jso
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
-from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.surface import is_advisory
@@ -52,36 +57,6 @@ DEFAULT_PRESET_COLUMN_NAME = "default"
 #: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
 #: ERRORED so the rest of the comparison table is still produced.
 MAX_MATRIX_CELL_RETRIES = 2
-
-
-def _emit_progress(line: str) -> None:
-    """Print one flushed progress line to stderr so the CI log streams it live.
-
-    The metered suite runs each scenario inside a silent list-comprehension; with
-    no per-scenario emission a hang produces ZERO output until the whole suite
-    ends (and GitHub never exposes an in-progress job's log blob), so a hung run
-    is indistinguishable from a slow one. A flushed ``RUN``/``DONE`` line per
-    scenario streams to the runner's stdout in real time: the suite is visibly
-    advancing, and a hang leaves the last ``RUN <scenario>`` line as the pinpoint.
-    """
-    print(line, file=sys.stderr, flush=True)  # noqa: T201 — load-bearing live progress; see docstring.
-
-
-def _run_scenario_with_progress(
-    spec: EvalSpec,
-    trial: Callable[[EvalSpec], ScenarioResult],
-    *,
-    trials: int,
-    require: str,
-    position: tuple[int, int],
-) -> PassAtKResult:
-    """Run one pass@k scenario, bracketed by flushed RUN/DONE progress lines."""
-    index, total = position
-    _emit_progress(f"RUN  [{index}/{total}] {spec.name} (k={trials}, require={require})")
-    result = run_pass_at_k(spec, trial, k=trials, require=require)
-    verdict = "SKIP" if result.skipped else ("PASS" if result.ok else "FAIL")
-    _emit_progress(f"DONE [{index}/{total}] {spec.name}: {verdict} ({result.passes}/{result.trials})")
-    return result
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -156,11 +131,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         return evaluate(spec, runner.run(spec), judge=grader)
 
     effective_specs = [with_model(spec, model_override) for spec in specs] if model_override else specs
-    total = len(effective_specs)
-    results = [
-        _run_scenario_with_progress(spec, _trial, trials=trials, require=require, position=(index, total))
-        for index, spec in enumerate(effective_specs, start=1)
-    ]
+    results = run_pass_at_k_results(effective_specs, _trial, trials=trials, require=require, summary_md=summary_md)
     if output_format == "json":
         typer.echo(
             json.dumps(
@@ -289,9 +260,12 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
             effort=effort,
         ),
     )
-    rows = collect_matrix_rows(
-        specs, model_list, runner=runner, policy=TrialPolicy(trials=trials, require=require), grader=grader
-    )
+    try:
+        rows = collect_matrix_rows(
+            specs, model_list, runner=runner, policy=TrialPolicy(trials=trials, require=require), grader=grader
+        )
+    except MatrixUsageLimitError as exc:
+        exit_on_usage_limit_or_prior_red(html_out=html_out, failed_before_limit=exc.failed_before_limit(specs))
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
@@ -424,6 +398,19 @@ class _MatrixCell:
     policy: TrialPolicy
 
 
+class MatrixUsageLimitError(UsageLimitReachedError):
+    def __init__(self, rows: list[MatrixRow], *, failed_within_cell: bool) -> None:
+        super().__init__("usage limit reached during matrix collection")
+        self.rows = rows
+        self.failed_within_cell = failed_within_cell
+
+    def failed_before_limit(self, specs: list[EvalSpec]) -> bool:
+        advisory = {spec.name for spec in specs if is_advisory(spec)}
+        return self.failed_within_cell or any(
+            row.errored or (not row.passed and not row.skipped and row.scenario not in advisory) for row in self.rows
+        )
+
+
 def collect_matrix_rows(
     specs: list[EvalSpec],
     columns: "Sequence[str | MatrixColumn]",
@@ -443,15 +430,22 @@ def collect_matrix_rows(
     row) and never aborts the whole comparison — the full table is always
     produced.
     """
-    return [
-        _resilient_matrix_trial(
-            runner,
-            _MatrixCell(spec=with_model(spec, column.model_for(spec)), tag=column.tag, policy=policy),
-            grader=grader,
-        )
-        for column in (_as_column(column) for column in columns)
-        for spec in specs
-    ]
+    rows: list[MatrixRow] = []
+    for column in (_as_column(column) for column in columns):
+        for spec in specs:
+            try:
+                rows.append(
+                    _resilient_matrix_trial(
+                        runner,
+                        _MatrixCell(spec=with_model(spec, column.model_for(spec)), tag=column.tag, policy=policy),
+                        grader=grader,
+                    )
+                )
+            except UsageLimitReachedError as exc:
+                raise MatrixUsageLimitError(
+                    rows, failed_within_cell=isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)
+                ) from exc
+    return rows
 
 
 def _resilient_matrix_trial(
@@ -513,7 +507,7 @@ def _matrix_trial(
 ) -> MatrixRow:
     spec = cell.spec
     if cell.policy.trials > 1:
-        result = run_pass_at_k(
+        result = run_trials_with_limit_evidence(
             spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=cell.policy.trials, require=cell.policy.require
         )
         return MatrixRow(

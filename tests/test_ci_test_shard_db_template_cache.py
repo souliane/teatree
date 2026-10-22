@@ -40,7 +40,12 @@ class TestTemplateDbCacheStep:
     def test_cache_key_is_scoped_to_migrations_lockfile_and_settings(self) -> None:
         key = _cache_step()["with"]["key"]
         assert "hashFiles(" in key
-        for source in ("src/**/migrations/*.py", "uv.lock", "tests/django_settings.py"):
+        for source in (
+            "src/**/migrations/*.py",
+            "src/**/migrations/max_migration.txt",
+            "uv.lock",
+            "tests/django_settings.py",
+        ):
             assert source in key, f"cache key must hash {source} — an unrelated change must never invalidate it"
 
     def test_cache_key_has_no_restore_keys_fallback(self) -> None:

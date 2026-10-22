@@ -8,13 +8,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
+from django.utils import timezone
 
 from teatree.agents._runner_env import DispatchCredential, _provider_child_env, agent_spawn_env
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
 from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
-from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness, route_hold
 from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
@@ -22,9 +23,11 @@ from teatree.agents.harness_registry import (
     NoAvailableHarnessError,
     UnknownHarnessError,
 )
+from teatree.agents.live_control import DEFAULT_IDLE_WINDOW_SECONDS
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
+from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError
 from teatree.agents.runner_cancel import settle_cancelled_checkout
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_heartbeat import HEARTBEAT_INTERVAL_SECONDS as _HEARTBEAT_INTERVAL
@@ -77,8 +80,10 @@ from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import park_on_timed_rejections
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_refused_checkout, verify_task_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.llm.credentials import CredentialError
@@ -123,14 +128,16 @@ class _RouteRetry:
     handoff: Path | None
     dispatch: DispatchHarness
 
-    def after(self, record: _RouteFailureRecord) -> TaskAttempt:
+    def after(self, record: _RouteFailureRecord, *, learn_failure: bool = True) -> TaskAttempt:
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
+        _alert_owner_of_metered_fallback(attempt)
         if record.outcome is not None:
             release_finished_thread(self.task)
             if record.outcome.tool_calls:
                 _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
+        if learn_failure:
+            _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
         return _run_agent(
             self.task,
             phase=self.phase,
@@ -181,10 +188,19 @@ def _retry_route_exception(
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
         _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
+    if (
+        isinstance(exc, ReadOnlyBriefRefusedError)
+        and preflight.dispatch.route_candidate_index is not None
+        and not preflight.dispatch.has_later_candidate
+    ):
+        hold = route_hold(preflight.dispatch.name, str(exc))
+        return park_on_timed_rejections(task, (hold,)) or _record_failure(  # no-usage: no billed turn ran
+            task, error=str(hold)
+        )
     if preflight.dispatch.route_candidate_index is None:
         return None
     if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
-        return route_retry.after(record)
+        return route_retry.after(record, learn_failure=not isinstance(exc, ReadOnlyBriefRefusedError))
     return None
 
 
@@ -283,13 +299,33 @@ def run_agent(
             verify_task_checkout(task, path, namespace=namespace)
             with drive_claim(task), delivered_phase_handoff(task) as handoff:
                 try:
-                    return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
+                    attempt = _run_agent(
+                        task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff
+                    )
+                    _alert_owner_of_metered_fallback(attempt)
+                    return attempt
                 finally:
                     if path:
                         settle_cancelled_checkout(task, Path(path))
     except (WorktreeOccupiedError, CheckoutFenceError) as exc:
         logger.warning("Parking dispatch for task %s: %s", task.pk, exc)
         return park_refused_checkout(task, exc)
+
+
+def _alert_owner_of_metered_fallback(attempt: TaskAttempt) -> None:
+    if attempt.lane != TaskAttempt.Lane.METERED or not attempt.route_candidate_index:
+        return
+    day = timezone.now().date().isoformat()
+    try:
+        notify_user(
+            f"An agent route fell through to the metered lane on {day} UTC. "
+            "Check the Metered group in check-in for estimated cost.",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"agent_route_paid_fallback:{day}",
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
+    except Exception:
+        logger.warning("owner alert for a metered route fallback failed — continuing", exc_info=True)
 
 
 def _run_agent(
@@ -488,5 +524,6 @@ async def _drive_with_heartbeat(
             sample_usage=_sample_usage_closing_connection,
             renew_lease=_renew_lease_closing_connection,
             drain_reason=drain_reason_closing_connection,
+            idle_window_seconds=DEFAULT_IDLE_WINDOW_SECONDS,
         ),
     )

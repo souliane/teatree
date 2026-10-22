@@ -19,6 +19,7 @@ import pytest
 import hooks.scripts.answer_first_gate as gate
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_answer_first_gate
+from tests._gate_escape_audit import audited_escape
 
 _QUESTION = "are you going to merge 4001 or not??"
 _DISPATCH_ONLY = "Dispatched a lane to merge #4001. It is queued behind the current tick.\n"
@@ -259,14 +260,19 @@ class TestPassesWhenAnsweredOrOutOfScope:
         assert _decision(capsys) == {}
         assert result is not True
 
-    def test_skip_token_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        body = _DISPATCH_ONLY + "[skip-answer-gate: the answer is in the posted table above]\n"
+    def test_audited_token_is_recorded_under_its_own_gate_id_then_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body = _DISPATCH_ONLY + "[gate-escape:answer_first: the answer is in the posted table above]\n"
         transcript = _write_transcript(tmp_path, [_user(_QUESTION), _assistant(body)])
 
-        result = handle_answer_first_gate({"transcript_path": str(transcript)})
+        data = {"transcript_path": str(transcript)}
+        with audited_escape(data, event="Stop") as requests:
+            result = handle_answer_first_gate(data)
 
         assert _decision(capsys) == {}
         assert result is not True
+        assert [request["gate"] for request in requests] == ["answer_first"]
 
     def test_kill_switch_passes(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -334,3 +340,14 @@ class TestRegisteredOnTheStopChain:
 
         assert "handle_answer_first_gate" in names
         assert names.index("handle_answer_first_gate") < names.index("handle_hand_back_answers")
+
+
+def test_unrecorded_new_escape_token_does_not_count_as_an_answer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    transcript = _write_transcript(
+        tmp_path, [_user(_QUESTION), _assistant(_DISPATCH_ONLY + "\n[gate-escape:answer_first: fixture]\n")]
+    )
+    result = handle_answer_first_gate({"transcript_path": str(transcript)})
+    assert result is True
+    assert _decision(capsys)["decision"] == "block"

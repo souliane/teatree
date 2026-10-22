@@ -261,7 +261,7 @@ class Command(TyperCommand):
         )
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
-        """``--dry-run``: run the followup scanners for real, post nothing, gate on breaches.
+        """``--dry-run``: scan built-in follow-up jobs, omit overlay hooks, and report breaches.
 
         Selection deliberately does NOT go through the live admission gate
         (:class:`_ScopedJobsBuilder`): ``followup`` is previewed precisely while it is
@@ -269,9 +269,9 @@ class Command(TyperCommand):
         that never ran. The live verdict is READ from ``loop_block_reasons`` — the same
         ``_admission_block`` the tick applies — and printed in the header instead.
 
-        Exit codes: 0 clean · 1 a candidate would be acted on that the authorship guard
-        does not class as the owner's · 3 nothing was selected, so the run proves
-        nothing (``--loop`` misuse is 2, raised by :meth:`handle`).
+        Exit codes: 0 complete · 1 authorship guard breach · 3 incomplete because
+        no colleague scanner was selected or an overlay hook was omitted
+        (``--loop`` misuse is 2, raised by :meth:`handle`).
         """
         from teatree.loop.followup_dry_run import (  # noqa: PLC0415 — loaded only for the explicit preview
             render_followup_dry_run,
@@ -321,7 +321,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
         dry_run: Annotated[
             bool,
-            typer.Option("--dry-run", help="Preview the followup loop without posting or writing the database."),
+            typer.Option(
+                "--dry-run",
+                help="Preview built-in followup scanners without posting; overlay hooks are reported but skipped.",
+            ),
         ] = False,
     ) -> None:
         if not loop.strip():

@@ -152,13 +152,22 @@ class TestWorktree(TestCase):
             "branches": {},
             "holder": {"id": "task:5277", "session": "run"},
         }
-        worktree.merge_extra(set_keys={"attested_state": "anchor", "auto_attestation": live_attestation})
+        worktree.merge_extra(
+            set_keys={
+                "attested_state": "anchor",
+                "direct_attested_state": "anchor",
+                "direct_attested_at": "2026-10-16T00:00:00+00:00",
+                "auto_attestation": live_attestation,
+            }
+        )
         stale.extra = {"worktree_path": "/tmp/updated"}
         stale.save(update_fields=["extra"])
 
         saved = Worktree.objects.get(pk=worktree.pk)
         assert saved.extra["worktree_path"] == "/tmp/updated"
         assert saved.extra["attested_state"] == "anchor"
+        assert saved.extra["direct_attested_state"] == "anchor"
+        assert saved.extra["direct_attested_at"] == "2026-10-16T00:00:00+00:00"
         assert saved.extra["auto_attestation"] == live_attestation
 
     def test_stale_save_cannot_restore_a_released_claim_or_a_dropped_proof(self) -> None:

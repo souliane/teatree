@@ -10,6 +10,37 @@
     </span>
   </form>
 
+  <section class="band" id="merge-waits">
+    <h2>Last 10 merged pull requests — where the time went</h2>
+    <p class="muted">From the first task admission to the first merge. Working time takes precedence over overlapping waits.</p>
+    {% if view.merge_rows %}
+      <table class="dash">
+        <thead><tr><th>ticket</th><th class="num">elapsed</th><th class="num">working</th>
+          {% for label in view.wait_headers %}<th class="num">{{ label }}</th>{% endfor %}
+          <th>longest wait</th><th class="num">Hand cancels</th><th class="num">Tasks created by hand (inferred)</th></tr></thead>
+        <tbody>
+          {% for row in view.merge_rows %}
+            <tr>
+              <td><a href="{{ row.pr_url }}">#{{ row.number }}</a></td>
+              {% if row.measured %}
+                <td class="num">{{ row.elapsed }}</td><td class="num">{{ row.working }}</td>
+                {% for wait in row.waits %}<td class="num">{{ wait }}</td>{% endfor %}
+                <td>{{ row.longest_wait }}{% if row.longest_wait_start %} ({{ row.longest_wait_duration }} from <time datetime="{{ row.longest_wait_start|date:'c' }}">{{ row.longest_wait_start|date:"M j H:i" }}</time>){% endif %}{% if not row.parks_retained %} (park history incomplete){% endif %}</td>
+              {% else %}
+                <td class="num muted" colspan="{{ view.wait_headers|length|add:3 }}">unmeasured — task admission history is missing or overwritten</td>
+              {% endif %}
+              <td class="num">{{ row.hand_cancels }}</td><td class="num">{{ row.inferred_hand_tasks }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p>Manual interventions per merged pull request: at least {{ view.merge_summary.interventions_per_merge }} recorded hand cancels per merge; {{ view.merge_summary.inferred_hand_tasks_per_merge }} inferred hand tasks per merge.</p>
+    {% else %}
+      <p class="muted">No merged pull requests to measure yet.</p>
+    {% endif %}
+    <p class="muted">Tasks created by hand are inferred from root tasks on the ticket's first session and may include false positives. Worktree attest, release-occupancy, rubric-set and config clears are not recorded yet.</p>
+  </section>
+
   <section class="band">
     <h2>Per transition</h2>
     <p class="muted">Median and p90 of every FSM edge since {{ view.since }}, slowest first. The median
@@ -30,6 +61,27 @@
       </table>
     {% else %}
       <p class="muted">No ticket completed a transition in this window.</p>
+    {% endif %}
+  </section>
+
+  <section class="band">
+    <h2>Pull requests: start to merged</h2>
+    <p class="muted">From first admission to merge, falling back to the first transition or pull request creation; open pull requests continue to age.</p>
+    <p>Median of {{ view.pr_merged_count }} merged pull requests: <strong>{{ view.pr_median }}</strong></p>
+    {% if view.open_prs %}
+      <table class="dash">
+        <thead><tr><th>open pull request</th><th class="num">age</th></tr></thead>
+        <tbody>
+          {% for row in view.open_prs %}
+            <tr>
+              <td><a href="{{ row.url }}">{{ row.url }}</a></td>
+              <td class="num">{{ row.age }}{% if row.stale %} <span class="chip warn">{{ view.open_pr_red_hours|floatformat:0 }}h+</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No open pull requests.</p>
     {% endif %}
   </section>
 

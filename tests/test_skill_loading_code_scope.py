@@ -36,6 +36,7 @@ from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _skill_gate_targets_code_work, handle_enforce_skill_loading
+from tests._gate_escape_audit import audited_escape
 
 
 def _seed_skill(skills_dir: Path, name: str) -> None:
@@ -188,16 +189,17 @@ class TestGateStillFiresOnCodeWork:
 
     def test_code_work_still_honors_skill_load_ok_escape(self, gate: Path, tmp_path: Path) -> None:
         _write_pending("sess-esc", ["ac-python"])
-        blocked, payload = _run(
-            {
-                "session_id": "sess-esc",
-                "tool_name": "Edit",
-                "tool_input": {
-                    "file_path": _py_fixture(tmp_path),
-                    "new_string": "x = 1  # [skill-load-ok: false trigger]",
-                },
-            }
-        )
+        data = {
+            "session_id": "sess-esc",
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": _py_fixture(tmp_path),
+                "new_string": "x = 1  # [gate-escape:skill-loading-enforcement: false trigger]",
+            },
+        }
+        with audited_escape(data) as requests:
+            blocked, payload = _run(data)
+        assert requests[0]["gate"] == "skill-loading-enforcement"
         assert blocked is False
         assert payload is None
 

@@ -91,6 +91,16 @@ class _DreamLoopSettings:
 
 
 @dataclass
+class _FollowupLoopSettings:
+    """Review nag timing and mention policy for the followup loop."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
+
+    review_nag_max_interval_days: int = 30
+    review_nag_reask_mention: str = ""
+
+
+@dataclass
 class _HousekeepingLoopSettings:
     """The self-update pass — how often it fast-forwards, and what it does after."""
 
@@ -209,6 +219,7 @@ LOOP_OWNED_SETTING_BASES: tuple[type, ...] = (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
     _InboxLoopSettings,
     _IssueImplementerLoopSettings,

@@ -448,7 +448,7 @@
       ]
     },
     {
-      "help": "Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.",
+      "help": "Live sessions: list and inspect are passive; steer and follow-up are active.",
       "name": "live",
       "subcommands": [
         {
@@ -462,6 +462,10 @@
         {
           "help": "List every live session on this host's workers (passive)",
           "name": "list"
+        },
+        {
+          "help": "Start one new turn in a still-open idle session and print its receipt (active)",
+          "name": "follow-up"
         }
       ]
     },
@@ -1103,7 +1107,7 @@
       ]
     },
     {
-      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "help": "Print the factory signals over the trailing window vs its baseline.",
       "name": "signals",
       "subcommands": []
     },

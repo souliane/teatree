@@ -765,7 +765,7 @@ remaining_services() {
 }
 
 # Stage the convergence so the control plane is never wholly absent (#4214). One
-# all-at-once recreate replaces all five services together: the dashboard and the
+# all-at-once recreate replaces every service together: the dashboard and the
 # only CLI route vanish for the whole init window (~67s measured), every `t3` call
 # inside it fails the way a real outage does, and the container logs a live
 # diagnosis was reading are destroyed. Each stage below leaves at least one of

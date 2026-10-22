@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.backends.github.ci_eval_client import DEFAULT_CI_EVAL_REPO
+from teatree.config import get_effective_settings
 
 if TYPE_CHECKING:
     from teatree.token_rows import TokenAccountRow
@@ -30,6 +31,15 @@ def check_ci_oauth_pool(*, rows: Sequence["TokenAccountRow"] | None = None) -> b
         return True
     membership_ok = True
     if check_membership:
+        allowlist = get_effective_settings().eval_ci_account_allowlist
+        if not allowlist:
+            typer.echo("FAIL  CI eval account allowlist is empty; configure it before trusting CI evals.")
+            return False
+        missing = sorted(set(allowlist) - {row.account for row in oauth})
+        if missing:
+            typer.echo(f"FAIL  CI eval allowlisted accounts have no stored OAuth row: {missing}.")
+            return False
+        oauth = [row for row in oauth if row.account in allowlist]
         from teatree.ci_oauth_switch import CiAccountSwitcher  # noqa: PLC0415 — doctor-time dependency
 
         membership_ok = check_ci_oauth_pool_membership(

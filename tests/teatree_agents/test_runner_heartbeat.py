@@ -10,9 +10,11 @@ import asyncio
 import contextlib
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -22,19 +24,36 @@ from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, RejectCode
+from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
+from teatree.agents.live_control import (
+    DEFAULT_IDLE_WINDOW_SECONDS,
+    MAX_FOLLOW_UP_TURNS,
+    ControlOutcome,
+    ControlReceipt,
+    LiveFence,
+    RejectCode,
+)
+from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import (
+    CHECKPOINT_GRACE_SECONDS,
     CHECKPOINT_MAX_DEFER_BEATS,
     HeartbeatRuntime,
     drain_reason_closing_connection,
     drive_with_heartbeat,
 )
-from teatree.agents.runner_stream import HarnessOutcome
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, drain_turn
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
 from teatree.loop.drain import set_worker_quiescing
-from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, result_message
+from teatree.mcp.agent_mailbox import MailboxClient
+from tests.teatree_agents._sdk_fake import (
+    FakeHarnessSession,
+    InterruptibleSession,
+    OneSessionHarness,
+    assistant_text,
+    result_message,
+)
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
@@ -49,9 +68,16 @@ class _Ceilings:
     watchdog: LoopWatchdog = _WATCHDOG
     heartbeat_interval: float = 0.005
     turns: int = 0
+    idle_window_seconds: float = 0.0
 
 
 _NO_BREACH = _Ceilings()
+
+
+def _current_fence() -> LiveFence:
+    facts = shared_registry().facts(_TASK_PK)
+    assert facts is not None
+    return LiveFence(facts["attempt"], facts["generation"])
 
 
 def _drain_from_beat(first: int, calls: list[str]) -> Callable[[], str]:
@@ -92,12 +118,261 @@ def _drive(
         sample_usage=lambda _task: TaskUsage(turns=ceilings.turns, cost_usd=0.0),
         renew_lease=renew_lease,
         drain_reason=drain_reason,
+        idle_window_seconds=ceilings.idle_window_seconds,
     )
     return asyncio.run(
         drive_with_heartbeat(
             task or Task(phase="coding"), "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime
         )
     )
+
+
+class _TwoTurnSession(InterruptibleSession):
+    def __init__(self) -> None:
+        super().__init__([], session_id=_SESSION)
+        self.prompts: list[str] = []
+
+    async def follow_up(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        text = "second" if self.prompts else "first"
+        yield assistant_text(text)
+        yield result_message(session_id=_SESSION, result=text)
+
+
+def test_drain_turn_keeps_the_first_turn_text_and_uses_the_latest_result() -> None:
+    capture = StreamCapture()
+    capture.observe(assistant_text("first"))
+    capture.observe(result_message(result="first"))
+    session = FakeHarnessSession([assistant_text("second"), result_message(result="second")])
+
+    outcome = asyncio.run(drain_turn(session, capture))
+
+    assert outcome.agent_text == "first\nsecond"
+    assert outcome.result_message is not None
+    assert outcome.result_message.result == "second"
+
+
+def test_an_idle_follow_up_keeps_the_claim_and_records_the_second_turn() -> None:
+    session = _TwoTurnSession()
+    renewals: list[int] = []
+
+    def renew(_task: Task) -> None:
+        renewals.append(1)
+
+    with ThreadPoolExecutor(1) as worker:
+        driven = worker.submit(
+            _drive,
+            session,
+            drain_reason=lambda: "",
+            renew_lease=renew,
+            task=Task(pk=_TASK_PK, phase="coding"),
+            ceilings=_Ceilings(idle_window_seconds=0.2),
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not any(row["state"] == "idle" for row in shared_registry().sessions()):
+            if driven.done():
+                driven.result()
+                break
+            time.sleep(0.005)
+        assert any(row["state"] == "idle" for row in shared_registry().sessions())
+        receipt = asyncio.run(
+            shared_registry().follow_up(_TASK_PK, "continue", command_id="next", wait=0.1, fence=_current_fence())
+        )
+        outcome = driven.result(timeout=3)
+
+    assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert len(session.prompts) == 1
+    assert outcome.agent_text == "first\nsecond"
+    assert len(renewals) > 1
+
+
+def test_each_drive_gets_a_fresh_live_attempt_under_one_task_claim() -> None:
+    task = Task(pk=_TASK_PK, phase="coding", claimed_at=datetime.now(UTC), claimed_generation="worker-one")
+    attempts: list[str] = []
+
+    for _ in range(2):
+        with ThreadPoolExecutor(1) as worker:
+            driven = worker.submit(
+                _drive,
+                _TwoTurnSession(),
+                drain_reason=lambda: "",
+                task=task,
+                ceilings=_Ceilings(idle_window_seconds=0.1),
+            )
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                row["state"] == "idle" for row in shared_registry().sessions()
+            ):
+                time.sleep(0.005)
+            facts = shared_registry().facts(_TASK_PK)
+            assert facts is not None
+            assert facts["state"] == "idle"
+            assert facts["generation"] == "worker-one"
+            attempts.append(facts["attempt"])
+            driven.result(timeout=2)
+
+    assert attempts[0] != attempts[1]
+
+
+def test_a_wedged_follow_up_obeys_the_original_runtime_deadline() -> None:
+    released = asyncio.Event()
+
+    class WedgedSecondTurn(_TwoTurnSession):
+        loop: asyncio.AbstractEventLoop | None = None
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            if self.prompts:
+                self.loop = asyncio.get_running_loop()
+                await released.wait()
+            yield result_message(session_id=_SESSION, result="done")
+
+    session = WedgedSecondTurn()
+    ceiling = _Ceilings(
+        watchdog=LoopWatchdog(max_runtime_seconds=1, max_turns=0, max_cost_usd=0.0),
+        idle_window_seconds=2,
+    )
+
+    with ThreadPoolExecutor(1) as worker:
+        driven = worker.submit(
+            _drive,
+            session,
+            drain_reason=lambda: "",
+            task=Task(pk=_TASK_PK, phase="coding"),
+            ceilings=ceiling,
+        )
+        try:
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                row["state"] == "idle" for row in shared_registry().sessions()
+            ):
+                time.sleep(0.005)
+            assert any(row["state"] == "idle" for row in shared_registry().sessions())
+            receipt = asyncio.run(
+                shared_registry().follow_up(_TASK_PK, "continue", command_id="wedged", wait=0.1, fence=_current_fence())
+            )
+            outcome = driven.result(timeout=3)
+        finally:
+            if session.loop is not None and not session.loop.is_closed():
+                session.loop.call_soon_threadsafe(released.set)
+
+    assert receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN
+    assert outcome.stuck_reason is not None
+    assert len(session.prompts) == 1
+    assert "continue" in session.prompts[0]
+
+
+def test_the_idle_window_stops_after_the_follow_up_turn_cap() -> None:
+    session = _TwoTurnSession()
+
+    with ThreadPoolExecutor(1) as worker:
+        driven = worker.submit(
+            _drive,
+            session,
+            drain_reason=lambda: "",
+            task=Task(pk=_TASK_PK, phase="coding"),
+            ceilings=_Ceilings(idle_window_seconds=2),
+        )
+        receipts = []
+        fence: LiveFence | None = None
+        for index in range(MAX_FOLLOW_UP_TURNS):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                row["state"] == "idle" for row in shared_registry().sessions()
+            ):
+                if driven.done():
+                    driven.result()
+                time.sleep(0.005)
+            assert any(row["state"] == "idle" for row in shared_registry().sessions())
+            fence = _current_fence()
+            receipts.append(
+                asyncio.run(
+                    shared_registry().follow_up(_TASK_PK, "continue", command_id=str(index), wait=0.1, fence=fence)
+                )
+            )
+        facts = None
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            facts = shared_registry().facts(_TASK_PK)
+            if facts is None or facts["state"] != "busy":
+                break
+            time.sleep(0.005)
+        assert facts is None or facts["state"] != "busy"
+        assert fence is not None
+        fifth = asyncio.run(
+            shared_registry().follow_up(_TASK_PK, "fifth", command_id="past-cap", wait=0.1, fence=fence)
+        )
+        assert (fifth.outcome, fifth.code) == (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+        assert len(session.prompts) == 4
+        driven.result(timeout=3)
+
+    past_cap = [
+        asyncio.run(shared_registry().follow_up(_TASK_PK, "once more", command_id="later", wait=0.1, fence=fence)),
+        asyncio.run(shared_registry().push(_TASK_PK, "peer note", command_id="peer-past-cap", wait=0.1, fence=fence)),
+    ]
+    assert all(receipt.outcome is ControlOutcome.ACCEPTED_NEW_TURN for receipt in receipts), receipts
+    assert len(session.prompts) == 4
+    assert [(late.outcome, late.code) for late in past_cap] == [
+        (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+    ] * 2
+    assert not shared_registry().sessions()
+
+
+def test_a_drain_during_idle_records_success_without_checkpointing() -> None:
+    session = _TwoTurnSession()
+    started = time.monotonic()
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: _DRAIN,
+        ceilings=_Ceilings(idle_window_seconds=1),
+    )
+
+    assert time.monotonic() - started < 0.5
+    assert outcome.stuck_reason is None
+    assert outcome.checkpointed is False
+    assert outcome.agent_text == "first"
+    assert session.prompts == []
+    assert session.interrupts == 0
+
+
+def test_the_runtime_ceiling_does_not_interrupt_a_finished_idle_turn() -> None:
+    class RuntimeProbe(LoopWatchdog):
+        def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:
+            return "runtime ceiling would fire" if elapsed_seconds > 0.03 else None
+
+    session = _TwoTurnSession()
+    short_runtime = RuntimeProbe(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: "",
+        ceilings=_Ceilings(watchdog=short_runtime, idle_window_seconds=0.1),
+    )
+
+    assert outcome.stuck_reason is None
+    assert outcome.checkpointed is False
+    assert session.interrupts == 0
+
+
+def test_a_lost_lease_during_idle_remains_a_lost_lease() -> None:
+    session = _TwoTurnSession()
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: "",
+        renew_lease=_lease_lost_on_beat(1),
+        ceilings=_Ceilings(idle_window_seconds=0.1),
+    )
+
+    assert outcome.lease_lost is True
+    assert outcome.checkpointed is False
+    assert session.interrupts == 0
+
+
+def test_the_idle_window_is_shorter_than_the_drain_grace() -> None:
+    assert 0 < DEFAULT_IDLE_WINDOW_SECONDS < CHECKPOINT_GRACE_SECONDS
 
 
 def _open_tool_call() -> AssistantMessage:
@@ -237,12 +512,65 @@ class _OperatorSteerableSession(InterruptibleSession):
         self.steered.append(input_id)
 
     def operator_steer(self, command_id: str) -> None:
-        steer = shared_registry().steer(_TASK_PK, "stop and report", command_id=command_id, wait=0.05)
+        facts = shared_registry().facts(_TASK_PK)
+        assert facts is not None
+        steer = shared_registry().steer(
+            _TASK_PK,
+            "stop and report",
+            command_id=command_id,
+            wait=0.05,
+            fence=LiveFence(facts["attempt"], facts["generation"]),
+        )
         self.receipts.append(asyncio.run(steer))
 
     async def interrupt(self) -> None:
         await asyncio.to_thread(self.operator_steer, "after-interrupt")
         await super().interrupt()
+
+
+def test_one_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
+    class _PeerSession(InterruptibleSession):
+        def __init__(self) -> None:
+            super().__init__([], session_id=_SESSION)
+            self.received = asyncio.Event()
+
+        async def receive_response(self) -> AsyncIterator[object]:
+            await self.received.wait()
+            yield result_message(session_id=_SESSION)
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.received.set()
+
+    session = _PeerSession()
+    task = Task(pk=_TASK_PK, ticket_id=3, phase="coding")
+    harness = GuardedHarness(OneSessionHarness(session), CompactionGuard(), "codex_app_server")
+    runtime = HeartbeatRuntime(
+        watchdog=_NO_BREACH.watchdog,
+        heartbeat_interval=_NO_BREACH.heartbeat_interval,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=lambda: "",
+    )
+
+    def drive_codex() -> HarnessOutcome:
+        return asyncio.run(drive_with_heartbeat(task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        drive = pool.submit(drive_codex)
+        broker = shared_broker()
+        deadline = time.monotonic() + 5
+        while not (facts := shared_registry().facts(_TASK_PK)) or not broker.identities():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        [peer] = broker.identities()
+        participant = broker._by_address[peer["address"]]
+        assert participant.task.fence == LiveFence(facts["attempt"], facts["generation"])
+        sender = broker.register(room="3", harness="claude_sdk", label="sender")
+        receipt = asyncio.run(
+            MailboxClient(sender.socket_path, sender.token).send(peer["address"], "hello", "one", timeout_seconds=1)
+        )
+        assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
+        assert drive.result(timeout=5).result_message is not None
 
 
 @pytest.mark.parametrize(

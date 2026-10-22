@@ -128,6 +128,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
         "5 offline",
     ),
+    Capability(
+        "teatree live follow-up",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the follow-up receipt; active: 0 accepted_new_turn, 3 rejected, "
+        "4 unknown_delivery, 5 offline",
+    ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree settings_compare",

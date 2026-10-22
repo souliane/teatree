@@ -24,6 +24,20 @@ def _build_overlay_db(path: Path, rows: list[tuple[int, str, str, str]]) -> None
 
 
 class TestExternalTicketsScannerScan:
+    def test_reads_ticket_committed_only_to_wal(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _build_overlay_db(db, [])
+        writer = sqlite3.connect(db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("INSERT INTO teatree_ticket VALUES (7, 'scoped', 'https://example.com/7', 'foo')")
+            writer.commit()
+            assert Path(f"{db}-wal").stat().st_size > 0
+            assert [signal.payload["ticket_id"] for signal in ExternalTicketsScanner("foo", db).scan()] == [7]
+        finally:
+            writer.close()
+
     def test_returns_empty_when_db_missing(self, tmp_path: Path) -> None:
         scanner = ExternalTicketsScanner(overlay_name="foo", db_path=tmp_path / "absent.sqlite3")
         assert scanner.scan() == []

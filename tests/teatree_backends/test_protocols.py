@@ -131,6 +131,10 @@ class _FakeCodeHost:
         _ = (repo, pr_iid)
         return []
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        _ = (repo, pr_iid)
+        return []
+
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
         _ = (repo, pr_iid)
         return []
@@ -335,6 +339,10 @@ class _FakeMessaging:
         return {}
 
     def resolve_user_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
+    def resolve_unique_active_user_id(self, handle: str) -> str:
         _ = handle
         return ""
 

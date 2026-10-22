@@ -95,6 +95,22 @@ def data_dir(tmp_path: Path) -> Path:
 
 
 class TestProjectionCarriesWhatTheHooksRead:
+    def test_publishes_a_generation_committed_only_to_wal(self, source_db: Path, data_dir: Path) -> None:
+        writer = sqlite3.connect(source_db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute(
+                "UPDATE teatree_config_setting SET value='8' WHERE key=?",
+                (GENERATION_KEY,),
+            )
+            writer.commit()
+            assert Path(f"{source_db}-wal").stat().st_size > 0
+            assert ProjectionPublisher(source_db, data_dir).publish().generation == 8
+            assert ProjectionReader(data_dir).read().projection.generation == 8
+        finally:
+            writer.close()
+
     def test_publishes_every_scope_and_every_loop_status(self, source_db: Path, data_dir: Path) -> None:
         published = ProjectionPublisher(source_db, data_dir).publish()
 

@@ -5,6 +5,7 @@ store and the downstream drain run for real against the test database.
 """
 
 import logging
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -32,7 +33,7 @@ def _merge_request(*, iid: int = 7, title: str = "Add the thing", action: str = 
     return {
         "object_kind": "merge_request",
         "user": {"username": "alice"},
-        "project": {"path_with_namespace": "group/project"},
+        "project": {"id": 101, "path_with_namespace": "group/project"},
         "object_attributes": {"iid": iid, "title": title, "action": action},
     }
 
@@ -66,6 +67,24 @@ class GitLabEventsTestCase(TestCase):
 
 
 class TestStoringMessages(GitLabEventsTestCase):
+    def test_gitlab_relay_row_keeps_no_payload(self) -> None:
+        self.pubsub.publish_gitlab(_merge_request(), webhook_id="wh-trim")
+
+        self.scanner.scan()
+
+        row = IncomingEvent.objects.get(idempotency_key="gitlab:wh-trim")
+        assert (row.body, row.payload_json) == ("", {})
+        assert (row.event_name, row.origin, row.repo_key, row.action, row.signer) == (
+            "merge_request",
+            "relay",
+            "gitlab:101",
+            "open",
+            "",
+        )
+        assert row.occurred_at is not None
+        assert row.occurred_at_unknown is False
+        assert IncomingEvent.objects.webhooks_verified_for("gitlab", "gitlab:101", "merge_request", timedelta(days=1))
+
     def test_stores_each_message_keyed_on_its_webhook_id_and_acknowledges_it(self) -> None:
         first = self.pubsub.publish_gitlab(_merge_request(iid=7), webhook_id="wh-1")
         second = self.pubsub.publish_gitlab(_merge_request(iid=8), webhook_id="wh-2")
@@ -79,7 +98,6 @@ class TestStoringMessages(GitLabEventsTestCase):
             "group/project",
             "7",
         )
-        assert event.payload_json == _merge_request(iid=7)
         assert event.processed_at is not None
         assert IncomingEvent.objects.filter(idempotency_key="gitlab:wh-2").exists()
         assert self.pubsub.acked_message_ids == [first, second]
@@ -108,7 +126,7 @@ class TestStoringMessages(GitLabEventsTestCase):
         assert IncomingEvent.objects.count() == 1
         assert len(self.pubsub.acked_message_ids) == 1
 
-    def test_the_body_text_is_the_object_kind_never_a_title_the_text_classifier_would_act_on(self) -> None:
+    def test_settled_body_is_blank_so_the_text_classifier_cannot_act_on_a_title(self) -> None:
         title = "How do we ship the urgent fix? please review https://gitlab.example.com/g/p/-/merge_requests/9"
         self.pubsub.publish_gitlab(_merge_request(title=title), webhook_id="wh-1")
 
@@ -116,7 +134,7 @@ class TestStoringMessages(GitLabEventsTestCase):
 
         signals = IncomingEventsScanner().scan()
 
-        assert IncomingEvent.objects.get().body == "merge_request"
+        assert IncomingEvent.objects.get(idempotency_key="gitlab:wh-1").body == ""
         assert [s.kind for s in signals] == []
 
 
@@ -303,13 +321,10 @@ class TestPoisonAndOversizeMessages(GitLabEventsTestCase):
         self.scanner.scan()
 
         event = IncomingEvent.objects.get(idempotency_key="gitlab:wh-big")
-        assert event.payload_json == {
-            "body_omitted": True,
-            "gitlab_event": "Pipeline Hook",
-            "publish_time": "2026-10-01T10:00:00Z",
-        }
         assert event.dead_lettered_at is None
         assert event.processed_at is not None
+        assert (event.event_name, event.origin, event.repo_key) == ("pipeline", "relay", "")
+        assert event.occurred_at is not None
         assert self.pubsub.acked_message_ids == [message]
         assert IncomingEventsScanner().scan() == []
 

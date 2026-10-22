@@ -118,7 +118,7 @@ class PassPathSelector:
     probes a provider while choosing a credential.
     """
 
-    def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE) -> str | None:
+    def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE, *, persist_pick: bool = True) -> str | None:
         """The ``pass_path`` override for *kind* in *scope*, or ``None`` for the built-in.
 
         Reuses a still-configured, fresh, non-exhausted, non-warning sticky pick with no
@@ -154,8 +154,9 @@ class PassPathSelector:
         if chosen is None:
             raise self._all_exhausted_error(kind)
 
-        AnthropicActivePick.objects.set_pick(kind.value, scope, chosen)
-        if fell_back_across_scopes:
+        if persist_pick:
+            AnthropicActivePick.objects.set_pick(kind.value, scope, chosen)
+        if fell_back_across_scopes and persist_pick:
             # Make the auto-resolution visible: the requested scope had no routing, so a
             # cross-scope account was selected and pinned. The pass_path is a store path
             # (already persisted), never the token value.

@@ -24,6 +24,7 @@ from teatree.hooks import _repo_visibility
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from teatree.token_report import EvalReserveDecision
 from tests._send_gate import allow_forge_repos
 
 #: A memory-backed rule plus a correction turn violating it again.
@@ -122,7 +123,7 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
             self._tick()
         asks.assert_called_once()
 
-    def test_live_validation_runs_from_tick_unconditionally(self) -> None:
+    def test_live_validation_runs_from_tick_when_the_eval_reserve_is_met(self) -> None:
         sentinel = object()
         seen: dict[str, object] = {}
 
@@ -131,11 +132,29 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
             return []
 
         with (
+            patch(
+                "teatree.core.management.commands.dream.local_eval_reserve_decision",
+                return_value=EvalReserveDecision(met=True),
+            ),
             patch("teatree.loops.dream.promote.build_live_validator", return_value=sentinel),
             patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=_capture),
         ):
             self._tick()
         assert seen["validator"] is sentinel
+
+    def test_live_validation_parks_from_tick_below_the_eval_reserve(self) -> None:
+        with (
+            patch(
+                "teatree.core.management.commands.dream.local_eval_reserve_decision",
+                return_value=EvalReserveDecision(met=False, reason="OAuth headroom is below the eval reserve"),
+            ),
+            patch("teatree.loops.dream.promote.build_live_validator") as build,
+            patch("teatree.loops.dream.promote.promote_proposals_file") as promote,
+        ):
+            out = self._tick()
+        build.assert_not_called()
+        promote.assert_not_called()
+        assert "eval promotion parked" in out
 
     def test_memory_promotion_runs_from_tick_on_its_toggle_alone(self) -> None:
         with (

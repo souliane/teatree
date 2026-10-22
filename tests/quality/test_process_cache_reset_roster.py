@@ -33,6 +33,7 @@ from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
 from teatree.hooks import _ssh_alias
+from teatree.loop.overlay_followup_jobs import _INFLIGHT_HOOKS, reset_inflight_hooks
 from teatree.utils.throttled_log import _last_warned, reset_throttle
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "teatree"
@@ -174,6 +175,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.worktree.branch_classification:_merged_pr_head_sha": "reset_forge_probe_cache",
     "teatree.core.worktree.branch_classification:_pr_merge_commit_sha": "reset_forge_probe_cache",
     "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",
+    "teatree.loop.overlay_followup_jobs:_INFLIGHT_HOOKS": "reset_inflight_hooks",
     "teatree.core.review.gitlab_head_pipeline:_REPORTED_UNMATCHED": "reset_unmatched_head_reports",
     # The once-per-process unlink of the degraded-read marker. Exhausted by an earlier test,
     # a later one's healthy read leaves a marker it asserts was cleared.
@@ -211,6 +213,9 @@ RESET_BY_CONFTEST: dict[str, str] = {
 #: Registries are populated once at import/app-ready and are stable for the whole
 #: process — resetting them mid-session would break resolution, not isolate a test.
 EXEMPT: dict[str, str] = {
+    "teatree.mount_identity:parsed_mount_table": (
+        "bounded by two exact mountinfo texts; parsing uses no filesystem state and a changed table changes the key"
+    ),
     "teatree.config.feature_flags:FEATURE_FLAGS": (
         "import-time feature flag registry; entries are not accumulated from runtime inputs"
     ),
@@ -408,6 +413,7 @@ class TestProcessCacheResetRoster:
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
             (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
             (_ssh_alias._CACHE, ("sentinel-alias", "/sentinel-home"), _ssh_alias.reset_ssh_alias_cache),
+            (_INFLIGHT_HOOKS, "sentinel-overlay", reset_inflight_hooks),
         ]
         for container, key, reset_fn in cases:
             container[key] = object()

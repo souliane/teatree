@@ -43,9 +43,11 @@ from teatree.types import (
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
+    from teatree.core.backend_factory import OverlayBackends
     from teatree.core.factory.health_signal import HealthSignal
     from teatree.core.models import Worktree
     from teatree.core.worktree.readiness import Probe
+    from teatree.loop.scanners.base import Scanner
     from teatree.types import RawAPIDict
     from teatree.utils.django_db import DjangoDbImportConfig
 
@@ -198,6 +200,7 @@ class OverlayConfig(BaseModel):
     eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfooding"
+    dogfood_smoke_fixture_url: str = ""
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
     # The dashboard header mark, as a static path; an overlay ships its own logo in
     # its package's ``static/`` dir and names it here.
@@ -577,6 +580,10 @@ class OverlayE2E:
 
 class OverlayReview:
     """Review / merge / customer-display concern — ``overlay.review``."""
+
+    def get_followup_scanners(self, backend: "OverlayBackends") -> "list[Scanner]":
+        """Scanners this overlay adds to the follow-up loop; construct only, do forge I/O in ``scan()``."""
+        return []
 
     def merge_candidate_repo_slugs(self) -> list[str]:
         """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against."""

@@ -177,12 +177,13 @@ class TestTruncationSurfaced:
         assert selection.truncated
         assert selection.total_matched == total
         assert selection.deferred == 50
+        assert selection.deferred_names == tuple(f"s{n:04d}" for n in range(MAX_SELECTIVE_PR_SCENARIOS, total))
         assert len(selection.names) == MAX_SELECTIVE_PR_SCENARIOS
         note = selection.truncation_note()
         assert note is not None
         assert f"selected {total} changed scenarios" in note
         assert f"capped to {MAX_SELECTIVE_PR_SCENARIOS}" in note
-        assert "deferred 50 to the weekly sharded lane" in note
+        assert "deferred 50 to the nightly owed batch" in note
 
 
 class TestMain:
@@ -195,14 +196,23 @@ class TestMain:
         all_files = sorted({_relative_to_root(s.source_path, _REPO_ROOT) for s in discover_specs()})
         monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(all_files) + "\n"))
         metadata = tmp_path / "selection.env"
-        code = main(["--metadata-env", str(metadata)])
+        deferred_out = tmp_path / "deferred.txt"
+        code = main(["--metadata-env", str(metadata), "--deferred-out", str(deferred_out)])
         captured = capsys.readouterr()
         assert code == 0
         assert "capped to" in captured.err
-        assert "weekly sharded lane" in captured.err
+        assert "nightly owed batch" in captured.err
         assert len([line for line in captured.out.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
         deferred = len(discover_specs()) - MAX_SELECTIVE_PR_SCENARIOS
         assert metadata.read_text(encoding="utf-8") == f"EVAL_DEFERRED={deferred}\n"
+        assert len(deferred_out.read_text(encoding="utf-8").splitlines()) == deferred
+
+        secret_name = next(name for name in deferred_out.read_text(encoding="utf-8").splitlines() if len(name) >= 16)
+        monkeypatch.setenv("EVAL_TEST_TOKEN", secret_name)
+        monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(all_files) + "\n"))
+        assert main(["--deferred-out", str(deferred_out)]) == 0
+        assert secret_name not in deferred_out.read_text(encoding="utf-8")
+        assert "[REDACTED]" in deferred_out.read_text(encoding="utf-8")
 
     def test_real_catalog_file_prints_names_and_exits_zero(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

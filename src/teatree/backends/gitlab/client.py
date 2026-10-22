@@ -14,6 +14,7 @@ from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
 from teatree.backends.gitlab.pr_notes import GitLabMrNotes
+from teatree.backends.gitlab.reads import list_pr_commits as _list_pr_commits
 from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
@@ -207,7 +208,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _pr_reads.project_pr_file_diffs(self._client, project, pr_iid=pr_iid)
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+        return _list_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)
@@ -264,6 +265,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        return _pr_reads.project_engaged_reviewers(self._client, self._resolve_project(repo), repo=repo, pr_iid=pr_iid)
 
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)

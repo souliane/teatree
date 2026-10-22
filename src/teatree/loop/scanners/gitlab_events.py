@@ -13,8 +13,11 @@ free text, so nothing drains these rows until a GitLab-aware route exists.
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from django.db import DatabaseError
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from teatree.backends.pubsub import PubsubMessage, PubsubSubscription
 from teatree.core.models import IncomingEvent
@@ -36,19 +39,41 @@ def _text(payload: RawAPIDict, *path: str) -> str:
     return str(value or "")
 
 
+def _event_name(payload: RawAPIDict, message: PubsubMessage) -> str:
+    kind = payload.get("object_kind")
+    if isinstance(kind, str) and kind:
+        return kind[:64]
+    header = message.attributes.get("X-Gitlab-Event", "")
+    return header.removesuffix(" Hook").lower().replace(" ", "_")[:64]
+
+
+def _repo_key(payload: RawAPIDict) -> str:
+    project = payload.get("project")
+    project_id = project.get("id") if isinstance(project, dict) else None
+    return f"gitlab:{project_id}" if type(project_id) is int and 0 < project_id <= 2**63 - 1 else ""
+
+
+def _publish_time(message: PubsubMessage) -> datetime | None:
+    try:
+        parsed = parse_datetime(message.publish_time)
+    except (ValueError, OverflowError):
+        return None
+    return parsed if parsed is not None and timezone.is_aware(parsed) else None
+
+
 def _record_for(message: PubsubMessage) -> IngestionRecord:
     webhook_id = message.attributes.get("webhook-id", "")
     if not webhook_id:
         return _dead_letter(message, "message without webhook-id")
     key = f"gitlab:{webhook_id}"
     if message.attributes.get("body-omitted") == "true":
-        marker = {
-            "body_omitted": True,
-            "gitlab_event": message.attributes.get("X-Gitlab-Event", ""),
-            "publish_time": message.publish_time,
-        }
         return IngestionRecord(
-            source=IncomingEvent.Source.GITLAB, idempotency_key=key, payload_json=marker, settled=True
+            source=IncomingEvent.Source.GITLAB,
+            idempotency_key=key,
+            event_name=_event_name({}, message),
+            origin=IncomingEvent.Origin.RELAY,
+            occurred_at=_publish_time(message),
+            settled=True,
         )
     try:
         payload = json.loads(message.data)
@@ -59,6 +84,11 @@ def _record_for(message: PubsubMessage) -> IngestionRecord:
     return IngestionRecord(
         source=IncomingEvent.Source.GITLAB,
         idempotency_key=key,
+        event_name=_event_name(payload, message),
+        origin=IncomingEvent.Origin.RELAY,
+        repo_key=_repo_key(payload),
+        action=_text(payload, "object_attributes", "action")[:64],
+        occurred_at=_publish_time(message),
         actor=_text(payload, "user", "username"),
         channel_ref=_text(payload, "project", "path_with_namespace"),
         thread_ref=_text(payload, "object_attributes", "iid"),

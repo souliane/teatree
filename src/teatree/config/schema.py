@@ -176,6 +176,7 @@ class TeatreeSettingsSchema(BaseSettings):
     agent_harness_provider: Annotated[
         AgentHarnessProvider | None, BeforeValidator(_provider_or_none), _PERSONAL_OVERLAY
     ] = None
+    agent_route_paid_fallback: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     anthropic_api_key_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     anthropic_oauth_pass_paths: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_OVERLAY] = []
     approved_recipe_sha: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
@@ -210,6 +211,7 @@ class TeatreeSettingsSchema(BaseSettings):
     dream_memory_promote: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     dream_umbrella_url: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     envelope_stop_gate_refusals: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    eval_ci_account_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     eval_local_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     excluded_skills: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     expected_required_contexts: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]

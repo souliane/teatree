@@ -74,6 +74,7 @@ class DiskCachePurgeTests(TestCase):
 
         assert (cache / "blob").exists()
         assert ResourcePressureMarker.load().zero_yield_passes == 1
+        assert "YIELD 0.00 GB this pass (zero-yield streak 1)" in ResourcePressureMarker.load().last_plan
 
     def test_successful_purge_reports_freed_bytes_and_resets_stall_streak(self) -> None:
         cache = self.tmp / "first"

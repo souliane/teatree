@@ -15,14 +15,20 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Task, Worktree
-from teatree.core.models.worktree_occupancy import release_task_occupancy, terminal_task_pk
+from teatree.core.models.worktree_occupancy import _task_pk_from_holder, release_task_occupancy, terminal_task_pk
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TaskFactory, TicketFactory, WorktreeFactory
+
+
+@pytest.mark.parametrize(("holder", "pk"), [("task:12", 12), ("12", None), ("task:²", None)])
+def test_task_pk_from_holder_reads_only_task_prefixed_ascii_digits(holder: str, pk: int | None) -> None:
+    assert _task_pk_from_holder(holder) == pk
 
 
 class TerminalTaskPkTests(TestCase):
