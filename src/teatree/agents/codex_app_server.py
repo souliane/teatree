@@ -83,7 +83,7 @@ class _StreamFailure:
     error: CodexAppServerError | HarnessFallbackError
 
 
-class CodexAppServerSession:
+class CodexAppServerSession(CodexTurnSteering):
     def __init__(
         self,
         options: CodexAppServerOptions,
@@ -114,21 +114,6 @@ class CodexAppServerSession:
         self.translator = CodexEventTranslator()
         self._tool_events = CodexToolEvents()
         self._server_request_tasks: set[asyncio.Task[None]] = set()
-        self._steering = CodexTurnSteering()
-
-    def _turn_opened(self, turn_id: str) -> None:
-        self._steering.turn_opened(turn_id)
-
-    def _turn_closed(self, *, session: bool = False) -> None:
-        self._steering.turn_closed(session=session)
-
-    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
-        await self._steering.steer(
-            text, input_id=input_id, wait=wait, thread_id=self.thread_id, send_request=self._request
-        )
-
-    async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
-        await self._steering.steer_refusal(thread_id, turn_id, reason, self._request)
 
     async def start(self, *, open_thread: bool = True) -> None:
         if self.options.executor is not None and self.options.executor.container_id not in (self.command or ()):

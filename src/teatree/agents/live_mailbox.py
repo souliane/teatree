@@ -407,8 +407,6 @@ class LiveMailboxBroker:
     async def _accepted(self, delivery: PeerDelivery, recipient: _Participant | None, wait: float) -> SendReceipt:
         """Push into the recipient's running turn while its inbox read can still accept first."""
         deadline = asyncio.get_running_loop().time() + wait
-        if delivery.unknown_reported and not delivery.queued_in_inbox:
-            return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
         if not delivery.settled.done():
             was_unknown = delivery.unknown_reported
             if not was_unknown:

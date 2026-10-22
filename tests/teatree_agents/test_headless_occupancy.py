@@ -34,7 +34,6 @@ from teatree.agents.runner_stream import StreamCapture
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
-from teatree.core.models.task_claim import claim_generation
 from teatree.core.worktree.checkout_fence import CheckoutFenceError
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
@@ -406,6 +405,8 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
         return occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
 
     def test_the_task_lease_and_checkout_are_renewed_through_the_idle_window_and_released_after(self) -> None:
+        minted = LiveFence.mint()
+
         def observe() -> tuple[str, datetime, datetime, datetime, datetime]:
             deadline = time.monotonic() + 10
             while not any(row["state"] == "idle" for row in shared_registry().sessions()):
@@ -413,7 +414,7 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
                 time.sleep(0.005)
             facts = shared_registry().facts(self.task.pk)
             assert facts is not None
-            assert (facts["attempt"], facts["generation"]) == (claim_generation(self.task), "worker-A")
+            assert (facts["attempt"], facts["generation"]) == (minted.attempt, "worker-A")
             while Task.objects.get(pk=self.task.pk).lease_expires_at is None:
                 assert time.monotonic() < deadline, "no lease renewal reached the task"
                 time.sleep(0.005)
@@ -446,7 +447,11 @@ class IdleWindowHoldsTheClaimTests(TransactionTestCase):
             return mock.Mock(spec=TaskAttempt)
 
         observed = _in_background(observe)
-        with mock.patch.object(runner, "_run_agent", driver), mock.patch.object(runner, "verify_task_checkout"):
+        with (
+            mock.patch.object(runner, "_run_agent", driver),
+            mock.patch.object(runner, "verify_task_checkout"),
+            mock.patch.object(LiveFence, "mint", return_value=minted),
+        ):
             runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
         holder, held_until, renewed_until, lease, renewed_lease = observed.result(timeout=30)
 

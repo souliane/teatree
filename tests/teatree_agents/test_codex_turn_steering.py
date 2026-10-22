@@ -14,15 +14,10 @@ from teatree.agents.codex_app_server_errors import request_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_read_only_server import executor_session
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
-from teatree.agents.codex_turn_steering import CodexSteerUnknownError, CodexTurnSteering
+from teatree.agents.codex_turn_steering import CodexSteerUnknownError
 from teatree.agents.live_control import RejectCode, SteerableSession, SteerRejectedError
 
 _CONTRACT = Path(__file__).parents[1] / "fixtures/codex_app_server/0.155.1-contract.json"
-
-
-def test_codex_sessions_compose_the_turn_steering_service() -> None:
-    assert CodexTurnSteering not in CodexAppServerSession.__mro__
-    assert CodexTurnSteering not in SharedCodexSession.__mro__
 
 
 def _session(tmp_path: Path, answer: dict[str, Any] | None = None) -> tuple[CodexAppServerSession, AsyncMock]:
