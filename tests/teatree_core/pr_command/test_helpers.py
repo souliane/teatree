@@ -229,6 +229,7 @@ class TestRunVisualQAGate(TestCase):
     def test_skip_survives_server_hook_exception(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
         overlay = _PageTargetOverlay()
+        overlay.runtime = OverlayRuntime()
         overlay.runtime.visual_qa_server = MagicMock(side_effect=ValueError("broken hook"))
         with patch("teatree.core.management.commands._ship.gates.get_overlay", return_value=overlay):
             assert _run_visual_qa_gate(ticket, worktree, skip_reason="reviewed") is None
