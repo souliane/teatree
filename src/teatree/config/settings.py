@@ -157,6 +157,7 @@ class _ModeHarnessSettings:
     # carries no enum member yet. Per-overlay overridable;
     # ``T3_AGENT_HARNESS_PROVIDER`` env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
+    agent_route_paid_fallback: bool = False
     # The EXPLICIT allowlist of model-id patterns eligible on a regulated lane
     # (matched case-insensitively as substrings). Empty means this installation
     # has no regulated model restriction; a nonempty list enforces membership.

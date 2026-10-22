@@ -13,6 +13,7 @@ from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
@@ -104,9 +105,18 @@ def read_only_system_context(context: str) -> str:
     return rewritten
 
 
-def _refused(reason: str) -> HarnessFallbackError:
-    return HarnessFallbackError(
-        f"read-only executor brief refused: {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False
+def read_only_text(text: str) -> str:
+    rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, text)
+    return _TEATREE_COMMAND.sub(f"{ABSENT_TOOL} ", rewritten)
+
+
+class ReadOnlyBriefRefusedError(HarnessFallbackError):
+    """The selected read-only executor cannot run this brief."""
+
+
+def _refused(reason: str) -> ReadOnlyBriefRefusedError:
+    return ReadOnlyBriefRefusedError(
+        f"{READ_ONLY_BRIEF_REFUSED_PREFIX} {reason}", kind=HarnessFallbackKind.ACCESS, side_effects_started=False
     )
 
 
@@ -118,7 +128,7 @@ def _issue(ticket: "Ticket") -> tuple[str, str]:
     try:
         host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
         issue = host.get_issue(ticket.issue_url) if host is not None else {}
-    except Exception as exc:  # an unreadable body refuses the run; the next route candidate plans instead
+    except Exception as exc:
         reason = f"the issue body could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
     body = next((issue.get(key) for key in ("description", "body") if key in issue), None)

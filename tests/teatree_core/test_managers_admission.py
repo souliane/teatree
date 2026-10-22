@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
-from teatree.core.cycle_time.timeline import _engagements
+from teatree.core.cycle_time.timeline import engagements_for_tickets
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW, _lane_occupancy_q
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.worktree.checkout_fence import park_task_checkout
@@ -67,7 +67,7 @@ class TestAdmissionSeatPredicates(TestCase):
 
         task.refresh_from_db()
         assert task.admitted_at == admitted_at
-        assert len(_engagements([ticket.pk])[ticket.pk, "coding"]) == 1
+        assert len(engagements_for_tickets([ticket.pk])[ticket.pk, "coding"]) == 1
         assert Task.objects.expensive_lane_occupancy() == 0
 
     def test_short_route_failure_hold_keeps_readmit_throttle(self) -> None:

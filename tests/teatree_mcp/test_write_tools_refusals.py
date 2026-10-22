@@ -47,6 +47,7 @@ _DELEGATION_GLOBS = (
     "enforce_*",
     "*_threshold",
     "*_identities",
+    "*_paid_fallback",
 )
 
 # The specific keys the F9.1 attack turns on: an MCP agent self-granting substrate-merge

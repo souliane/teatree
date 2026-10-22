@@ -70,11 +70,13 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
 #: and flat at both. The two land together: 21 -> 23, not 22.
 #: The board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
+MERGE_READ_QUERIES = 9
 #: The cycle-time page reads merged and open pull-request flow once each: +2, O(1), flat at both.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 13,
+    "dash:board": 14,
     "dash:board_columns": 11,
-    "dash:cycle_time": 12,
+    "dash:cycle_time": 13,
     "dash:health": 23,
     "dash:health_bands": 23,
     "dash:live": 20,
@@ -148,6 +150,24 @@ class DashboardPageQueryPlansTestCase(TestCase):
         for name, expected in PAGE_QUERY_PINS.items():
             with self.subTest(page=name):
                 self._assert_pinned(reverse(name), expected)
+
+    def test_merge_wait_reads_stay_flat_with_more_merged_tickets(self) -> None:
+        for scale in (3, 15):
+            _populate(scale)
+            merged_ids = list(
+                Ticket.objects.filter(state=State.WORK_STARTED, tasks__isnull=False).values_list("pk", flat=True)
+            )
+            Ticket.objects.filter(pk__in=merged_ids).update(state=State.MERGED)
+            PullRequest.objects.filter(ticket_id__in=merged_ids).update(state=PullRequest.State.MERGED)
+            TicketTransition.objects.bulk_create(
+                TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
+                for ticket_id in merged_ids
+            )
+            for name in ("dash:board", "dash:cycle_time"):
+                with self.subTest(page=name, scale=scale):
+                    cache.clear()
+                    with self.assertNumQueries(PAGE_QUERY_PINS[name] + MERGE_READ_QUERIES):
+                        assert self.client.get(reverse(name), **_LOOPBACK).status_code == 200
 
     def test_the_ticket_drawer_holds_its_plan_however_much_history_the_ticket_has(self) -> None:
         ticket = _populate(3)
