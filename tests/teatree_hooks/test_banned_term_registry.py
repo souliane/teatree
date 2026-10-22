@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree import paths
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.secret_settings import SECRET_SETTINGS
 from teatree.hooks import banned_term_registry
@@ -82,18 +83,17 @@ def test_registry_secret_wins_over_row(tmp_path: Path, monkeypatch: pytest.Monke
     assert terms_for_gate("tree", db_path=db) == ("new",)
 
 
-def test_scratch_control_dir_cannot_replace_owner_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    owner = tmp_path / "owner"
-    scratch = tmp_path / "scratch"
-    owner.mkdir()
-    scratch.mkdir()
-    _seed(owner, banned_term_registry={"leak": ["owner-term"]}).rename(owner / "db.sqlite3")
-    _seed(scratch, banned_term_registry={"leak": ["scratch-term"]}).rename(scratch / "db.sqlite3")
-    monkeypatch.setattr(banned_term_registry, "DEFAULT_CONTROL_DB_DIR", owner)
-    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(scratch))
+def test_configured_control_dir_supplies_overlay_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    _seed(control_dir, banned_term_registry={"overlay": ["private-code"]}).rename(control_dir / "db.sqlite3")
+    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", Path.home() / ".local" / "share" / "teatree")
+    # Keep the rejected fallback off the live database during mutation checks.
+    monkeypatch.setattr(banned_term_registry, "DEFAULT_CONTROL_DB_DIR", tmp_path / "default", raising=False)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_dir))
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
 
-    assert terms_for_gate("diff") == ("owner-term",)
+    assert terms_for_gate("overlay") == ("private-code",)
 
 
 @pytest.mark.parametrize("registry", [[], {"leak": "bad", "prose_collider": []}])

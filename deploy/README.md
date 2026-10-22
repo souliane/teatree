@@ -264,19 +264,25 @@ source == target (path identity).
 `ControlDbJournal` selects WAL with `synchronous=NORMAL` and a 64 MiB journal
 size limit only when the container sees the control DB in its named directory
 on a proven local filesystem. An unreadable mount table, a host process, a
-symlinked path, or a shared or network filesystem selects TRUNCATE. All other
-database paths also select TRUNCATE. `T3_CONTROL_DB_JOURNAL_MODE=truncate` in
-the box's `deploy/teatree.env` forces rollback mode for the control DB;
+symlinked path, or a shared or network filesystem selects TRUNCATE for a new
+database or a deployed install. All other database paths also select TRUNCATE.
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in the box's `deploy/teatree.env` forces
+rollback mode for the control DB;
 `wal` asserts that WAL is eligible and fails at connection setup if it is not.
 Values are case-insensitive and may have surrounding whitespace; other values
 fail at connection setup. The file's mode can change only when a connection
 opens, and a TRUNCATE opener fails with `database is locked` while another
 process holds a WAL connection open.
 
-An unshipped checkout preserves an existing database's journal header until
-the operator sets an override. If it points at the installed control-DB
-directory, it refuses an override that would change that header. The deployed
-source identified by `TEATREE_CLONE_DIR` makes the normal selection.
+An unshipped checkout has a `.git` entry and a root different from
+`TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
+preserves an existing rollback or WAL header; if storage eligibility cannot be
+established for an existing WAL file, opening it fails instead of selecting
+TRUNCATE. At the literal default control-DB directory, an override cannot
+change an existing header. An explicit `wal` override in another control-DB
+directory can change an existing rollback file to WAL when the storage is
+eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
+uses normal selection.
 
 On the first deploy, drain the worker and stop every database-using service
 before the new code opens the control DB. A mode change while an old process

@@ -1,5 +1,6 @@
 import os
 import select
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.db import journal_mode
 from teatree.db.journal_mode import ControlDbJournal
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.sqlite_snapshot import _sqlite_snapshot
@@ -185,6 +187,23 @@ def test_deployed_checkout_selects_wal_for_existing_local_db(tmp_path: Path) -> 
     source_root = Path(__file__).resolve().parents[2]
     env = {CONTROL_DB_DIR_ENV: str(tmp_path), "TEATREE_CLONE_DIR": str(source_root)}
     with patch("teatree.db.write_domain.read_mount_entries", return_value=(MountEntry(Path("/"), "ext4"),)):
+        assert ControlDbJournal(db, env, containerized=True).mode == "wal"
+
+
+def test_source_copy_without_git_selects_wal_for_existing_local_db(tmp_path: Path) -> None:
+    db = tmp_path / "control" / "db.sqlite3"
+    db.parent.mkdir()
+    with closing(sqlite3.connect(db)) as connection:
+        connection.execute("CREATE TABLE note(body TEXT)")
+    source_copy = tmp_path / "source" / "src" / "teatree" / "db" / "journal_mode.py"
+    source_copy.parent.mkdir(parents=True)
+    shutil.copyfile(journal_mode.__file__, source_copy)
+    env = {CONTROL_DB_DIR_ENV: str(db.parent)}
+
+    with (
+        patch.object(journal_mode, "__file__", str(source_copy)),
+        patch("teatree.db.write_domain.read_mount_entries", return_value=(MountEntry(Path("/"), "ext4"),)),
+    ):
         assert ControlDbJournal(db, env, containerized=True).mode == "wal"
 
 

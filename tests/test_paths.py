@@ -626,7 +626,7 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
         # from the real home — the test harness's tmp `HOME` deliberately does not reach
         # them, which is the same isolation that keeps a worktree off the canonical DB.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
-        assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR
+        assert paths.TRUE_CANONICAL_DB.parent == paths.control_db_dir(os.environ)
 
 
 class TestCoreRepoRoot:
