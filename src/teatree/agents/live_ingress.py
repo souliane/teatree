@@ -15,7 +15,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from teatree.agents.live_control import DEFAULT_STEER_WAIT_SECONDS, MAX_STEER_WAIT_SECONDS, RejectCode, SessionFacts
+from teatree.agents.live_control import (
+    DEFAULT_STEER_WAIT_SECONDS,
+    MAX_STEER_WAIT_SECONDS,
+    LiveFence,
+    RejectCode,
+    SessionFacts,
+)
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 PROC_ROOT = Path("/proc")
@@ -134,6 +140,7 @@ class OperatorIngress:
     async def _steer(self, request: Mapping[str, object]) -> object:
         task_pk = _task_pk(request)
         text, command_id = request.get("text"), request.get("command_id")
+        attempt, generation = request.get("attempt"), request.get("generation")
         wait = request.get("wait_seconds", DEFAULT_STEER_WAIT_SECONDS)
         if not isinstance(text, str) or not text:
             msg = "Live steer needs non-empty text"
@@ -141,8 +148,13 @@ class OperatorIngress:
         if not isinstance(command_id, str) or not 0 < len(command_id.encode()) <= _MAX_COMMAND_ID_BYTES:
             msg = "Live steer needs a 1-128 byte command_id"
             raise ValueError(msg)
+        if not isinstance(attempt, str) or not attempt or not isinstance(generation, str):
+            msg = "Live steer needs an attempt and generation fence"
+            raise ValueError(msg)
         if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 < wait <= MAX_STEER_WAIT_SECONDS:
             msg = f"Live steer wait must be within (0, {MAX_STEER_WAIT_SECONDS:.0f}] seconds"
             raise ValueError(msg)
-        receipt = await self._registry().steer(task_pk, text, command_id=command_id, wait=float(wait))
+        receipt = await self._registry().steer(
+            task_pk, text, command_id=command_id, wait=float(wait), fence=LiveFence(attempt, generation)
+        )
         return receipt.as_payload()
