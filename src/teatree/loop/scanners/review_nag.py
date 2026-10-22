@@ -9,8 +9,8 @@ and a short re-ask on ``(channel, thread_ts)``. A missing safe mention refuses t
 The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
 
-Mention. :mod:`teatree.loop.scanners.review_nag_mention` maps engaged forge users
-and thread repliers only when one active, non-bot, non-guest Slack user matches, then falls back to the
+Mention. :mod:`teatree.loop.scanners.review_nag_mention` maps engaged forge users,
+thread repliers and reactors only when one active, non-bot, non-guest Slack user matches, then falls back to the
 per-overlay ``review_nag_reask_mention`` setting when nobody maps.
 
 Cadence. The interval is ``TriageThresholds.nag_interval_for_attempt(owner,

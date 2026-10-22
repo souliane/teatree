@@ -120,6 +120,29 @@ class TestReaskMention(TestCase):
 
         assert self._mention(slack, FakeHost()) == "<@UACTIVE>"
 
+    def test_thread_reactor_is_mentioned_even_on_a_bot_message(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        slack = FakeSlack(
+            thread_replies=[
+                {
+                    "ts": "1001",
+                    "bot_id": "B1",
+                    "reactions": [{"name": "eyes", "users": ["UOWNER", "UPEER001"], "count": 2}],
+                }
+            ],
+            members=[active_member("UPEER001", "peer")],
+        )
+
+        assert self._mention(slack, FakeHost()) == "<@UPEER001>"
+
+    def test_unmapped_thread_reactor_uses_group(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
+        slack = FakeSlack(
+            thread_replies=[{"ts": "1001", "reactions": [{"name": "eyes", "users": ["UPEER001"]}]}],
+        )
+
+        assert self._mention(slack, FakeHost()) == "<!subteam^S0REVIEWERS>"
+
     def test_unmapped_reply_id_uses_one_directory_lookup_across_ticks(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         slack = FakeSlack(thread_replies=[{"ts": "1001", "user": "UPEER001"}])

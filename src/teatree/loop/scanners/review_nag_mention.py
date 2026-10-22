@@ -103,20 +103,33 @@ def _forge_engagers(comments: object, reviewers: object) -> set[str]:
     return names
 
 
+def _reaction_user_ids(reactions: object) -> list[object]:
+    if not isinstance(reactions, list):
+        return []
+    users: list[object] = []
+    for reaction in reactions:
+        if isinstance(reaction, dict) and isinstance(reaction.get("users"), list):
+            users.extend(reaction["users"])
+    return users
+
+
 def _thread_engagers(messaging: MessagingBackend, replies: object, *, overlay_name: str) -> set[str]:
     ids: set[str] = set()
     seen: set[str] = set()
     if not isinstance(replies, list):
         return ids
     for reply in replies:
-        if not isinstance(reply, dict) or reply.get("bot_id") or reply.get("subtype") == "bot_message":
+        if not isinstance(reply, dict):
             continue
-        user_id = reply.get("user")
-        if user_id == "USLACKBOT" or not is_slack_user_id(user_id) or user_id in seen:
-            continue
-        seen.add(user_id)
-        if active_id := _active_user_id(messaging, user_id, overlay_name=overlay_name, cache_negative=True):
-            ids.add(active_id)
+        users = _reaction_user_ids(reply.get("reactions"))
+        if not reply.get("bot_id") and reply.get("subtype") != "bot_message":
+            users.append(reply.get("user"))
+        for user_id in users:
+            if user_id == "USLACKBOT" or not is_slack_user_id(user_id) or user_id in seen:
+                continue
+            seen.add(user_id)
+            if active_id := _active_user_id(messaging, user_id, overlay_name=overlay_name, cache_negative=True):
+                ids.add(active_id)
     return ids
 
 
