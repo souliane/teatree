@@ -230,6 +230,7 @@ class TestSqliteWriteSerialization:
         and is not vacuous.
         """
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path))
+        monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
         monkeypatch.setenv("TEATREE_ROLE", "worker")
         monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
         alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)

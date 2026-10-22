@@ -78,6 +78,7 @@ class TestCreateBackup:
             restored = volume / "db.sqlite3"
             copy2(artifact, restored)
             monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+            monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
             monkeypatch.setenv("TEATREE_ROLE", "worker")
             monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
             handler = ConnectionHandler(

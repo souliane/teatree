@@ -155,6 +155,7 @@ class TestTheGuardedDjangoBackend:
         volume = tmp_path / "control"
         volume.mkdir()
         monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+        monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
         db = _config_db(volume / "db.sqlite3")
 
         with _connection(db, django_db_blocker) as connection:
@@ -207,6 +208,8 @@ class TestTheGuardedDjangoBackend:
         volume = tmp_path / "control"
         volume.mkdir()
         monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+        if location == "control":
+            monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
         db = _config_db((volume if location == "control" else tmp_path) / "db.sqlite3")
         handler = ConnectionHandler(
             {
