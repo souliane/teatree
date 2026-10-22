@@ -31,14 +31,6 @@ class TestRollupState:
         assert pr_reads.rollup_state(rollup) == "pending"
 
 
-class TestIsNotFound:
-    def test_true_on_http_404(self) -> None:
-        assert pr_reads.is_not_found(CommandFailedError(["gh"], 1, "", "HTTP 404")) is True
-
-    def test_false_on_other_error(self) -> None:
-        assert pr_reads.is_not_found(CommandFailedError(["gh"], 1, "", "HTTP 500")) is False
-
-
 class TestIssueRepoShort:
     def test_parses_issue_url(self) -> None:
         assert pr_reads.issue_repo_short("https://github.com/souliane/teatree/issues/50") == "teatree"

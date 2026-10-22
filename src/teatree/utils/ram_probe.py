@@ -30,11 +30,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Reserve for the sibling containers' own ceilings (admin 2g + slack-listener 1g
-# + watchdog 256m = 3.25 GiB, #3651) carved off host RAM before sizing the worker.
+# Reserve for sibling ceilings (admin 2g + slack 1g + webhooks 1g + watchdog 256m).
 # Tracks the caps in deploy/docker-compose.yml: a reserve below their sum would
 # let the derived worker ceiling plus the siblings' exceed host RAM.
-_SIBLING_RESERVE_MIB = 3328
+_SIBLING_RESERVE_MIB = 4352
 # Keep ~20% of host RAM for the OS / page cache / short bursts — the worker gets
 # the rest as a hard ``mem_limit`` (a cgroup OOM ceiling, so headroom matters).
 _HOST_HEADROOM = 0.8

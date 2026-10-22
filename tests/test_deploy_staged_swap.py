@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # What a whole-project `compose config --services` lists: the executor sits behind its own profile.
-_SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener teatree-watchdog"
+_SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener teatree-webhooks teatree-watchdog"
 _EXECUTOR = "teatree-ro-executor"
 
 _DOCKER_STUB = f"""#!/usr/bin/env bash
