@@ -7546,8 +7546,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions running now on this host's workers: inspect them    │
-│                 passively, steer them actively.                              │
+│ live            Sessions on this host's workers: inspect passively, steer or │
+│                 follow up actively.                                          │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -11746,18 +11746,20 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions running now on this host's workers: inspect them passively, steer
- them actively.
+ Sessions on this host's workers: inspect passively, steer or follow up
+ actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list     List every live session on this host's workers (passive).           │
-│ inspect  Show one live session's state, tool and progress without contacting │
-│          the agent.                                                          │
-│ steer    Send input into a running agent's current turn and print its        │
-│          receipt (active).                                                   │
+│ list       List every live session on this host's workers (passive).         │
+│ inspect    Show one live session's state, tool and progress without          │
+│            contacting the agent.                                             │
+│ steer      Send input into a running agent's current turn and print its      │
+│            receipt (active).                                                 │
+│ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11814,6 +11816,30 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            defaults to the attempt `live list` shows.        │
 │ --generation        TEXT   Refuse unless the worker runs this generation;    │
 │                            defaults to the located session's.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live follow-up`
+
+```
+Usage: t3 teatree live follow-up [OPTIONS] TASK
+
+ Start one new turn in a still-open idle session and print its receipt
+ (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input for one new turn in an idle session (at │
+│                            most 16 KiB).                                     │
+│ --command-id        TEXT   Idempotency key; the same text returns the first  │
+│                            receipt.                                          │
+│ --wait              FLOAT  Seconds to wait for the new turn to start (at     │
+│                            most 900).                                        │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

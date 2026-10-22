@@ -38,6 +38,16 @@ class FenceOverride(NamedTuple):
     generation: str | None = None
 
 
+@dataclass(frozen=True)
+class _OperatorInput:
+    method: str
+    task: int
+    text: str
+    command_id: str
+    wait: float
+    fence: FenceOverride | None
+
+
 class LiveOfflineError(Exception):
     """No worker on this host answered, or none is running the task."""
 
@@ -105,22 +115,39 @@ class LiveClient:
         wait: float = DEFAULT_STEER_WAIT_SECONDS,
         fence: FenceOverride | None = None,
     ) -> ReceiptPayload:
-        row = self._owner_row(task)
+        return self._operator_command(_OperatorInput("live.steer", task, text, command_id, wait, fence))
+
+    def follow_up(
+        self,
+        task: int,
+        text: str,
+        *,
+        command_id: str,
+        wait: float = DEFAULT_STEER_WAIT_SECONDS,
+        fence: FenceOverride | None = None,
+    ) -> ReceiptPayload:
+        return self._operator_command(_OperatorInput("live.follow_up", task, text, command_id, wait, fence))
+
+    def _operator_command(self, command: _OperatorInput) -> ReceiptPayload:
+        row = self._owner_row(command.task)
+        if not isinstance(row.get("attempt"), str) or not row["attempt"] or not isinstance(row.get("generation"), str):
+            msg = f"worker {row['worker']} is too old for fenced live commands; retry after it restarts"
+            raise LiveOfflineError(msg)
         worker = (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
-        fence = fence or FenceOverride()
+        fence = command.fence or FenceOverride()
         request: LiveRequest = {
-            "method": "live.steer",
-            "task": task,
-            "text": text,
-            "command_id": command_id,
-            "wait_seconds": wait,
+            "method": command.method,
+            "task": command.task,
+            "text": command.text,
+            "command_id": command.command_id,
+            "wait_seconds": command.wait,
             "attempt": row["attempt"] if fence.attempt is None else fence.attempt,
             "generation": row["generation"] if fence.generation is None else fence.generation,
         }
         try:
-            return cast("ReceiptPayload", self._call(worker, request, timeout=wait + _STEER_GRACE_SECONDS))
+            return cast("ReceiptPayload", self._call(worker, request, timeout=command.wait + _STEER_GRACE_SECONDS))
         except _UnreachableError as exc:
-            msg = f"worker {worker.stem} stopped answering before the steer was sent: {exc}"
+            msg = f"worker {worker.stem} stopped answering before the command was sent: {exc}"
             raise LiveOfflineError(msg) from exc
         except _AnswerLostError as exc:
             raise LiveDeliveryUnknownError(str(exc)) from exc
