@@ -22,7 +22,6 @@ from pytest_django.plugin import DjangoDbBlocker
 
 from teatree.cli.doctor import checks_db_integrity
 from teatree.cli.doctor.checks_db_integrity import (
-    _SQLITE_OK,
     _check_db_integrity,
     _check_db_is_off_the_host_filesystem,
     _check_host_projection_is_current,
@@ -32,6 +31,7 @@ from teatree.cli.doctor.checks_db_integrity import (
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE, ProjectionPublisher, ProjectionReader
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.sqlite_integrity import _SQLITE_OK
 
 
 def _sound_db(path: Path) -> Path:
