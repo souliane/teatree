@@ -83,11 +83,12 @@ def _run(data: dict) -> bool | None:
     if reason := _skip_token((last_assistant_turn(transcript_path) or ("", False))[0]):
         sys.stderr.write(f"NOTE: slack-first gate skipped via [skip-slack-first: {reason}].\n")
         return None
-    published = standing_directives_cache.read_factory_slack()
-    verdict = slack_first_scanner.find_unrelayed_prompt(
-        owner_words, turn.tool_results, slack_live=published is not None and published["live"]
+    slack_live = standing_directives_cache.slack_is_live(
+        standing_directives_cache.read_factory_slack(), os.environ.get("T3_OVERLAY_NAME", "")
     )
+    verdict = slack_first_scanner.find_unrelayed_prompt(owner_words, turn.tool_results, slack_live=slack_live)
     if verdict is None:
         return None
-    json.dump({"decision": "block", "reason": slack_first_scanner.format_block_message(verdict)}, sys.stdout)
+    reason = slack_first_scanner.format_block_message(verdict, session_id)
+    json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True

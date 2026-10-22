@@ -56,7 +56,7 @@ def _transcript(tmp_path: Path, *entries: dict) -> str:
     return str(path)
 
 
-def _publish(*, live: bool, age_seconds: float = 0.0) -> None:
+def _publish(*, live: bool, age_seconds: float = 0.0, by_overlay: dict[str, bool] | None = None) -> None:
     standing_directives_cache.write_factory_slack(
         {
             "overlay": "t3-slack",
@@ -64,6 +64,7 @@ def _publish(*, live: bool, age_seconds: float = 0.0) -> None:
             "reason": "" if live else "heartbeat_absent",
             "checked_at": time.time() - age_seconds,
             "open_relays": {},
+            "by_overlay": by_overlay or {},
         }
     )
 
@@ -104,7 +105,30 @@ def test_any_genuine_owner_prompt_without_relay_receipt_blocks_when_slack_live(
     assert "SLACK-FIRST GATE" in decision["reason"]
     assert _PROMPT in decision["reason"]
     assert "pending_chat relay" in decision["reason"]
+    assert f"--session-id {_SESSION}" in decision["reason"]
+    assert f"session_id={_SESSION}" in decision["reason"]
     assert "[skip-slack-first: <reason>]" in decision["reason"]
+
+
+class TestTwoCredentialedOverlaysGateEachSessionOnItsOwn:
+    """With several credentialed overlays the default verdict is ambiguous, but the relay still goes through."""
+
+    @pytest.fixture(autouse=True)
+    def ambiguous_default(self) -> None:
+        _publish(live=False, by_overlay={"t3-slack": True, "t3-quiet": False})
+
+    @pytest.mark.parametrize(
+        ("overlay_name", "blocked"),
+        [("t3-slack", True), ("t3-quiet", False), ("", False)],
+        ids=["overlay-whose-slack-is-live", "overlay-whose-slack-is-quiet", "no-overlay-named"],
+    )
+    def test_the_gate_reads_the_verdict_for_the_sessions_own_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlay_name: str, *, blocked: bool
+    ) -> None:
+        monkeypatch.setenv("T3_OVERLAY_NAME", overlay_name)
+        transcript = _transcript(tmp_path, _user(_PROMPT), _assistant(_ANSWER))
+
+        assert handle_slack_first_gate(_stop(transcript)) is (True if blocked else None)
 
 
 def test_terminal_answer_allowed_when_slack_not_live(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

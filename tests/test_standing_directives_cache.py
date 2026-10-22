@@ -149,9 +149,20 @@ class TestAtomicity:
 
 
 def _verdict(
-    *, checked_at: float, live: bool = True, relays: dict[str, list[OpenRelayPayload]] | None = None
+    *,
+    checked_at: float,
+    live: bool = True,
+    relays: dict[str, list[OpenRelayPayload]] | None = None,
+    by_overlay: dict[str, bool] | None = None,
 ) -> FactorySlackPayload:
-    return {"overlay": "t3-slack", "live": live, "reason": "", "checked_at": checked_at, "open_relays": relays or {}}
+    return {
+        "overlay": "t3-slack",
+        "live": live,
+        "reason": "",
+        "checked_at": checked_at,
+        "open_relays": relays or {},
+        "by_overlay": by_overlay or {},
+    }
 
 
 class TestThePublishedFactorySlackVerdict:
@@ -209,6 +220,38 @@ class TestThePublishedFactorySlackVerdict:
 
         publish(open_relays)
         assert standing_directives_cache.read_factory_slack(env=env, now=1060.0) is None
+
+    def test_a_verdict_published_before_the_per_overlay_map_reads_with_an_empty_one(self, env: dict[str, str]) -> None:
+        target = standing_directives_cache.factory_slack_path(env=env)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        document = {"schema": standing_directives_cache.SCHEMA, **_verdict(checked_at=1000.0)}
+        del document["by_overlay"]
+        target.write_text(json.dumps(document), encoding="utf-8")
+
+        read = standing_directives_cache.read_factory_slack(env=env, now=1060.0)
+
+        assert read is not None
+        assert (read["live"], read["by_overlay"]) == (True, {})
+
+    @pytest.mark.parametrize("by_overlay", [[], {"t3-slack": "yes"}, {"t3-slack": 1}], ids=["list", "str", "int"])
+    def test_a_malformed_per_overlay_map_reads_the_verdict_as_absent(
+        self, env: dict[str, str], by_overlay: object
+    ) -> None:
+        target = standing_directives_cache.factory_slack_path(env=env)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        document = {"schema": standing_directives_cache.SCHEMA, **_verdict(checked_at=1000.0), "by_overlay": by_overlay}
+        target.write_text(json.dumps(document), encoding="utf-8")
+
+        assert standing_directives_cache.read_factory_slack(env=env, now=1060.0) is None
+
+    def test_a_session_reads_the_verdict_for_its_own_overlay_else_the_default(self) -> None:
+        published = _verdict(checked_at=1000.0, live=False, by_overlay={"t3-slack": True, "t3-quiet": False})
+
+        assert standing_directives_cache.slack_is_live(published, "t3-slack")
+        assert not standing_directives_cache.slack_is_live(published, "t3-quiet")
+        assert not standing_directives_cache.slack_is_live(published, "t3-unlisted")
+        assert standing_directives_cache.slack_is_live(_verdict(checked_at=1000.0, live=True), "t3-unlisted")
+        assert not standing_directives_cache.slack_is_live(None, "t3-slack")
 
     def test_a_verdict_older_than_the_freshness_bound_reads_as_absent(self, env: dict[str, str]) -> None:
         standing_directives_cache.write_factory_slack(_verdict(checked_at=1000.0), env=env)

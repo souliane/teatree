@@ -10,6 +10,7 @@ import os
 import re
 import sys
 
+from hooks.scripts.classifier_relax_gate import ask_input_offers_relax_option
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.question_gates import _first_question, denied_question_dedupe_key, denied_question_row_marker
 
@@ -91,7 +92,9 @@ def _route(data: dict) -> str | None:
         for index, option in enumerate(options)
     )
     card = QuestionCard(
-        decision=OwnerDecision.PRODUCT_SCOPE,
+        decision=OwnerDecision.CREDENTIALS
+        if ask_input_offers_relax_option(data.get("tool_input"))
+        else OwnerDecision.PRODUCT_SCOPE,
         checked=("Your session asked this while factory Slack is live, so it is posted here.",),
         blocker="Only you can choose.",
         why="Your session is waiting on this answer before it carries on.",

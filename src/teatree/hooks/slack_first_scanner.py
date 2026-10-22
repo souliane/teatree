@@ -45,13 +45,14 @@ def find_unrelayed_prompt(owner_words: str, turn_tool_results: str, *, slack_liv
     return SlackFirstVerdict(prompt=words[:_PROMPT_PREVIEW_CHARS])
 
 
-def format_block_message(verdict: SlackFirstVerdict) -> str:
-    """The BLOCK reason: what was not relayed, how to relay it, and the ways out."""
+def format_block_message(verdict: SlackFirstVerdict, session_id: str) -> str:
+    """The BLOCK reason: what was not relayed, how to relay it under this session, and the ways out."""
     return (
         "SLACK-FIRST GATE — factory Slack is live, so the owner's prompt goes to their factory DM, not an "
         f'answer here.\n  prompt: "{verdict.prompt}"\n'
-        "Relay it verbatim: `t3 <overlay> pending_chat relay --relay-id <new id> --text-file <file holding "
-        "the prompt>` or the MCP tool `mcp__teatree__pending_chat_relay`. Then end the turn with only the "
+        f"Relay it verbatim as session {session_id}: `t3 <overlay> pending_chat relay --session-id {session_id} "
+        "--relay-id <new id> --text-file <file holding the prompt>` or the MCP tool "
+        f"`mcp__teatree__pending_chat_relay` with session_id={session_id}. Then end the turn with only the "
         f"permalink from its {RELAY_RECEIPT_MARKER} line. Exit 3 or 4, or a {RELAY_REFUSED_MARKER} line, "
         "means answer in the terminal with a one-line reason. Not a prompt for the factory (a harness "
         "command, an attachment, or the owner said to answer here)? End the turn with "

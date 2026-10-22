@@ -48,13 +48,18 @@ class OpenRelayPayload(TypedDict):
 
 
 class FactorySlackPayload(TypedDict):
-    """Whether factory Slack was live when the worker last looked, and each session's open relays."""
+    """Whether factory Slack was live when the worker last looked, and each session's open relays.
+
+    ``live`` is the verdict for a caller naming no overlay, which several credentialed overlays make ambiguous;
+    ``by_overlay`` is the verdict a session in each credentialed overlay reaches.
+    """
 
     overlay: str
     live: bool
     reason: str
     checked_at: float
     open_relays: dict[str, list[OpenRelayPayload]]
+    by_overlay: dict[str, bool]
 
 
 _OPEN_RELAY_FIELD_TYPES = {"id": int, "slack_ts": str, "channel": str, "text": str, "state": str}
@@ -70,6 +75,19 @@ def _are_open_relays(relays: object) -> bool:
     return isinstance(relays, dict) and all(
         isinstance(entries, list) and all(map(_is_open_relay, entries)) for entries in relays.values()
     )
+
+
+def _has_verdict_scalars(document: dict) -> bool:
+    return (
+        isinstance(document.get("live"), bool)
+        and isinstance(document.get("overlay"), str)
+        and isinstance(document.get("reason"), str)
+        and isinstance(document.get("checked_at"), int | float)
+    )
+
+
+def _is_overlay_verdicts(verdicts: object) -> TypeGuard[dict[str, bool]]:
+    return isinstance(verdicts, dict) and all(isinstance(live, bool) for live in verdicts.values())
 
 
 def cache_path(*, env: Mapping[str, str] = os.environ) -> Path:
@@ -142,24 +160,24 @@ def read_factory_slack(*, env: Mapping[str, str] = os.environ, now: float | None
         return None
     if not isinstance(document, dict) or document.get("schema") != SCHEMA:
         return None
-    checked_at, relays = document.get("checked_at"), document.get("open_relays")
-    if (
-        not isinstance(document.get("live"), bool)
-        or not isinstance(document.get("overlay"), str)
-        or not isinstance(document.get("reason"), str)
-        or not isinstance(checked_at, int | float)
-        or not _are_open_relays(relays)
-    ):
+    relays, by_overlay = document.get("open_relays"), document.get("by_overlay", {})
+    if not (_has_verdict_scalars(document) and _are_open_relays(relays) and _is_overlay_verdicts(by_overlay)):
         return None
-    if (time.time() if now is None else now) - checked_at > FACTORY_SLACK_FRESH_SECONDS:
+    if (time.time() if now is None else now) - document["checked_at"] > FACTORY_SLACK_FRESH_SECONDS:
         return None
     return FactorySlackPayload(
         overlay=document["overlay"],
         live=document["live"],
         reason=document["reason"],
-        checked_at=float(checked_at),
+        checked_at=float(document["checked_at"]),
         open_relays=relays,
+        by_overlay=by_overlay,
     )
+
+
+def slack_is_live(published: FactorySlackPayload | None, overlay: str) -> bool:
+    """Whether a session in *overlay* may treat factory Slack as live: its own verdict, else the default one."""
+    return published is not None and published["by_overlay"].get(overlay, published["live"])
 
 
 def _replace(target: Path, directives: list[StandingDirectivePayload], *, env: Mapping[str, str]) -> bool:
@@ -189,6 +207,7 @@ __all__ = [
     "publish",
     "read",
     "read_factory_slack",
+    "slack_is_live",
     "write",
     "write_factory_slack",
 ]

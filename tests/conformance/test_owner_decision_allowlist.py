@@ -37,7 +37,7 @@ _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
 
 _CARD_KINDS: frozenset[tuple[str, str, str]] = frozenset(
     {
-        ("hooks/scripts/slack_first_question.py", "_route", "PRODUCT_SCOPE"),
+        ("hooks/scripts/slack_first_question.py", "_route", "CREDENTIALS|PRODUCT_SCOPE"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "<module>", "PUBLIC_POST"),
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_triage_recommendations", "PRODUCT_SCOPE"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "PRODUCT_SCOPE"),
@@ -91,11 +91,19 @@ def _is_call_to(call: ast.Call, name: str) -> bool:
     return func.attr == name and (name != "record" or ast.unparse(func.value).endswith("DeferredQuestion"))
 
 
+def _named_kinds(value: ast.expr) -> set[str]:
+    if isinstance(value, ast.Attribute):
+        return {value.attr}
+    if isinstance(value, ast.IfExp):
+        arms = _named_kinds(value.body), _named_kinds(value.orelse)
+        return set.union(*arms) if all(arms) else set()
+    return set()
+
+
 def _kind(card_call: ast.Call) -> str:
     for keyword in card_call.keywords:
         if keyword.arg == "decision":
-            value = keyword.value
-            return value.attr if isinstance(value, ast.Attribute) else _DECLARED_BY_THE_CALLER
+            return "|".join(sorted(_named_kinds(keyword.value))) or _DECLARED_BY_THE_CALLER
     return _DECLARED_BY_THE_CALLER
 
 

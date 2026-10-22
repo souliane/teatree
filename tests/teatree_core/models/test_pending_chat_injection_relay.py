@@ -283,4 +283,10 @@ class TestRelayFollowUp(TestCase):
         with CaptureQueriesContext(connection) as many:
             assert len(list(PendingChatInjection.objects.open_relays(now=_NOW))) == 6
 
-        assert len(many) == len(few)
+        assert len(many) == len(few) == 1
+
+    def test_a_relay_whose_delegated_lane_failed_stays_open_however_old_it_is(self) -> None:
+        ancient = _relay_row("7.1", session="s1", age_minutes=60 * 24 * 400)
+        _delegated(ancient, Task.Status.FAILED)
+
+        assert [row.pk for row in PendingChatInjection.objects.open_relays("s1", now=_NOW)] == [ancient.pk]

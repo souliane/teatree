@@ -392,6 +392,31 @@ def test_attended_ask_user_question_routes_to_slack_when_factory_slack_live(
     assert "Should the release ship today?" in post["text"]
 
 
+@pytest.mark.parametrize(
+    ("options", "decision"),
+    [
+        (_RELEASE_OPTIONS, "product_scope"),
+        (
+            [
+                {"label": "Allow it (relax classifier)", "description": "I add a narrow allow rule."},
+                {"label": "Keep the denial (do it differently)", "description": "I find another way."},
+            ],
+            "credentials",
+        ),
+    ],
+    ids=["a-product-choice", "a-classifier-relax-is-a-permission-grant"],
+)
+def test_the_card_of_a_routed_question_names_the_decision_it_asks_for(
+    tmp_path: Path, options: list[dict], decision: str
+) -> None:
+    with live_factory_slack(FakeOwnerDm()):
+        handle_mirror_question_to_slack(
+            _ask_payload("Should I go ahead?", options, **_attended(tmp_path, tool_use_id="t-32"))
+        )
+
+    assert DeferredQuestion.objects.get().evidence["decision"] == decision
+
+
 def test_attended_ask_user_question_renders_in_client_when_slack_not_live(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

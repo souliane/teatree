@@ -187,6 +187,19 @@ class TestTheFactorySlackVerdictRidesTheSameChain(django.test.TestCase):
         [entry] = published["open_relays"]["s1"]
         assert (entry["state"], entry["text"]) == ("delegated", "x" * RELAY_LISTING_CHARS)
 
+    def test_two_credentialed_overlays_publish_a_verdict_for_each_and_the_ambiguous_default(self) -> None:
+        with live_factory_slack(FakeOwnerDm(), also_credentialed=("t3-quiet",)):
+            self._fire()
+
+        published = standing_directives_cache.read_factory_slack()
+        assert published is not None
+        assert not published["live"]
+        assert published["reason"].startswith("ambiguous_overlay")
+        assert published["by_overlay"] == {SLACK_OVERLAY: True, "t3-quiet": False}
+        assert standing_directives_cache.slack_is_live(published, SLACK_OVERLAY)
+        assert not standing_directives_cache.slack_is_live(published, "t3-quiet")
+        assert not standing_directives_cache.slack_is_live(published, "")
+
     def test_a_box_without_slack_publishes_not_live_with_the_reason(self) -> None:
         with mock.patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[]):
             self._fire()

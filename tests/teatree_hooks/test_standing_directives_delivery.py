@@ -332,6 +332,7 @@ def _publish_relays(relays: dict[str, list[OpenRelayPayload]], *, age_seconds: f
             "reason": "",
             "checked_at": time.time() - age_seconds,
             "open_relays": relays,
+            "by_overlay": {},
         }
     )
 

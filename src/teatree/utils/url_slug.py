@@ -21,6 +21,8 @@ from teatree.utils.pr_ref import PrRef
 #: state says nothing about whether the loop work is done, so the artifact-terminal
 #: task sweep must never complete a task anchored here (souliane/teatree#3706).
 SYNTHETIC_LOOP_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+SLACK_ANCHOR_PREFIX = f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack="
+SLACK_ANCHOR_SUFFIX = "/dm"
 
 
 def is_synthetic_loop_umbrella_url(issue_url: str) -> bool:
@@ -36,7 +38,7 @@ def slack_conversation_anchor(*, channel: str, slack_ts: str) -> str:
     ``derive_issue_number`` reads trailing digits, so a fragment ending in the ts
     would stamp the Slack timestamp as a forge issue number.
     """
-    return f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack={channel}/{slack_ts}/dm"
+    return f"{SLACK_ANCHOR_PREFIX}{channel}/{slack_ts}{SLACK_ANCHOR_SUFFIX}"
 
 
 _GITHUB_RE = re.compile(r"^/(?P<slug>[^/]+/[^/]+)/(?:issues|pull|pulls)/\d+/?$")

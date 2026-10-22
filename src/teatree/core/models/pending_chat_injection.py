@@ -17,14 +17,14 @@ truth for "this row needs a reply".
 
 import datetime as dt
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.apps import apps
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q, Value
+from django.db.models.functions import Concat
 from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_resolver
@@ -40,7 +40,10 @@ from teatree.core.modelkit.relay import (
 )
 from teatree.core.telemetry.admission import record_lifecycle_transition
 from teatree.standing_directives_cache import OpenRelayPayload
-from teatree.utils.url_slug import slack_conversation_anchor
+from teatree.utils.url_slug import SLACK_ANCHOR_PREFIX, SLACK_ANCHOR_SUFFIX
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 _QUESTION_WORDS: frozenset[str] = frozenset(
     {
@@ -128,8 +131,9 @@ class PendingChatInjectionQuerySet(models.QuerySet):
         if session_id is not None:
             relays = relays.filter(relayed_by_session=session_id)
         unreplied = Q(loop_response_confirmed_at__isnull=True, received_at__lte=moment - RELAY_QUIET_AFTER)
-        delegated = list(relays.filter(answer_kind=self.model.AnswerKind.DELEGATED))
-        return relays.filter(unreplied | Q(pk__in=_pks_with_lane_gone_wrong(delegated, moment))).order_by("received_at")
+        delegated_gone_wrong = Q(answer_kind=self.model.AnswerKind.DELEGATED) & _lane_gone_wrong(moment)
+        lane_anchor = Concat(Value(SLACK_ANCHOR_PREFIX), "channel", Value("/"), "slack_ts", Value(SLACK_ANCHOR_SUFFIX))
+        return relays.annotate(lane_anchor=lane_anchor).filter(unreplied | delegated_gone_wrong).order_by("received_at")
 
     @staticmethod
     def relay_required(overlay: str) -> bool:
@@ -473,27 +477,15 @@ class PendingChatInjection(models.Model):
         return answered
 
 
-type _LaneTask = tuple[str, dt.datetime | None]
-
-
-def _pks_with_lane_gone_wrong(relays: list[PendingChatInjection], now: dt.datetime) -> list[int]:
-    """The delegated *relays* whose answering lane has a failed task with none finished, or an active one gone stale."""
-    pk_by_anchor = {slack_conversation_anchor(channel=r.channel, slack_ts=r.slack_ts): r.pk for r in relays}
-    lanes: defaultdict[str, list[_LaneTask]] = defaultdict(list)
-    tasks = apps.get_model("core", "Task").objects.filter(ticket__issue_url__in=list(pk_by_anchor))
-    for anchor, status, created_at in tasks.values_list("ticket__issue_url", "status", "created_at"):
-        lanes[anchor].append((status, created_at))
-    return [pk for anchor, pk in pk_by_anchor.items() if _lane_gone_wrong(lanes[anchor], now)]
-
-
-def _lane_gone_wrong(tasks: list[_LaneTask], now: dt.datetime) -> bool:
-    statuses = {status for status, _ in tasks}
-    if "failed" in statuses and "completed" not in statuses:
-        return True
-    return any(
-        status in {"pending", "claimed"} and created_at is not None and created_at <= now - RELAY_STALLED_AFTER
-        for status, created_at in tasks
-    )
+def _lane_gone_wrong(now: dt.datetime) -> Q:
+    """A failed answering task with none finished, or an active one gone stale, on the row's ``lane_anchor``."""
+    task = cast("type[Task]", apps.get_model("core", "Task"))
+    lane = task.objects.filter(ticket__issue_url=OuterRef("lane_anchor"))
+    active = (task.Status.PENDING, task.Status.CLAIMED)
+    failed = Q(Exists(lane.filter(status=task.Status.FAILED)))
+    finished = Q(Exists(lane.filter(status=task.Status.COMPLETED)))
+    stalled = Q(Exists(lane.filter(status__in=active, created_at__lte=now - RELAY_STALLED_AFTER)))
+    return (failed & ~finished) | stalled
 
 
 def _classify_is_question(text: str) -> bool:

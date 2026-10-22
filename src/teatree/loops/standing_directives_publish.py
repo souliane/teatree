@@ -21,6 +21,7 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
 from teatree import standing_directives_cache
+from teatree.core.backend_factory import OwnerMessagingTransport
 from teatree.core.models import PendingChatInjection
 from teatree.core.slack_first.factory_slack_liveness import factory_slack_live
 from teatree.loop.standing_directives import publish
@@ -43,8 +44,13 @@ def _pending_publish() -> bool:
 
 
 def publish_factory_slack() -> None:
-    """Publish whether factory Slack is live and each session's open relays; rewritten every fire to stay fresh."""
+    """Publish whether factory Slack is live, per credentialed overlay, and each session's open relays.
+
+    Rewritten every fire to stay fresh. The no-overlay verdict is ambiguous once several overlays are
+    credentialed, so a session reads the one for its own overlay, as the relay command does.
+    """
     verdict = factory_slack_live("")
+    by_overlay = {name: factory_slack_live(name).live for name, _backend in OwnerMessagingTransport.credentialed()}
     open_relays: dict[str, list[OpenRelayPayload]] = {}
     for row in PendingChatInjection.objects.open_relays():
         open_relays.setdefault(row.relayed_by_session, []).append(row.open_relay_payload())
@@ -55,6 +61,7 @@ def publish_factory_slack() -> None:
             "reason": verdict.reason,
             "checked_at": time.time(),
             "open_relays": open_relays,
+            "by_overlay": by_overlay,
         }
     )
 

@@ -119,7 +119,10 @@ def _ask_question_has_relax_option(block: dict) -> bool:
     """True when an ``AskUserQuestion`` tool_use offers the verbatim relax option."""
     if block.get("type") != "tool_use" or block.get("name") != "AskUserQuestion":
         return False
-    tool_input = block.get("input")
+    return ask_input_offers_relax_option(block.get("input"))
+
+
+def ask_input_offers_relax_option(tool_input: object) -> bool:
     questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
     if not isinstance(questions, list):
         return False

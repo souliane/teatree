@@ -57,13 +57,21 @@ class FakeOwnerDm:
 
 
 @contextmanager
-def live_factory_slack(dm: FakeOwnerDm, *, overlay: str = SLACK_OVERLAY) -> Generator[Path]:
-    """Make factory Slack live for *dm*: fresh heartbeat, one credentialed overlay, a held t3-master lease."""
+def live_factory_slack(
+    dm: FakeOwnerDm, *, overlay: str = SLACK_OVERLAY, also_credentialed: tuple[str, ...] = ()
+) -> Generator[Path]:
+    """Make factory Slack live for *dm*: fresh heartbeat, a held t3-master lease, *overlay* credentialed.
+
+    *also_credentialed* names further overlays carrying the same transport but no heartbeat stamp.
+    """
     with tempfile.TemporaryDirectory(prefix="factory-slack-") as scratch:
         directory = Path(scratch)
         with (
             patch("teatree.core.slack_first.slack_listener_heartbeat.DATA_DIR", directory),
-            patch("teatree.core.backend_factory.OverlayConfigResolver.all_names", return_value=[overlay]),
+            patch(
+                "teatree.core.backend_factory.OverlayConfigResolver.all_names",
+                return_value=[overlay, *also_credentialed],
+            ),
             patch("teatree.core.backend_factory.configured_messaging_from_overlay", return_value=dm),
         ):
             write_heartbeat(overlay, directory / FILENAME)
