@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
@@ -13,7 +13,7 @@ from teatree.agents.codex_app_server import CodexAppServerSession
 from teatree.agents.codex_app_server_errors import request_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_read_only_server import executor_session
-from teatree.agents.codex_shared_app_server import SharedCodexSession
+from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
 from teatree.agents.codex_turn_steering import CodexSteerUnknownError
 from teatree.agents.live_control import RejectCode, SteerableSession, SteerRejectedError
 
@@ -84,6 +84,11 @@ def test_server_refusals_are_typed_rejections(error: dict[str, Any], code: Rejec
 
 def test_an_unrecognised_server_error_is_unknown_delivery() -> None:
     caught = request_error("turn/steer", {"code": -32000, "message": "do-not-print"})
+    assert not isinstance(caught, SteerRejectedError)
+
+
+def test_an_invalid_request_with_codex_error_info_is_unknown_delivery() -> None:
+    caught = request_error("turn/steer", {"code": -32600, "data": {"codexErrorInfo": {"other": {}}}})
     assert not isinstance(caught, SteerRejectedError)
 
 
@@ -174,10 +179,70 @@ def test_close_with_a_pending_steer_is_unknown_without_replay(tmp_path: Path) ->
         await written.wait()
         await session.close()
         with pytest.raises(CodexSteerUnknownError):
-            await steering
+            await asyncio.wait_for(steering, 0.2)
 
     asyncio.run(run())
     assert [call.args[0] for call in request.call_args_list] == ["turn/start", "turn/steer"]
+
+
+def test_receive_response_closes_steering_when_the_turn_completes(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+    session._next_event = AsyncMock(
+        return_value={
+            "method": "turn/completed",
+            "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}},
+        }
+    )
+
+    async def run() -> None:
+        await session.query("start")
+        async for _ in session.receive_response():
+            pass
+        with pytest.raises(SteerRejectedError) as caught:
+            await session.steer("late", input_id="late-1", wait=0.1)
+        assert caught.value.code is RejectCode.TURN_ENDED
+
+    asyncio.run(run())
+    assert [call.args[0] for call in request.call_args_list] == ["turn/start"]
+
+
+def test_app_server_close_marks_steering_closed(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await session.query("start")
+        await session.close()
+        with pytest.raises(SteerRejectedError) as caught:
+            await session.steer("late", input_id="late-1", wait=0.1)
+        assert caught.value.code is RejectCode.SESSION_CLOSED
+
+    asyncio.run(run())
+    assert [call.args[0] for call in request.call_args_list] == ["turn/start"]
+
+
+def test_shared_session_close_marks_steering_closed(tmp_path: Path) -> None:
+    options = CodexAppServerOptions.from_sdk_options(ClaudeAgentOptions(cwd=str(tmp_path)))
+    manager = Mock(spec=SharedCodexAppServer)
+    manager.code_home = tmp_path
+    manager.request = AsyncMock(
+        side_effect=lambda _options, method, _params: (
+            {"turn": {"id": "turn-1"}} if method == "turn/start" else {"turnId": "turn-1"}
+        )
+    )
+    manager.close_session = AsyncMock()
+    session = SharedCodexSession(options, manager=manager, resume=None)
+    session.thread_id = "thread-1"
+
+    async def run() -> None:
+        await session.query("start")
+        await session.close()
+        with pytest.raises(SteerRejectedError) as caught:
+            await session.steer("late", input_id="late-1", wait=0.1)
+        assert caught.value.code is RejectCode.SESSION_CLOSED
+
+    asyncio.run(run())
+    manager.close_session.assert_awaited_once()
+    assert manager.request.await_count == 1
 
 
 def test_two_racing_steers_are_answered_independently_and_never_replayed(tmp_path: Path) -> None:

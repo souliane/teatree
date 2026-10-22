@@ -15,6 +15,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents import codex_app_server_events
 from teatree.agents.codex_app_server_env import codex_command, codex_process_env
 from teatree.agents.codex_app_server_errors import (
+    METHOD_NOT_FOUND,
     auth_persist_error,
     managed_auth_error,
     request_error,
@@ -71,8 +72,6 @@ CODEX_APP_SERVER_CAPABILITIES = HarnessCapabilities(
     metered_lane=False,
     managed_lane=True,
 )
-
-_METHOD_NOT_FOUND = -32601
 
 
 def codex_capabilities() -> HarnessCapabilities:
@@ -370,7 +369,7 @@ class CodexAppServerSession(CodexTurnSteering):
     async def _refuse_server_request(self, message: dict[str, Any]) -> None:
         if not self._closing:
             await self._write(
-                {"id": message["id"], "error": {"code": _METHOD_NOT_FOUND, "message": "Unsupported server request."}}
+                {"id": message["id"], "error": {"code": METHOD_NOT_FOUND, "message": "Unsupported server request."}}
             )
 
     async def _respond_approval(self, message: dict[str, Any]) -> None:

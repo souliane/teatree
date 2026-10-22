@@ -42,6 +42,12 @@ def bound_task_mailbox(
             "dict[str, McpServerConfig]",
             {**servers, "teatree": {**teatree_stdio, "env": child_env}},
         )
+    if teatree_stdio is None and task.harness != "codex_app_server":
+        try:
+            yield None
+        finally:
+            options.mcp_servers = original
+        return
     active: LiveMailboxBroker | None = None
     identity: MailboxIdentity | None = None
     try:

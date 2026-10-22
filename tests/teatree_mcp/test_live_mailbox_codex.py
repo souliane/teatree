@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -17,9 +17,10 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents.codex_app_server import CodexAppServerHarness, CodexAppServerSession
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer
+from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_binding import bound_task_mailbox
-from teatree.agents.live_control import LiveFence, LiveTask, RejectCode
+from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_delivery import InboxMessage, SendReceipt
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -139,11 +140,15 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
             await session.start()
             try:
                 await session.query("wait for a peer")
-                async with registry.attach(task, _Capture()) as controller:
-                    controller.bind(_UnsteerableSession() if mode == "no-steer" else session)
-                    receipt = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
-                    again = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
-                    inbox = list(broker._by_token[peer.token].inbox)
+                refusal = patch.object(
+                    CodexTurnSteering, "steer", side_effect=SteerRejectedError(RejectCode.NOT_STEERABLE)
+                )
+                with refusal if mode == "no-steer" else nullcontext():
+                    async with registry.attach(task, _Capture()) as controller:
+                        controller.bind(session)
+                        receipt = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
+                        again = await client.send(peer.address, "nonce-5417", "message-1", timeout_seconds=0.2)
+                        inbox = list(broker._by_token[peer.token].inbox)
             finally:
                 await session.close()
         assert receipt == again
@@ -254,22 +259,33 @@ def test_the_delivery_scenario_fails_when_steering_or_routing_is_disabled(tmp_pa
     assert steers == []
     assert inbox == []
 
-    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
-        sender = broker.register(room="3", harness="claude_sdk", label="sender")
-        client = MailboxClient(sender.socket_path, sender.token)
-        assert asyncio.run(client.peers()) == []
-        absent = asyncio.run(client.send("missing-recipient", "nonce-5417", "message-2", timeout_seconds=0.2))
-        assert (absent["outcome"], absent["code"]) == ("rejected", "session_closed")
-
-
-def test_a_push_only_peer_never_claims_an_inbox_copy(tmp_path: Path) -> None:
-    for mode, outcome in (
-        ("accept", "accepted_current_turn"),
-        ("silent", "unknown_delivery"),
-        ("no-steer", "rejected"),
+    options = ClaudeAgentOptions(mcp_servers={})
+    non_codex = LiveTask(pk=8, ticket=3, phase="coding", harness="pydantic_ai", model="test")
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path) as broker,
+        bound_task_mailbox(options, non_codex, broker=broker) as peer,
     ):
-        receipt, _, inbox = _exchange(tmp_path / mode, mode=mode)
-        assert receipt["outcome"] == outcome
+        assert peer is None
+        sender = broker.register(room="3", harness="claude_sdk", label="sender")
+        assert asyncio.run(MailboxClient(sender.socket_path, sender.token).peers()) == []
+        with pytest.raises(ValueError, match="recipient is not active"):
+            broker.enqueue_from(broker.identities()[0], "missing-recipient", "nonce-5417")
+
+
+def test_a_push_only_peer_never_claims_an_inbox_copy() -> None:
+    task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
+    with tempfile.TemporaryDirectory(prefix="t3p-", dir="/tmp") as runtime_dir:
+        with LiveMailboxBroker(runtime_dir=Path(runtime_dir)) as broker:
+            recipient = broker.register(
+                room="3", harness="codex_app_server", label="recipient", task=PushOnlyTask(task)
+            )
+            sender = broker.register(room="3", harness="claude_sdk", label="sender")
+            receipt = asyncio.run(
+                MailboxClient(sender.socket_path, sender.token).send(
+                    recipient.address, "nonce-5417", "message-1", timeout_seconds=0.1
+                )
+            )
+            inbox = list(broker._by_token[recipient.token].inbox)
         assert receipt["queued_in_inbox"] is False
         assert inbox == []
 

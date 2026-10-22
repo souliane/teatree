@@ -29,7 +29,7 @@ _HTTP_STATUS_KINDS = {
     429: HarnessFallbackKind.QUOTA,
 }
 _SERVER_ERROR_STATUS_CLASS = 5
-_METHOD_NOT_FOUND = -32601
+METHOD_NOT_FOUND = -32601
 _INVALID_REQUEST = -32600
 
 
@@ -45,7 +45,7 @@ def request_error(
     if method == "turn/steer" and isinstance(payload, dict):
         if isinstance(info, dict) and "activeTurnNotSteerable" in info:
             return SteerRejectedError(RejectCode.NOT_STEERABLE)
-        if payload.get("code") == _METHOD_NOT_FOUND:
+        if payload.get("code") == METHOD_NOT_FOUND:
             return SteerRejectedError(RejectCode.NOT_STEERABLE)
         if payload.get("code") == _INVALID_REQUEST and info is None:
             return SteerRejectedError(RejectCode.TURN_ENDED)

@@ -142,6 +142,25 @@ def test_a_command_for_another_generation_is_stale() -> None:
     assert session.steered == []
 
 
+def test_a_closed_tombstone_rejects_another_fence_before_replaying_a_receipt() -> None:
+    registry = LiveSessionRegistry()
+    with OwnerLoop(registry, _TASK, _AcceptingSession()):
+        original = _steer(registry)
+
+    stale = asyncio.run(
+        registry.steer(
+            _TASK.pk,
+            "use the attached page",
+            command_id="c-1",
+            wait=0.05,
+            fence=LiveFence("old-attempt", _TASK.fence.generation),
+        )
+    )
+
+    assert original.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert (stale.outcome, stale.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+
+
 def test_a_reused_command_id_cannot_replay_into_a_new_attempt() -> None:
     registry = LiveSessionRegistry()
     old = replace(_TASK, fence=LiveFence("old", "g"))

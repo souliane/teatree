@@ -120,6 +120,19 @@ def test_steer_with_an_old_attempt_exits_3_stale_command(control_dir: Path) -> N
 
 
 @pytest.mark.usefixtures("worker")
+def test_steer_with_an_old_generation_exits_3_stale_command(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+    listed = json.loads(cli("list", "--json").stdout)
+    current = next(row for row in listed if row["task"] == 101)
+    stale = cli(
+        "steer", "101", "--text", "old", "--attempt", current["attempt"], "--generation", "old-generation", "--json"
+    )
+
+    assert stale.returncode == 3
+    assert (json.loads(stale.stdout)["outcome"], json.loads(stale.stdout)["code"]) == ("rejected", "stale_command")
+
+
+@pytest.mark.usefixtures("worker")
 def test_live_steer_without_a_fence_is_refused(control_dir: Path) -> None:
     worker = next((control_dir / "live").glob("*.sock"))
     with pytest.raises(LiveRefusedError, match="needs an attempt and generation fence"):
