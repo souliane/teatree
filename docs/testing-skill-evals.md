@@ -109,7 +109,10 @@ The fresh-run `api` lane authenticates with the credential `agent_harness_provid
 selects, resolved through `resolve_eval_credential` — **defaulting to the
 subscription `CLAUDE_CODE_OAUTH_TOKEN`** (it draws no per-token bill). TRADEOFF: the
 subscription's depleting 5h/7d window is shared with the main loop, so the CI lane is
-RIGHT-SIZED. The **weekly cron** (`eval.yml`) runs the BASELINE: each scenario ONCE at
+RIGHT-SIZED, and an eval runs on an account only while it preserves the eval reserve
+for the factory (else the lane parks green and the scenarios are owed to the nightly).
+The **weekly sweep** (`eval.yml`, checked daily, run inside the 24h before a 7-day reset)
+runs the BASELINE: each scenario ONCE at
 its baseline-pinned cheapest-passing tier (`--preset baseline`,
 `evals/presets/baseline.yaml`), single trial, with NO effort fan — the 3-tier
 `low,medium,high` benchmark fan lives ONLY in the MANUAL `eval-benchmark.yml`. A manual
@@ -166,8 +169,8 @@ to have asserted something.
 - **Model-free lanes — every PR.** `pinned-regressions` (prek hook)
   - `skill-coverage` (pytest). `t3 tool verify-gates` runs the same set locally.
 - **Fresh-run lane — weekly + on demand.** A standalone workflow
-  ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: weekly cron +
-  manual dispatch. It skips cleanly (exit 0, logged) when no PR merged in the
+  ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: a daily cron that
+  runs only inside the 24h before an account's 7-day reset, plus manual dispatch. It skips cleanly (exit 0, logged) when no PR merged in the
   lookback window, asserts `claude --version`, and passes `--require-executed`
   unconditionally, so a missing binary or all-skipped run fails RED. It
   authenticates from the `ANTHROPIC_API_KEY` secret (the metered key, never the

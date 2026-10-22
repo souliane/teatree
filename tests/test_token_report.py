@@ -21,9 +21,11 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree import token_report
+from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.credential_config import LIST_SETTING, TokenKind
+from teatree.credential_config import LIST_SETTING, AllTokensExhaustedError, TokenKind
 from teatree.llm.rate_limits import MeteredKeySnapshot, OverageUsage, RateLimitProbeError, RateLimitSnapshot
 from teatree.token_report import (
     TokenAccountPayload,
@@ -31,6 +33,8 @@ from teatree.token_report import (
     TokenReport,
     TokenSource,
     TokenStatus,
+    ci_eval_reserve_decision,
+    local_eval_reserve_decision,
     render_table,
 )
 
@@ -233,7 +237,12 @@ class TokenReportRowsTest(TestCase):
 
 
 def _stored(
-    pass_path: str, *, org: str, u7d: float = 0.1, status_7d: str = "allowed", now: dt.datetime | None = None
+    pass_path: str,
+    *,
+    org: str,
+    u7d: float = 0.1,
+    status_7d: str = "allowed",
+    now: dt.datetime | None = None,
 ) -> AnthropicTokenUsage:
     return AnthropicTokenUsage.objects.record(
         pass_path,
@@ -248,6 +257,175 @@ def _stored(
         ),
         now=now or timezone.now(),
     )
+
+
+class EvalReserveTest(TestCase):
+    def test_eval_reserve_api_is_exported(self) -> None:
+        assert {"EvalReserveDecision", "local_eval_reserve_decision", "ci_eval_reserve_decision"} <= set(
+            token_report.__all__
+        )
+
+    def test_fresh_allowlisted_oauth_account_serves_eval(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/spent", "anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/spent", org="org-spent", u7d=0.85)
+        _stored("anthropic/oauth/healthy", org="org-healthy")
+        ConfigSetting.objects.set_value(
+            "eval_ci_account_allowlist", ["anthropic/oauth/spent", "anthropic/oauth/healthy"]
+        )
+        assert ci_eval_reserve_decision().met is True
+
+    def test_stale_or_below_reserve_account_cannot_serve_eval(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/stale", "anthropic/oauth/spent"])
+        _stored("anthropic/oauth/stale", org="org-stale", now=timezone.now() - dt.timedelta(minutes=10))
+        _stored("anthropic/oauth/spent", org="org-spent", u7d=0.85)
+        accounts = ("anthropic/oauth/stale", "anthropic/oauth/spent")
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", list(accounts))
+        assert ci_eval_reserve_decision().met is False
+
+    def test_missing_window_or_allowlist_fails_closed(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/unknown"])
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/unknown",
+            TokenHealthReading(
+                organization_id="org-unknown",
+                utilization_5h=None,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/unknown"])
+        assert ci_eval_reserve_decision().met is False
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [])
+        assert ci_eval_reserve_decision().met is False
+
+
+class EvalReserveGateTest(TestCase):
+    def setUp(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-healthy")
+
+    def test_the_local_gate_reads_the_factory_accounts_without_a_ci_allowlist(self) -> None:
+        assert local_eval_reserve_decision().met is True
+
+    def test_exhausted_selector_parks_the_local_eval(self) -> None:
+        with patch("teatree.token_report.PassPathSelector.select", side_effect=AllTokensExhaustedError("spent")):
+            assert local_eval_reserve_decision().met is False
+
+    def test_the_ci_gate_refuses_without_an_allowlist(self) -> None:
+        assert ci_eval_reserve_decision().met is False
+
+    def test_the_ci_gate_reads_only_the_allowlisted_pool(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/limited"])
+        _stored("anthropic/oauth/limited", org="org-limited", u7d=0.85)
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/limited"])
+        assert ci_eval_reserve_decision().met is False
+
+    def test_low_five_hour_headroom_parks_local_and_ci_gates(self) -> None:
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/healthy",
+            TokenHealthReading(
+                organization_id="org-short",
+                utilization_5h=0.65,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        assert local_eval_reserve_decision().met is False
+        assert ci_eval_reserve_decision().met is False
+
+    def test_stale_local_row_refreshes_once_without_changing_the_sticky_pick(self) -> None:
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            assert local_eval_reserve_decision().met is True
+            assert local_eval_reserve_decision().met is True
+        assert reader.calls == [("TOK-live", True)]
+        assert AnthropicTokenUsage.objects.get(pass_path="anthropic/oauth/healthy").organization_id == "org-live"
+        assert AnthropicActivePick.objects.pick_for(TokenKind.OAUTH.value, "") is None
+
+    def test_stale_ci_row_refreshes_the_allowlisted_account(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            assert ci_eval_reserve_decision().met is True
+        assert reader.calls == [("TOK-live", True)]
+
+    def test_unreachable_stale_reading_reports_the_hold(self) -> None:
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({}, unreachable={"TOK-down"})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-down"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            decision = token_report.local_eval_reserve_decision()
+        assert decision.met is False
+        assert decision.stale is True
+        assert decision.reason == "stale OAuth headroom could not be refreshed"
+        assert reader.calls == [("TOK-down", True)]
+
+    def test_unreachable_stale_ci_reading_reports_the_hold(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", ["anthropic/oauth/healthy"])
+        _stored("anthropic/oauth/healthy", org="org-old", now=timezone.now() - dt.timedelta(hours=1))
+        reader = FakeReader({}, unreachable={"TOK-down"})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-down"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            decision = ci_eval_reserve_decision()
+        assert decision.met is False
+        assert decision.stale is True
+        assert decision.reason == "stale CI OAuth headroom could not be refreshed"
+        assert reader.calls == [("TOK-down", True)]
+
+    def test_unsettled_account_selection_fails_closed(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/alternate"])
+        _stored("anthropic/oauth/alternate", org="org-alternate")
+        selections = ["anthropic/oauth/healthy", "anthropic/oauth/alternate"] * 3
+        with patch("teatree.token_report.PassPathSelector.select", side_effect=selections):
+            decision = local_eval_reserve_decision()
+        assert decision.met is False
+        assert decision.reason == "OAuth account selection did not settle"
+
+    def test_env_only_oauth_credential_can_open_the_local_gate(self) -> None:
+        ConfigSetting.objects.filter(key=LIST_SETTING[TokenKind.OAUTH]).delete()
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "TOK-live"}),
+            patch("teatree.token_report.read_rate_limits", reader),
+        ):
+            assert local_eval_reserve_decision().met is True
+        assert reader.calls == [("TOK-live", True)]
+
+    def test_unmeasured_local_row_never_probes_and_fails_the_reserve_decision(self) -> None:
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/healthy",
+            TokenHealthReading(
+                organization_id="org-unknown",
+                utilization_5h=None,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK-live"})
+        with patch("teatree.token_report.read_rate_limits", reader), patch("teatree.token_report.read_pass", secrets):
+            assert local_eval_reserve_decision().met is False
+        assert reader.calls == []
+
+    def test_local_reserve_checks_the_account_the_selector_will_reuse(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/sticky"])
+        _stored("anthropic/oauth/sticky", org="org-sticky", u7d=0.75)
+        AnthropicActivePick.objects.set_pick(TokenKind.OAUTH.value, "", "anthropic/oauth/sticky")
+        assert local_eval_reserve_decision().met is False
 
 
 class DefaultPathNeverRendersTheCacheTest(TestCase):
@@ -311,6 +489,19 @@ class CachedRoutingViewTest(TestCase):
         assert secrets.calls == []
         assert row.organization_id == "org-stored"
         assert row.status is TokenStatus.EXHAUSTED
+
+    def test_cached_reserve_row_never_refreshes_stale_health(self) -> None:
+        account = "anthropic/oauth/acct"
+        _stored(account, org="org-stale", now=timezone.now() - dt.timedelta(hours=1))
+        secrets = RecordingSecretReader({account: "TOK-live"})
+        reader = FakeReader({"TOK-live": _live_snapshot(org="org-live")})
+
+        row, was_stale = TokenReport(reader=reader, secret_reader=secrets, from_cache=True).reserve_row(account)
+
+        assert was_stale is True
+        assert row.status.is_measured is False
+        assert reader.calls == []
+        assert secrets.calls == []
 
     def test_an_account_the_router_has_no_verdict_for_is_uncached(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/never-probed"])

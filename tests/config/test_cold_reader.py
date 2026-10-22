@@ -10,10 +10,12 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.config import cold_reader
+from teatree.config import cold_db, cold_reader
+from teatree.config.cold_db import read_readonly
 from teatree.config.host_projection import ProjectionPublisher
 
 Row = tuple[str, str, object]
@@ -33,6 +35,58 @@ _PROJECTION_SOURCE_TABLES = (
         "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
     ),
 )
+
+
+def test_cold_read_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    db = source_dir / "db.sqlite3"
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE note(body TEXT)")
+        writer.execute("INSERT INTO note VALUES ('in-wal')")
+        writer.commit()
+        wal = Path(f"{db}-wal")
+        assert wal.stat().st_size > 0
+        open_readonly = cold_db._open_readonly
+
+        def refuse_readonly(path: Path, parameters: str, busy_timeout_ms: int) -> sqlite3.Connection:
+            if parameters == "mode=ro":
+                error = sqlite3.OperationalError("unable to open database file")
+                error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+                raise error
+            return open_readonly(path, parameters, busy_timeout_ms)
+
+        with (
+            patch.object(cold_db, "_open_readonly", side_effect=refuse_readonly),
+            pytest.raises(sqlite3.OperationalError, match="-wal"),
+        ):
+            read_readonly(db, lambda connection: connection.execute("SELECT body FROM note").fetchall())
+    finally:
+        writer.close()
+
+
+def test_cold_reader_returns_none_when_wal_cannot_be_inspected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "db.sqlite3"
+    wal = Path(f"{db}-wal")
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == wal:
+            message = "permission denied"
+            raise PermissionError(message)
+        return original_stat(path, *args, **kwargs)
+
+    def refuse_readonly(path: Path, parameters: str, busy_timeout_ms: int) -> sqlite3.Connection:
+        error = sqlite3.OperationalError("unable to open database file")
+        error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+        raise error
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    monkeypatch.setattr(cold_db, "_open_readonly", refuse_readonly)
+    assert cold_db.fetch_one(db, "SELECT 1", ()) is None
 
 
 def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:

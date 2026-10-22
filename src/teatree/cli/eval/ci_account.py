@@ -17,6 +17,7 @@ import json
 import typer
 
 from teatree.backends.github.ci_eval_client import DEFAULT_CI_EVAL_REPO
+from teatree.config import get_effective_settings
 from teatree.utils.django_bootstrap import ensure_django
 
 ci_account_app = typer.Typer(help="Inspect / switch the Anthropic account CI's OAuth secret holds.")
@@ -105,7 +106,12 @@ def switch(
 
     run_start = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=starting_in)
     try:
-        outcome = _switcher(repo).switch(_rows(), run_start=run_start, dry_run=dry_run)
+        outcome = _switcher(repo).switch(
+            _rows(),
+            run_start=run_start,
+            allowlist=get_effective_settings().eval_ci_account_allowlist,
+            dry_run=dry_run,
+        )
     except NoEligibleAccountError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error

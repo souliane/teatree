@@ -12,6 +12,7 @@ from teatree.eval.benchmark_publish_guard import (
     IncompleteDashboardError,
     UnmeteredShardError,
     contaminated_shards,
+    passed_scenarios,
     verify_publishable,
 )
 from teatree.eval.matrix import MatrixRow, render_matrix_html
@@ -63,6 +64,22 @@ def _unmetered_rows(model: str) -> list[MatrixRow]:
 
 
 class TestContaminationDetection:
+    def test_a_scenario_passes_only_if_every_shard_passes_it(self, tmp_path: Path) -> None:
+        model = "claude-sonnet-5"
+        _write_shard(
+            tmp_path,
+            "clean_room-1-2",
+            [_row("alpha", model, passed=True, cost_usd=1), _row("beta", model, passed=True, cost_usd=1)],
+            [model],
+        )
+        _write_shard(
+            tmp_path,
+            "clean_room-2-2",
+            [_row("alpha", model, passed=False, cost_usd=1), _row("beta", model, passed=True, cost_usd=1)],
+            [model],
+        )
+        assert passed_scenarios(tmp_path) == ["beta"]
+
     def test_all_models_zero_cost_is_refused(self, tmp_path: Path) -> None:
         models = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
         rows = [row for model in models for row in _unmetered_rows(model)]

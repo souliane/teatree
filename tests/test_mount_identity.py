@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import pytest
+
+from teatree import mount_identity
 from teatree.mount_identity import physical_location
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 _CHECKOUT = Path("/nonexistent-t3/mnt/ws/ticket/repo")
 _BOOT = "11111111-2222-3333-4444-555555555555\n"
@@ -24,6 +28,13 @@ def _locate(table: str, boot: str = _BOOT) -> str | None:
 
 def test_an_identity_bind_reaches_the_same_directory_the_host_does() -> None:
     assert _locate(_CONTAINER_IDENTITY_BIND) == _locate(_HOST) == "259:2:/nonexistent-t3/mnt/ws/ticket/repo"
+
+
+def test_two_mount_points_in_one_runtime_identify_one_directory() -> None:
+    table = _HOST + "30 22 259:2 /nonexistent-t3/mnt/ws /alias rw - ext4 /dev/x rw\n"
+    host = physical_location(_CHECKOUT, mountinfo=table)
+    alias = physical_location(Path("/alias/ticket/repo"), mountinfo=table)
+    assert host == alias == "259:2:/nonexistent-t3/mnt/ws/ticket/repo"
 
 
 def test_a_container_private_path_never_matches_the_host() -> None:
@@ -49,6 +60,13 @@ def test_the_last_of_two_stacked_mounts_is_the_one_on_top() -> None:
     assert _locate(stacked) == "259:7:/sub/ticket/repo"
 
 
+def test_a_later_parent_mount_hides_an_earlier_child_mount() -> None:
+    table = _HOST + "30 22 259:7 /old /nonexistent-t3/mnt/ws rw - ext4 /dev/y rw\n"
+    table += "31 22 259:9 /new /nonexistent-t3/mnt rw - ext4 /dev/z rw\n"
+
+    assert _locate(table) == "259:9:/new/ws/ticket/repo"
+
+
 def test_an_escaped_mount_point_is_read_as_the_path_it_names() -> None:
     table = _HOST + r"40 22 259:3 / /nonexistent-t3/my\040home rw - ext4 /dev/w rw" + "\n"
 
@@ -66,3 +84,84 @@ def test_this_process_can_locate_a_real_directory(tmp_path: Path) -> None:
 
     assert location is not None
     assert child == f"{location.rstrip('/')}/absent/child"
+
+
+def test_a_bind_alias_is_a_spelling_of_the_directory_in_both_directions(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    alias = "/nonexistent-t3/mnt/T1/repo"
+    with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:2", "/ws", "/nonexistent-t3/mnt")):
+        table = mount_identity.parsed_mount_table(mount_identity.read_mount_table())
+        assert set(table.spellings(real)) == {str(real), alias}
+        assert set(table.spellings(alias)) == {str(real), alias}
+
+
+def test_a_spelling_shadowed_by_a_deeper_mount_is_not_offered(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    with patched_mount_table(
+        ("259:2", "/ws", str(tmp_path / "mnt")),
+        ("259:2", "/ws", "/nonexistent-t3/mnt"),
+        ("259:3", "/other", "/nonexistent-t3/mnt/T1"),
+    ):
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(real) == [str(real)]
+
+
+def test_an_alias_with_a_symlink_prefix_is_not_offered(tmp_path: Path) -> None:
+    real_root = tmp_path / "mnt"
+    (real_root / "T1" / "repo").mkdir(parents=True)
+    redirect = tmp_path / "redirect"
+    redirect.symlink_to(tmp_path / "elsewhere")
+    with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", str(redirect))):
+        path = real_root / "T1" / "repo"
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(path) == [str(path)]
+
+
+def test_the_same_root_on_another_device_is_not_a_spelling(tmp_path: Path) -> None:
+    real = tmp_path / "mnt" / "T1" / "repo"
+    real.mkdir(parents=True)
+    with patched_mount_table(("259:2", "/ws", str(tmp_path / "mnt")), ("259:3", "/ws", "/nonexistent-t3/mnt")):
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(real) == [str(real)]
+
+
+def test_spelling_scan_skips_mounts_on_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = _HOST + "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 22 259:3 /unrelated /other rw - ext4 /dev/y rw\n"
+    mount_table = mount_identity.MountTable(table)
+    holds = mount_identity._holds
+    checked: list[str] = []
+
+    def record_checked_root(root: str, target: str) -> bool:
+        checked.append(root)
+        return holds(root, target)
+
+    monkeypatch.setattr(mount_identity, "_holds", record_checked_root)
+    assert "/alias/T1/repo" in mount_table.spellings("/alias/T1/repo", resolved="/alias/T1/repo")
+    assert checked == ["/", "/ws"]
+
+
+def test_an_unreadable_mount_table_offers_no_spelling(tmp_path: Path) -> None:
+    with missing_mount_table():
+        assert mount_identity.parsed_mount_table(mount_identity.read_mount_table()).spellings(tmp_path) == []
+    assert mount_identity.parsed_mount_table("").spellings(tmp_path) == []
+    assert mount_identity.parsed_mount_table("malformed\n").spellings(tmp_path) == []
+
+
+def test_an_invalid_utf8_byte_does_not_discard_valid_mounts(tmp_path: Path, monkeypatch) -> None:
+    table = tmp_path / "mountinfo"
+    table.write_bytes((_HOST + "30 22 259:2 /nonexistent-t3/mnt/ws /alias rw - ext4 /dev/x rw\n").encode() + b"\xff\n")
+    monkeypatch.setattr(mount_identity, "_MOUNTINFO", table)
+    mount_table = mount_identity.parsed_mount_table(mount_identity.read_mount_table())
+    assert "/alias/ticket/repo" in mount_table.spellings(_CHECKOUT)
+
+
+def test_a_rootless_mount_table_follows_a_nested_mount() -> None:
+    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 30 259:3 /other /alias/T1 rw - ext4 /dev/y rw\n"
+    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) == "259:3:/other/repo"
+
+
+def test_overlapping_rootless_mounts_do_not_guess_a_covering_mount() -> None:
+    table = "30 22 259:2 /ws /alias rw - ext4 /dev/x rw\n"
+    table += "31 23 259:3 /other /alias/T1 rw - ext4 /dev/y rw\n"
+    assert physical_location(Path("/alias/T1/repo"), mountinfo=table) is None

@@ -1,6 +1,6 @@
 r"""Per-account Anthropic token-health report (``t3 tokens``).
 
-A read-oriented diagnostic over the SAME routing state the per-account selector
+A diagnostic over the SAME routing state the per-account selector
 (``teatree.credential_config``) drives: it enumerates every configured ``pass``
 entry — the per-overlay OAuth + API-key candidate lists across all scopes plus
 global — and reports each account's org id + health status, rendered per credential
@@ -21,7 +21,9 @@ for token health is asking what is true NOW, and a cached row can be wrong in ev
 was sticky at the time. ``from_cache`` (``t3 tokens --cached``) is the opt-in inverse:
 render the stored verdict, probe nothing, and say so — the view of what the ROUTER
 believes. An account with no stored verdict renders :attr:`TokenStatus.UNCACHED`, never a
-fabricated zero.
+fabricated zero. The eval reserve reader reuses a fresh stored OAuth row or probes a stale
+one and refreshes the shared cache; ``from_cache`` makes that reader return an unmeasured
+row instead of probing stale health.
 
 Rows are ordered best-account-first (:func:`_routing_preference`) so the top row is the
 one a new task should run on. Probes are independent and network-bound, so they run
@@ -44,18 +46,23 @@ health + tokens with no network or ``pass``.
 """
 
 import datetime as dt
+import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from django.utils import timezone
 
+from teatree.account_headroom import WindowReserve
+from teatree.config import get_effective_settings
 from teatree.core.models.anthropic_token_usage import (
     DEFAULT_WARNING_THRESHOLDS,
+    HEALTH_TTL,
     AnthropicTokenUsage,
     WarningThresholds,
     fingerprint_token,
 )
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.credential_config import LIST_SETTING, TokenKind, reading_from
+from teatree.credential_config import LIST_SETTING, AllTokensExhaustedError, PassPathSelector, TokenKind, reading_from
 from teatree.llm.rate_limits import (
     MeteredKeyReader,
     MeteredKeySnapshot,
@@ -77,15 +84,18 @@ from teatree.token_rows import (
     oauth_row,
     render_table,
 )
-from teatree.utils.secrets import SecretReader, read_pass
+from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
 
 __all__ = [
+    "EvalReserveDecision",
     "RowIdentity",
     "TokenAccountPayload",
     "TokenAccountRow",
     "TokenReport",
     "TokenSource",
     "TokenStatus",
+    "ci_eval_reserve_decision",
+    "local_eval_reserve_decision",
     "render_table",
 ]
 
@@ -101,6 +111,13 @@ _API_KEY_PREFIX = "sk-ant-api03"
 #: One account's probe result. A :class:`TokenStatus` means there is no reading at all
 #: (no stored token, or the probe failed) — the union keeps the network phase ORM-free.
 type ProbeOutcome = RateLimitSnapshot | MeteredKeySnapshot | TokenStatus
+
+
+@dataclass(frozen=True, slots=True)
+class EvalReserveDecision:
+    met: bool
+    reason: str = ""
+    stale: bool = False
 
 
 class TokenReport:
@@ -131,6 +148,22 @@ class TokenReport:
         now = timezone.now()
         ad_hoc = [self._ad_hoc_row(index, token, now) for index, token in enumerate(self._ad_hoc_tokens, start=1)]
         return sorted(self._pass_rows(now), key=_routing_preference) + ad_hoc
+
+    def reserve_row(self, account: str) -> tuple[TokenAccountRow, bool]:
+        """Reuse fresh OAuth health or probe and cache it; cached mode never probes stale health."""
+        identity = RowIdentity(account, TokenKind.OAUTH, TokenSource.STORE, ())
+        cached = _cached_row(identity)
+        now = timezone.now()
+        if cached.checked_at is not None and dt.timedelta() <= now - cached.checked_at <= HEALTH_TTL:
+            return cached, False
+        was_stale = cached.checked_at is not None
+        if self._from_cache:
+            return blank_row(identity, TokenStatus.UNCACHED), was_stale
+        try:
+            outcome, fingerprint = self._probe(TokenKind.OAUTH, account)
+        except SecretStoreError:
+            return blank_row(identity, TokenStatus.UNREACHABLE), was_stale
+        return _row_from(identity, outcome, now, fingerprint=fingerprint), was_stale
 
     def render(self) -> str:
         return render_table(self.rows(), from_cache=self._from_cache)
@@ -285,6 +318,85 @@ def _live_facts(snapshot: RateLimitSnapshot) -> LiveProbeFacts:
 def _band(reported: float | None, shipped: float) -> float:
     """The API's own warning band where it reports one, else teatree's shipped guess."""
     return shipped if reported is None else reported
+
+
+def _account_reserve_decision(report: TokenReport, reserve: WindowReserve, account: str) -> EvalReserveDecision:
+    row, was_stale = report.reserve_row(account)
+    if not row.status.is_measured or row.utilization_5h is None or row.utilization_7d is None:
+        if was_stale:
+            return EvalReserveDecision(met=False, reason="stale OAuth headroom could not be refreshed", stale=True)
+        return EvalReserveDecision(met=False, reason="OAuth headroom is unmeasured")
+    if reserve.allows(
+        row.utilization_5h,
+        row.next_window_reset,
+        row.utilization_7d,
+        row.weekly_reset,
+        timezone.now(),
+    ):
+        return EvalReserveDecision(met=True)
+    return EvalReserveDecision(met=False, reason="OAuth headroom is below the eval reserve")
+
+
+def _environment_eval_reserve_decision(reserve: WindowReserve) -> EvalReserveDecision:
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if not token:
+        return EvalReserveDecision(met=False, reason="no OAuth account is configured")
+    try:
+        snapshot = read_rate_limits(token, is_oauth=True)
+    except RateLimitProbeError:
+        return EvalReserveDecision(met=False, reason="environment OAuth headroom could not be read")
+    allowed = reserve.allows(
+        snapshot.unified_5h_utilization,
+        snapshot.unified_5h_reset,
+        snapshot.unified_7d_utilization,
+        snapshot.unified_7d_reset,
+        timezone.now(),
+    )
+    return EvalReserveDecision(met=allowed, reason="" if allowed else "environment OAuth headroom is below the reserve")
+
+
+def local_eval_reserve_decision() -> EvalReserveDecision:
+    reserve = WindowReserve.from_environment(os.environ)
+    selector = PassPathSelector()
+    report = TokenReport()
+    try:
+        selected = selector.select(TokenKind.OAUTH, persist_pick=False)
+    except AllTokensExhaustedError:
+        return EvalReserveDecision(met=False, reason="all configured OAuth accounts are exhausted")
+    if selected is None:
+        return _environment_eval_reserve_decision(reserve)
+    for _ in range(len(_configured()) + 1):
+        if selected is None:
+            return _environment_eval_reserve_decision(reserve)
+        decision = _account_reserve_decision(report, reserve, selected)
+        try:
+            next_selected = selector.select(TokenKind.OAUTH, persist_pick=False)
+        except AllTokensExhaustedError:
+            return EvalReserveDecision(met=False, reason="all configured OAuth accounts are exhausted")
+        if next_selected == selected:
+            return decision
+        selected = next_selected
+    return EvalReserveDecision(met=False, reason="OAuth account selection did not settle")
+
+
+def ci_eval_reserve_decision() -> EvalReserveDecision:
+    accounts = tuple(get_effective_settings().eval_ci_account_allowlist)
+    if not accounts:
+        return EvalReserveDecision(met=False, reason="CI eval account allowlist is empty")
+    configured = {row.account for row in _configured() if row.kind is TokenKind.OAUTH}
+    report = TokenReport()
+    reserve = WindowReserve.from_environment(os.environ)
+    rejected: list[EvalReserveDecision] = []
+    for account in accounts:
+        if account not in configured:
+            continue
+        decision = _account_reserve_decision(report, reserve, account)
+        if decision.met:
+            return decision
+        rejected.append(decision)
+    if any(decision.stale for decision in rejected):
+        return EvalReserveDecision(met=False, reason="stale CI OAuth headroom could not be refreshed", stale=True)
+    return EvalReserveDecision(met=False, reason="no configured CI OAuth account meets the eval reserve")
 
 
 def _cached_row(account: RowIdentity) -> TokenAccountRow:

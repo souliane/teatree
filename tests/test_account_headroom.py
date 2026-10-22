@@ -9,7 +9,7 @@ import datetime as dt
 
 import pytest
 
-from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, rank
+from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, WindowReserve, headroom_at, rank
 
 AT = dt.datetime(2026, 7, 21, 12, 0, tzinfo=dt.UTC)
 
@@ -71,3 +71,22 @@ class TestOrderTieBreak:
         second = _entry("a", h5=0.5, h7=0.5)
 
         assert [entry.account for entry in rank([first, second])] == ["a", "b"]
+
+
+class TestWindowReserveConfiguration:
+    def test_environment_overrides_both_window_floors(self) -> None:
+        reserve = WindowReserve.from_environment({"EVAL_RESERVE_5H_FREE": "0.55", "EVAL_RESERVE_7D_FREE": "0.45"})
+
+        assert (reserve.min_5h_free, reserve.min_7d_free) == (0.55, 0.45)
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("invalid", "could not convert"),
+            ("-0.1", "fractions must"),
+            ("1.1", "fractions must"),
+        ],
+    )
+    def test_invalid_environment_reserve_fails_loud(self, value: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            WindowReserve.from_environment({"EVAL_RESERVE_5H_FREE": value})

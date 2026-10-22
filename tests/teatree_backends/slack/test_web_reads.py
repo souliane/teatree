@@ -10,10 +10,12 @@ from teatree.backends.slack.web_reads import (
     _MAX_USER_PAGES,
     Getter,
     read_channel_history_or_refuse,
+    resolve_unique_active_user_id,
     resolve_user_id,
     resolve_usergroup_id,
 )
 from teatree.types import ChannelReadRefusedError, RawAPIDict
+from tests._review_nag_members import active_member as _active_user
 
 
 def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDict:
@@ -21,6 +23,106 @@ def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDic
     if next_cursor:
         data["response_metadata"] = {"next_cursor": next_cursor}
     return data
+
+
+class TestResolveUniqueActiveUserId:
+    def test_empty_handle_never_reads_directory(self) -> None:
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            raise AssertionError(method)
+
+        assert resolve_unique_active_user_id(get=get, handle=" @ ") == ""
+
+    def test_page_cap_fails_closed_for_a_partial_unique_match(self) -> None:
+        calls = 0
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            nonlocal calls
+            calls += 1
+            members = [_active_user("UPEER001", "peer")] if calls == 1 else []
+            return _members_page(members, next_cursor="more")
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+        assert calls == _MAX_USER_PAGES
+
+    def test_user_id_resolves_only_for_active_non_guest_member(self) -> None:
+        members = [_active_user("UACTIVE", "peer"), {**_active_user("UGUEST", "guest"), "is_restricted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="UACTIVE") == "UACTIVE"
+        assert resolve_unique_active_user_id(get=get, handle="UGUEST") == ""
+
+    def test_display_name_matches_casefolded_handle(self) -> None:
+        member = {**_active_user("UPEER00", "other"), "profile": {"display_name": "Review Peer"}}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="@review PEER") == "UPEER00"
+
+    def test_app_user_is_not_an_active_reviewer(self) -> None:
+        member = {**_active_user("UAPP", "peer"), "is_app_user": True}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_single_channel_guest_is_not_mentioned(self) -> None:
+        member = {**_active_user("UGUEST01", "peer"), "is_ultra_restricted": True}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unknown_deleted_status_is_not_active(self) -> None:
+        member = _active_user("UPEER001", "peer")
+        del member["deleted"]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unique_active_match_ignores_deactivated_duplicate(self) -> None:
+        members = [_active_user("UPEER00", "peer"), {**_active_user("UDEAD00", "peer"), "deleted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == "UPEER00"
+
+    def test_two_active_matches_are_ambiguous_across_pages(self) -> None:
+        pages = {
+            "": _members_page([_active_user("UONE", "peer")], next_cursor="next"),
+            "next": _members_page([_active_user("UTWO", "peer")]),
+        }
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return pages[str(params.get("cursor", ""))]
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_bot_guest_and_unknown_status_are_never_a_match(self) -> None:
+        members = [
+            {**_active_user("UBOT", "peer"), "is_bot": True},
+            {**_active_user("UGUEST", "peer"), "is_restricted": True},
+            {"id": "UUNKNOWN", "name": "peer", "deleted": False},
+        ]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unreadable_directory_raises_instead_of_looking_empty(self) -> None:
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return {"ok": False, "error": "missing_scope"}
+
+        with pytest.raises(RuntimeError, match="could not be read"):
+            resolve_unique_active_user_id(get=get, handle="peer")
 
 
 class TestResolveUserId:

@@ -199,6 +199,10 @@ async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture 
     """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window."""
     capture = capture if capture is not None else StreamCapture()
     await session.query(prompt)
+    return await drain_turn(session, capture)
+
+
+async def drain_turn(session: HarnessSession, capture: StreamCapture) -> HarnessOutcome:
     interrupted = False
     async for message in session.receive_response():
         capture.observe(message)

@@ -102,12 +102,12 @@ t3 <overlay> loops tick --loop followup --dry-run --json   # same, scoped to one
 ```
 
 **`--dry-run` (followup only) — verify a posting change without firing it at real people.** Runs the
-real followup scanners against a throwaway copy of the database and swaps ONLY the final Slack call, so every
+real built-in followup scanners against a throwaway copy of the database and swaps ONLY the final Slack call, so every
 live read, gate and decision still runs and there is no second decision surface to drift. It emits one row per
 candidate — target, author, the self/foreign/unreadable authorship verdict, the action it would have taken, the
 channel/thread, the live outcome and the refusal reason — and writes nothing: no post, no reaction, no
 `DeferredQuestion`, no `ReviewRequestPost` claim, no `OnBehalfAudit`, no `LoopLease`, and no `Loop.last_run_at`
-bump.
+bump. Overridden overlay hooks are omitted and listed as not previewed because they may write to the forge.
 
 Selection deliberately bypasses the live admission gate, because `followup` is previewed precisely while it is
 masked off — a gated preview would answer "0 candidates" and read as a clean bill of health for a scan that
@@ -117,10 +117,10 @@ It is a gate, not only a report:
 
 | exit | meaning |
 | --- | --- |
-| 0 | clean — every candidate the guard cleared is self-authored |
+| 0 | complete — every candidate the guard cleared is self-authored and no overlay hook was omitted |
 | 1 | BREACH — a candidate would be acted on that the authorship guard does not class as the owner's |
 | 2 | usage — `--dry-run` was passed with a loop other than `followup` |
-| 3 | VACUOUS — no scanner was selected (the posture forbids egress, or no messaging backend), so nothing was examined and the run proves nothing |
+| 3 | INCOMPLETE — no scanner was selected, or an overridden overlay hook was omitted and could not be certified |
 
 A foreign or unreadable candidate the guard REFUSED is the guard working: it is listed as refused and exits 0.
 

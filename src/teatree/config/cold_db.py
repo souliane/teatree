@@ -1,25 +1,13 @@
-"""Django-free stdlib sqlite plumbing for the canonical DB-home store.
+"""Django-free read-only access to the primary control DB.
 
-The raw read layer split out of :mod:`teatree.config.cold_reader` (the
-module-health function-count bar): resolving the PRIMARY config DB path, opening
-it read-only with the WAL-aware fallback, the shared single-row fetch, and the
-two non-config-setting reads built straight on that plumbing — the loop-state
-status and the generic existence probe. :mod:`teatree.config.cold_reader` layers
-the typed `ConfigSetting` value readers on top of this module.
+This path resolver deliberately targets the primary DB even from a git worktree.
+The worktree-aware resolver in :mod:`teatree.paths` selects an isolated sibling
+instead, so the few lines that choose the primary path remain separate here.
+``tests/config/test_cold_reader.py`` pins the result equal to
+``teatree.paths.TRUE_CANONICAL_DB`` to prevent the two answers from drifting.
 
-Imports only the standard library; in particular it does NOT import
-`teatree.paths`, whose module-level `resolve_data_dir` would auto-isolate a
-worktree onto a sibling DB. The deliberate inverse of that resolver:
-`canonical_config_db` always targets the PRIMARY control DB — the named
-volume `control_db_dir(env)/db.sqlite3` for the machine's canonical data dir, and
-the data dir's own file for every private copy — even from inside a git worktree
-(a `.git` *file*): config lives in one place, the installed `t3`'s DB. The ~5-line path
-computation is duplicated here rather than imported;
-`tests/config/test_cold_reader.py` pins it equal to
-`teatree.paths.TRUE_CANONICAL_DB` so the two can never drift.
-
-Every read fails OPEN to `None` / the caller's default — a missing file, a fresh
-install with no table, a locked DB, or a corrupt value never raises.
+The public cold probes convert SQLite failures to caller defaults; confirmed
+probes also report whether the query ran.
 """
 
 import os
@@ -30,12 +18,11 @@ from typing import cast
 
 from teatree.config.host_projection import HostProjection, ProjectionReader, warn_once
 from teatree.paths import ControlDb
+from teatree.sqlite_snapshot import uncheckpointed_wal
 
 #: How long a cold read waits for a contended lock before reporting the store UNREADABLE.
-#: The canonical DB runs `journal_mode=TRUNCATE` (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`
-#: dropped WAL), so a committing writer holds EXCLUSIVE and a reader genuinely blocks — the
-#: opposite of WAL, which is what the 100ms this replaces was sized for. This read
-#: wait stays far under the cold writer's and ORM tier's 30s write wait.
+#: A host-reachable copy can still run TRUNCATE, where a committing writer blocks
+#: readers. This wait stays below the cold writer's and ORM tier's 30s timeout.
 _BUSY_TIMEOUT_MS = 2000
 
 
@@ -126,16 +113,22 @@ def read_readonly[T](
 
     A WAL-format file with no live writer has no `-shm`/`-wal` sidecars, and `mode=ro` fails
     its first read when it cannot create them: `SQLITE_CANTOPEN` on older SQLite,
-    `SQLITE_READONLY_DIRECTORY` on newer. Only those codes retry; a lock is never bypassed.
+    `SQLITE_READONLY_DIRECTORY` on newer. Only those codes retry, and a nonempty
+    `-wal` forbids the immutable fallback; a lock is never bypassed.
     """
-    connection = _open_readonly(db, "mode=ro", busy_timeout_ms)
+    connection: sqlite3.Connection | None = None
     try:
+        connection = _open_readonly(db, "mode=ro", busy_timeout_ms)
         return read(connection)
     except sqlite3.OperationalError as exc:
-        if exc.sqlite_errorcode not in _QUIESCENT_WAL_READ_ERRORS:
+        if getattr(exc, "sqlite_errorcode", None) not in _QUIESCENT_WAL_READ_ERRORS:
             raise
+        if wal := uncheckpointed_wal(db):
+            message = f"Cannot use immutable fallback while {wal} is nonempty"
+            raise sqlite3.OperationalError(message) from exc
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     connection = _open_readonly(db, "immutable=1", busy_timeout_ms)
     try:
         return read(connection)

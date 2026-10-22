@@ -111,6 +111,24 @@ def test_a_peer_push_to_a_task_with_no_live_session_is_unknown_session() -> None
     assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.UNKNOWN_SESSION)
 
 
+def test_old_claim_and_worker_generation_cannot_reach_a_replacement_session() -> None:
+    registry = LiveSessionRegistry()
+    current = replace(_TASK, fence=LiveFence("claim-b", "worker-b"))
+    session = _AcceptingSession()
+    with OwnerLoop(registry, current, session):
+        for stale in (
+            LiveFence("claim-a", "worker-b"),
+            LiveFence("claim-b", "worker-a"),
+        ):
+            operator = asyncio.run(registry.follow_up(_TASK.pk, "stale", command_id="old", wait=1, fence=stale))
+            peer = asyncio.run(registry.push(_TASK.pk, "stale peer", command_id="old-peer", wait=1, fence=stale))
+            assert (operator.outcome, operator.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+            assert (peer.outcome, peer.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+        assert session.steered == []
+        accepted = asyncio.run(registry.steer(_TASK.pk, "current", command_id="new", wait=1, fence=current.fence))
+        assert accepted.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+
+
 def test_a_command_for_an_older_attempt_never_reaches_the_newer_one() -> None:
     registry = LiveSessionRegistry()
     old = replace(_TASK, fence=LiveFence("old", "generation"))

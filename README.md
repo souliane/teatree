@@ -467,7 +467,7 @@ steerable peer (`claude_sdk` or `codex_app_server`) takes it into its running tu
 framed as a peer's information rather than an operator instruction. An MCP-backed
 peer may also accept by reading its inbox; a push-only peer has no inbox copy.
 The send returns a receipt:
-`accepted_current_turn`, `accepted_inbox_read`, or `rejected` with
+`accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
 `too_large`, `session_closed`, `stale_command`, `dropped_unread` or `recipient_cannot_receive`.
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
@@ -475,8 +475,9 @@ remains in the recipient's inbox, including after a current-turn push. Retrying
 the same key waits on the original message instead of sending a second copy, and
 at most four sends per task wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
-with the message. Delivery is live-only: there is no database queue, parked-task
-delivery across hosts, or idle-session wake-up. A socket left by a worker that
+with the message. An idle `claude_sdk` peer can take one new turn during its
+60-second idle window; a parked task cannot be woken. Delivery is live-only:
+there is no database queue or parked-task delivery across hosts. A socket left by a worker that
 exited is removed before the 32-worker limit is applied. Peer listing skips an
 unresponsive socket and logs a warning; a send whose destination cannot be found
 fails if discovery was incomplete. Discovery verifies the socket's owner, private
@@ -496,6 +497,7 @@ cannot use these verbs.
 t3 teatree live list                          # every live session on this host's workers (passive)
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
 t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```
 
@@ -511,6 +513,17 @@ which the worker rejects as `stale_command`. Sessions run by `claude_sdk` and
 `codex_app_server` are steerable. Codex admits input only on a matching App Server
 `turn/steer` answer; a timeout or turn-end race is `unknown_delivery`.
 Nothing survives a worker restart.
+
+After a clean result, a `claude_sdk` session remains idle for up to 60 seconds
+while the worker renews its task and checkout leases. `follow-up` starts one new
+turn and returns `accepted_new_turn` (exit 0) once the SDK accepts its prompt;
+`not_idle` exits 3. A repeated command id and text returns its first receipt.
+Each request carries the selected session's attempt and worker generation; a stale
+request is rejected before delivery. New-turn admission renews the task claim and checkout.
+After expiry or restart, the command exits 5 with the task-list status and the
+durable route; a lost answer exits 4 and is never replayed automatically. A
+parked task resumes only through the task list. At most four follow-up turns can
+start in one session. A follow-up turn that exceeds the run's runtime ceiling is cancelled and recorded as stuck.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.

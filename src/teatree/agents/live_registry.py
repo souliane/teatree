@@ -4,7 +4,7 @@ import asyncio
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -29,6 +29,15 @@ class _LiveEntry:
     loop: asyncio.AbstractEventLoop
 
 
+@dataclass(frozen=True, slots=True)
+class _OperatorCommand:
+    text: str
+    command_id: str
+    wait: float
+    kind: str
+    fence: LiveFence
+
+
 class LiveSessionRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -36,9 +45,11 @@ class LiveSessionRegistry:
         self._closed: OrderedDict[int, LiveSessionController] = OrderedDict()
 
     @asynccontextmanager
-    async def attach(self, task: LiveTask, capture: StreamFacts) -> AsyncGenerator[LiveSessionController]:
+    async def attach(
+        self, task: LiveTask, capture: StreamFacts, *, claim_live: Callable[[], Awaitable[bool]] | None = None
+    ) -> AsyncGenerator[LiveSessionController]:
         """Publish *task* for the life of the block; its controller closes and settles on exit."""
-        entry = _LiveEntry(LiveSessionController(task, capture), asyncio.get_running_loop())
+        entry = _LiveEntry(LiveSessionController(task, capture, claim_live), asyncio.get_running_loop())
         with self._lock:
             self._live[task.pk] = entry
             self._closed.pop(task.pk, None)
@@ -66,19 +77,28 @@ class LiveSessionRegistry:
 
     async def steer(self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence) -> ControlReceipt:
         """Hand the command to the session's owning loop and await its receipt from any other loop."""
+        return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "steer", fence))
+
+    async def follow_up(
+        self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence
+    ) -> ControlReceipt:
+        return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "follow_up", fence))
+
+    async def _operator_command(self, task_pk: int, request: _OperatorCommand) -> ControlReceipt:
         with self._lock:
             entry = self._live.get(task_pk)
             tombstone = self._closed.get(task_pk)
             target = entry.controller if entry is not None else tombstone
-            if target is not None and target.task.fence != fence:
-                return ControlReceipt.rejected(command_id, task_pk, RejectCode.STALE_COMMAND)
+            if target is not None and target.task.fence != request.fence:
+                return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.STALE_COMMAND)
         if entry is None:
             if tombstone is None:
-                return ControlReceipt.rejected(command_id, task_pk, RejectCode.UNKNOWN_SESSION)
-            known = tombstone.known_receipt(command_id, text)
-            return known or ControlReceipt.rejected(command_id, task_pk, RejectCode.SESSION_CLOSED)
-        command = entry.controller.steer(text, command_id=command_id, wait=wait)
-        return await self._on_owner_loop(entry, command, command_id=command_id, wait=wait)
+                return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.UNKNOWN_SESSION)
+            known = tombstone.known_receipt(request.command_id, request.text, request.kind)
+            return known or ControlReceipt.rejected(request.command_id, task_pk, RejectCode.SESSION_CLOSED)
+        method = entry.controller.follow_up if request.kind == "follow_up" else entry.controller.steer
+        command = method(request.text, command_id=request.command_id, wait=request.wait)
+        return await self._on_owner_loop(entry, command, command_id=request.command_id, wait=request.wait)
 
     async def push(
         self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence
