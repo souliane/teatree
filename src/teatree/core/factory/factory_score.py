@@ -1,6 +1,6 @@
 """The recipe-weighted factory score (SIG-PR-2).
 
-Folds the five SIG-PR-1 signal readings into one aggregate the T4 outer loop can
+Folds the SIG-PR-1 signal readings into one aggregate the T4 outer loop can
 optimise against — but only ever an *honest* one. The honesty invariants are
 structural, not advisory. Any signal at ``instrumentation_gap`` (a silent
 recorder) or any RED report row (e.g. S4's stale-CLEAR trip) folds the whole
@@ -84,7 +84,7 @@ class ScoredSignal:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FactoryScore:
-    """The recipe-weighted aggregate over the five signals, with provenance + deltas."""
+    """The recipe-weighted aggregate over registered signals, with provenance + deltas."""
 
     aggregate: float | None
     verdict: str
@@ -122,7 +122,7 @@ def _normalize(value: float, direction: Direction, cap: float | None) -> tuple[f
     """
     if cap is not None:
         # The recipe loader permits a cap ONLY on the LOWER_IS_BETTER magnitude
-        # signals (merge_latency, repair_burn), so a capped reading always
+        # signals (merge_latency, pr_start_to_merged, repair_burn), so a capped reading always
         # normalises as "closer to zero is healthier", clamped to 0..1.
         return max(0.0, 1.0 - value / cap), True
     in_range = 0.0 <= value <= 1.0

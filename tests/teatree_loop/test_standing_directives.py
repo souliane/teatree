@@ -139,6 +139,7 @@ class TestTheThreeSlots:
 
     def test_pr_board_directive_names_the_keystone_and_its_guards(self) -> None:
         text = _text("standing-pr-board")
+        assert "List every open PR with its age and pending task, started PRs first, oldest first." in text
         assert "ticket clear" in text
         assert "ticket merge" in text
         assert "LIVE head" in text

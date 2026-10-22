@@ -1,13 +1,16 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.skill_routing as routing_mod
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.agents.skill_routing import (
+    QUOTA_AUTH_HOLD,
     AmbiguousSkillRouteError,
     ConflictingHarnessRoutingError,
     clear_route_availability_cache,
@@ -15,6 +18,7 @@ from teatree.agents.skill_routing import (
 )
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
 from teatree.core.modelkit.phases import KNOWN_PHASES
+from teatree.core.models import AgentRouteAvailability
 from teatree.types import SkillMetadata
 
 
@@ -203,6 +207,20 @@ class TestTheArchitectureDesignRoute(TestCase):
         moved = {phase for phase in before if before[phase] != after[phase]}
         assert moved == {"planning", "directive_interpreting"}
         assert {after[phase] for phase in moved} == {"architecture-design"}
+
+
+class TestDurableAvailability(TestCase):
+    def test_a_healthy_probe_after_a_hold_expires_removes_its_durable_row(self) -> None:
+        clear_route_availability_cache()
+        self.addCleanup(clear_route_availability_cache)
+        candidate = AgentRouteCandidate("codex_app_server", "gpt-5.6-codex")
+        routing_mod.record_route_unavailable("teatree", candidate, "auth failed", retry_after=QUOTA_AUTH_HOLD)
+        assert AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
+
+        with patch("django.utils.timezone.now", return_value=timezone.now() + QUOTA_AUTH_HOLD + timedelta(minutes=1)):
+            assert routing_mod.cached_unavailable_reason("teatree", candidate, lambda: None) is None
+
+        assert not AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
 
 
 def test_an_owner_another_owner_requires_yields_to_the_more_specific_one() -> None:

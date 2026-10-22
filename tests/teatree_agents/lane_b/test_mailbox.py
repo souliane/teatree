@@ -61,8 +61,8 @@ def test_a_broker_outage_returns_tool_data_and_the_agent_finishes() -> None:
 
 @pytest.mark.parametrize(
     "reply",
-    [b"garbage\n", b"x" * 2_000_001 + b"\n"],
-    ids=["malformed-json", "oversized-line"],
+    [b"garbage\n", b"x" * 2_000_001 + b"\n", b"\xff\n", b"[" * 10_000 + b"0" + b"]" * 10_000 + b"\n"],
+    ids=["malformed-json", "oversized-line", "invalid-utf8", "deeply-nested-json"],
 )
 def test_a_bad_broker_reply_is_tool_data(tmp_path: Path, reply: bytes) -> None:
     async def run() -> object:
@@ -96,7 +96,7 @@ def test_native_wait_calls_the_client_wait() -> None:
 def test_send_inbox_and_peers_round_trip_over_the_broker_socket(tmp_path: Path) -> None:
     with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
         sender = broker.register(room="ticket", harness="pydantic_ai", label="sender")
-        recipient = broker.register(room="ticket", harness="pydantic_ai", label="recipient")
+        recipient = broker.register(room="ticket", harness="pydantic_ai", label="recipient", can_receive=True)
         sending = build_mailbox_toolset(MailboxClient(sender.socket_path, sender.token), "coding").tools
         reading = build_mailbox_toolset(MailboxClient(recipient.socket_path, recipient.token), "coding").tools
 

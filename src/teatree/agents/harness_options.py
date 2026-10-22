@@ -87,5 +87,5 @@ class HarnessOptions:
             # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
             # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.
             max_turns=options.max_turns or 0,
-            mailbox=MailboxClient.from_env(identity if isinstance(identity, Mapping) else {}),
+            mailbox=MailboxClient.from_env(identity if isinstance(identity, Mapping) else options.env or {}),
         )

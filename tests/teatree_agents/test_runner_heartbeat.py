@@ -8,9 +8,9 @@ session id — deferring at most ``CHECKPOINT_MAX_DEFER_BEATS`` beats while a to
 
 import asyncio
 import contextlib
-import operator
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -24,7 +24,9 @@ from django.test import TestCase
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask, RejectCode
+from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveFence, LiveTask, RejectCode
+from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import (
     CHECKPOINT_MAX_DEFER_BEATS,
@@ -36,7 +38,7 @@ from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
 from teatree.loop.drain import set_worker_quiescing
-from tests.teatree_agents._live_fence import NEEDS_LIVE_FENCE
+from teatree.mcp.agent_mailbox import MailboxClient
 from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, result_message
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
@@ -240,12 +242,65 @@ class _OperatorSteerableSession(InterruptibleSession):
         self.steered.append(input_id)
 
     def operator_steer(self, command_id: str) -> None:
-        steer = shared_registry().steer(_TASK_PK, "stop and report", command_id=command_id, wait=0.05)
+        facts = shared_registry().facts(_TASK_PK)
+        assert facts is not None
+        steer = shared_registry().steer(
+            _TASK_PK,
+            "stop and report",
+            command_id=command_id,
+            wait=0.05,
+            fence=LiveFence(facts["attempt"], facts["generation"]),
+        )
         self.receipts.append(asyncio.run(steer))
 
     async def interrupt(self) -> None:
         await asyncio.to_thread(self.operator_steer, "after-interrupt")
         await super().interrupt()
+
+
+def test_one_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
+    class _PeerSession(InterruptibleSession):
+        def __init__(self) -> None:
+            super().__init__([], session_id=_SESSION)
+            self.received = asyncio.Event()
+
+        async def receive_response(self) -> AsyncIterator[object]:
+            await self.received.wait()
+            yield result_message(session_id=_SESSION)
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.received.set()
+
+    session = _PeerSession()
+    task = Task(pk=_TASK_PK, ticket_id=3, phase="coding")
+    harness = GuardedHarness(OneSessionHarness(session), CompactionGuard(), "codex_app_server")
+    runtime = HeartbeatRuntime(
+        watchdog=_NO_BREACH.watchdog,
+        heartbeat_interval=_NO_BREACH.heartbeat_interval,
+        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        renew_lease=_no_lease_renewal,
+        drain_reason=lambda: "",
+    )
+
+    def drive_codex() -> HarnessOutcome:
+        return asyncio.run(drive_with_heartbeat(task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        drive = pool.submit(drive_codex)
+        broker = shared_broker()
+        deadline = time.monotonic() + 5
+        while not (facts := shared_registry().facts(_TASK_PK)) or not broker.identities():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        [peer] = broker.identities()
+        participant = broker._by_address[peer["address"]]
+        assert participant.task.fence == LiveFence(facts["attempt"], facts["generation"])
+        sender = broker.register(room="3", harness="claude_sdk", label="sender")
+        receipt = asyncio.run(
+            MailboxClient(sender.socket_path, sender.token).send(peer["address"], "hello", "one", timeout_seconds=1)
+        )
+        assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
+        assert drive.result(timeout=5).result_message is not None
 
 
 @pytest.mark.parametrize(
@@ -365,7 +420,6 @@ class TestTheProductionDrainRead(TestCase):
             raws[0].execute("SELECT 1")
 
 
-@NEEDS_LIVE_FENCE
 def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox() -> None:
     mailbox_tasks: list[LiveTask] = []
     registry_tasks: list[LiveTask] = []
@@ -376,6 +430,11 @@ def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox(
     def bound_spy(options: ClaudeAgentOptions, live_task: LiveTask) -> Any:
         mailbox_tasks.append(live_task)
         with real_bound(options, live_task) as identity:
+            assert identity is not None
+            peer = shared_broker().identity_of(identity.address)
+            assert peer is not None
+            assert peer["can_receive"] is True
+            assert HarnessOptions.from_sdk_options(options).mailbox is not None
             yield identity
 
     def attach_spy(live_task: LiveTask, capture: Any) -> Any:
@@ -404,4 +463,4 @@ def test_one_pydantic_drive_publishes_one_fence_to_the_registry_and_the_mailbox(
 
     assert len(mailbox_tasks) == len(registry_tasks) == 1
     assert mailbox_tasks[0].harness == registry_tasks[0].harness == "pydantic_ai"
-    assert operator.attrgetter("fence")(mailbox_tasks[0]) == operator.attrgetter("fence")(registry_tasks[0])
+    assert mailbox_tasks[0].fence == registry_tasks[0].fence

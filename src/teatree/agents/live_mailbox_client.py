@@ -54,7 +54,7 @@ class MailboxClient:
                 raise MailboxError(_INVALID_RESPONSE)
             try:
                 response = json.loads(raw)
-            except json.JSONDecodeError as exc:
+            except (ValueError, RecursionError) as exc:
                 raise MailboxError(_INVALID_RESPONSE) from exc
             if not isinstance(response, dict):
                 raise MailboxError(_INVALID_RESPONSE)

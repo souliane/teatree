@@ -74,6 +74,15 @@ class TestHarnessOptionsFromSdk:
         assert "T3_AGENT_MAILBOX_TOKEN" not in neutral.env
         assert "T3_AGENT_MAILBOX_TOKEN" not in LaneBToolConfig.from_options(neutral, phase="coding").shell_env
 
+    def test_native_mailbox_identity_comes_from_options_env_without_an_mcp_child(self) -> None:
+        options = ClaudeAgentOptions(
+            env={"T3_AGENT_MAILBOX_SOCKET": "/tmp/mailbox.sock", "T3_AGENT_MAILBOX_TOKEN": "private-token"}
+        )
+        neutral = HarnessOptions.from_sdk_options(options)
+        assert neutral.mailbox is not None
+        assert neutral.mailbox.token == "private-token"
+        assert "T3_AGENT_MAILBOX_TOKEN" not in LaneBToolConfig.from_options(neutral, phase="coding").shell_env
+
     def test_defaults_are_empty_and_neutral(self) -> None:
         neutral = HarnessOptions.from_sdk_options(ClaudeAgentOptions())
         assert neutral.model is None

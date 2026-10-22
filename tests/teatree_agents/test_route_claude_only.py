@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from teatree.agents.harness_dispatch import DispatchHarness, candidate_selection, resolve_dispatch_harness
 from teatree.agents.harness_registry import HarnessBuildContext
+from teatree.config import get_effective_settings
 from teatree.core.models import Session, Task, TaskAttempt
 from teatree.core.models.types import validated_ticket_extra
 from tests.factories import planned_ticket
@@ -47,7 +48,7 @@ class TestClaudeOnlyTicket(TestCase):
 
     def test_the_overlay_phase_candidate_path_obeys_it_too(self) -> None:
         task = self._task(claude_only=True)
-        context = HarnessBuildContext(task=task, phase="coding", overlay="")
+        context = HarnessBuildContext(task=task, phase="coding", overlay="", settings=get_effective_settings(None))
 
         selection = candidate_selection(context, [MANAGED, CLAUDE_SDK])
 

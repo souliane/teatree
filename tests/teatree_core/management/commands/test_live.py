@@ -25,6 +25,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents import live_mailbox
+from teatree.agents.live_client import LiveClient, LiveRefusedError
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.core.models import Task
 from tests.factories import SessionFactory, TicketFactory
@@ -183,9 +184,10 @@ def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
 
     assert listed.returncode == 0, listed.stderr
     rows = {row["task"]: row for row in json.loads(listed.stdout)}
-    assert set(rows) == {101, 102, 103, 104}
+    assert set(rows) == {101, 102, 103, 104, 105}
     assert (rows[101]["harness"], rows[101]["state"], rows[101]["steerable"]) == ("claude_sdk", "busy", True)
     assert rows[104]["steerable"] is False
+    assert rows[105]["steerable"] is True
     assert inspected.returncode == 0, inspected.stderr
     assert "PASSIVE" in inspected.stderr
     assert "Bash" in inspected.stderr
@@ -193,6 +195,56 @@ def test_list_inspect_and_steer_a_live_session(control_dir: Path) -> None:
     receipt = json.loads(steered.stdout)
     assert (receipt["outcome"], receipt["command_id"], receipt["mode"]) == ("accepted_current_turn", "c-1", "active")
     assert "ACTIVE" in steered.stderr
+
+
+@pytest.mark.usefixtures("worker")
+def test_steer_with_an_old_attempt_exits_3_stale_command(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+    listed = json.loads(cli("list", "--json").stdout)
+    current = next(row for row in listed if row["task"] == 101)
+    stale = cli(
+        "steer", "101", "--text", "old", "--attempt", "old-attempt", "--generation", current["generation"], "--json"
+    )
+    accepted = cli("steer", "101", "--text", "current", "--json")
+    assert stale.returncode == 3
+    assert (json.loads(stale.stdout)["outcome"], json.loads(stale.stdout)["code"]) == ("rejected", "stale_command")
+    assert accepted.returncode == 0
+
+
+@pytest.mark.usefixtures("worker")
+def test_steer_with_an_old_generation_exits_3_stale_command(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+    listed = json.loads(cli("list", "--json").stdout)
+    current = next(row for row in listed if row["task"] == 101)
+    stale = cli(
+        "steer", "101", "--text", "old", "--attempt", current["attempt"], "--generation", "old-generation", "--json"
+    )
+
+    assert stale.returncode == 3
+    assert (json.loads(stale.stdout)["outcome"], json.loads(stale.stdout)["code"]) == ("rejected", "stale_command")
+
+
+@pytest.mark.usefixtures("worker")
+def test_live_steer_without_a_fence_is_refused(control_dir: Path) -> None:
+    worker = next((control_dir / "live").glob("*.sock"))
+    with pytest.raises(LiveRefusedError, match="needs an attempt and generation fence"):
+        LiveClient._call(
+            worker,
+            {"method": "live.steer", "task": 101, "text": "x", "command_id": "unfenced", "wait_seconds": 1},
+            timeout=2,
+        )
+
+
+@pytest.mark.usefixtures("worker")
+def test_live_steer_reaches_a_codex_session_through_the_public_cli(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+    listed = json.loads(cli("list", "--json").stdout)
+    codex = next(row for row in listed if row["task"] == 105)
+    receipt = cli("steer", "105", "--text", "nonce-5417", "--json")
+    assert (codex["harness"], codex["steerable"]) == ("codex_app_server", True)
+    assert codex["attempt"]
+    assert receipt.returncode == 0
+    assert json.loads(receipt.stdout)["outcome"] == "accepted_current_turn"
 
 
 @pytest.mark.usefixtures("worker")

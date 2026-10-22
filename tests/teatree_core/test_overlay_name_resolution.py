@@ -1,8 +1,12 @@
 """Tests for teatree.core.overlay_name_resolution — ambient + inverse overlay lookup."""
 
+from functools import lru_cache
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from teatree.core import overlay_loader, overlay_name_resolution
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.core.overlay_name_resolution import cwd_overlay_name, overlay_name_of
 
@@ -37,3 +41,23 @@ def test_cwd_overlay_name_is_none_when_discovery_raises() -> None:
     overlays = get_all_overlays()
     with patch("teatree.config.discover_active_overlay", side_effect=RuntimeError("boom")):
         assert cwd_overlay_name(overlays) is None
+
+
+@pytest.mark.parametrize(
+    ("spelling", "names", "expected"),
+    [
+        ("acme", ("t3-acme",), "t3-acme"),
+        ("acme", ("acme", "t3-acme"), "acme"),
+        ("t3-acme", ("acme", "t3-acme"), "t3-acme"),
+        ("t3-ghost", ("ghost",), "ghost"),
+        ("ghost", ("t3-acme",), None),
+        ("", ("t3-acme",), None),
+    ],
+)
+def test_registered_overlay_name_qualifies_up_to_the_registered_spelling(
+    spelling: str, names: tuple[str, ...], expected: str | None
+) -> None:
+    overlay = get_all_overlays()["t3-teatree"]
+    registry = dict.fromkeys(names, overlay)
+    with patch.object(overlay_loader, "_discover_overlays", lru_cache(maxsize=1)(lambda: registry)):
+        assert overlay_name_resolution.registered_overlay_name(spelling) == expected

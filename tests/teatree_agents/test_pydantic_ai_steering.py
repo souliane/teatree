@@ -1,8 +1,6 @@
 import asyncio
-import operator
 import threading
 from dataclasses import replace
-from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -22,7 +20,6 @@ from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePyd
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
-from tests.teatree_agents._live_fence import NEEDS_LIVE_FENCE
 
 
 def test_a_steer_is_admitted_into_the_next_model_request_and_acknowledged_only_then() -> None:
@@ -319,12 +316,11 @@ class AdmittedTextResumeTests(TestCase):
         assert "resumable nonce" in repr(resumed.history)
 
 
-@NEEDS_LIVE_FENCE
 def test_a_stale_command_never_reaches_a_pydantic_session() -> None:
     async def run() -> None:
-        registry: Any = LiveSessionRegistry()
+        registry = LiveSessionRegistry()
         task = LiveTask(pk=9, ticket=1, phase="coding", harness="pydantic_ai", model="function")
-        fence: Any = operator.attrgetter("fence")(task)
+        fence = task.fence
         stale_fences = (
             replace(fence, attempt="an-older-attempt"),
             replace(fence, generation=f"{fence.generation}-older"),

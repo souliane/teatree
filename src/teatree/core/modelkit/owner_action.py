@@ -23,6 +23,7 @@ class ActionRequest(TypedDict):
 
 
 MARKER_PREFIX = "owner-action:"
+ATTEST_MARKER_PREFIX = f"{MARKER_PREFIX}{OwnerActionKind.ATTEST}:"
 
 
 def action_marker(action: ActionRequest) -> str:
