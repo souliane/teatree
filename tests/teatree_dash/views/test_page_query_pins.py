@@ -70,10 +70,11 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
 #: and flat at both. The two land together: 21 -> 23, not 22.
 #: The board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: The cycle-time page reads merged and open pull-request flow once each: +2, O(1), flat at both.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 13,
     "dash:board_columns": 11,
-    "dash:cycle_time": 10,
+    "dash:cycle_time": 12,
     "dash:health": 23,
     "dash:health_bands": 23,
     "dash:live": 20,

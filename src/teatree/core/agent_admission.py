@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
+from teatree.core.admission.pr_start_cap import cap_hold_reason
 from teatree.core.admission_governor import (
     AdmissionCeiling,
     MachineBrake,
@@ -187,6 +188,8 @@ class AgentAdmission:
         if not _task_model().objects.record_admission(
             task_pk, cheap=cost is PhaseCost.CHEAP, lane_ceiling=lane.ceiling
         ):
+            if reason := cap_hold_reason(task_pk):
+                return reason
             if lane.ceiling is None:
                 return "already dispatched this window"
             return f"no {cost}-phase seat: already dispatched this window, or a racer took the last one"

@@ -34,7 +34,8 @@ def _valid_payload() -> dict:
             "first_try_green": {"weight": 0.25, "red_when": 0.5},
             "defect_escape": {"weight": 0.25, "red_when": 0.5},
             "review_catch": {"weight": 0.20, "red_when": 0.0},
-            "merge_latency": {"weight": 0.15, "cap": 48.0},
+            "merge_latency": {"weight": 0.05, "cap": 48.0},
+            "pr_start_to_merged": {"weight": 0.10, "cap": 96.0},
             "repair_burn": {"weight": 0.15, "cap": 5.0},
         },
     }
