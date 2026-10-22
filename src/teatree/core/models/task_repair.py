@@ -8,12 +8,20 @@ its module-health LOC cap) — the thin ``Task`` methods delegate here. The
 functions take a ``Task`` so they stay free of model-class state.
 """
 
+from django.db.models import Exists, OuterRef
+
 from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
+from teatree.core.modelkit.task_failure_taxonomy import (
+    LEASE_EXPIRED_PREFIX,
+    NON_REPAIR_KINDS,
+    classify_failure,
+    stall_fingerprints,
+)
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
+from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -24,35 +32,46 @@ from teatree.core.repair_loop import (
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 
-def phase_attempts(task: Task) -> list[TaskAttempt]:
-    """The WORK attempts of *task*'s ``(ticket, normalized-phase)``, oldest first.
-
-    Spans the re-queued ``Task`` rows of the same ticket-phase — a re-queue
-    creates a NEW ``Task`` row, so the iteration sequence is keyed on the ticket
-    + canonical phase, not a single ``Task``.
-
-    A usage-window limit-park (Directive #3) is EXCLUDED: its ``TaskAttempt`` records a
-    scheduling event, not a work iteration, so it must not burn the per-phase iteration
-    budget nor trip the identical-failure stall detector during a multi-hour outage.
-
-    A window-recoverable exhaustion FAILURE (subscription session/weekly or a transient
-    rate limit — see :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`)
-    is EXCLUDED for the same reason: capacity ran out, the run never executed a work
-    iteration. It lands FAILED (not parked) when limit auto-recovery is off or on a
-    non-parking lane, so it carries no ``LIMIT_PARKED_PREFIX`` — counting it would let two
-    identical capacity dips trip the stall detector and spuriously dead-letter the phase.
-    API-credit exhaustion (no timed reset) is NOT excluded: it is a real halt the operator
-    must clear, so it keeps burning the budget and may escalate.
-    """
-    attempts = (
-        TaskAttempt.objects.filter(
-            task__ticket_id=task.ticket_id,
-            task__phase__in=phase_spellings(normalize_phase(task.phase)),
-        )
-        .excluding_parks()
+def repair_iterations(attempts: TaskAttemptQuerySet) -> list[TaskAttempt]:
+    """Executed work attempts in a queryset, oldest first."""
+    successor = TaskAttempt.objects.filter(fallback_from_attempt_id=OuterRef("pk"))
+    work = (
+        attempts.excluding_parks()
+        .exclude(failure_kind__in=NON_REPAIR_KINDS)
+        .exclude(error__startswith=LEASE_EXPIRED_PREFIX)
+        .filter(~Exists(successor))
         .order_by("pk")
     )
-    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
+    return [attempt for attempt in work if recoverable_exhaustion_cause(attempt.error) is None]
+
+
+def ticket_phase_iterations(ticket_id: int, phase: str) -> list[TaskAttempt]:
+    """Work attempts for a ticket and normalized phase, across re-queued task rows."""
+    attempts = TaskAttempt.objects.filter(
+        task__ticket_id=ticket_id,
+        task__phase__in=phase_spellings(normalize_phase(phase)),
+    )
+    return repair_iterations(attempts)
+
+
+def phase_attempts(task: Task) -> list[TaskAttempt]:
+    """Work attempts for the task's ticket and phase."""
+    return ticket_phase_iterations(task.ticket_id, task.phase)
+
+
+def next_repair_iteration(attempt: TaskAttempt) -> int:
+    """Stamp a pending attempt against the rows the repair budget will count."""
+    if (
+        attempt.error.startswith(PARK_ERROR_PREFIXES)
+        or classify_failure(attempt.error) in NON_REPAIR_KINDS
+        or attempt.error.startswith(LEASE_EXPIRED_PREFIX)
+        or recoverable_exhaustion_cause(attempt.error) is not None
+    ):
+        return 0
+    prior = phase_attempts(attempt.task)
+    source = attempt.fallback_from_attempt
+    source_id = source.pk if source else None
+    return 1 + sum(row.pk != source_id for row in prior)
 
 
 def check_requeue_allowed(task: Task) -> None:

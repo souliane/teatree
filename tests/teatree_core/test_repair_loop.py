@@ -12,6 +12,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    LEASE_EXPIRED_PREFIX,
+    PLAN_STALE_PREFIX,
+    SUPERSEDED_PREFIX,
+)
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -164,6 +170,42 @@ class TestCheckRequeueAllowed(TestCase):
         _failed_attempt(task, error="failure A")
         # One attempt so far, distinct failures only — re-queue is fine.
         task.check_requeue_allowed()  # must not raise
+
+    def test_non_repair_kinds_do_not_spend_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for error in (f"{CANCELLED_PREFIX}operator", f"{PLAN_STALE_PREFIX}base", f"{SUPERSEDED_PREFIX}rework"):
+            _failed_attempt(task, error=error)
+
+        assert task.phase_iteration_count() == 0
+        task.check_requeue_allowed()
+
+    def test_superseded_route_hop_does_not_spend_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        source = _failed_attempt(task, error="read-only executor brief refused")
+        successor = TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            exit_code=0,
+            fallback_from_attempt=source,
+        )
+
+        assert task.phase_iteration_count() == 1
+        assert successor.iteration == 1
+        task.check_requeue_allowed()
+
+    def test_route_refusal_without_successor_still_spends_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        _failed_attempt(task, error="read-only executor brief refused")
+
+        assert task.phase_iteration_count() == 1
+
+    def test_consecutive_lease_reaps_do_not_stall_a_phase(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for _ in range(2):
+            _failed_attempt(task, error=f"{LEASE_EXPIRED_PREFIX}lease held by worker expired")
+
+        assert task.phase_iteration_count() == 0
+        task.check_requeue_allowed()
 
     def test_at_cap_raises_max_iterations_exceeded(self) -> None:
         ticket = Ticket.objects.create()

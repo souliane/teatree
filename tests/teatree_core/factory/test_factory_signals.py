@@ -37,7 +37,7 @@ from teatree.core.factory.factory_signals import (
 )
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, LEASE_EXPIRED_PREFIX
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
@@ -684,6 +684,28 @@ class S4MergeLatencyTests(FactorySignalsTestBase):
 
 
 class S5RepairBurnTests(FactorySignalsTestBase):
+    def test_route_hops_and_lease_reaps_use_the_budget_filter(self) -> None:
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1)
+        ticket = TicketFactory()
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
+        hop = TaskAttemptFactory(task=task, iteration=1, exit_code=1, error="route refusal")
+        successor = TaskAttemptFactory(task=task, iteration=1, exit_code=0, fallback_from_attempt=hop)
+        reap = TaskAttemptFactory(
+            task=task,
+            iteration=0,
+            exit_code=1,
+            error=f"{LEASE_EXPIRED_PREFIX}lease held by worker expired",
+        )
+        TaskAttempt.objects.filter(pk__in=[hop.pk, successor.pk, reap.pk]).update(
+            started_at=self.now - timedelta(days=5)
+        )
+
+        row = _row(compute_factory_signals(now=self.now), "repair_burn")
+        assert row.evidence["attempts"] == 6
+        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.evidence["success_groups"] == 6
+
     def test_low_burn_is_ok(self) -> None:
         for _ in range(5):
             self._attempt(days_ago=5, iteration=1)

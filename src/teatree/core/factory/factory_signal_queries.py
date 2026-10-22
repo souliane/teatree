@@ -23,15 +23,14 @@ from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import ReviewVerdict, Severity
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_repair import repair_iterations
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
 # A five-observation floor keeps the thresholds stable at solo-factory volume.
@@ -444,32 +443,15 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
     """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase).
 
-    Scheduling-event attempts (limit-parks, recoverable-exhaustion dips) are excluded,
-    the same rows ``task_repair.phase_attempts`` drops from the budget query and by the
-    same idiom (a DB-level park exclude for the perf win over the 340k-row park backlog,
-    then a Python recoverable-exhaustion filter) — they are capacity events, not work
-    iterations, so they neither inflate the burn mean nor the failure fraction
-    (#3689/#3690). An operator cancellation or a rework supersede (``NON_REPAIR_KINDS``)
-    is excluded the same way — the repair loop never failed on its own merits there, and
-    the incident detector (``lifecycle_incident.py``) already agrees these are not real
-    failures, so counting them here would disagree with it while describing the same
-    attempt. A high failure fraction over a meaningful sample trips a companion hard-red
-    the scalar mean alone cannot see: a window where nearly every attempt fails leaves
-    too few success groups to measure, so the mean reads low (or insufficient) while the
-    loop is on fire.
+    Uses the repair budget's work-attempt filter. A high failure fraction over a
+    meaningful sample trips a companion hard-red when few successes remain.
     """
-    attempts = (
-        TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
-        .excluding_parks()
-        .select_related("task")
+    attempts = TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end).select_related(
+        "task"
     )
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
-    rows = [
-        attempt
-        for attempt in attempts
-        if recoverable_exhaustion_cause(attempt.error) is None and attempt.failure_kind not in NON_REPAIR_KINDS
-    ]
+    rows = repair_iterations(attempts)
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     succeeded = 0
     failed = 0
