@@ -171,10 +171,10 @@ class TestGateDisableEnable:
         disabled = runner.invoke(app, ["gate", "foreign-push", "disable"])
         assert disabled.exit_code == 0, disabled.output
         assert str(canonical_db) in disabled.output
-        assert teatree_bool_setting("foreign_branch_push_gate_enabled", default=True) is False
+        assert teatree_bool_setting("foreign_branch_push_gate_enabled") is False
         enabled = runner.invoke(app, ["gate", "foreign-push", "enable"])
         assert enabled.exit_code == 0, enabled.output
-        assert teatree_bool_setting("foreign_branch_push_gate_enabled", default=True) is True
+        assert teatree_bool_setting("foreign_branch_push_gate_enabled") is True
 
 
 class TestGateIsEnabledFailsOpen:

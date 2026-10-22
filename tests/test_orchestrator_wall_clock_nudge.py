@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """Wall-clock responsiveness dimension of the orchestrator nudge (#1733 §2).
 
 The count-based nudge (#1727) steers the orchestrator to yield once a turn

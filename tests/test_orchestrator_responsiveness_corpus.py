@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """Golden corpus for orchestrator responsiveness — symmetric never-lockout guard.
 
 The orchestrator (MAIN agent) stays responsive only if it (a) never ties its

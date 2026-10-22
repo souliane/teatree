@@ -6,10 +6,10 @@ DB-home ``teatree_settings`` adapter, which resolves a gate flag from the canoni
 ``ConfigSetting`` store via the Django-free ``cold_reader`` — and every reader
 delegates to it.
 
-Two behaviors each reader must preserve. A fail-OPEN reader (``default=True``)
+Two behaviors each reader must preserve. A fail-OPEN reader (declared default ``True``)
 returns ``True`` on a missing/unreadable store and on any value except a real DB
 boolean ``false`` (a JSON string ``"false"`` does NOT disable). A fail-CLOSED
-reader (``default=False``) returns ``False`` likewise unless a real DB boolean
+reader (declared default ``False``) returns ``False`` likewise unless a real DB boolean
 ``true`` is stored. The generic helper semantics are pinned by the config twin
 ``tests/config/test_teatree_settings_db_flip.py``; this file drives each router
 reader end-to-end and proves the delegation.

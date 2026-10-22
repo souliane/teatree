@@ -54,7 +54,7 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
 
     The status exists because the value alone cannot express the difference between
     "the operator never opted in" and "this install cannot read its own settings"
-    (#3499) — the two resolve identically to the caller's default, which is why a
+    (#3499) — the two resolve identically to the setting's declared default, which is why a
     total DB-read outage stayed invisible for months. Readers that only need the
     value ignore the status; the engagement advisory and the ``t3 doctor``
     cold-hook probe branch on it.
@@ -80,7 +80,7 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     is to import nothing first-party at load.
 
     Fails open to ``None`` on ANY error — ``teatree`` still not importable, an
-    unreadable/locked DB, a missing row — so each caller's per-setting default still
+    unreadable/locked DB, a missing row — so each setting's declared default still
     stands (never-lockout). The path entry is always removed again, so a hook process
     that imports us never leaks a mutated ``sys.path`` into later handlers.
     """
@@ -128,36 +128,34 @@ def _cold_db_bool(name: str) -> bool | None:
     :func:`read_cold_setting_status`, lazily imported so this leaf stays import-light at
     load. Fails open to ``None`` on ANY error — ``teatree`` not importable, an
     unreadable/locked DB, a missing row, a non-bool value — so the caller's
-    per-setting default still stands (never-lockout).
+    declared default still stands (never-lockout).
     """
     value, _ = read_cold_setting_status(name)
     return value if isinstance(value, bool) else None
 
 
-def section_bool_setting(section: str, name: str, *, default: bool | None = None) -> bool:
+def section_bool_setting(section: str, name: str) -> bool:
     """DB-only read of a ``[section] <flag>`` boolean.
 
     Resolves the gate flag from the DB ``ConfigSetting`` store — ``section``
     ``teatree`` maps to the GLOBAL scope, the only section the cold flags use — else
-    *default*. Only a real DB bool is honoured: a quoted ``"false"`` (a str) never
-    disables a ``default=True`` flag and a quoted ``"true"`` never enables a
-    ``default=False`` one. A missing/unreadable DB row resolves to *default*, so a
+    the declared default. Only a real DB bool is honoured: a quoted ``"false"``
+    never disables a default-on flag and a quoted ``"true"`` never enables a
+    default-off one. A missing/unreadable DB row resolves to the declared default, so a
     gate never silently changes its verdict (never-lockout). A non-``teatree``
-    section has no DB scope and always resolves to *default*.
+    section has no DB scope and always resolves to the declared default.
     """
     if section == "teatree":
         db_value = _cold_db_bool(name)
         if db_value is not None:
             return db_value
-    if default is not None:
-        return default
-    declared = _declared_default(name) if section == "teatree" else None
+    declared = _declared_default(name)
     return declared if isinstance(declared, bool) else name.endswith("_gate_enabled")
 
 
-def teatree_bool_setting(name: str, *, default: bool | None = None) -> bool:
+def teatree_bool_setting(name: str) -> bool:
     """Best-effort read of a ``[teatree] <name>`` boolean flag (see :func:`section_bool_setting`)."""
-    return section_bool_setting("teatree", name, default=default)
+    return section_bool_setting("teatree", name)
 
 
 def _cold_db_int(name: str) -> int | None:
@@ -166,7 +164,7 @@ def _cold_db_int(name: str) -> int | None:
     The integer sibling of :func:`_cold_db_bool`. Delegates to :func:`_cold_read`
     and fails open to ``None`` on ANY error. REJECTS a ``bool``: a ``bool``
     subclasses ``int``, but a stored boolean must never be read as a budget, so it
-    returns ``None`` and the caller's default fires instead (never-lockout).
+    returns ``None`` and the declared default fires instead (never-lockout).
     """
     value, _ = read_cold_setting_status(name)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -174,19 +172,19 @@ def _cold_db_int(name: str) -> int | None:
     return value
 
 
-def section_int_setting(section: str, name: str, *, default: int | None = None, minimum: int | None = None) -> int:
+def section_int_setting(section: str, name: str, *, minimum: int | None = None) -> int:
     """DB-only read of a ``[section] <name>`` integer budget.
 
     The integer sibling of :func:`section_bool_setting`. Resolves from the DB
     ``ConfigSetting`` store — ``section`` ``teatree`` maps to the GLOBAL scope, the
-    only section the cold budgets use — else *default*. Only a real int (never a
-    bool) is honoured. A value below *minimum* is malformed and degrades to *default*
+    only section the cold budgets use — else the declared default. Only a real int (never a
+    bool) is honoured. A value below *minimum* is malformed and degrades to the declared default
     so the bound it encodes can't be mistyped away (a ``hook_validator_timeout_seconds``
     of ``0`` never disables the timeout); ``minimum=0`` keeps ``0`` valid so an
-    explicit "off" budget survives. A missing/unreadable DB row resolves to *default*.
-    A non-``teatree`` section has no DB scope and always resolves to *default*.
+    explicit "off" budget survives. A missing/unreadable DB row resolves to the declared default.
+    A non-``teatree`` section has no DB scope and always resolves to the declared default.
     """
-    declared = _declared_default(name) if default is None and section == "teatree" else default
+    declared = _declared_default(name)
     if not isinstance(declared, int) or isinstance(declared, bool):
         declared = int(import_module("hooks.scripts.hook_budget").HOOK_CEILING_S)
     if section == "teatree":
@@ -196,9 +194,9 @@ def section_int_setting(section: str, name: str, *, default: int | None = None, 
     return declared
 
 
-def teatree_int_setting(name: str, *, default: int | None = None, minimum: int | None = None) -> int:
+def teatree_int_setting(name: str, *, minimum: int | None = None) -> int:
     """Best-effort read of a ``[teatree] <name>`` integer budget (see :func:`section_int_setting`)."""
-    return section_int_setting("teatree", name, default=default, minimum=minimum)
+    return section_int_setting("teatree", name, minimum=minimum)
 
 
 _AUTOLOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})

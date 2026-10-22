@@ -74,12 +74,12 @@ class TestSeedThenColdRead(TransactionTestCase):
 
         # The flipped bool adapter returns the SEEDED non-default, not the in-code
         # default — so the gate stays disabled exactly as the user configured.
-        assert teatree_settings.teatree_bool_setting("auto_update_require_green_main", default=True) is False
+        assert teatree_settings.teatree_bool_setting("auto_update_require_green_main") is False
 
         # The cold reader returns the SEEDED raised budget. The hook_router int flip
         # is PR4; here the cold reader proves the int budget was seeded losslessly
         # and is cold-readable as the correct int type.
-        assert cold_reader.int_setting("hook_validator_timeout_seconds", default=60, minimum=1) == 90
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", minimum=1) == 90
 
     def test_unseeded_gate_falls_to_in_code_default_after_seed(self) -> None:
         # A gate the seed did not configure has no seeded row, so the flipped reader
@@ -92,4 +92,4 @@ class TestSeedThenColdRead(TransactionTestCase):
 
         from hooks.scripts import teatree_settings  # noqa: PLC0415
 
-        assert teatree_settings.teatree_bool_setting("completion_claim_gate_enabled", default=True) is True
+        assert teatree_settings.teatree_bool_setting("completion_claim_gate_enabled") is True

@@ -23,7 +23,7 @@ TYPED_READERS = {
 }
 
 
-def literal_default_sites(source: str) -> list[int]:
+def default_keyword_sites(source: str) -> list[int]:
     tree = ast.parse(source)
     return [
         node.lineno
@@ -33,24 +33,21 @@ def literal_default_sites(source: str) -> list[int]:
             (isinstance(node.func, ast.Name) and node.func.id.lstrip("_") in TYPED_READERS)
             or (isinstance(node.func, ast.Attribute) and node.func.attr in TYPED_READERS)
         )
-        and any(
-            keyword.arg == "default"
-            and (
-                isinstance(keyword.value, ast.Constant)
-                or (isinstance(keyword.value, ast.Name) and keyword.value.id.isupper())
-            )
-            for keyword in node.keywords
-        )
+        and any(keyword.arg == "default" for keyword in node.keywords)
     ]
 
 
 def test_the_scanner_flags_a_planted_literal() -> None:
-    assert literal_default_sites('teatree_bool_setting("x", default=True)') == [1]
+    assert default_keyword_sites('teatree_bool_setting("x", default=True)') == [1]
 
 
-def test_no_cold_read_site_passes_a_literal_default() -> None:
+def test_the_scanner_flags_a_planted_dynamic_default() -> None:
+    assert default_keyword_sites('teatree_bool_setting("x", default=chosen)') == [1]
+
+
+def test_no_cold_read_site_passes_a_default_keyword() -> None:
     sites = {
-        str(path.relative_to(ROOT)): literal_default_sites(path.read_text())
+        str(path.relative_to(ROOT)): default_keyword_sites(path.read_text())
         for base in (ROOT / "hooks", ROOT / "src")
         for path in base.rglob("*.py")
     }

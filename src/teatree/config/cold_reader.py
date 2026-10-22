@@ -14,7 +14,7 @@ plumbing (path resolution, read-only open, single-row fetch, loop-state status,
 existence probe) lives in `cold_db` and is re-exported so every existing
 `cold_reader.<name>` reference and `patch` target keeps resolving here.
 
-Every read fails OPEN to `None` / the caller's default — a missing file, a
+Every read fails OPEN to `None` / the setting's declared default — a missing file, a
 fresh install with no table, a locked DB, or a corrupt value never raises.
 """
 
@@ -185,17 +185,16 @@ def _declared_default(name: str) -> object:
 def bool_setting(
     name: str,
     *,
-    default: bool | None = None,
     scope_chain: Sequence[str] = (_GLOBAL_SCOPE,),
     db_path: Path | None = None,
 ) -> bool:
-    """The stored value only when it is a real bool, else `default`.
+    """The stored value only when it is a real bool, else its declared default.
 
     Mirrors `hooks/scripts/teatree_settings.section_bool_setting`: a quoted
-    `"false"` is a `str`, not a bool, so it never disables a `default=True` flag.
+    `"false"` is a `str`, not a bool, so it never disables a default-on flag.
     """
     value = _read_chain(name, scope_chain, db_path=db_path)
-    declared = _declared_default(name) if default is None else default
+    declared = _declared_default(name)
     fallback = declared if isinstance(declared, bool) else name.endswith("_gate_enabled")
     return value if isinstance(value, bool) else fallback
 
@@ -203,24 +202,23 @@ def bool_setting(
 def int_setting(
     name: str,
     *,
-    default: int | None = None,
     minimum: int | None = None,
     scope_chain: Sequence[str] = (_GLOBAL_SCOPE,),
     db_path: Path | None = None,
 ) -> int:
-    """The stored value only when it is a real int (not bool) at/above `minimum`, else `default`.
+    """The stored value only when it is a real int (not bool) at/above `minimum`, else its declared default.
 
     Shares the strict coercion with the hot path via
     :func:`value_coercion.strict_int` but binds the cold policy
     `accept_numeric_str=False` — a `bool` (mistyped) and a numeric string `"5"`
-    both degrade to `default` rather than raising into the cold read path. The
+    both degrade to the declared default rather than raising into the cold read path. The
     numeric-string rejection is intentional defense-in-depth: the validated write
     path (`config_setting`) stores canonical JSON ints, so a string-typed numeric
-    is unreachable here. A value below `minimum` degrades to `default` so the
+    is unreachable here. A value below `minimum` degrades to the declared default so the
     bound it encodes can't be mistyped away.
     """
     value = _read_chain(name, scope_chain, db_path=db_path)
-    declared = _declared_default(name) if default is None else default
+    declared = _declared_default(name)
     fallback = declared if isinstance(declared, int) and not isinstance(declared, bool) else 0
     try:
         coerced = value_coercion.strict_int(value, accept_numeric_str=False)
@@ -234,28 +232,26 @@ def int_setting(
 def str_setting(
     name: str,
     *,
-    default: str | None = None,
     scope_chain: Sequence[str] = (_GLOBAL_SCOPE,),
     db_path: Path | None = None,
 ) -> str:
-    """The stored value only when it is a real str, else `default` (no stringifying)."""
+    """The stored value only when it is a real str, else its declared default (no stringifying)."""
     value = _read_chain(name, scope_chain, db_path=db_path)
-    declared = _declared_default(name) if default is None else default
+    declared = _declared_default(name)
     return value if isinstance(value, str) else declared if isinstance(declared, str) else ""
 
 
 def list_setting(
     name: str,
     *,
-    default: list[object] | None = None,
     scope_chain: Sequence[str] = (_GLOBAL_SCOPE,),
     db_path: Path | None = None,
 ) -> list[object]:
-    """The stored value only when it is a real list, else `default`."""
+    """The stored value only when it is a real list, else its declared default."""
     value = _read_chain(name, scope_chain, db_path=db_path)
     if isinstance(value, list):
         return cast("list[object]", value)
-    declared = _declared_default(name) if default is None else default
+    declared = _declared_default(name)
     return cast("list[object]", declared) if isinstance(declared, list) else []
 
 

@@ -148,7 +148,7 @@ else:
 sys.path.insert(0, {scripts_dir!r})
 from teatree_settings import autoload_enabled, teatree_int_setting
 
-print(json.dumps({{"autoload": autoload_enabled(), "budget": teatree_int_setting("probe_budget", default=7)}}))
+print(json.dumps({{"autoload": autoload_enabled(), "budget": teatree_int_setting("orchestrator_turn_budget")}}))
 """
 
 
@@ -197,7 +197,7 @@ class TestColdReadersBootstrapSrc:
     def test_int_budget_reads_db_without_teatree_on_syspath(self, tmp_path: Path) -> None:
         """The bootstrap lives at the SHARED seam, so the int reader is fixed too.
 
-        ``7`` is the caller's default and ``11`` the stored row, so a value of ``11``
+        ``25`` is the declared default and ``11`` the stored row, so a value of ``11``
         can only come from a DB read that actually succeeded.
         """
         db = tmp_path / "db.sqlite3"
@@ -205,7 +205,7 @@ class TestColdReadersBootstrapSrc:
         conn = sqlite3.connect(db)
         try:
             conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'probe_budget', ?)",
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'orchestrator_turn_budget', ?)",
                 (json.dumps(11),),
             )
             conn.commit()
