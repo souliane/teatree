@@ -149,10 +149,7 @@ def gate_status(*, overlay: str | None = None) -> dict[str, Any]:
     settings = get_effective_settings(overlay or None)
     review_gate = {key: bool(getattr(settings, key)) for key in _REVIEW_GATE_KEYS}
     raw_merge_gate = {
-        _RAW_MERGE_GATE_KEY: cold_reader.bool_setting(
-            _RAW_MERGE_GATE_KEY,
-            default=bool(COLD_HOOK_SETTINGS[_RAW_MERGE_GATE_KEY].default),
-        ),
+        _RAW_MERGE_GATE_KEY: cold_reader.bool_setting(_RAW_MERGE_GATE_KEY),
     }
     return {
         "overlay": overlay or "",

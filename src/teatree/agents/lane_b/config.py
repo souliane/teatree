@@ -137,7 +137,5 @@ class LaneBToolConfig:
             read_roots=read_roots,
             phase=phase,
             shell_env=shell_env,
-            shell_max_output_bytes=cold_reader.int_setting(
-                _SHELL_MAX_OUTPUT_BYTES_KEY, default=_DEFAULT_SHELL_MAX_OUTPUT_BYTES, minimum=0
-            ),
+            shell_max_output_bytes=cold_reader.int_setting(_SHELL_MAX_OUTPUT_BYTES_KEY, minimum=0),
         )

@@ -48,7 +48,7 @@ _CHECK_CACHE_TTL_SECONDS = 15
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
-    return teatree_bool_setting("standing_goal_stop_gate_enabled", default=True)
+    return teatree_bool_setting("standing_goal_stop_gate_enabled")
 
 
 def handle_standing_goal_stop(data: dict) -> bool | None:

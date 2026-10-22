@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from hooks.scripts import teatree_settings
 from teatree.config import (
     COLD_HOOK_SETTINGS,
     COLD_SETTINGS,
@@ -42,28 +43,12 @@ _HOOK_SCRIPTS = _REPO_ROOT / "hooks" / "scripts"
 # reader's key reads here as no reader at all.
 _BOOL_FLAG_CALL = re.compile(r"(?:_)?teatree_bool_setting(?:_loud)?\(\s*[\"']([a-z0-9_]+)[\"']")
 
-# Same call WITH its ``default=`` so the registered default can be pinned to the
-# hook's own fallback — a drift between them would seed the wrong DB default.
-_BOOL_FLAG_DEFAULT = re.compile(
-    r"(?:_)?teatree_bool_setting(?:_loud)?\(\s*[\"']([a-z0-9_]+)[\"']\s*,\s*default=(True|False)\s*\)",
-)
-
 # The ``[teatree] <key>`` integer budgets ``hook_router`` reads cold through the
 # shared ``teatree_int_setting`` / ``section_int_setting`` adapter (config-unify PR4,
 # replacing the old inline ``teatree.get(...)`` ``tomllib`` reads). ``_KEY`` regexes
-# capture the budget key from either call shape; ``_DEFAULT`` regexes also capture the
-# ``default=`` constant so the registered default can be pinned to the hook's own
-# ``_DEFAULT_*`` fallback (a drift would seed the wrong DB default).
+# capture the budget key from either call shape.
 _INT_BUDGET_KEY = re.compile(r"(?:_)?teatree_int_setting\(\s*[\"']([a-z0-9_]+)[\"']")
 _SECTION_INT_BUDGET_KEY = re.compile(r"(?:_)?section_int_setting\(\s*[\"']teatree[\"']\s*,\s*[\"']([a-z0-9_]+)[\"']")
-_INT_BUDGET_DEFAULT = re.compile(
-    r"(?:_)?teatree_int_setting\(\s*[\"']([a-z0-9_]+)[\"']\s*,\s*default=(_[A-Z][A-Z0-9_]*)",
-)
-_SECTION_INT_BUDGET_DEFAULT = re.compile(
-    r"(?:_)?section_int_setting\(\s*[\"']teatree[\"']\s*,\s*[\"']([a-z0-9_]+)[\"']\s*,\s*default=(_[A-Z][A-Z0-9_]*)",
-)
-# Module-level ``_UPPER_CONST = <int>`` assignments (the default constants).
-_MODULE_INT_CONST = re.compile(r"^(_[A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\b", re.MULTILINE)
 
 
 def _enumerate_cold_int_budgets() -> set[str]:
@@ -128,18 +113,11 @@ def test_every_cold_bool_flag_has_a_registered_home() -> None:
     assert unregistered == [], f"cold-hook gate flags with no registered home: {unregistered}"
 
 
-def test_cold_bool_flag_defaults_match_the_hook_default() -> None:
-    # Pin each registered default to the hook's own ``default=`` so the DB-seeded
-    # default can never drift from what the cold reader falls back to.
-    declared: dict[str, bool] = {}
-    for script in _HOOK_SCRIPTS.rglob("*.py"):
-        for key, value in _BOOL_FLAG_DEFAULT.findall(script.read_text(encoding="utf-8")):
-            declared[key] = value == "True"
-    homes = {**COLD_SETTINGS, **COLD_HOOK_SETTINGS}
-    registered = {key: want for key, want in declared.items() if key in homes}
-    drifted = sorted(key for key, want in registered.items() if homes[key].default is not want)
-    assert drifted == [], f"registered cold-hook default disagrees with the hook: {drifted}"
-    assert len(registered) >= 10
+def test_cold_bool_flag_defaults_match_the_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(teatree_settings, "_cold_db_bool", lambda _name: None)
+    for key, entry in {**COLD_SETTINGS, **COLD_HOOK_SETTINGS}.items():
+        if isinstance(entry.default, bool) and key in _enumerate_cold_bool_flags():
+            assert teatree_settings.teatree_bool_setting(key) is entry.default, key
 
 
 def test_int_budget_cold_reads_equal_the_registered_int_keys() -> None:
@@ -160,24 +138,10 @@ def test_int_budget_cold_reads_equal_the_registered_int_keys() -> None:
     assert budgets == _registered_int_keys()
 
 
-def test_int_budget_defaults_match_the_registered_default() -> None:
-    # Pin each budget's ``default=`` constant to the registered COLD_HOOK_SETTINGS
-    # default so the DB-seeded default can never drift from the hook's own fallback.
-    const_values: dict[str, int] = {}
-    declared: dict[str, str] = {}
-    for script in _HOOK_SCRIPTS.rglob("*.py"):
-        text = script.read_text(encoding="utf-8")
-        const_values.update({name: int(value) for name, value in _MODULE_INT_CONST.findall(text)})
-        declared.update(_INT_BUDGET_DEFAULT.findall(text))
-        declared.update(_SECTION_INT_BUDGET_DEFAULT.findall(text))
-
-    assert set(declared) == _registered_int_keys(), "every registered int budget must expose a resolvable default="
-    for key, const in declared.items():
-        hook_default = const_values[const]
-        registered = COLD_HOOK_SETTINGS[key].default
-        assert registered == hook_default, (
-            f"registered default for {key!r} ({registered}) drifted from the hook default {hook_default}"
-        )
+def test_int_budget_defaults_match_the_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(teatree_settings, "_cold_db_int", lambda _name: None)
+    for key in _registered_int_keys():
+        assert teatree_settings.teatree_int_setting(key) == COLD_HOOK_SETTINGS[key].default
 
 
 def test_cold_hook_settings_disjoint_from_overridable_registry() -> None:

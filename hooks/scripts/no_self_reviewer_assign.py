@@ -132,7 +132,7 @@ def _gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("no_self_reviewer_assign_gate_enabled", default=True)
+    return _teatree_bool_setting("no_self_reviewer_assign_gate_enabled")
 
 
 def _body_flag_pattern(skeleton: str) -> "re.Pattern[str] | None":

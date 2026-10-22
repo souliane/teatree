@@ -21,6 +21,8 @@ resolves to the per-setting default, so a gate never silently flips its verdict
 import contextlib
 import os
 import sys
+from collections.abc import Generator
+from importlib import import_module
 from pathlib import Path
 
 # Alias both identities so a bare ``from teatree_settings import ...`` (the live
@@ -82,22 +84,41 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     stands (never-lockout). The path entry is always removed again, so a hook process
     that imports us never leaks a mutated ``sys.path`` into later handlers.
     """
+    with _teatree_src_on_path():
+        read = None
+        with contextlib.suppress(Exception):
+            reader = import_module("teatree.config.cold_reader")
+            read = reader.read_setting_confirmed(name, scope=_GLOBAL_SCOPE)
+        if read is None:
+            return None, COLD_READ_UNREADABLE
+        return read.value, (COLD_READ_OK if read.readable else COLD_READ_UNREADABLE)
+
+
+@contextlib.contextmanager
+def _teatree_src_on_path() -> Generator[None]:
     src_dir = str(Path(__file__).resolve().parents[2] / "src")
     added = src_dir not in sys.path
     if added:
         sys.path.insert(0, src_dir)
     try:
-        from teatree.config.cold_reader import read_setting_confirmed  # noqa: PLC0415 — deferred: cold-hook import
-
-        read = read_setting_confirmed(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None, COLD_READ_UNREADABLE
-    else:
-        return read.value, (COLD_READ_OK if read.readable else COLD_READ_UNREADABLE)
+        yield
     finally:
         if added:
             with contextlib.suppress(ValueError):
                 sys.path.remove(src_dir)
+
+
+def _declared_default(name: str) -> object | None:
+    resolution = None
+    value = None
+    with _teatree_src_on_path(), contextlib.suppress(Exception):
+        registries = import_module("teatree.config.registries")
+        entry = registries.COLD_HOOK_SETTINGS.get(name) or registries.COLD_SETTINGS.get(name)
+        if entry is not None:
+            return entry.default
+        resolution = import_module("teatree.config.resolution")
+        value = resolution.effective_default(name)
+    return None if resolution is None or value is resolution.NO_EFFECTIVE_DEFAULT else value
 
 
 def _cold_db_bool(name: str) -> bool | None:
@@ -113,7 +134,7 @@ def _cold_db_bool(name: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def section_bool_setting(section: str, name: str, *, default: bool) -> bool:
+def section_bool_setting(section: str, name: str, *, default: bool | None = None) -> bool:
     """DB-only read of a ``[section] <flag>`` boolean.
 
     Resolves the gate flag from the DB ``ConfigSetting`` store — ``section``
@@ -128,10 +149,13 @@ def section_bool_setting(section: str, name: str, *, default: bool) -> bool:
         db_value = _cold_db_bool(name)
         if db_value is not None:
             return db_value
-    return default
+    if default is not None:
+        return default
+    declared = _declared_default(name) if section == "teatree" else None
+    return declared if isinstance(declared, bool) else name.endswith("_gate_enabled")
 
 
-def teatree_bool_setting(name: str, *, default: bool = True) -> bool:
+def teatree_bool_setting(name: str, *, default: bool | None = None) -> bool:
     """Best-effort read of a ``[teatree] <name>`` boolean flag (see :func:`section_bool_setting`)."""
     return section_bool_setting("teatree", name, default=default)
 
@@ -150,7 +174,7 @@ def _cold_db_int(name: str) -> int | None:
     return value
 
 
-def section_int_setting(section: str, name: str, *, default: int, minimum: int | None = None) -> int:
+def section_int_setting(section: str, name: str, *, default: int | None = None, minimum: int | None = None) -> int:
     """DB-only read of a ``[section] <name>`` integer budget.
 
     The integer sibling of :func:`section_bool_setting`. Resolves from the DB
@@ -162,14 +186,17 @@ def section_int_setting(section: str, name: str, *, default: int, minimum: int |
     explicit "off" budget survives. A missing/unreadable DB row resolves to *default*.
     A non-``teatree`` section has no DB scope and always resolves to *default*.
     """
+    declared = _declared_default(name) if default is None and section == "teatree" else default
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        declared = int(import_module("hooks.scripts.hook_budget").HOOK_CEILING_S)
     if section == "teatree":
         db_value = _cold_db_int(name)
-        if db_value is not None:
-            return db_value if minimum is None or db_value >= minimum else default
-    return default
+        if db_value is not None and (minimum is None or db_value >= minimum):
+            return db_value
+    return declared
 
 
-def teatree_int_setting(name: str, *, default: int, minimum: int | None = None) -> int:
+def teatree_int_setting(name: str, *, default: int | None = None, minimum: int | None = None) -> int:
     """Best-effort read of a ``[teatree] <name>`` integer budget (see :func:`section_int_setting`)."""
     return section_int_setting("teatree", name, default=default, minimum=minimum)
 

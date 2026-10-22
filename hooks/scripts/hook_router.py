@@ -388,7 +388,7 @@ def _danger_gate_fail_open_enabled() -> bool:
     Read through the Django-free cold reader, so a deny never boots Django; any
     unreadable or non-bool value fails CLOSED to disabled, never relaxing every gate.
     """
-    return _teatree_bool_setting("danger_gate_fail_open", default=False)
+    return _teatree_bool_setting("danger_gate_fail_open")
 
 
 def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -> bool:
@@ -792,7 +792,7 @@ def _skill_loading_gate_enabled() -> bool:
     a code edit). See :func:`_teatree_bool_setting` for the shared bare-boolean
     semantics.
     """
-    return _teatree_bool_setting("skill_loading_gate_enabled", default=True)
+    return _teatree_bool_setting("skill_loading_gate_enabled")
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
@@ -882,7 +882,7 @@ def _plan_edit_gate_enabled() -> bool:
     (``t3 <overlay> gate plan disable``, never a code edit). See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("plan_edit_gate_enabled", default=True)
+    return _teatree_bool_setting("plan_edit_gate_enabled")
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -1673,7 +1673,7 @@ def _orchestrator_bash_gate_enabled() -> bool:
     user disable it with one config line (never a code edit). See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("orchestrator_bash_gate_enabled", default=True)
+    return _teatree_bool_setting("orchestrator_bash_gate_enabled")
 
 
 def _orchestrator_boundary_agent_gate_enabled() -> bool:
@@ -1704,7 +1704,7 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     protective default; only an explicit bare ``false`` is the kill-switch. See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled", default=True)
+    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled")
 
 
 def _deny_foreground_agent_dispatch(data: dict) -> bool:
@@ -1905,8 +1905,6 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
 _TURN_TOOL_COUNT_SUFFIX = "turn-tool-count"
 _TURN_NUDGED_SUFFIX = "turn-budget-nudged"
 _TURN_START_SUFFIX = "turn-start-monotonic"
-_DEFAULT_ORCHESTRATOR_TURN_BUDGET = 25
-_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS = 180
 
 
 def _orchestrator_turn_budget() -> int:
@@ -1918,7 +1916,7 @@ def _orchestrator_turn_budget() -> int:
     with one config line, never a code edit — while a below-zero or non-int value
     falls back to the default.
     """
-    return _teatree_int_setting("orchestrator_turn_budget", default=_DEFAULT_ORCHESTRATOR_TURN_BUDGET, minimum=0)
+    return _teatree_int_setting("orchestrator_turn_budget", minimum=0)
 
 
 def _orchestrator_turn_wall_clock_threshold() -> int:
@@ -1930,9 +1928,7 @@ def _orchestrator_turn_wall_clock_threshold() -> int:
     disables the wall-clock dimension with one config line — while a below-zero or
     non-int value falls back to the default.
     """
-    return _teatree_int_setting(
-        "orchestrator_turn_wall_clock_seconds", default=_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS, minimum=0
-    )
+    return _teatree_int_setting("orchestrator_turn_wall_clock_seconds", minimum=0)
 
 
 def handle_reset_turn_tool_budget(data: dict) -> None:

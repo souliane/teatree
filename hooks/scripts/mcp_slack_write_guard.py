@@ -106,7 +106,7 @@ def _gate_enabled() -> bool:
     try:
         from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-        return _teatree_bool_setting("mcp_slack_write_gate_enabled", default=True)
+        return _teatree_bool_setting("mcp_slack_write_gate_enabled")
     except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
         return True
 

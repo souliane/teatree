@@ -392,7 +392,7 @@ def _contribute_enabled() -> bool:
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — pre-Django read off the module-load path
 
-    return cold_reader.bool_setting("contribute", default=False)
+    return cold_reader.bool_setting("contribute")
 
 
 def _overlay_editable_from_source(top_package: str) -> bool:
