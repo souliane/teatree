@@ -1,7 +1,7 @@
 """The admission score shared by both headless chokepoints, loop claims and task-list inspection.
 
 One score per waiting task, the sum of named parts, highest first; a started pull request's
-first admission breaks ties before the older task row. Every caller orders through
+earliest current admission breaks ties before the older task row. Every caller orders through
 :data:`ADMISSION_ORDER`, so a new part is added here without touching any of them.
 """
 

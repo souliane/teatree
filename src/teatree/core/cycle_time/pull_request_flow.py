@@ -1,4 +1,4 @@
-"""Elapsed PR time from first admission, then first transition or PR creation when missing."""
+"""Elapsed PR time from the current admission stamp, then first transition or PR creation when missing."""
 
 from dataclasses import dataclass
 from datetime import datetime

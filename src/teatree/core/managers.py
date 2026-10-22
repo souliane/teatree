@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
 from django.db.models import Exists, OuterRef, Q
-from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
@@ -538,9 +537,6 @@ class TaskQuerySet(models.QuerySet):
         return bool(
             seat.update(
                 admitted_at=now,
-                first_admitted_at=Coalesce(
-                    "first_admitted_at", "admitted_at", models.Value(now), output_field=models.DateTimeField()
-                ),
             )
         )
 

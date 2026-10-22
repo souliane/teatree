@@ -28,16 +28,9 @@ def _pull_request_start_expression() -> models.Expression:
     transition_row = apps.get_model("core", "TicketTransition")
     first_admission = (
         task.objects.filter(ticket_id=models.OuterRef("ticket_id"))
-        .filter(models.Q(first_admitted_at__isnull=False) | models.Q(admitted_at__isnull=False))
-        .annotate(
-            _earliest_admission=Least(
-                Coalesce("first_admitted_at", "admitted_at"),
-                Coalesce("admitted_at", "first_admitted_at"),
-                output_field=models.DateTimeField(),
-            )
-        )
-        .order_by("_earliest_admission", "pk")
-        .values("_earliest_admission")[:1]
+        .filter(admitted_at__isnull=False)
+        .order_by("admitted_at", "pk")
+        .values("admitted_at")[:1]
     )
     first_transition = (
         transition_row.objects.filter(ticket_id=models.OuterRef("ticket_id"))
@@ -56,7 +49,7 @@ def _pull_request_start_expression() -> models.Expression:
         created,
         output_field=models.DateTimeField(),
     )
-    # The creation stamp bounds old rows whose first admission was already lost.
+    # Creation bounds a renewed admission stamp that is later than the pull request.
     return Least(start, Coalesce(created, start), output_field=models.DateTimeField())
 
 
