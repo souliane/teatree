@@ -1424,8 +1424,8 @@ Fields:
 - `agent_path` — path to a `SKILL.md` (relative to the teatree repo root).
 - `prompt` — full prompt text passed as the user message.
 - `tier` — abstract model tier (`frontier` / `balanced` / `cheap`), resolved to a
-  concrete model id through the single `teatree.agents.model_tiering.TIER_MODELS`
-  constant. Optional; wins over `phase`, loses to an explicit `model`.
+  concrete model id through the single `teatree.agents.model_tiering.tier_models()`
+  map. Optional; wins over `phase`, loses to an explicit `model`.
 - `phase` — a teatree FSM phase name (`planning` / `coding` / `reviewing` / …),
   resolved to its tier via `DEFAULT_PHASE_MODELS` (an unmapped phase falls back to
   the default tier) then to a model. Optional; loses to `model` and `tier`.
@@ -1433,7 +1433,7 @@ Fields:
   default unset; when unset the model resolves from `tier` / `phase` / the default
   tier (`balanced`). **Resolution precedence: `model` > `tier` > `phase` >
   default tier.** No concrete model id is ever baked into a scenario by default —
-  adopt a new model by editing `TIER_MODELS` (or `[agent.tier_models]`), with no
+  adopt a new model by editing the `agent_tier_models` default (or `[agent.tier_models]`), with no
   scenario edit.
 - `max_turns` — turn budget for the CLI (default `30`, the generous
   `DEFAULT_MAX_TURNS`; env `T3_EVAL_MAX_TURNS`).
@@ -1702,7 +1702,7 @@ rule is about the catalog's OWN default resolution path, not about removing
 
 Mechanically, a scenario CAN pin `tier: frontier` (or a concrete `model:` id)
 in its `evals/scenarios/*.yaml` spec — both are loader-validated against
-`TIER_MODELS` and honored by the normal eval lanes the same as any other tier.
+`tier_models()` and honored by the normal eval lanes the same as any other tier.
 But doing so on a scenario shipped under `evals/scenarios/` also trips the
 catalog-wide guard above: `tests/eval_replay/test_catalog_never_resolves_frontier.py`
 fails on ANY shipped scenario that resolves to the frontier model, by any path.

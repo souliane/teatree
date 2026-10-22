@@ -130,7 +130,7 @@ class Scenario:
     #: Explicit abstract tier (``frontier``/``balanced``/``cheap``). Empty → the
     #: tier is INFERRED from ``agent_path`` (see :func:`infer_tier_or_phase`). The
     #: emitted YAML carries ``tier:`` or ``phase:``, never a concrete model id —
-    #: the single ``teatree.agents.model_tiering.TIER_MODELS`` constant owns ids.
+    #: ``teatree.agents.model_tiering.tier_models()`` owns ids.
     tier: str = ""
     #: Per-scenario metered-budget ceiling (USD). ``None`` leaves the lane default
     #: ($1.0). A scenario whose CORRECT trajectory legitimately dispatches a
@@ -233,7 +233,7 @@ def infer_tier_or_phase(agent_path: str) -> str:
 
     Maps the skill the scenario exercises to a teatree FSM phase (resolved to a
     tier at run time) or, when no phase fits, the ``balanced`` tier. The single
-    ``teatree.agents.model_tiering.TIER_MODELS`` constant owns the concrete model
+    ``teatree.agents.model_tiering.tier_models()`` owns the concrete model
     ids — this emits an ABSTRACT tier/phase only, never a model id.
 
     A phase that :data:`teatree.agents.model_tiering.DEFAULT_PHASE_MODELS`

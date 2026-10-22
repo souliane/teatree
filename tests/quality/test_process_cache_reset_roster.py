@@ -187,8 +187,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.eval.cost_observation:suite_budget_from_env": "_reset_suite_budget",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
-    # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
-    # below because nothing but the resolver reads that one.
+    # later import against the wrong shipped table.
     "teatree.config.seed_defaults:_cache": "reset_seed_defaults_cache",
     # Open descriptors holding kernel flocks on E2E specs checkouts. A CLI run IS the
     # process, so process-lifetime is the right production lifetime — but a test process
@@ -251,18 +250,13 @@ EXEMPT: dict[str, str] = {
     "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
         "import-populated constant; not mutated at runtime"
     ),
-    "teatree.config.cold_defaults:_cache": (
-        "single-entry mtime-keyed memo of the packaged defaults.toml, self-evicting (clears itself on "
-        "each parse so it holds at most the current mtime); keyed by an immutable-in-production file, "
-        "so resetting it would only force a re-parse of the identical file — it isolates no test state"
-    ),
-    "teatree.config.schema:_NO_INIT_OVERRIDES": (
-        "empty-overrides constant spread into the shipped_defaults() constructor; never mutated at runtime"
-    ),
     "teatree.config.schema:shipped_defaults": (
-        "@lru_cache singleton of the pydantic model built from the packaged defaults.toml; process-stable "
-        "(the file is immutable in production and no test rebinds _DEFAULTS_TOML), so resetting it would "
-        "only rebuild the identical model"
+        "@lru_cache singleton of the pydantic model built from the setting declarations; process-stable "
+        "(declarations are import-time constants), so resetting it would only rebuild the identical model"
+    ),
+    "teatree.config.setting_help:all_setting_help": (
+        "@lru_cache dict derived from the setting declarations; import-time constants no test rebinds, so "
+        "resetting it would only rebuild the identical dict"
     ),
     "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
         "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
