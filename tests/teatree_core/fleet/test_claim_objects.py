@@ -16,6 +16,7 @@ enforceable — and its metadata still READABLE from the remote — after the cy
 so "leave nothing behind" can never be satisfied by dropping a live claim.
 """
 
+import re
 from pathlib import Path
 
 from teatree.core.fleet import claim as fleet_claim
@@ -29,7 +30,11 @@ _TTL = 100.0
 
 def _loose_objects(repo: Path) -> set[Path]:
     root = repo / ".git" / "objects"
-    return {path for path in root.rglob("*") if path.is_file() and "pack" not in path.relative_to(root).parts}
+    return {
+        path
+        for path in root.rglob("*")
+        if path.is_file() and re.fullmatch(r"[0-9a-f]{2}/[0-9a-f]{38}", path.relative_to(root).as_posix())
+    }
 
 
 def _origin(tmp_path: Path, name: str = "clone") -> tuple[Path, Path]:
@@ -48,6 +53,13 @@ def test_probe_detects_an_unisolated_object_write(tmp_path: Path) -> None:
     before = _loose_objects(clone)
     _write_claim_commit_unisolated(clone)
     assert _loose_objects(clone) > before
+
+
+def test_probe_ignores_git_maintenance_lock(tmp_path: Path) -> None:
+    _, clone = _origin(tmp_path)
+    before = _loose_objects(clone)
+    (clone / ".git" / "objects" / "maintenance.lock").touch()
+    assert _loose_objects(clone) == before
 
 
 def test_acquire_and_heartbeat_write_no_objects_into_the_clone(tmp_path: Path) -> None:

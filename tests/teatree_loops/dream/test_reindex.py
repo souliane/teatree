@@ -1,8 +1,8 @@
 """Phase 5 — regenerate the ``MEMORY.md`` index from the memory set (#1933 § 6).
 
 Fixture-only: tmp dir, never the real ``~/.claude``. The contract: one bare
-``- name.md`` pointer per memory (no free-text summary, so the whole index stays
-under the ~24 KB byte budget at a realistic corpus, #2755), deduped, stably
+``- name.md`` pointer per memory (no free-text summary, so each hot memory costs
+its filename and nothing more, #2755), deduped, stably
 ordered, no content moved into the index, and BYTE-IDENTICAL on a re-run with no
 changes.
 """
@@ -134,14 +134,11 @@ class ReindexTestCase(SimpleTestCase):
         assert "mem_a.md" in index
         assert "broken.md" not in index
 
-    def test_realistic_corpus_stays_under_budget(self) -> None:
-        # #2755: the re-index must keep the WHOLE index under the ~24 KB
-        # session-load byte budget at a realistic corpus. The old
-        # ``- name.md — summary`` form rendered ~228 memories with ~50-byte filenames
-        # OVER budget (undoing curated compaction); the bare ``- name.md`` pointer form
-        # fits every pointer with room to spare. Anti-vacuous: this fixture renders
-        # ~25 KB under the old summary generator (RED against both thresholds) and
-        # ~14 KB under the bare-pointer one (GREEN), and every memory keeps one pointer.
+    def test_realistic_corpus_renders_bare_pointers(self) -> None:
+        # #2755: each hot memory costs its filename, nothing more, so the hot set is as large
+        # as the budget allows. The old ``- name.md — summary`` form rendered ~228 memories
+        # with ~50-byte filenames at ~25 KB; the bare ``- name.md`` pointer form at ~14 KB.
+        # The budget itself is enforced by the decay tier, not here: this renderer stays total.
         count = 228
         names = []
         for i in range(count):
@@ -156,22 +153,20 @@ class ReindexTestCase(SimpleTestCase):
         index = render_index(self.dir)
         size = len(index.encode("utf-8"))
         assert size < 17_000, f"index is {size} bytes; must stay under the ~17 KB curated target"
-        assert size < gates.INDEX_BYTE_BUDGET
         pointer_lines = [line for line in index.splitlines() if line.startswith("- ")]
         assert len(pointer_lines) == count  # one pointer line per memory
         assert all(index.count(name) == 1 for name in names)  # every file linked exactly once
 
-    def test_generated_header_carries_the_load_budget_guidance(self) -> None:
-        # #4385: the header regenerates wholesale, so the curated line documenting the load
-        # limit — and the rule that settled per-ticket records leave this index — was
-        # destroyed on every pass and the next reader had no way to know a limit existed.
-        # With no MEMORY_PRIORITY.md present, the GENERATED header must carry both.
+    def test_generated_header_is_a_title_and_one_recall_pointer(self) -> None:
+        # #4997: the header regenerates wholesale and every line of it is paid by every session,
+        # so it carries the one thing a reader cannot discover: how to reach the archived rest.
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
-        index = render_index(self.dir)
-        assert f"~{gates.INDEX_LINE_DRAIN_TARGET} lines" in index
-        assert f"past {gates.INDEX_LINE_BUDGET} on load" in index
-        assert "Resolved per-ticket records are archived out of this index by decay" in index
-        assert "`archive/` holds the body" in index
+        header = render_index(self.dir).split("- mem_a.md")[0]
+        assert [line for line in header.splitlines() if line] == [
+            "# Auto Memory — Index",
+            "> Hot memories only. The rest: `t3 <overlay> memory recall <query>`; bodies under `archive/`.",
+        ]
+        assert header.strip().splitlines()[-1] in reindex.GENERATED_HEADER_LINES
 
     def test_render_index_never_truncates_over_budget(self) -> None:
         # #4385 AV-3: the renderer stays TOTAL — one pointer per memory, no cap — and lets

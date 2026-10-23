@@ -6,26 +6,12 @@ import pytest
 
 from teatree.agents import codex_app_server_options
 from teatree.skill_support import index as skill_index
-from teatree.utils import secrets
 
 
 @pytest.fixture(autouse=True)
 def codex_on_a_host(monkeypatch: pytest.MonkeyPatch) -> None:
     # CI jobs run in containers; pin the venue so host expectations never flip on a runner.
     monkeypatch.setattr(codex_app_server_options, "running_in_container", lambda: False)
-
-
-@pytest.fixture(autouse=True)
-def no_real_pass_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`pass` fails as if absent: the Codex auth cache binds its readers as default args, so patching them misses."""
-    real = secrets.run_bounded_group
-
-    def guarded(argv: list[str], *args: Any, **kwargs: Any) -> Any:
-        if argv and argv[0] == "pass":
-            raise FileNotFoundError(argv[0])
-        return real(argv, *args, **kwargs)
-
-    monkeypatch.setattr(secrets, "run_bounded_group", guarded)
 
 
 @pytest.fixture(autouse=True)

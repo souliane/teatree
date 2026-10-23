@@ -19,6 +19,8 @@ from teatree.agents.codex_auth_cache import CodexAuthCache
 from teatree.cli.codex import codex_app
 from tests.teatree_agents.test_codex_shared_app_server import _SERVER
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _SENTINEL = "sentinel-do-not-print"
 _LOGGING_SERVER = "import sys\nLOG = sys.argv[1]\n" + _SERVER.replace(
     "    request = json.loads(raw)\n", "    request = json.loads(raw)\n    open(LOG, 'a').write(raw)\n", 1

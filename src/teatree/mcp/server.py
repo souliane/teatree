@@ -40,7 +40,6 @@ than core can.
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any, override
 
 from asgiref.sync import sync_to_async
@@ -132,17 +131,14 @@ class _NoShadowServer(MCPServer):
 
 
 # Per-service tool groups, registered iff the service is in the union of
-# ``required_third_party_services`` across all registered overlays. Each entry
-# is ``(register, instructions)``; the instructions block is appended to the
-# server instructions only when the group registers, so the instructions never
-# advertise an unregistered tool.
-_SERVICE_GROUPS: dict[Service, tuple[Callable[[MCPServer], None], str]] = {
-    Service.GITHUB: (services_forge.register_github, services_forge.INSTRUCTIONS_GITHUB),
-    Service.GITLAB: (services_forge.register_gitlab, services_forge.INSTRUCTIONS_GITLAB),
-    Service.SLACK: (services_slack.register, services_slack.INSTRUCTIONS),
-    Service.NOTION: (services_notion.register, services_notion.INSTRUCTIONS),
-    Service.SENTRY: (services_sentry.register, services_sentry.INSTRUCTIONS),
-    Service.SHAREPOINT: (services_sharepoint.register, services_sharepoint.INSTRUCTIONS),
+# ``required_third_party_services`` across all registered overlays.
+_SERVICE_GROUPS: dict[Service, Callable[[MCPServer], None]] = {
+    Service.GITHUB: services_forge.register_github,
+    Service.GITLAB: services_forge.register_gitlab,
+    Service.SLACK: services_slack.register,
+    Service.NOTION: services_notion.register,
+    Service.SENTRY: services_sentry.register,
+    Service.SHAREPOINT: services_sharepoint.register,
 }
 
 
@@ -217,11 +213,20 @@ def _write_tool_names(overlay_groups: list[tuple[str, McpToolGroup]]) -> frozens
 
 
 def _read_only_instructions(instructions: str, *, withheld: frozenset[str], allowed_writes: frozenset[str]) -> str:
-    withheld_lines = tuple(f"- {name}(" for name in withheld - allowed_writes)
+    withheld_names = withheld - allowed_writes
+    withheld_lines = tuple(f"- {name}(" for name in withheld_names)
     sections: list[str] = []
     for section in instructions.split("\n\n"):
         lines = section.split("\n")
-        kept = [line for line in lines if not line.startswith(withheld_lines)]
+        kept = []
+        for line in lines:
+            if line.startswith(withheld_lines):
+                continue
+            if line.startswith("Mailbox tools: "):
+                names = line.removeprefix("Mailbox tools: ").split(", ")
+                kept.append("Mailbox tools: " + ", ".join(name for name in names if name not in withheld_names))
+            else:
+                kept.append(line)
         # A section that lost every tool line would leave its header advertising nothing.
         if len(kept) == len(lines) or any(line.startswith("- ") for line in kept):
             sections.append("\n".join(kept))
@@ -244,31 +249,16 @@ def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
 
 _PREAMBLE = (
     "Structured search + gate-preserving writes over teatree's internal model. "
-    "Prefer these tools over shelling out to `t3 ... list` and parsing text. The "
-    "read tools below are read-only; the write tools each wrap the exact seam the "
-    "`t3` CLI calls, so every FSM / merge / on-behalf / leak gate fires identically "
-    "(see the write-tool section at the end).\n"
-    "\n"
-    "Read tools:\n"
+    "Prefer these tools over shelling out to `t3 ... list` and parsing text; when unsure "
+    "which `t3` command exists, call command_search first. The read tools are read-only; "
+    "the Teatree write tools each wrap the exact seam the `t3` CLI calls, so every FSM / "
+    "merge / on-behalf / leak gate fires identically."
 )
 
 _READ_ONLY_NOTICE = (
     "\n\nThis server is read-only for this dispatch. Write tools registered: {writes}. "
     "Return anything you could not write here in your result envelope."
 )
-
-
-@dataclass(frozen=True)
-class _ReadTool:
-    """One read-only MCP tool: its name, async handler, and instruction line.
-
-    The single source the base instructions and the registration loop both read,
-    so a read tool's name/handler/prose can never drift across the two.
-    """
-
-    name: str
-    handler: Callable[..., Awaitable[Any]]
-    instruction: str
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -482,78 +472,22 @@ async def _command_search(query: str, *, limit: int = 20) -> list[dict[str, Any]
     return await sync_to_async(introspection.command_search, thread_sensitive=True)(query=query, limit=limit)
 
 
-# The always-registered read tools, in one table the base instructions and the
-# registration loop both derive from (no INSTRUCTIONS/add_tool drift).
-_READ_TOOLS: tuple[_ReadTool, ...] = (
-    _ReadTool(
-        "command_search",
-        _command_search,
-        "- command_search(query): which `t3` CLI leaf command to run for a task — "
-        "path, help summary, and whether it emits --json. Use this FIRST when unsure "
-        "which command exists.",
-    ),
-    _ReadTool(
-        "ticket_get",
-        _ticket_get,
-        "- ticket_get(ticket): one ticket's full detail (by pk / issue number / URL) incl. its visited-phase ledger.",
-    ),
-    _ReadTool(
-        "ticket_list",
-        _ticket_list,
-        "- ticket_list(overlay, state, kind, role, in_flight): enumerate tickets by "
-        "lifecycle state — the mirror of `t3 <overlay> ticket list`.",
-    ),
-    _ReadTool(
-        "ticket_search",
-        _ticket_search,
-        "- ticket_search(text, overlay, state, kind, role, in_flight): free-text "
-        "ticket search across url / description / context.",
-    ),
-    _ReadTool(
-        "worktree_status",
-        _worktree_status,
-        "- worktree_status(ticket, overlay, active_only): a ticket's or an overlay's "
-        "worktrees with FSM state, branch, db, staleness.",
-    ),
-    _ReadTool("pr_for_ticket", _pr_for_ticket, "- pr_for_ticket(ticket): the pull requests recorded for a ticket."),
-    _ReadTool(
-        "task_list",
-        _task_list,
-        "- task_list(overlay, status, phase, ticket): the autonomous loop's task "
-        "queue — the mirror of `t3 <overlay> tasks list`.",
-    ),
-    _ReadTool(
-        "question_list",
-        _question_list,
-        "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
-        "user's answer (pairs with the question_answer write tool).",
-    ),
-    _ReadTool("loop_stats", _loop_stats, "- loop_stats(overlay): task-status counts plus the dead-letter total."),
-    _ReadTool(
-        "incoming_event_recent",
-        _incoming_event_recent,
-        "- incoming_event_recent(source, unprocessed_only): recent inbound platform events.",
-    ),
-    _ReadTool(
-        "config_setting_get",
-        _config_setting_get,
-        "- config_setting_get(key, overlay): a config setting's effective value, its "
-        "source (db vs file/env), and scope.",
-    ),
-    _ReadTool("gate_status", _gate_status, "- gate_status(overlay): the review-gate and raw-merge gate state."),
-    _ReadTool(
-        "factory_signals",
-        _factory_signals,
-        "- factory_signals(overlay, window_days): the factory quality/velocity "
-        "signals with fail-loud statuses and the verdict.",
-    ),
-)
-
-_FACTORY_SCORE_TOOL = _ReadTool(
-    "factory_score",
-    _factory_score,
-    "- factory_score(overlay, window_days): the recipe-weighted factory score (available on every server build).",
-)
+_READ_TOOLS: dict[str, Callable[..., Awaitable[Any]]] = {
+    "command_search": _command_search,
+    "ticket_get": _ticket_get,
+    "ticket_list": _ticket_list,
+    "ticket_search": _ticket_search,
+    "worktree_status": _worktree_status,
+    "pr_for_ticket": _pr_for_ticket,
+    "task_list": _task_list,
+    "question_list": _question_list,
+    "loop_stats": _loop_stats,
+    "incoming_event_recent": _incoming_event_recent,
+    "config_setting_get": _config_setting_get,
+    "gate_status": _gate_status,
+    "factory_signals": _factory_signals,
+    "factory_score": _factory_score,
+}
 
 
 def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = frozenset()) -> MCPServer:
@@ -563,27 +497,13 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     *read_only* withholds every write tool not named in *allowed_writes* and drops
-    its line from the instructions.
+    its contributed overlay instruction line when present.
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
-    read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL)
 
     instructions = (
         _PREAMBLE
-        + "\n".join(tool.instruction for tool in read_tools)
-        + "".join(
-            f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
-            for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
-            if service in declared
-        )
-        # The teatree-own write tools register UNCONDITIONALLY (unlike the
-        # fail-closed per-service groups): each wraps a `t3` CLI seam that is
-        # itself gate-guarded and no-ops safely when its backend is absent
-        # (notify_user returns sent=false with no messaging backend), so a
-        # service declaration is not their fail-closed lever — their seam is.
-        + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
-        + write_tools.INSTRUCTIONS
         + (
             "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
@@ -597,9 +517,9 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
             instructions, withheld=_write_tool_names(overlay_groups), allowed_writes=allowed_writes
         )
     server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only, allowed_writes=allowed_writes)
-    for tool in read_tools:
-        server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
-    for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
+    for name, handler in _READ_TOOLS.items():
+        server.add_tool(handler, name=name, annotations=_READ_ONLY)
+    for service, register_group in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
             register_group(server)
     write_tools.register(server)
