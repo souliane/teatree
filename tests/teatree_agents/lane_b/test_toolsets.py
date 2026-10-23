@@ -18,7 +18,7 @@ import pytest
 from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
@@ -107,9 +107,12 @@ class TestHardDenyWithinAssembledToolsets:
         )
         result = _run(_agent(config, model), "go")
         assert result.output == "understood, i will not"
-        # The refusal surfaced as a RetryPromptPart carrying the deny reason.
+        # The refusal stays visible to the model as a retried tool return.
         retries = [
-            p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "RetryPromptPart"
+            p
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+            if isinstance(p, ToolReturnPart) and p.outcome == "retried"
         ]
         assert any("BLOCKED" in str(p.content) for p in retries)
 
@@ -122,7 +125,10 @@ class TestHardDenyWithinAssembledToolsets:
         result = _run(_agent(config, model), "go")
         assert result.output == "done"
         assert not [
-            p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "RetryPromptPart"
+            p
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+            if isinstance(p, ToolReturnPart) and p.outcome == "retried"
         ]
 
     def test_safe_shell_command_runs(self, tmp_path: Path) -> None:
@@ -233,8 +239,8 @@ def _read_one(config: LaneBToolConfig, path: str) -> tuple[list[str], list[str]]
     model = _scripted(_call("Read", {"path": path}), _text("done"))
     result = _run(_agent(config, model), "go")
     parts = [p for m in result.all_messages() for p in getattr(m, "parts", [])]
-    returns = [str(p.content) for p in parts if type(p).__name__ == "ToolReturnPart"]
-    retries = [str(p.content) for p in parts if type(p).__name__ == "RetryPromptPart"]
+    returns = [str(p.content) for p in parts if isinstance(p, ToolReturnPart) and p.outcome == "success"]
+    retries = [str(p.content) for p in parts if isinstance(p, ToolReturnPart) and p.outcome == "retried"]
     return returns, retries
 
 

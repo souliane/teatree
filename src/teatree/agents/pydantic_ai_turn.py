@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
 
 from teatree.llm.anthropic_limits import EgressBlockedError
@@ -45,12 +45,6 @@ def router_reported_cost(run_usage: object) -> float | None:
     return None
 
 
-def retry_text(part: RetryPromptPart) -> str:
-    """The refusal text of a ``RetryPromptPart`` (a gate deny), as a plain string."""
-    content = part.content
-    return content if isinstance(content, str) else str(content)
-
-
 @dataclass(slots=True)
 class ToolCallRecord:
     """One tool call's trajectory entry; output and duration stay ``None`` for a call that never returned."""
@@ -77,8 +71,8 @@ class ToolCallRecord:
     def returned(self) -> bool:
         return self.output_bytes is not None
 
-    def finish(self, part: "ToolReturnPart | RetryPromptPart") -> None:
-        output = part.model_response_str() if isinstance(part, ToolReturnPart) else retry_text(part)
+    def finish(self, part: ToolReturnPart) -> None:
+        output = str(part.content) if part.outcome == "retried" else part.model_response_str()
         self.output_bytes = len(output.encode())
         self.duration_ms = int((time.monotonic() - self.started_at) * 1000)
 

@@ -23,7 +23,6 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -31,14 +30,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
 from teatree.agents.provider_refusal import hard_refusal_event
-from teatree.agents.pydantic_ai_turn import (
-    SessionRun,
-    ToolCallEntry,
-    ToolCallRecord,
-    TurnSpend,
-    egress_block_in,
-    retry_text,
-)
+from teatree.agents.pydantic_ai_turn import SessionRun, ToolCallEntry, ToolCallRecord, TurnSpend, egress_block_in
 from teatree.llm.anthropic_limits import EgressBlockedError
 
 if TYPE_CHECKING:
@@ -83,7 +75,7 @@ class _StreamedToolCapture:
     """
 
     def __init__(self, observer: "Callable[[AgentStreamEvent], None] | None" = None) -> None:
-        self._parts: list[ToolCallPart | ToolReturnPart | RetryPromptPart] = []
+        self._parts: list[ToolCallPart | ToolReturnPart] = []
         self._calls: list[ToolCallRecord] = []
         self._observer = observer
 
@@ -161,8 +153,8 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
     """Yield the tool call/result blocks a turn produced, in the seam's vocabulary.
 
     Maps each pydantic_ai ``ToolCallPart`` produced this turn onto a
-    :class:`~claude_agent_sdk.ToolUseBlock` and each ``ToolReturnPart`` /
-    ``RetryPromptPart`` (a gate refusal) onto a
+    :class:`~claude_agent_sdk.ToolUseBlock` and each ``ToolReturnPart`` (including
+    retried gate refusals) onto a
     :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
     each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
     what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
@@ -177,7 +169,7 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
                     yield _tool_call_message(part)
         elif isinstance(message, ModelRequest):
             for part in message.parts:
-                if isinstance(part, ToolReturnPart | RetryPromptPart):
+                if isinstance(part, ToolReturnPart):
                     yield _tool_result_message(part)
 
 
@@ -213,15 +205,16 @@ def _tool_call_message(part: ToolCallPart) -> AssistantMessage:
     )
 
 
-def _tool_result_message(part: "ToolReturnPart | RetryPromptPart") -> AssistantMessage:
-    """One tool result as the seam's tool-result message; a ``RetryPromptPart`` is a gate refusal."""
-    if isinstance(part, ToolReturnPart):
-        return AssistantMessage(
-            content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
-            model="",
-        )
+def _tool_result_message(part: ToolReturnPart) -> AssistantMessage:
+    """One tool result as the seam's tool-result message."""
     return AssistantMessage(
-        content=[ToolResultBlock(tool_use_id=part.tool_call_id or "", content=retry_text(part), is_error=True)],
+        content=[
+            ToolResultBlock(
+                tool_use_id=part.tool_call_id,
+                content=str(part.content),
+                is_error=part.outcome != "success",
+            )
+        ],
         model="",
     )
 

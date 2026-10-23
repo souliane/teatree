@@ -33,7 +33,6 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -206,7 +205,7 @@ class TestHardDenyParity:
 def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
     """A streaming FunctionModel that records every orphaned tool-result it is sent.
 
-    A ``ToolReturnPart`` / tool-linked ``RetryPromptPart`` whose ``tool_call_id``
+    A ``ToolReturnPart`` whose ``tool_call_id``
     was not produced by a preceding ``ToolCallPart`` is exactly the "tool message
     without preceding tool_calls" an OpenAI-compatible provider rejects — the model
     stand-in for that wire-level check.
@@ -218,10 +217,11 @@ def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
             if isinstance(message, ModelResponse):
                 call_ids.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
             elif isinstance(message, ModelRequest):
-                for part in message.parts:
-                    tool_linked_retry = isinstance(part, RetryPromptPart) and part.tool_name is not None
-                    if (isinstance(part, ToolReturnPart) or tool_linked_retry) and part.tool_call_id not in call_ids:
-                        orphans.append(part.tool_call_id)
+                orphans.extend(
+                    part.tool_call_id
+                    for part in message.parts
+                    if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids
+                )
 
         async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
             yield "ok"

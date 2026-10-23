@@ -15,7 +15,7 @@ share a byte-identical prefix.
 
 The cut never orphans a tool result: an OpenAI-compatible provider rejects a
 ``ModelRequest`` carrying a ``ToolReturnPart`` (or a tool-linked
-``RetryPromptPart``) whose paired ``ToolCallPart`` was dropped with the trimmed
+retried ``ToolReturnPart``) whose paired ``ToolCallPart`` was dropped with the trimmed
 middle ("tool message without preceding tool_calls"). :func:`compact_history`
 drops the orphaned leading tool-result messages so the kept window always opens
 on a valid call→return pairing.
@@ -24,7 +24,7 @@ on a valid call→return pairing.
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from teatree.agents.lane_b.tool_names import TOOL_GREP, TOOL_READ
 from teatree.config import cold_reader
@@ -214,15 +214,13 @@ def _tool_call_ids(window: "list[ModelMessage]") -> set[str]:
 def _tool_result_ids(message: "ModelMessage") -> set[str]:
     """The ``tool_call_id``s a ``ModelRequest`` returns, else the empty set.
 
-    A ``ToolReturnPart`` and a tool-linked ``RetryPromptPart`` (``tool_name`` set —
-    a gate/validation refusal of a specific call) both serialize as a tool message
-    that needs a preceding ``tool_calls``; a plain ``RetryPromptPart`` (no
-    ``tool_name``) is an output retry, not tool-linked, so it is excluded.
+    A ``ToolReturnPart`` (including a gate or validation refusal) serializes as a tool
+    message that needs a preceding ``tool_calls``. Output retry feedback has no tool id.
     """
     if not isinstance(message, ModelRequest):
         return set()
     ids: set[str] = set()
     for part in message.parts:
-        if isinstance(part, ToolReturnPart) or (isinstance(part, RetryPromptPart) and part.tool_name is not None):
+        if isinstance(part, ToolReturnPart):
             ids.add(part.tool_call_id)
     return ids

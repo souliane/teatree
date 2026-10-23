@@ -6,7 +6,6 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -41,7 +40,9 @@ def _tool_return(call_id: str) -> ModelRequest:
 
 
 def _tool_retry(call_id: str) -> ModelRequest:
-    return ModelRequest(parts=[RetryPromptPart(content="denied", tool_name="shell", tool_call_id=call_id)])
+    return ModelRequest(
+        parts=[ToolReturnPart(content="denied", tool_name="shell", tool_call_id=call_id, outcome="retried")]
+    )
 
 
 def _orphaned_return_ids(msgs: list[ModelMessage]) -> list[str]:
@@ -52,10 +53,11 @@ def _orphaned_return_ids(msgs: list[ModelMessage]) -> list[str]:
         if isinstance(message, ModelResponse):
             seen_calls.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
         elif isinstance(message, ModelRequest):
-            for part in message.parts:
-                tool_linked_retry = isinstance(part, RetryPromptPart) and part.tool_name is not None
-                if (isinstance(part, ToolReturnPart) or tool_linked_retry) and part.tool_call_id not in seen_calls:
-                    orphans.append(part.tool_call_id)
+            orphans.extend(
+                part.tool_call_id
+                for part in message.parts
+                if isinstance(part, ToolReturnPart) and part.tool_call_id not in seen_calls
+            )
     return orphans
 
 
@@ -120,7 +122,7 @@ class TestToolPairingPreserved:
         assert history[6] in compacted
 
     def test_a_tool_linked_retry_return_is_also_snapped(self) -> None:
-        # A gate-refusal RetryPromptPart (tool_name set) serializes as a tool
+        # A gate-refusal tool return serializes as a tool
         # message too, so an orphaned leading retry must be dropped like a return.
         history: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="task")]),
