@@ -26,6 +26,12 @@ class TestSealedSecret(TestCase):
         assert self.store.read("alpha/token") is None
         assert not self.source.path.exists()
 
+    def test_rejected_name_creates_no_key_and_no_row(self) -> None:
+        with pytest.raises(ValueError, match="no whitespace"):
+            self.store.write("alpha token", "canary")
+        assert not self.source.path.exists()
+        assert not SealedSecret.objects.exists()
+
     def test_store_roundtrips_with_same_bytes_at_new_source(self) -> None:
         assert self.store.write("alpha/token", "canary") is True
         assert self.source.path.stat().st_mode & 0o777 == 0o600

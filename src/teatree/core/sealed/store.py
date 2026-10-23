@@ -4,6 +4,7 @@ from typing import override
 
 from django.db import OperationalError
 
+from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.core.models.sealed_secret import SEALED_MIGRATION, SealedSecret
 from teatree.utils.master_key import KeyFileSource, master_key_source
 from teatree.utils.secrets import SecretStore, SecretStoreError
@@ -24,6 +25,7 @@ class DbStore(SecretStore):
         return row.reveal(self.source.load()) if row is not None else None
 
     def write(self, key: str, value: str) -> bool:
+        validate_pass_key_entry(key)
         try:
             has_rows = SealedSecret.objects.exists()
         except OperationalError as exc:
