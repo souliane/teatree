@@ -13,7 +13,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.config import get_effective_settings
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import ModeOverride, Session, Task, Ticket, Worktree
@@ -212,7 +212,7 @@ class TestClaimNextPayload(_LoopDispatchTest):
 
         entry = json.loads(stdout.getvalue())[0]
         assert "model" in entry
-        assert entry["model"] == TIER_MODELS["frontier"]
+        assert entry["model"] == tier_models()["frontier"]
         assert isinstance(entry["skill_bundle"], list)
 
     def test_payload_never_carries_an_effort_key(self) -> None:

@@ -22,7 +22,6 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.model_tiering import (
     HARNESS_EFFORT_SCALE,
-    PHASE_HARNESS,
     SpawnModelSelection,
     _resolve_spawn_model_selection,
     resolve_phase_harness,
@@ -32,6 +31,7 @@ from teatree.agents.session_lineage import honesty_subject
 from teatree.agents.skill_routing import UNAVAILABLE_TTL, resolve_skill_route
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolve_agent_config
+from teatree.config.registries import phase_harness_defaults
 from teatree.core.admission.dispatch_lane import dispatch_lane
 from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
@@ -257,7 +257,7 @@ def _static_rejection(context: HarnessBuildContext, candidate: AgentRouteCandida
     if reason := _route_effort_unavailable_reason(candidate.effort, candidate.harness):
         return reason
     pinned = resolve_phase_harness(candidate.harness, context.phase)
-    if context.phase in PHASE_HARNESS and pinned != candidate.harness:
+    if context.phase in phase_harness_defaults() and pinned != candidate.harness:
         return f"phase {context.phase!r} is pinned to harness {pinned!r}"
     if tier_rank(candidate.tier or candidate.model) < floor_rank:
         return "model is below a loaded skill's scalar floor"

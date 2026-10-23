@@ -40,7 +40,7 @@ def _cron_loop_shell_gate_enabled() -> bool:
     """Whether the gate is enabled (default True); an explicit ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("cron_loop_shell_gate_enabled", default=True)
+    return _teatree_bool_setting("cron_loop_shell_gate_enabled")
 
 
 def _flock_held() -> bool:

@@ -106,7 +106,7 @@ _COST_MODEL_PRICES_KEY = "cost_model_prices"
 # Capability order, weakest to strongest, for the per-skill model floor merge
 # (:func:`teatree.agents.model_tiering.resolve_spawn_model`). Expressed in the
 # ABSTRACT tiers (``cheap`` < ``balanced`` < ``frontier``) — the
-# :data:`teatree.agents.model_tiering.TIER_MODELS` keys. Distinct from pricing:
+# :data:`teatree.agents.model_tiering.tier_models()` keys. Distinct from pricing:
 # an unknown full id ranks ABOVE every known tier here (treated as most-capable
 # so a below-floor never silently downgrades a spawn), whereas
 # :func:`tier_of_model` prices an unknown id at the conservative tier.

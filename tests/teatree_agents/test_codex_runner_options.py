@@ -16,7 +16,7 @@ from teatree.agents.codex_app_server import codex_app_server_spec
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
@@ -170,7 +170,7 @@ class TestCodexRunnerModelSelection(TestCase):
     def test_direct_claude_preserves_phase_model_resolution(self) -> None:
         assert (
             self._prepared_model(harness_name="claude_sdk", model=None, route_candidate_index=None)
-            == TIER_MODELS["frontier"]
+            == tier_models()["frontier"]
         )
 
     def test_every_dispatchable_phase_is_translatable_or_rejected_by_the_preflight_probe(self) -> None:

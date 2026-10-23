@@ -15,7 +15,7 @@ disjunction (``any_of`` — at least one positive branch holds). ``op`` is
 import dataclasses
 import json
 
-from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS
+from teatree.agents.model_tiering import phase_models
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
 from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
 
@@ -130,7 +130,7 @@ class Scenario:
     #: Explicit abstract tier (``frontier``/``balanced``/``cheap``). Empty → the
     #: tier is INFERRED from ``agent_path`` (see :func:`infer_tier_or_phase`). The
     #: emitted YAML carries ``tier:`` or ``phase:``, never a concrete model id —
-    #: the single ``teatree.agents.model_tiering.TIER_MODELS`` constant owns ids.
+    #: ``teatree.agents.model_tiering.tier_models()`` owns ids.
     tier: str = ""
     #: Per-scenario metered-budget ceiling (USD). ``None`` leaves the lane default
     #: ($1.0). A scenario whose CORRECT trajectory legitimately dispatches a
@@ -233,15 +233,15 @@ def infer_tier_or_phase(agent_path: str) -> str:
 
     Maps the skill the scenario exercises to a teatree FSM phase (resolved to a
     tier at run time) or, when no phase fits, the ``balanced`` tier. The single
-    ``teatree.agents.model_tiering.TIER_MODELS`` constant owns the concrete model
+    ``teatree.agents.model_tiering.tier_models()`` owns the concrete model
     ids — this emits an ABSTRACT tier/phase only, never a model id.
 
-    A phase that :data:`teatree.agents.model_tiering.DEFAULT_PHASE_MODELS`
+    A phase that :func:`teatree.config.registries.phase_models`
     resolves to the ``frontier`` tier (``coding``/``reviewing``/``planning``/
     ``debugging``/``retrospecting``) is pinned to ``tier: balanced`` instead of
     emitted as ``phase:`` — a shipped scenario silently riding Opus throttled the
     metered CI eval lane's shared subscription-OAuth account (souliane/teatree
-    run 28515055436). Reading ``DEFAULT_PHASE_MODELS`` (never duplicating its
+    run 28515055436). Reading ``phase_models()`` (never duplicating its
     frontier set here) keeps this in lockstep with production phase tiering, so
     a future frontier phase is caught automatically rather than by memory.
     """
@@ -261,7 +261,7 @@ def infer_tier_or_phase(agent_path: str) -> str:
         phase = "shipping"
     elif "/retro/" in p:
         phase = "retrospecting"
-    if phase is not None and DEFAULT_PHASE_MODELS.get(phase) != "frontier":
+    if phase is not None and phase_models().get(phase) != "frontier":
         return f"  phase: {phase}"
     return "  tier: balanced"
 

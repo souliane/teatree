@@ -35,7 +35,7 @@ DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 — deferred: cold-hook import
 
-    return teatree_bool_setting("brief_anchor_gate_enabled", default=True)
+    return teatree_bool_setting("brief_anchor_gate_enabled")
 
 
 def _prompt_of(data: dict) -> str:

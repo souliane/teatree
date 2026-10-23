@@ -186,13 +186,13 @@ class TestStaleProjectionRaisesAnAdvisory:
         ProjectionPublisher(source_db, data_dir).publish()
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
         monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: data_dir / "absent.sqlite3")
-        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is False, (
+        assert cold_reader.bool_setting("auto_update_require_green_main") is False, (
             "control: the fresh projection must be what the cold reader answers from"
         )
 
         _plant_generation(reader.target, 3)
 
-        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is True, (
+        assert cold_reader.bool_setting("auto_update_require_green_main") is True, (
             "a stale projection must fall back to the compiled-in default, never serve its own stored value"
         )
 
@@ -296,7 +296,7 @@ class TestAnOlderPublishersPayloadIsStillServed:
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
         monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: data_dir / "absent.sqlite3")
 
-        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is False
+        assert cold_reader.bool_setting("auto_update_require_green_main") is False
 
     @pytest.mark.parametrize("version", [0, 99, "two", None])
     def test_a_version_outside_the_readable_range_is_refused(self, data_dir: Path, version: object) -> None:

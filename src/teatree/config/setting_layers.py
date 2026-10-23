@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from teatree.config.homes import SETTING_HOMES, SettingHome
-from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table
+from teatree.config.mr_reminder import mr_reminder_from_table
 from teatree.config.settings import UserSettings
 from teatree.config.speak import speak_from_subtable
 from teatree.types import SpeakConfig
@@ -47,16 +47,6 @@ class SettingLayers:
     #: listed only when the tier could not be determined, never when it is merely absent.
     #: That distinction is the whole point — ``{}`` alone cannot carry it.
     degraded_scopes: frozenset[str] = frozenset()
-
-
-def stored_form(value: object) -> object:
-    """*value* as a ``ConfigSetting`` row holds it — the two structured settings as their dict.
-
-    A ``StrEnum`` needs no conversion: it IS a ``str``. Shared by the resolver's default
-    authority and the shipped-file renderer so the two cannot disagree about what a
-    declared default looks like once stored.
-    """
-    return value.to_dict() if isinstance(value, SpeakConfig | MrReminderConfig) else value
 
 
 def apply_structured_settings(

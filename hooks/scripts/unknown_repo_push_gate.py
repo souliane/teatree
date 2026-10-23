@@ -83,7 +83,7 @@ def _unknown_repo_push_gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("unknown_repo_push_gate_enabled", default=True)
+    return _teatree_bool_setting("unknown_repo_push_gate_enabled")
 
 
 def _classify_push_for_cwd(cwd: Path) -> str:

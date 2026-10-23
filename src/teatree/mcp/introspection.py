@@ -11,6 +11,7 @@ Same contract as ``search``: synchronous, JSON-safe, never mutates.
 from typing import Any
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
+from teatree.config.resolution import get_effective_setting
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
@@ -88,7 +89,7 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
     set the CLI consults (``ALL_KNOWN_CONFIG_SETTINGS`` — the ``UserSettings``
     partition, the injected registries, the cold-read keys, and the cold-hook
     gate flags), so a key the CLI can ``set`` is never reported unknown here. A
-    ``ConfigSetting`` row in the requested scope is reported as
+    ``ConfigSetting`` row selected by the shared alias-tolerant resolver is reported as
     ``source == "db"``; a cold-hook key with no row reports its in-code default
     (``source == "code default"``, the CLI ``get`` fallback); every other key
     falls through to the file/env layer (``source == "file/env"``). ``overlay``
@@ -111,9 +112,16 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
         }
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
-    stored = ConfigSetting.objects.get_effective(key, scope=scope)
+    stored, stored_scope = ConfigSetting.objects.get_effective_with_scope(key, scope=scope)
     if stored is not None:
-        return {"key": key, "known": True, "value": _jsonable(stored), "source": "db", "scope": label, "overlay": scope}
+        return {
+            "key": key,
+            "known": True,
+            "value": _jsonable(stored),
+            "source": "db",
+            "scope": _scope_label(stored_scope),
+            "overlay": scope,
+        }
     cold_hook = COLD_HOOK_SETTINGS.get(key)
     if cold_hook is not None:
         return {
@@ -124,7 +132,7 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
             "scope": label,
             "overlay": scope,
         }
-    fallback = getattr(get_effective_settings(overlay or None), key, None)
+    fallback = get_effective_setting(key, overlay or None)
     return {
         "key": key,
         "known": True,
@@ -149,10 +157,7 @@ def gate_status(*, overlay: str | None = None) -> dict[str, Any]:
     settings = get_effective_settings(overlay or None)
     review_gate = {key: bool(getattr(settings, key)) for key in _REVIEW_GATE_KEYS}
     raw_merge_gate = {
-        _RAW_MERGE_GATE_KEY: cold_reader.bool_setting(
-            _RAW_MERGE_GATE_KEY,
-            default=bool(COLD_HOOK_SETTINGS[_RAW_MERGE_GATE_KEY].default),
-        ),
+        _RAW_MERGE_GATE_KEY: cold_reader.bool_setting(_RAW_MERGE_GATE_KEY),
     }
     return {
         "overlay": overlay or "",

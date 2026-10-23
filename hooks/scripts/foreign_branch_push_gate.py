@@ -152,7 +152,7 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
     parsed = push_specs(command, str(data.get("cwd", "") or ""))
     if not parsed.specs and not parsed.unread:
         return False
-    if not _teatree_bool_setting(GATE_SETTING, default=True):
+    if not _teatree_bool_setting(GATE_SETTING):
         return False
     verdict = _refusal_verdict(parsed, _ForgeRun())
     if verdict is None:

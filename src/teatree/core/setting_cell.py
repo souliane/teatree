@@ -124,7 +124,15 @@ def settings_write_url(key: str, scope: str) -> str:
     One derivation for every grid that edits a setting: a scope-qualified POST to
     ``settings/set/<key>/``. A cell that ignored the scope would write the wrong layer.
     """
-    url = reverse("dash:settings_set", args=[key])
+    return _settings_url("dash:settings_set", key, scope)
+
+
+def settings_restore_url(key: str, scope: str) -> str:
+    return _settings_url("dash:settings_restore", key, scope)
+
+
+def _settings_url(route: str, key: str, scope: str) -> str:
+    url = reverse(route, args=[key])
     return f"{url}?scope={quote(scope)}" if scope else url
 
 
@@ -133,6 +141,7 @@ __all__ = [
     "DriftVerdict",
     "SettingCell",
     "env_pin_refusal",
+    "settings_restore_url",
     "settings_write_url",
     "verdict_for",
 ]
