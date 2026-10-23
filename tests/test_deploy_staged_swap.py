@@ -226,7 +226,14 @@ def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout"
     deploy = root / "deploy"
     deploy.mkdir(parents=True)
-    for name in ("deploy.sh", "deploy-lock.sh", "Dockerfile", "docker-compose.yml", "docker-compose.host-identity.yml"):
+    for name in (
+        "deploy.sh",
+        "deploy-lock.sh",
+        "git-pins.sh",
+        "Dockerfile",
+        "docker-compose.yml",
+        "docker-compose.host-identity.yml",
+    ):
         shutil.copy2(_DEPLOY_DIR / name, deploy / name)
     (deploy / "deploy.sh").chmod(0o755)
     (deploy / "teatree.env").write_text("", encoding="utf-8")
