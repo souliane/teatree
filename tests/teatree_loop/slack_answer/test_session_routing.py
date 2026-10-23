@@ -332,6 +332,23 @@ class TestBoundTicketThread(TestCase):
         assert Task.objects.count() == 1
         assert "queued" in backend.replies[0][2]
 
+    def test_message_before_pending_task_claim_queues_for_that_task(self) -> None:
+        task = self._bound_task()
+        row = self._message("Use the new API before you start")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = []
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", row.slack_ts))
+        assert command.task_id == task.pk
+        assert command.outcome == "queued"
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+
     def test_unreachable_worker_does_not_start_another_task(self) -> None:
         self._bound_task()
         row = self._message("Use the new API instead")
@@ -567,6 +584,8 @@ class TestBoundTicketThread(TestCase):
 
     def test_stale_claim_without_command_falls_back_when_session_ended(self) -> None:
         prior = self._bound_task()
+        prior.status = Task.Status.COMPLETED
+        prior.save(update_fields=["status"])
         row = self._message("Change the implementation")
         assert row.mark_loop_replied(PendingChatInjection.AnswerKind.SESSION)
         PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))

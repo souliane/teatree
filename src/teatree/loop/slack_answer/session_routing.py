@@ -81,16 +81,13 @@ def _selected_task_id(text: str) -> int | None:
 
 
 def _pending_task(binding: ThreadBinding, text: str, *, paused_only: bool = False) -> Task | _AmbiguousSessions | None:
-    tasks = list(
-        Task.objects.filter(ticket_id=binding.ticket_id, status=Task.Status.PENDING, not_before__isnull=False).order_by(
-            "pk"
-        )
-    )
+    tasks = list(Task.objects.filter(ticket_id=binding.ticket_id, status=Task.Status.PENDING).order_by("pk"))
     if paused_only:
         tasks = [
             task
             for task in tasks
-            if str(task.attempts.order_by("-pk").values_list("error", flat=True).first() or "").startswith(
+            if task.not_before is not None
+            and str(task.attempts.order_by("-pk").values_list("error", flat=True).first() or "").startswith(
                 OPERATOR_PAUSED_PREFIX
             )
         ]
