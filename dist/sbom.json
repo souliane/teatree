@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.167",
+      "description": "requirements line 38: claude-agent-sdk==0.2.168",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.167",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.168",
       "type": "library",
-      "version": "0.2.167"
+      "version": "0.2.168"
     },
     {
       "bom-ref": "requirements-L40",
@@ -1232,7 +1232,7 @@
     },
     {
       "bom-ref": "requirements-L253",
-      "description": "requirements line 253: tomlkit==0.15.1",
+      "description": "requirements line 253: tomlkit==0.15.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1241,9 +1241,9 @@
         }
       ],
       "name": "tomlkit",
-      "purl": "pkg:pypi/tomlkit@0.15.1",
+      "purl": "pkg:pypi/tomlkit@0.15.2",
       "type": "library",
-      "version": "0.15.1"
+      "version": "0.15.2"
     },
     {
       "bom-ref": "requirements-L255",
