@@ -454,7 +454,7 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Slack ticket thread control
 
-An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. When no live session is available, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
+An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. `pause` parks the running task with its conversation; messages sent while parked queue into its next prompt, and `resume` releases that same task. A leading `#task-id` selects among several tasks on the ticket. Once no task remains, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
 
 ### Live agent mailbox
 
@@ -497,6 +497,7 @@ cannot use these verbs.
 t3 teatree live list                          # every live session on this host's workers (passive)
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+t3 teatree live pause 1234                    # interrupts and parks this task for resume
 t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
 t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```

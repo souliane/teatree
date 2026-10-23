@@ -8,6 +8,7 @@ older turns near the model's token window while keeping recent turns and tool pa
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
+from math import ceil
 from typing import TYPE_CHECKING
 
 import pydantic_ai
@@ -82,36 +83,98 @@ class LateHistoryCompactor:
     async def __call__(
         self, ctx: pydantic_ai.RunContext[object], messages: "list[ModelMessage]"
     ) -> "list[ModelMessage]":
-        elided = elide_stale_tool_results(messages, self.keep_tool_results)
+        elided = elide_stale_tool_results(_drop_superseded_reads(messages), self.keep_tool_results)
         window = context_window_for_model(
             getattr(ctx.model, "model_name", ""), ctx.model.context_window, self.context_windows
         )
-        used = ctx.context_window_used
-        if window is None:
-            return elided
-        observed = used * ctx.model.context_window if used is not None and ctx.model.context_window else None
-        elided_tokens = _estimated_tokens(elided)
-        current = (
-            max(elided_tokens, observed - (_estimated_tokens(messages) - elided_tokens)) if observed else elided_tokens
-        )
         forced, self._force = self._force, False
+        if window is None and not forced:
+            return elided
+        unknown_window = window is None
+        window = window or max(2 * self.reserve_tokens, 2 * _estimated_tokens(elided))
+        current = _current_tokens(ctx, messages, elided)
         if not forced and current <= window - self.reserve_tokens:
             return elided
         start = len(elided)
-        recent_tokens = min(self.keep_recent_tokens, window // 5)
+        recent_tokens = min(self.keep_recent_tokens, max(1, current // 4) if unknown_window else window // 5)
         while start > 1 and _estimated_tokens(elided[start - 1 :]) < recent_tokens:
             start -= 1
         while start > 1 and _tool_result_ids(elided[start]) - _tool_call_ids(elided[start:]):
             start -= 1
         if start <= 1:
             return elided
-        stale = ModelMessagesTypeAdapter.dump_json(elided[1:start]).decode()
-        summary = await self.summarize(stale, ctx.usage)
-        if not summary.strip():
-            msg = "history summary was empty"
-            raise ValueError(msg)
-        summarized = ModelRequest(parts=[UserPromptPart(content=f"Earlier conversation summary:\n{summary}")])
-        return [elided[0], summarized, *elided[start:]]
+        target = max(1, (window - self.reserve_tokens) // 2)
+        while True:
+            stale = ModelMessagesTypeAdapter.dump_json(elided[1:start]).decode()
+            summary = await self.summarize(stale, ctx.usage)
+            if not summary.strip():
+                msg = "history summary was empty"
+                raise ValueError(msg)
+            summarized = ModelRequest(parts=[UserPromptPart(content=f"Earlier conversation summary:\n{summary}")])
+            pinned = _pinned_operator_messages(elided[1:start])
+            result = [elided[0], summarized, *pinned, *elided[start:]]
+            if _estimated_tokens(result) <= target or start >= len(elided) - 1:
+                return result
+            while start < len(elided) - 1 and _estimated_tokens(result) > target:
+                start += 1
+                result = [elided[0], summarized, *_pinned_operator_messages(elided[1:start]), *elided[start:]]
+
+
+def _pinned_operator_messages(messages: "Sequence[ModelMessage]") -> "list[ModelRequest]":
+    return [
+        message
+        for message in messages
+        if isinstance(message, ModelRequest)
+        and any(
+            isinstance(part, UserPromptPart)
+            and isinstance(part.content, str)
+            and part.content.startswith("[TeaTree operator input id=")
+            for part in message.parts
+        )
+    ]
+
+
+def _current_tokens(
+    ctx: pydantic_ai.RunContext[object], messages: "Sequence[ModelMessage]", elided: "Sequence[ModelMessage]"
+) -> int:
+    used = ctx.context_window_used
+    observed = used * ctx.model.context_window if used is not None and ctx.model.context_window else None
+    elided_tokens = _estimated_tokens(elided)
+    return (
+        ceil(max(elided_tokens, observed - (_estimated_tokens(messages) - elided_tokens)))
+        if observed
+        else elided_tokens
+    )
+
+
+def _drop_superseded_reads(messages: "Sequence[ModelMessage]") -> "list[ModelMessage]":
+    latest_by_path: dict[str, str] = {}
+    superseded: set[str] = set()
+    for message in messages:
+        for part in message.parts:
+            if not isinstance(part, ToolCallPart) or part.tool_name != TOOL_READ or not isinstance(part.args, dict):
+                continue
+            path = part.args.get("file_path") or part.args.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            if prior := latest_by_path.get(path):
+                superseded.add(prior)
+            latest_by_path[path] = part.tool_call_id
+    if not superseded:
+        return list(messages)
+    result: list[ModelMessage] = []
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            result.append(message)
+            continue
+        parts = [
+            replace(part, content="[superseded file read]")
+            if isinstance(part, ToolReturnPart) and part.tool_call_id in superseded
+            else part
+            for part in message.parts
+        ]
+        result.append(replace(message, parts=parts))
+    return result
 
 
 def _estimated_tokens(messages: "Sequence[ModelMessage]") -> int:

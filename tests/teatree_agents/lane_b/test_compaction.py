@@ -23,6 +23,7 @@ from teatree.agents.lane_b.compaction import (
     compact_history,
     elide_stale_tool_results,
 )
+from teatree.agents.lane_b.tool_names import TOOL_READ
 
 
 def _msgs(n: int) -> list:
@@ -88,6 +89,86 @@ class TestCompactHistory:
 
 
 class TestLateCompaction:
+    def test_operator_steer_in_stale_history_survives_verbatim(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "Previous work summarized"
+
+        steer = "[TeaTree operator input id=steer-1] Preserve the public API. [end operator input]"
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelRequest(parts=[UserPromptPart(content=steer)]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert steer in repr(result)
+
+    def test_superseded_read_is_stubbed_before_summary(self) -> None:
+        calls = [
+            ModelResponse(parts=[ToolCallPart(tool_name=TOOL_READ, args={"file_path": "/a.py"}, tool_call_id=key)])
+            for key in ("old", "new")
+        ]
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            calls[0],
+            ModelRequest(parts=[ToolReturnPart(tool_name=TOOL_READ, content="old" * 6000, tool_call_id="old")]),
+            calls[1],
+            ModelRequest(parts=[ToolReturnPart(tool_name=TOOL_READ, content="latest", tool_call_id="new")]),
+        ]
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "summary"
+
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=2000), usage=RunUsage())
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert "old" * 100 not in repr(result)
+        assert "latest" in repr(result)
+        assert summaries == []
+
+    def test_forced_compaction_with_unknown_window_still_summarizes(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "Older work"
+
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(30)]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=None), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize)
+        compactor.force_next()
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert len(summaries) == 1
+        assert len(result) < len(history)
+
+    def test_compaction_lands_below_half_the_trigger(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "Earlier work " * 90
+
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelResponse(parts=[TextPart(content="recent " * 70)]),
+            ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert compaction_mod._estimated_tokens(result) <= 420
+        assert "continue" in repr(result)
+
     def test_explicit_model_window_overrides_a_wrong_registry_window(self) -> None:
         summaries: list[str] = []
 

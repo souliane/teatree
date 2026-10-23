@@ -38,7 +38,7 @@ from teatree.agents.skill_assurance import (
 from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarnessProvider, cold_reader
 from teatree.core.autocompact_advisory import native_context_window
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import AllTokensExhaustedError
@@ -92,7 +92,19 @@ def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: P
 
 
 def _native_compaction_env(env: dict[str, str] | None, dispatch: DispatchHarness) -> dict[str, str] | None:
-    if dispatch.name != "claude_sdk" or (window := native_context_window(dispatch.model)) is None:
+    if dispatch.name != "claude_sdk":
+        return env
+    window_read = cold_reader.read_setting_confirmed("agent_model_context_windows")
+    if not window_read.readable:
+        msg = "agent_model_context_windows could not be read"
+        raise RuntimeError(msg)
+    configured = window_read.value.get(dispatch.model) if isinstance(window_read.value, dict) else None
+    window = (
+        configured
+        if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0
+        else native_context_window(dispatch.model)
+    )
+    if window is None:
         return env
     child_env = dict(env or {})
     child_env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(window))
