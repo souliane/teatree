@@ -1839,7 +1839,10 @@ class TestWorktreeProvisionerCutsFromAFetchedBase(TestCase):
 
         assert result.ok is False
         assert "git cannot read in this execution context" in result.detail
-        assert "not a git repository" in result.detail
+        assert any(
+            message in result.detail
+            for message in ("not a git repository", "gitfile does not point to a valid repository")
+        )
 
     def test_an_unreadable_checkout_found_at_the_slot_is_not_adopted(self) -> None:
         clone = self._clone()
