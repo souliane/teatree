@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 import pytest
 from django.db import IntegrityError, transaction
+from django.db.migrations.loader import MigrationLoader
 from django.test import TestCase
 
-from teatree.core.models.sealed_secret import SealedSecret, SealedStoreReadBackError
+from teatree.core.models.sealed_secret import SEALED_MIGRATION, SealedSecret, SealedStoreReadBackError
 from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 from teatree.utils.sealing import SealedValueTamperedError
@@ -101,3 +102,9 @@ class TestSealedSecret(TestCase):
         for row in malformed:
             with self.subTest(name=row["name"]), transaction.atomic(), pytest.raises(IntegrityError):
                 SealedSecret.objects.create(**row)
+
+
+def test_named_migration_is_the_one_that_creates_the_table() -> None:
+    migration = MigrationLoader(None, ignore_no_migrations=True).disk_migrations["core", SEALED_MIGRATION]
+    created = {operation.name for operation in migration.operations if operation.__class__.__name__ == "CreateModel"}
+    assert "SealedSecret" in created

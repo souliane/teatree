@@ -33,6 +33,7 @@ from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
 from teatree.core.factory.operational_health import collect_signals
 from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.models import ConfigSetting, SealedSecret, SecretCutover, Ticket
+from teatree.core.models.sealed_secret import SEALED_MIGRATION
 from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
 from teatree.utils.secrets import SecretStoreError
@@ -187,7 +188,7 @@ class TestConfigWritesReachCanonicalFromAWorktree:
             assert store.read("alpha/token") is None
             assert store.names("alpha") == frozenset()
             assert store.remove("alpha/token") is False
-            with pytest.raises(SecretStoreError, match="migration 0013"):
+            with pytest.raises(SecretStoreError, match=f"migration {SEALED_MIGRATION}"):
                 store.write("alpha/token", "value")
             assert not (tmp_path / "absent.key").exists()
             output = io.StringIO()

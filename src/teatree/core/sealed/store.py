@@ -4,7 +4,7 @@ from typing import override
 
 from django.db import OperationalError
 
-from teatree.core.models.sealed_secret import SealedSecret
+from teatree.core.models.sealed_secret import SEALED_MIGRATION, SealedSecret
 from teatree.utils.master_key import KeyFileSource, master_key_source
 from teatree.utils.secrets import SecretStore, SecretStoreError
 
@@ -28,7 +28,7 @@ class DbStore(SecretStore):
             has_rows = SealedSecret.objects.exists()
         except OperationalError as exc:
             if SealedSecret.objects.table_missing():
-                message = "sealed secret write requires migration 0013 on the canonical database"
+                message = f"sealed secret write requires migration {SEALED_MIGRATION} on the canonical database"
                 raise SecretStoreError(message) from exc
             message = f"sealed secret {key!r} could not be written"
             raise SecretStoreError(message) from exc

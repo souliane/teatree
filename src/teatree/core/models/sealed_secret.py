@@ -15,6 +15,7 @@ from teatree.utils.sealing import InvalidMasterKeyError, MasterKey, SealedValue,
 from teatree.utils.secrets import SecretStoreError
 
 TABLE_NAME = "teatree_sealed_secret"
+SEALED_MIGRATION = "0014_sealedsecret"
 _VERIFIED_ROWS: dict[tuple[str, str, str, bytes], tuple[str, ...]] = {}
 
 
