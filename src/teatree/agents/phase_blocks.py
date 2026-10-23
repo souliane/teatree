@@ -39,7 +39,7 @@ from teatree.core.review.live_head import live_head_at
 _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
     "",
     "VERIFICATION RIGOR:",
-    "1. Reproduce the claimed outcome from proof; summaries and unverified findings are not evidence.",
+    "1. Read the proof first, then reproduce the claimed outcome; summaries and unverified findings are not evidence.",
     "2. Grade correctness, robustness, maintainability, coherence, reliability, and proactivity separately.",
 )
 
@@ -65,7 +65,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     """
     return (
         "",
-        "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker forbids `t3 <overlay> review record`.",
+        "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker: do NOT try `t3 <overlay> review record`.",
         "The orchestrator records it and releases the review lock:",
         '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
