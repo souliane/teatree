@@ -660,6 +660,14 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         view = self._view(local, peer, filters=CompareFilters(scope="example"))
         assert [cell.value for cell in view.rows[0].cells] == [2, 4]
 
+    def test_disjoint_keys_under_both_aliases_are_folded_into_one_scope(self) -> None:
+        local = _box(LOCAL_LABEL, {"example": {"merge_wip": 2}, "t3-example": {"overlays": {"a": {}}}})
+        peer = _box("peer", {"example": {"merge_wip": 4}, "t3-example": {"overlays": {"b": {}}}})
+
+        view = self._view(local, peer, filters=CompareFilters(scope="example"))
+
+        assert {(row.title, row.scope) for row in view.rows} == {("merge_wip", "example"), ("overlays", "example")}
+
     def test_all_rows_keeps_every_difference_and_caps_identical_rows(self) -> None:
         same = tuple(f"same_{index:03d}" for index in range(501))
         keys = (*same, "different")
@@ -714,6 +722,7 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         assert "Changes from this page apply to this instance only" in rendered
         assert re.search(r"this instance\s*<span class=\"muted\">v1.2.3</span>", rendered)
         assert re.search(r"peer\s*<span class=\"muted\">v2.3.4</span>", rendered)
+        assert "Older instances cannot read format version 2 snapshots" in rendered
 
     def test_compare_posts_only_to_local_relative_urls(self) -> None:
         local = PeerSnapshot(

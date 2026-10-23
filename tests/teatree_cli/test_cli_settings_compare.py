@@ -52,10 +52,19 @@ class TestSettingsCompareCliDelegation:
         )
 
     def test_help_lists_the_filter_flags(self) -> None:
-        result = runner.invoke(app, ["settings", "compare", "--help"])
+        result = runner.invoke(app, ["settings", "compare", "--help"], prog_name="t3")
         assert result.exit_code == 0
+        assert "t3 settings compare" in result.output
         assert "--family" in result.output
         assert "--all-rows" in result.output
+
+    def test_unknown_option_reports_usage_without_a_traceback(self) -> None:
+        result = runner.invoke(app, ["settings", "compare", "--bogus"], prog_name="t3")
+
+        assert result.exit_code == 2
+        assert "No such option" in result.output
+        assert "Usage: t3 settings compare" in result.output
+        assert "Traceback" not in result.output
 
 
 def _payload(stored: dict[str, dict[str, Any]], declares: tuple[str, ...], **fingerprint: Any) -> dict[str, Any]:

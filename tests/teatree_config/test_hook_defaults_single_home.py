@@ -8,7 +8,7 @@ import pytest
 
 from hooks.scripts import teatree_settings
 from teatree.config import cold_reader
-from teatree.config.registries import COLD_HOOK_SETTINGS
+from teatree.config.registries import COLD_HOOK_SETTINGS, tier_models
 
 ROOT = Path(__file__).resolve().parents[2]
 TYPED_READERS = {
@@ -69,6 +69,56 @@ def test_cold_reader_uses_the_declared_default_without_a_caller_literal(tmp_path
     assert cold_reader.int_setting("hook_validator_timeout_seconds", db_path=missing) == 60
     assert cold_reader.str_setting("slack_user_id", db_path=missing) == ""
     assert cold_reader.list_setting("private_repos", db_path=missing) == []
+
+
+def test_cold_reader_does_not_expose_mutable_registry_defaults(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.sqlite3"
+    value = cold_reader.list_setting("private_repos", db_path=missing)
+    value.append("changed")
+
+    assert cold_reader.list_setting("private_repos", db_path=missing) == []
+
+
+def test_registry_model_maps_are_independent_copies() -> None:
+    models = tier_models()
+    models["frontier"] = "changed"
+
+    assert tier_models()["frontier"] != "changed"
+
+
+def test_autoload_follows_a_changed_declaration_when_the_store_has_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+    monkeypatch.setattr(teatree_settings, "_cold_db_bool", lambda _name: None)
+    monkeypatch.setattr(teatree_settings, "_declared_default", lambda _name: True)
+
+    assert teatree_settings.autoload_enabled() is True
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("orchestrator_turn_budget", 25),
+        ("orchestrator_turn_wall_clock_seconds", 180),
+        ("hook_validator_timeout_seconds", 60),
+    ],
+)
+def test_hook_budget_has_a_safe_emergency_value_when_the_declaration_cannot_load(
+    key: str, expected: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(teatree_settings, "_declared_default", lambda _name: None)
+    monkeypatch.setattr(teatree_settings, "_cold_db_int", lambda _name: None)
+
+    assert teatree_settings.teatree_int_setting(key) == expected
+
+
+def test_cold_shell_output_stays_bounded_when_the_declaration_cannot_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def unavailable(_name: str) -> object:
+        raise ModuleNotFoundError
+
+    monkeypatch.setattr(cold_reader, "import_module", unavailable)
+    assert cold_reader.int_setting("agent_shell_max_output_bytes", db_path=tmp_path / "missing") == 16384
 
 
 def test_an_unimportable_registry_keeps_a_gate_armed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

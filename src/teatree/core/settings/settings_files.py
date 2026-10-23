@@ -28,6 +28,9 @@ from django.utils.text import slugify
 from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
 from teatree.core.settings_snapshot import FORMAT_VERSION, SNAPSHOT_FORMAT, WITHHELD_LABEL
 
+LEGACY_FORMAT_VERSION = 1
+SUPPORTED_VERSIONS = frozenset({LEGACY_FORMAT_VERSION, FORMAT_VERSION})
+
 #: The largest document the loader accepts. A real snapshot measures a few hundred KB, so this
 #: is generous for any capture while refusing a mis-picked archive before it reaches the parser.
 MAX_SNAPSHOT_BYTES = 8_000_000
@@ -108,7 +111,8 @@ def _wrong_shape(payload: Mapping[str, Any]) -> str:
     """Why this JSON object is not a snapshot THIS teatree reads, or ``""`` when it is one."""
     if (declared := payload.get("format")) != SNAPSHOT_FORMAT:
         return f"its 'format' is {declared!r}, not {SNAPSHOT_FORMAT!r}"
-    if (version := payload.get("format_version")) not in {1, FORMAT_VERSION}:
+    version = payload.get("format_version")
+    if type(version) is not int or version not in SUPPORTED_VERSIONS:
         return f"its 'format_version' is {version!r} — this teatree reads format_version {FORMAT_VERSION} or 1"
     return ""
 

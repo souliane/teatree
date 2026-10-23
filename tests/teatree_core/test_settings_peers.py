@@ -81,6 +81,22 @@ class TestTheRowShowsTheAddressTheOperatorsForwardBinds:
     def test_a_peer_fetched_through_the_resolved_route_still_carries_its_own_label(self) -> None:
         assert PeerSnapshot(label="box-b", url="", note="").label == "box-b"
 
+    def test_fetching_a_peer_only_reads_its_snapshot(self) -> None:
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "http://127.0.0.1:9401/dash/settings/snapshot.json"),
+            json={"format": settings_peers.SNAPSHOT_FORMAT},
+        )
+        with (
+            patch.object(settings_peers.httpx, "get", return_value=response) as get,
+            patch.object(settings_peers.httpx, "post") as post,
+        ):
+            row = settings_peers._fetch("box-b", "http://127.0.0.1:9401/", "", 1.0)
+
+        assert row.reachable
+        get.assert_called_once()
+        post.assert_not_called()
+
 
 class TestTheTunnelAdviceOnlyAppearsWhereTheForwardIsInDoubt:
     """A peer that ANSWERED was reached over a working forward, whatever it answered.

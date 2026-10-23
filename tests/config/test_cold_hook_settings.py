@@ -147,7 +147,7 @@ def test_integer_fallback_loads_in_a_bare_hook_interpreter() -> None:
         f"sys.path.insert(0, {str(scripts)!r}); "
         "import teatree_settings as settings; "
         "settings._declared_default = lambda name: None; "
-        "assert settings.section_int_setting('teatree', 'orchestrator_turn_wall_clock_seconds') == 30"
+        "assert settings.section_int_setting('teatree', 'orchestrator_turn_wall_clock_seconds') == 180"
     )
     result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr

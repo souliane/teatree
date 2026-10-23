@@ -174,7 +174,7 @@ def _settings_registry(
         reason = secrets.get(key, "")
         entries[key] = {
             "kind": control.kind,
-            "family": _setting_family(key),
+            "family": setting_family(key),
             "annotation": control.annotation_text,
             "choices": [serialise(choice) for choice in control.raw_choices] or None,
             "default": defaults.get(key),
@@ -191,7 +191,7 @@ def _settings_registry(
     return entries
 
 
-def _setting_family(key: str) -> str:
+def setting_family(key: str) -> str:
     if key in REGISTRY_SETTINGS:
         return "registry"
     if key in COLD_HOOK_SETTINGS:
@@ -505,4 +505,5 @@ __all__ = [
     "WITHHELD_LABEL",
     "SnapshotError",
     "build_snapshot",
+    "setting_family",
 ]

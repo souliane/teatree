@@ -14,6 +14,8 @@
   agreement between the instances that did answer, which is the one wrong answer this page must
   never give.
   {% endcomment %}
+  <p class="muted">Older instances cannot read format version 2 snapshots from this instance;
+    upgrade them before loading a new capture.</p>
   <form method="get" action="{% url 'dash:settings_compare' %}" class="toolbar compare-filters">
     <label>Family
       <select name="family">

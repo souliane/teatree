@@ -33,6 +33,13 @@ sys.modules.setdefault("hooks.scripts.teatree_settings", sys.modules[__name__])
 
 _GLOBAL_SCOPE = ""
 
+# A missing declaration is a broken cold import, so these preserve each budget's unit;
+# the hook's 30-second process ceiling is unrelated to turn counts or validator timeouts.
+_EMERGENCY_INT_BUDGETS = {
+    "orchestrator_turn_budget": 25,
+    "orchestrator_turn_wall_clock_seconds": 180,
+    "hook_validator_timeout_seconds": 60,
+}
 # ``read_cold_setting_status`` second-element vocabulary.
 COLD_READ_OK = "ok"
 COLD_READ_UNREADABLE = "unreadable"
@@ -186,26 +193,12 @@ def section_int_setting(section: str, name: str, *, minimum: int | None = None) 
     """
     declared = _declared_default(name)
     if not isinstance(declared, int) or isinstance(declared, bool):
-        with _hook_scripts_on_path():
-            declared = int(import_module("hook_budget").HOOK_CEILING_S)
+        declared = _EMERGENCY_INT_BUDGETS.get(name, 1)
     if section == "teatree":
         db_value = _cold_db_int(name)
         if db_value is not None and (minimum is None or db_value >= minimum):
             return db_value
     return declared
-
-
-@contextlib.contextmanager
-def _hook_scripts_on_path() -> Generator[None]:
-    scripts_dir = str(Path(__file__).resolve().parent)
-    added = scripts_dir not in sys.path
-    if added:
-        sys.path.insert(0, scripts_dir)
-    try:
-        yield
-    finally:
-        if added:
-            sys.path.remove(scripts_dir)
 
 
 def teatree_int_setting(name: str, *, minimum: int | None = None) -> int:
@@ -217,16 +210,18 @@ _AUTOLOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 
 def autoload_enabled() -> bool:
-    """Whether teatree auto-engages a fresh session (#256). Default OFF, fail-closed.
+    """Whether teatree auto-engages a fresh session (#256).
 
     The cold-hook reader the SessionStart hook and the PreToolUse gates consult to decide
     default-off engagement. Env-first (``T3_AUTOLOAD`` truthy), else the DB-home
-    ``autoload`` flag read via the Django-free ``_cold_db_bool``. Fails CLOSED (OFF)
-    on a missing/broken DB, so a fresh install never auto-engages teatree until the
-    owner opts in.
+    ``autoload`` flag read via the Django-free ``_cold_db_bool``, then the declared
+    default. An unreadable declaration fails closed.
     """
     env = os.environ.get("T3_AUTOLOAD", "").strip().lower()
     if env:
         return env in _AUTOLOAD_TRUTHY
     db_value = _cold_db_bool("autoload")
-    return db_value if db_value is not None else False
+    if db_value is not None:
+        return db_value
+    declared = _declared_default("autoload")
+    return declared if isinstance(declared, bool) else False

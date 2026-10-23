@@ -35,8 +35,24 @@ def compare(ctx: typer.Context) -> None:
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415 — deferred until Django is ready
+    from django.core.management import (  # noqa: PLC0415 — deferred until Django is ready
+        call_command,
+        get_commands,
+        load_command_class,
+    )
+    from django.core.management.base import CommandError  # noqa: PLC0415 — deferred until Django is ready
 
+    command = load_command_class(get_commands()["settings_compare"], "settings_compare")
+    parser = command.create_parser("t3 settings", "compare")
+    if "--help" in ctx.args:
+        parser.print_help()
+        return
+    try:
+        parser.parse_args(ctx.args)
+    except CommandError as exc:
+        parser.print_help()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
     call_command("settings_compare", *ctx.args)
 
 

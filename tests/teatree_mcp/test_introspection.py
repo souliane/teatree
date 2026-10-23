@@ -44,6 +44,7 @@ class TestConfigSettingGet(TestCase):
 
         assert row["value"] == 7
         assert row["source"] == "db"
+        assert row["scope"] == "overlay:teatree"
 
     def test_overlay_reads_a_global_stored_value(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", 7)
@@ -52,6 +53,7 @@ class TestConfigSettingGet(TestCase):
 
         assert row["value"] == 7
         assert row["source"] == "db"
+        assert row["scope"] == "global"
 
     def test_db_override_reports_db_source(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", value=400)

@@ -69,9 +69,10 @@ from teatree.core.settings.settings_compare_rows import (
 )
 from teatree.core.settings.settings_compare_sync import SEED, SETTING
 from teatree.core.settings.settings_compat import CompatReport, build_compat_report
+from teatree.core.settings.settings_files import LEGACY_FORMAT_VERSION
 from teatree.core.settings.settings_peers import PeerSnapshot, local_snapshot, peer_snapshots
-from teatree.core.settings_snapshot import canonical_json
-from teatree.core.settings_snapshot.payload import _setting_family
+from teatree.core.settings_snapshot import FORMAT_VERSION, canonical_json
+from teatree.core.settings_snapshot.payload import setting_family
 from teatree.core.settings_snapshot.withholding import carries_stub
 
 
@@ -263,7 +264,7 @@ def _setting_rows(live: Sequence[PeerSnapshot], scope_filter: str) -> list[Compa
                         or (
                             "credential"
                             if is_pass_key_setting(key)
-                            else _setting_family(key)
+                            else setting_family(key)
                             if key in ALL_KNOWN_CONFIG_SETTINGS
                             else "setting"
                         )
@@ -302,8 +303,8 @@ def _setting_cell(instance: PeerSnapshot, scope: str, key: str) -> Cell:
 def _default_recorded(instance: PeerSnapshot, key: str) -> bool:
     if key not in _values(instance, "defaults"):
         return False
-    version = (instance.payload or {}).get("format_version", 2)
-    return version != 1 or key not in ALL_KNOWN_CONFIG_SETTINGS or _setting_family(key) != "table"
+    version = (instance.payload or {}).get("format_version", FORMAT_VERSION)
+    return version != LEGACY_FORMAT_VERSION or key not in ALL_KNOWN_CONFIG_SETTINGS or setting_family(key) != "table"
 
 
 def _registered_scopes(instance: PeerSnapshot) -> set[str]:

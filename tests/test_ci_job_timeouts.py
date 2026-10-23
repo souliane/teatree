@@ -19,16 +19,5 @@ def test_every_ci_job_declares_timeout_minutes() -> None:
 
 def test_dash_e2e_timeout_covers_cold_browser_install_and_both_suites() -> None:
     jobs = yaml.safe_load(_CI.read_text(encoding="utf-8"))["jobs"]
-    cold_browser_install_minutes = 7
-    browser_suite_minutes = 2
-    dashboard_suite_minutes = 2
-    runner_setup_minutes = 1
-    safety_margin_minutes = 2
-
-    assert jobs["dash-e2e"]["timeout-minutes"] >= (
-        cold_browser_install_minutes
-        + browser_suite_minutes
-        + dashboard_suite_minutes
-        + runner_setup_minutes
-        + safety_margin_minutes
-    )
+    # The previous 10-minute cap cancelled a nearly complete run.
+    assert jobs["dash-e2e"]["timeout-minutes"] >= 15

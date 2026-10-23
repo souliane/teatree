@@ -112,14 +112,14 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
         }
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
-    stored, _stored_scope = ConfigSetting.objects.get_effective_with_scope(key, scope=scope)
+    stored, stored_scope = ConfigSetting.objects.get_effective_with_scope(key, scope=scope)
     if stored is not None:
         return {
             "key": key,
             "known": True,
             "value": _jsonable(stored),
             "source": "db",
-            "scope": label,
+            "scope": _scope_label(stored_scope),
             "overlay": scope,
         }
     cold_hook = COLD_HOOK_SETTINGS.get(key)

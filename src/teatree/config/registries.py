@@ -337,23 +337,23 @@ COLD_SETTING_KEYS: tuple[str, ...] = tuple(COLD_SETTINGS)
 
 
 def tier_models() -> dict[str, str]:
-    return cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+    return dict(cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default))
 
 
 def pydantic_ai_tier_models() -> dict[str, str]:
-    return cast("dict[str, str]", COLD_SETTINGS["agent_pydantic_ai_tier_models"].default)
+    return dict(cast("dict[str, str]", COLD_SETTINGS["agent_pydantic_ai_tier_models"].default))
 
 
 def tier_effort() -> dict[str, str]:
-    return cast("dict[str, str]", COLD_SETTINGS["agent_tier_effort"].default)
+    return dict(cast("dict[str, str]", COLD_SETTINGS["agent_tier_effort"].default))
 
 
 def phase_models() -> dict[str, str]:
-    return cast("dict[str, str]", COLD_SETTINGS["agent_phase_models"].default)
+    return dict(cast("dict[str, str]", COLD_SETTINGS["agent_phase_models"].default))
 
 
 def phase_harness_defaults() -> dict[str, str]:
-    return cast("dict[str, str]", COLD_SETTINGS["agent_phase_harness"].default)
+    return dict(cast("dict[str, str]", COLD_SETTINGS["agent_phase_harness"].default))
 
 
 # Disjoint from ``OVERLAY_OVERRIDABLE_SETTINGS`` and from every ``UserSettings``

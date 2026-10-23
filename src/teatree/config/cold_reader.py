@@ -219,7 +219,11 @@ def int_setting(
     """
     value = _read_chain(name, scope_chain, db_path=db_path)
     declared = _declared_default(name)
-    fallback = declared if isinstance(declared, int) and not isinstance(declared, bool) else 0
+    fallback = (
+        declared
+        if isinstance(declared, int) and not isinstance(declared, bool)
+        else (16384 if name == "agent_shell_max_output_bytes" else 1)
+    )
     try:
         coerced = value_coercion.strict_int(value, accept_numeric_str=False)
     except (TypeError, ValueError):
@@ -252,7 +256,7 @@ def list_setting(
     if isinstance(value, list):
         return cast("list[object]", value)
     declared = _declared_default(name)
-    return cast("list[object]", declared) if isinstance(declared, list) else []
+    return cast("list[object]", declared.copy()) if isinstance(declared, list) else []
 
 
 def mapping_setting(

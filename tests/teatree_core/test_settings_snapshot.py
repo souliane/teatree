@@ -31,7 +31,7 @@ from teatree.core.settings_snapshot import (
     serialise,
 )
 from teatree.core.settings_snapshot.fingerprint import Warnings, schema_state
-from teatree.core.settings_snapshot.payload import _fold_stored_settings, _setting_family
+from teatree.core.settings_snapshot.payload import _fold_stored_settings, setting_family
 from teatree.hooks.term_match import line_matches
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
@@ -317,7 +317,7 @@ class TestOverlayAliasFoldIsOnePath(TestCase):
 
 
 def test_registry_family_covers_cold_hook_table_and_regular_keys() -> None:
-    assert _setting_family("agent_tier_models") == "table"
-    assert _setting_family("orchestrator_delegation_gate_enabled") == "hook-gate"
-    assert _setting_family("contribute") == "setting"
-    assert _setting_family("overlays") == "registry"
+    assert setting_family("agent_tier_models") == "table"
+    assert setting_family("orchestrator_delegation_gate_enabled") == "hook-gate"
+    assert setting_family("contribute") == "setting"
+    assert setting_family("overlays") == "registry"

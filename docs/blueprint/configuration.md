@@ -848,13 +848,15 @@ settings keep the same metadata in their registry entry. `schema.py` builds the
 `pydantic-settings` view from those declarations, with the same per-key coercer wrapped in
 `BeforeValidator`. The model covers every known key, while `setting_registries.py` derives
 the overlay parser map and box-global set from the fields. `setting_help.py` reads the
-same descriptions. `declared_keys.txt` records the complete 195-key namespace; removing a
+same descriptions. `declared_keys.txt` records the complete declared namespace; removing a
 key requires an explicit `RETIRED` or `RENAMED` entry in that manifest.
 
 `effective_default` is the resolver's one no-override answer. The generated TOML is
 never read back as a resolution tier. `cold_defaults.py` retains only the cold-safe
 flattening primitive used by TOML interchange. A measured median parse of the generated
-file was 3.93 ms; a second runtime default source would add drift risk without reducing
+file on the deployed `teatree-worker` container on 2026-10-23 was 2.69 ms (101 parses,
+34,501 bytes; p95 3.33 ms). This measures parsing in the running deployment, not a whole
+hook invocation. A second runtime default source would add drift risk without reducing
 cold-path cost, so Stage 2 runtime parsing is deferred until a measured reader needs it.
 The subprocess control in `tests/config/test_cold_defaults.py` still pins that this
 interchange helper imports neither pydantic nor Django.
@@ -1125,6 +1127,11 @@ read, is not UTF-8 JSON, is not a JSON object, or exceeds `MAX_SNAPSHOT_BYTES` i
 NAME with what was wrong (`LoadRefusal`). One bad document never costs the good ones: the POST
 answers 400 only when NOTHING loaded, so a mis-picked file cannot hide the comparison the rest
 produced.
+
+Snapshots produced by this release use format version 2. Older instances that read only
+version 1 refuse a version 2 capture from an upgraded peer; upgrade the receiving instance
+before loading that capture. This applies during a mixed-version rollout, even though this
+release still reads saved version 1 files.
 
 **Only the local column can write.** An eligible settings cell uses
 `ConfigSetting.set_value`, exactly like the Settings page; env-pinned, code-pinned, withheld,

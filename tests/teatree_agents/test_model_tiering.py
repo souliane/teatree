@@ -78,9 +78,9 @@ class TestTierConstantIsSingleSource:
         assert set(tier_models()) == {"frontier", "balanced", "cheap"}
 
     def test_shipped_maps_have_no_module_level_aliases(self) -> None:
-        assert model_tiering.tier_models() is COLD_SETTINGS["agent_tier_models"].default
-        assert model_tiering.tier_effort() is COLD_SETTINGS["agent_tier_effort"].default
-        assert model_tiering.phase_models() is COLD_SETTINGS["agent_phase_models"].default
+        assert model_tiering.tier_models() == COLD_SETTINGS["agent_tier_models"].default
+        assert model_tiering.tier_effort() == COLD_SETTINGS["agent_tier_effort"].default
+        assert model_tiering.phase_models() == COLD_SETTINGS["agent_phase_models"].default
         assert not hasattr(model_tiering, "TIER_MODELS")
         assert not hasattr(model_tiering, "TIER_EFFORT")
         assert not hasattr(model_tiering, "DEFAULT_PHASE_MODELS")
