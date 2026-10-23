@@ -258,10 +258,12 @@ class LifecycleIncidentTests(TestCase):
         self, errors: list[str], cause: str
     ) -> tuple[list[DetectorReport], list[int], list[int]]:
         now = timezone.now()
+        TaskAttemptFactory.create_batch(len(errors) + 1, task=TaskFactory())
         tasks = [TaskFactory() for _ in errors]
         attempts = [
             TaskAttemptFactory(task=task, exit_code=1, error=error) for task, error in zip(tasks, errors, strict=True)
         ]
+        assert {task.pk for task in tasks}.isdisjoint(attempt.pk for attempt in attempts)
         rows = [
             {
                 "epoch": int(now.timestamp()),
