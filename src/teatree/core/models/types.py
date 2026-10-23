@@ -142,6 +142,7 @@ class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]
+    nit_publication: dict[str, JSONObject]
     forced_repro_disabled_scopes: list[str]
     # Self-improvement repair tickets need this marker to classify their own
     # task failures separately from the incidents they are investigating.

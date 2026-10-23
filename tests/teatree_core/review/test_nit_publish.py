@@ -27,8 +27,9 @@ class TestNitPublish(TestCase):
     def test_publish_records_a_receipt_only_after_forge_readback(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         host = object()
+        overlay = object()
         with (
-            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=overlay),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(
                 "teatree.core.review.nit_publish.track_nits",
@@ -40,6 +41,7 @@ class TestNitPublish(TestCase):
             publish_nits(ticket, _PR_URL, _HEAD, (_POINT,))
 
         track.assert_called_once_with(host=host, pr_url=_PR_URL, head_sha=_HEAD, points=(_POINT,))
+        provider.return_value.get_code_host_for_url.assert_called_once_with(overlay, _PR_URL)
         assert has_nit_receipts(ticket, _PR_URL, _HEAD, (_POINT,))
         assert not has_nit_receipts(ticket, _PR_URL, "b" * 40, (_POINT,))
         assert not has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("src/example.py", 8, "Another nit"),))

@@ -48,6 +48,7 @@ from teatree.core.models import (
 from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.review.nit_lane import NitPoint, nit_point_marker
 from teatree.quality.brief_constraints import ConstraintViolation
 from tests._forge_stub import merge_path_stdout
@@ -147,6 +148,24 @@ class TestVerdictGate(TestCase):
             pytest.raises(MergeQualityVerdictError, match="brief constraint"),
         ):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_brief_constraints_use_the_ticket_target_branch(self) -> None:
+        ticket = _ordinary_ticket()
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
+        with (
+            patch(
+                "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                return_value=SimpleNamespace(plan_text="No migration."),
+            ),
+            patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value="/tmp/review"),
+            patch(
+                "teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value="origin/release"
+            ) as target,
+            patch("teatree.core.gates.merge_quality_gate.run_brief_constraints", return_value=()) as run,
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
+        target.assert_called_once_with(ticket, "/tmp/review")
+        assert run.call_args.kwargs["base_ref"] == "origin/release"
 
     def test_missing_verdict_names_quiescing_worker_and_recovery(self) -> None:
         ticket = _ordinary_ticket()
@@ -289,6 +308,10 @@ class TestRatifiedTestStrategyAnchor(TestCase):
         assert '"kind": "blocking"|"nit"' in contract
         assert '"points": [' in contract
         assert '"summary": "<specific finding>"' in contract
+        assert "redundant_with row" in contract
+        assert "blocking test_value point" in contract
+        assert "duplicate definition" in contract
+        assert "blocking cleanliness point" in contract
 
     def test_directive_anchor_is_the_sketch_acceptance_tests(self) -> None:
         ticket = _directive_ticket(with_sketch=True)
@@ -350,6 +373,71 @@ class TestTransitionScoping(TestCase):
 
 
 class TestNitReceiptGate(TestCase):
+    def _retry_ticket(self, status: str) -> tuple[Ticket, str, NitPoint]:
+        ticket = _ordinary_ticket()
+        pr_id = 4040 + ticket.pk
+        pr_url = f"https://github.com/souliane/teatree/pull/{pr_id}"
+        PullRequest.objects.create(
+            ticket=ticket, overlay="t3-teatree", url=pr_url, repo="souliane/teatree", iid=str(pr_id)
+        )
+        point = NitPoint("src/example.py", 8, "Rename helper")
+        _record_merge_verdict(
+            ticket,
+            items=[
+                _pass("test_value"),
+                {
+                    "slug": "cleanliness",
+                    "status": "fail",
+                    "citation": "src/example.py:8",
+                    "points": [{"kind": "nit", "summary": point.summary, "file": point.file, "line": point.line}],
+                },
+            ],
+        )
+        ticket.merge_extra(merge_into_dicts={"nit_publication": {_FORTY_HEX: {"status": status}}})
+        return ticket, pr_url, point
+
+    def test_pending_and_failed_nit_markers_retry_publication(self) -> None:
+        for status in ("pending", "failed"):
+            ticket, pr_url, point = self._retry_ticket(status)
+
+            def publish(_ticket: Ticket, _pr_url: str, _head: str, _points: tuple[NitPoint, ...]) -> None:
+                _ticket.merge_extra(
+                    merge_into_dicts={
+                        "nit_lane_receipts": {
+                            nit_point_marker(_pr_url, _head, _points[0]): {
+                                "head_sha": _head,
+                                "issue_url": "https://github.com/souliane/teatree/issues/10",
+                                "thread_id": "thread-1",
+                            }
+                        }
+                    }
+                )
+
+            with patch("teatree.core.gates.merge_quality_gate.publish_nits", side_effect=publish) as publish_call:
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            publish_call.assert_called_once_with(ticket, pr_url, _FORTY_HEX, (point,))
+            ticket.refresh_from_db()
+            assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "published"
+
+    def test_on_behalf_block_in_nit_retry_is_a_merge_verdict_refusal(self) -> None:
+        ticket, _, _ = self._retry_ticket("failed")
+        with (
+            patch(
+                "teatree.core.gates.merge_quality_gate.publish_nits",
+                side_effect=OnBehalfPostBlockedError("issue", "post_review_nit"),
+            ),
+            pytest.raises(MergeQualityVerdictError, match="NIT publication retry refused"),
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_graphql_runtime_error_in_nit_retry_is_a_merge_verdict_refusal(self) -> None:
+        ticket, _, _ = self._retry_ticket("pending")
+        with (
+            patch("teatree.core.gates.merge_quality_gate.publish_nits", side_effect=RuntimeError("GraphQL failed")),
+            pytest.raises(MergeQualityVerdictError, match="NIT publication retry refused: GraphQL failed"),
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
+
     def test_advisory_point_needs_a_receipt_at_the_same_head(self) -> None:
         ticket = _ordinary_ticket()
         pr_url = "https://github.com/souliane/teatree/pull/4040"

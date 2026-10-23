@@ -273,6 +273,23 @@ def test_gitlab_nit_comment_uses_gitlab_scrub_policy() -> None:
     assert scrub.call_args.kwargs["forge"] == "gitlab"
 
 
+def test_github_nit_comment_uses_github_scrub_policy() -> None:
+    host = _Host()
+    with (
+        patch("teatree.core.review.nit_lane.route_forge_write", side_effect=lambda **kw: kw["text"]) as scrub,
+        patch("teatree.core.review.nit_lane.require_on_behalf_approval", side_effect=lambda **kw: kw["publish"]()),
+    ):
+        _post_missing(
+            host,
+            pr_url="https://github.com/o/r/pull/9",
+            head_sha="a" * 40,
+            points=(NitPoint("x.py", 2, "Rename helper"),),
+            own_pr=True,
+        )
+    assert scrub.call_args.kwargs["forge"] == "github"
+    assert len(host.review_posts) == 1
+
+
 def test_post_missing_keeps_review_refusal_for_todo_anchored_comment() -> None:
     host = _Host()
     with (

@@ -45,7 +45,6 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_lane import NitLaneError
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.brief_constraints import extract_constraints
@@ -149,6 +148,8 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f"unverified with verified=false for each ungraded item; do not call it fail.\n\n"
         f"Finding standard: {FINDING_STANDARD} Every point carries kind: "
         f'"kind": "blocking"|"nit". A NIT alone cannot fail an item.\n\n'
+        f"A redundant_with row needs a blocking test_value point citing its test node; a duplicate definition "
+        f"needs a blocking cleanliness point citing its file:line. An ignored row is refused and re-armed.\n\n"
         f"{continuity}\n\n{evidence}\n\nAnchor for `test_value` — {strategy}\n\n"
         f"On a later head, each item's resolutions array must name every prior finding ID under that item, "
         f"state fixed or not_fixed, and cite the current artifact. "
@@ -327,7 +328,7 @@ def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdic
     if pr_url and marker.get("status") in {"pending", "failed"}:
         try:
             publish_nits(ticket, pr_url, head_sha, points)
-        except NitLaneError as exc:
+        except RuntimeError as exc:
             message = f"NIT publication retry refused: {exc}"
             raise MergeQualityVerdictError(message) from exc
         ticket.refresh_from_db()

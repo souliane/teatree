@@ -96,7 +96,10 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             )
         ),
         "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-        "Another or missing `reviewed_sha` is REFUSED; review the dispatched head or return needs_user_input.",
+        "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
+        "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
+        "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
+        "dispatched one, so a verdict that names no head records nothing at all.",
         "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
         "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
         *(

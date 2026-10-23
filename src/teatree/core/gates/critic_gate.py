@@ -245,21 +245,24 @@ def _evidence_row_refusal(ticket: "Ticket", head_sha: str, items: list[CriticIte
             point.kind == "blocking" and row.node in f"{point.citation} {point.summary}"
             for point in points.get("test_value", ())
         ):
-            return f"critic evidence unavailable: redundant_with row {row.node} needs a blocking test_value point"
+            return f"redundant_with row {row.node} needs a blocking test_value point citing that node"
     for duplicate in evidence.duplicates:
         location = f"{duplicate.path}:{duplicate.second_line}"
         if not any(
             point.kind == "blocking" and location in f"{point.citation} {point.file}:{point.line} {point.summary}"
             for point in points.get("cleanliness", ())
         ):
-            return f"critic evidence unavailable: duplicate definition {location} needs a blocking cleanliness point"
+            return f"duplicate definition {location} needs a blocking cleanliness point citing that location"
     return ""
 
 
 def _record_new_critic_verdict(dispatch: CriticDispatch, envelope: dict) -> CriticVerdict:
     raw_items = envelope.get("items")
     if dispatch.transition == "merge" and isinstance(raw_items, list):
-        items = [CriticItemVerdict.coerce(item) for item in raw_items if isinstance(item, dict)]
+        nit_follow_up = isinstance(dispatch.ticket.extra, dict) and dispatch.ticket.extra.get("nit_follow_up") is True
+        items = [
+            CriticItemVerdict.coerce(item, nit_follow_up=nit_follow_up) for item in raw_items if isinstance(item, dict)
+        ]
         validate_nit_comments(critic_nits(items))
         if refusal := _evidence_row_refusal(dispatch.ticket, dispatch.head_sha, items):
             raise CriticEvidenceUnavailableError(refusal)

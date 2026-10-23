@@ -45,8 +45,9 @@ from teatree.core.review.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, R
 from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
 from teatree.core.review.nit_publish import has_nit_receipts
 from teatree.core.runners.base import RunnerResult
+from teatree.quality.duplicate_definitions import DuplicateDefinition
 from teatree.quality.kill_matrix import KillMatrix, KillRow
-from teatree.quality.review_evidence import ReviewEvidence
+from teatree.quality.review_evidence import ReviewEvidence, ReviewEvidenceError
 
 _FORTY_HEX = "a" * 40
 _LLM_SLUGS = ("coherence", "duplication", "deferred", "ignored_input", "unenforced_guarantee")
@@ -234,6 +235,17 @@ class TestReturnedVerdictRecording(TestCase):
         assert error == ""
         assert CriticVerdict.objects.filter(ticket=ticket).exists()
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+    def test_retry_at_the_same_head_keeps_exactly_one_verdict(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        envelope = _critic_envelope()
+        assert record_returned_critic_verdict(dispatch.task, envelope) == ""
+        assert record_returned_critic_verdict(dispatch.task, envelope) == ""
+        assert (
+            CriticVerdict.objects.filter(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX).count() == 1
+        )
 
     def test_refuses_a_maker_graded_verdict(self) -> None:
         ticket = _clean_delivered_ticket()
@@ -490,7 +502,42 @@ class TestMergeNitPublication(TestCase):
         ):
             error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
         assert "redundant_with row" in error
+        assert error.count("critic evidence unavailable:") == 1
         assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
+    def test_duplicate_definition_needs_a_cited_blocking_cleanliness_point(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        evidence = ReviewEvidence(
+            _FORTY_HEX,
+            (DuplicateDefinition("src/example.py", "helper", 3, 9),),
+            KillMatrix(_FORTY_HEX, ()),
+        )
+        with (
+            patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
+            patch("teatree.core.gates.critic_gate.read_review_evidence", return_value=evidence),
+        ):
+            error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
+        assert "duplicate definition src/example.py:9 needs a blocking cleanliness point" in error
+        assert error.count("critic evidence unavailable:") == 1
+        assert CriticVerdict.objects.filter(ticket=ticket, transition="merge", head_sha=_FORTY_HEX).count() == 0
+        dispatch.refresh_from_db()
+        assert dispatch.state == CriticDispatch.State.DISPATCHED
+
+    def test_unreadable_review_evidence_becomes_a_critic_refusal(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        with (
+            patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
+            patch(
+                "teatree.core.gates.critic_gate.read_review_evidence", side_effect=ReviewEvidenceError("bad receipt")
+            ),
+        ):
+            error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
+        assert error == "critic evidence unavailable: bad receipt"
+        assert CriticVerdict.objects.filter(ticket=ticket, transition="merge", head_sha=_FORTY_HEX).count() == 0
 
     def test_unpostable_critic_nit_refuses_before_recording(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
@@ -502,6 +549,22 @@ class TestMergeNitPublication(TestCase):
         ]
         assert "comment check" in record_returned_critic_verdict(dispatch.task, result)
         assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
+    def test_nit_follow_up_regrades_natural_nit_as_blocking_before_comment_checks(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, extra={"nit_follow_up": True}
+        )
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        result = _merge_critic_envelope()
+        result["critic_verdict"]["items"][1]["points"] = [
+            {"kind": "nit", "summary": "this is missing a blank line", "file": "x.py", "line": 1}
+        ]
+        assert record_returned_critic_verdict(dispatch.task, result) == ""
+        verdict = CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert verdict is not None
+        assert verdict.item_verdicts()[1].points[0].kind == "blocking"
+        assert "nit_publication" not in ticket.extra
 
     def test_critic_verdict_stamps_inline_nit_receipt(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
