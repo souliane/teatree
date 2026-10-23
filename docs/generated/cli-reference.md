@@ -7539,8 +7539,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 window (SIG-PR-1).                                           │
 │ agent           Launch the configured agent with overlay context and         │
 │                 auto-detected skills.                                        │
-│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
-│                 brief must carry.                                            │
+│ skill-preamble  Emit the skill preamble a raw Agent-tool sub-agent brief     │
+│                 must carry.                                                  │
 │ config          Overlay configuration.                                       │
 │ loops           Run DB-configured autonomous loops for this overlay.         │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
@@ -7705,10 +7705,10 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 ```
 Usage: t3 teatree skill-preamble [OPTIONS]
 
- Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+ Emit the skill preamble a raw Agent-tool sub-agent brief must carry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│ --skills,--skill        TEXT  Skills to include, comma-separated and/or      │
 │                               repeated (e.g. --skills t3:rules,t3:e2e).      │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯

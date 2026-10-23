@@ -67,6 +67,22 @@ class TestSkillPreambleEmission:
         result = CliRunner().invoke(app, ["skill-preamble", "--skills", "acme"])
         assert "does not auto-load" in result.output
 
+    def test_deduplicates_aliases_and_loads_stack_skills(
+        self, app: typer.Typer, overlay_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skills = overlay_project / "skills"
+        _write_skill(skills, "ac-django", "Django stack body " * 2_000)
+        _write_skill(skills, "ac-python", "Python stack body " * 2_000)
+        monkeypatch.setattr(skill_index, "install_roots", lambda: [skills])
+        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "t3:rules,rules,ac-django,ac-python"])
+        assert result.exit_code == 0, result.output
+        assert result.output.count("--- SKILL: rules ---") == 1
+        assert "REQUIRED: Load /ac-django" in result.output
+        assert "REQUIRED: Load /ac-python" in result.output
+        assert "--- SKILL: ac-django ---" not in result.output
+        assert "--- SKILL: ac-python ---" not in result.output
+        assert len(result.output.encode("utf-8")) <= 21_000
+
 
 class TestSkillPreambleWithoutOverlaySkillsDir:
     def test_framework_skill_resolves_when_no_overlay_skills_dir(self) -> None:
