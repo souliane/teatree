@@ -34,6 +34,7 @@ _EXPECTED_SURFACES = (
     "tests/README.md",
     "skills/code/SKILL.md",
     "skills/test/SKILL.md",
+    "skills/review/SKILL.md",
     "skills/ship/SKILL.md",
     "skills/contribute/SKILL.md",
     "skills/retro/references/commit-to-fork.md",
@@ -58,6 +59,16 @@ class TestRegisteredMandatesAreDiffScoped:
             "a phase's local-verification mandate is not diff-scoped -- the full suite ran "
             "locally twice per ticket before CI ran it a third time (#3994):\n" + "\n".join(str(f) for f in findings)
         )
+
+
+def test_review_skill_prescribes_a_scoped_lane() -> None:
+    text = (_REPO_ROOT / "skills/review/SKILL.md").read_text(encoding="utf-8")
+    mandate = PhaseMandate(surface="skills/review/SKILL.md", phase="reviewing")
+    roots = full_suite_invocation.declared_testpaths(_REPO_ROOT / "pyproject.toml")
+
+    assert scan_text(text, mandate, roots) == []
+    reverted = text.replace("bash dev/test-affected.sh", "uv run pytest")
+    assert any("UNSCOPED whole-suite pytest" in finding.detail for finding in scan_text(reverted, mandate, roots))
 
 
 class TestScanText:

@@ -12,7 +12,7 @@ envelope directive that keeps the run from being wasted.
 import json
 from collections.abc import Callable
 
-from teatree.agents.coding_prompt import _coding_phase_directive
+from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive
 from teatree.agents.dispatch_preflight import (
     branch_currency_brief_lines,
     declared_seams_brief_lines,
@@ -389,6 +389,9 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
             " a `hold` owes none."
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
+        *_TEST_SELECTION_LINES,
+        "For a revert-to-RED or mutation probe, run only the pinned test node ids with -n0.",
+        "Read the forge check-runs at the reviewed head; use CI for whole-tree evidence.",
         *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
@@ -463,7 +466,12 @@ def _testing_phase_lines(task: Task) -> tuple[str, ...]:
     time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
     so the tester starts from a fetched answer rather than a clean-looking tree.
     """
-    return ("", "PHASE: testing — branch-currency preflight", *branch_currency_brief_lines(task))
+    return (
+        "",
+        "PHASE: testing — branch-currency preflight",
+        *branch_currency_brief_lines(task),
+        *_TEST_SELECTION_LINES,
+    )
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:

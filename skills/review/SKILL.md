@@ -93,8 +93,10 @@ Run this **before** the cleanup checklist. Resolve any conflicts the same way yo
 **Run the affected tests through `t3`, in the checkout — never a hand-rolled runner (Non-Negotiable).** A fresh review checkout is bare (no `uv sync`, no `.venv`), so the test run is the step where a reviewer is most tempted to improvise. `t3 <overlay> run tests` provisions the checkout first (`runtime.pre_run_steps`), spawns in the worktree it resolved, and prints the argv + cwd it used so the run is reconstructible later; a genuinely unspawnable runner names `t3 <overlay> worktree provision --path <dir>` instead of reporting a bare `Failed to spawn` (souliane/teatree#4746). The `checkout` command emits the exact invocation as its `run_tests` key.
 
 ```bash
-cd <worktree> && t3 <overlay> run tests -- <paths>   # `--path` also works; everything after `--` reaches pytest verbatim
+cd <worktree> && t3 <overlay> run tests -- <test-files-or-node-ids>   # `--path` also works
 ```
+
+For teatree core, inspect `t3 tool affected-tests` first, then use `bash dev/test-affected.sh` only when it reports SCOPED. If it reports FULL, run only changed test files or pinned node ids locally and read CI's whole-tree result at the reviewed head. An oversized package directory is refused by pytest before collection.
 
 Where it differs from CI: this lane inherits the `pyproject.toml` addopts (`-n auto --reuse-db`, no coverage), while CI's authority lane is a 12-way `pytest-split` shard adding `--doctest-modules --cov` and enforcing the 93% floor over the combined shards. So a green local run proves the selected tests pass, never the coverage floor — say which you ran when the verdict leans on it. The same applies to `t3 tool verify-gates`: it takes no target, so grade the reviewed head (`t3 review checkout <pr-url> --sha <head>`, then `t3 tool verify-gates --expect-sha <head>`) and quote the SHA it says it measured — an exit code from the main clone is a green for `origin/main`, not for the PR, and the forge at the reviewed SHA (`gh api repos/<o>/<r>/commits/<sha>/check-runs`) stays the authority on CI.  <!-- mcp-ratchet: allow — the per-SHA check-runs read has no MCP tool, and `gh pr checks` answers only for the PR's CURRENT head, which is the confusion this line exists to prevent -->
 
@@ -213,7 +215,7 @@ Correctness is the **maker's** responsibility, not the reviewer's. Colleagues re
 4. **Self-reviewed using the skills** — the checklist above plus the **anti-vacuity proof on every NEW regression test**: revert the production fix and confirm the test goes **RED**; if it stays green it guards nothing. The canonical vacuity pattern is a guard that **skips the failing case** — a `seen >= 2` / `>= N` gate, a first-iteration skip, an assertion on a structurally-guaranteed post-condition the buggy code also satisfies, or a check whose clean verdict came from an input it never actually read. The full rule is the source of truth in [`../code/SKILL.md`](../code/SKILL.md) § "TDD Discipline" ("A regression test is only valid if it has been observed to FAIL on the pre-fix code"); do not duplicate it, apply it.
 5. **E2E created when relevant** — UI / cross-service behavior carries a Playwright spec (`/t3:e2e`).
 
-A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
+A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. Run each revert-to-RED or mutation probe by its pinned test node id with `-n0`; a package-directory or whole-tree sweep is unnecessary. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
 
 For an automatic reviewing task, return `anti_vacuity` with `ac_coverage`, `proven_tests`, and `no_new_tests`; the review recorder writes the attestation at the reviewed head before completion. For a manual review, stamp the same proof before the `request review` or merge transition:
 
@@ -242,7 +244,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 1. **Lint:** zero errors from the project linter
 2. **Type check:** passes (if the project uses it)
-3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
+3. **Tests:** affected lane or touched test files/node ids green locally; CI whole-tree check-runs green at the reviewed head
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
 6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced in the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`) against the repo's skills; this command checks them against every installed skill.

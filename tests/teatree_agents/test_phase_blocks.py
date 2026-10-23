@@ -231,6 +231,22 @@ class TestFixRecordDirective(TestCase):
         assert "fix_record" not in self._review_brief_for_pr_owned_by(Ticket.Kind.FEATURE)
 
 
+class TestPhaseTestSelection(TestCase):
+    def test_testing_uses_the_diff_scoped_lane(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+        assert "TEST SELECTION" in brief
+        assert "t3 tool affected-tests" in brief
+        assert "bash dev/test-affected.sh" in brief
+
+    def test_reviewing_scopes_mutation_and_reads_ci_at_the_head(self) -> None:
+        for read_only_venue in (False, True):
+            brief = "\n".join(phase_specific_lines(_task("reviewing"), [], read_only_venue=read_only_venue))
+            assert "t3 tool affected-tests" in brief
+            assert "bash dev/test-affected.sh" in brief
+            assert "node ids" in brief
+            assert "check-runs" in brief
+
+
 class TestTestingPhaseBranchCurrency(TestCase):
     """#2663: a testing dispatch carries the branch-currency verdict, and only it does."""
 

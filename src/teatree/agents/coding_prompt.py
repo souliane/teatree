@@ -20,11 +20,11 @@ _AFFECTED_TESTS_COMMAND = "bash dev/test-affected.sh"
 # run CI is about to make anyway — measured at ~85 minutes of a 3.5h cycle (#3994).
 _TEST_SELECTION_LINES: tuple[str, ...] = (
     "",
-    f"TEST SELECTION: run the DIFF-SCOPED lane, never the whole suite — `{_AFFECTED_TESTS_COMMAND}`",
-    "(teatree core) or the overlay's wired test runner. The lane is fail-safe TO FULL: a migration,",
-    "a conftest/factories/test-settings edit, an unclassifiable path, or a missing merge-base all run",
-    "the whole suite on their own, so scoping never under-runs. CI's sharded whole-tree lane is the",
-    "merge authority — a local full sweep pays for it twice and is on the critical path.",
+    "TEST SELECTION: inspect `t3 tool affected-tests` before any local lane.",
+    "If SCOPED, run `bash dev/test-affected.sh` (teatree core) or the overlay's wired runner.",
+    "It selects tests the diff can reach plus the always-run floor.",
+    "If FULL, run changed test files or pinned node ids locally and let CI run the whole tree.",
+    "Never run a multi-thousand-test directory for one fix or mutation; CI owns whole-tree proof.",
 )
 
 # Auto-injected into a long-running maker brief (PR-12): user-visible liveness

@@ -63,6 +63,7 @@ PHASE_MANDATES: tuple[PhaseMandate, ...] = (
     PhaseMandate(surface="tests/README.md", phase="testing (test-strategy command index)"),
     PhaseMandate(surface="skills/code/SKILL.md", phase="coding"),
     PhaseMandate(surface="skills/test/SKILL.md", phase="testing"),
+    PhaseMandate(surface="skills/review/SKILL.md", phase="reviewing"),
     PhaseMandate(surface="skills/ship/SKILL.md", phase="shipping"),
     PhaseMandate(surface="skills/contribute/SKILL.md", phase="contributing"),
     PhaseMandate(surface="skills/retro/references/commit-to-fork.md", phase="contributing (fork pre-flight)"),

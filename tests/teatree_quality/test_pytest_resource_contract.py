@@ -1,5 +1,6 @@
 """A bare local pytest invocation must stay bounded and scoped."""
 
+import json
 import os
 import subprocess
 import sys
@@ -9,13 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
     INHERITED_LEASE_ENV,
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
     WorkerSlotPool,
     bounded_auto_workers,
-    whole_tree_refusal,
+    oversized_selection_refusal,
 )
 from teatree.utils.ram_probe import available_cpu_count
 from tests.teatree_quality.real_pytest_pool_support import (
@@ -42,15 +44,110 @@ def test_explicit_ci_worker_budget_is_preserved() -> None:
 
 
 def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
-    assert "dev/ci-parity-fast.sh" in whole_tree_refusal(["tests"], root=tmp_path, sharded=False)
-    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" in whole_tree_refusal([], root=tmp_path, sharded=False)
-    assert whole_tree_refusal(["tests/teatree_core/test_admission_governor.py"], root=tmp_path, sharded=False) == ""
-    assert whole_tree_refusal(["tests"], root=tmp_path, sharded=True) == ""
+    assert "dev/ci-parity-fast.sh" in oversized_selection_refusal(["tests"], root=tmp_path, sharded=False)
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" in oversized_selection_refusal([], root=tmp_path, sharded=False)
+    assert (
+        oversized_selection_refusal(["tests/teatree_core/test_admission_governor.py"], root=tmp_path, sharded=False)
+        == ""
+    )
+    assert oversized_selection_refusal(["tests"], root=tmp_path, sharded=True) == ""
+
+
+def test_large_directory_selection_is_refused_before_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    package = tmp_path / "tests" / "teatree_core"
+    package.mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text(
+        json.dumps({"tests/teatree_core/test_one.py::test_case": 1201.0}),
+        encoding="utf-8",
+    )
+
+    refusal = oversized_selection_refusal(
+        ["tests/teatree_core", "tests/test_ensure_pr_installed_t3_hook.py"],
+        root=tmp_path,
+        sharded=False,
+    )
+    assert "bash dev/test-affected.sh" in refusal
+    assert "1201" in refusal
+
+
+def test_small_directory_and_file_selections_remain_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    package = tmp_path / "tests" / "small"
+    package.mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text(
+        json.dumps({"tests/small/test_one.py::test_case": 1199.0}),
+        encoding="utf-8",
+    )
+
+    assert oversized_selection_refusal(["tests/small"], root=tmp_path, sharded=False) == ""
+    assert oversized_selection_refusal(["tests/small/test_one.py"], root=tmp_path, sharded=False) == ""
+    assert oversized_selection_refusal(["tests/small/test_one.py::test_case"], root=tmp_path, sharded=False) == ""
+
+
+def test_large_directory_exemptions_preserve_curated_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    package = tmp_path / "tests" / "large"
+    package.mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text(
+        json.dumps({"tests/large/test_one.py::test_case": 1201.0}),
+        encoding="utf-8",
+    )
+    args = ["tests/large"]
+
+    assert oversized_selection_refusal(args, root=tmp_path, sharded=False)
+    assert oversized_selection_refusal(args, root=tmp_path, sharded=True) == ""
+    assert oversized_selection_refusal(args, root=tmp_path, sharded=False, tach_active=True) == ""
+    assert oversized_selection_refusal(args, root=tmp_path, sharded=False, full_selected=True) == ""
+    monkeypatch.setenv("CI", "true")
+    assert oversized_selection_refusal(args, root=tmp_path, sharded=False) == ""
+
+
+def test_multiple_directory_selections_share_one_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    first = tmp_path / "tests" / "first"
+    second = tmp_path / "tests" / "second"
+    first.mkdir(parents=True)
+    second.mkdir()
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text(
+        json.dumps({"tests/first/test_a.py::test_a": 700, "tests/second/test_b.py::test_b": 700}),
+        encoding="utf-8",
+    )
+
+    refusal = oversized_selection_refusal(["tests/first", "tests/second"], root=tmp_path, sharded=False)
+    assert "1400s" in refusal
+
+
+def test_missing_durations_keeps_existing_path_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    (tmp_path / "tests" / "small").mkdir(parents=True)
+    assert oversized_selection_refusal(["tests/small"], root=tmp_path, sharded=False) == ""
+    assert "unsharded whole-tree" in oversized_selection_refusal(["tests"], root=tmp_path, sharded=False)
+    monkeypatch.setenv("CI", "true")
+    assert "unsharded whole-tree" in oversized_selection_refusal(["tests"], root=tmp_path, sharded=False)
+
+
+def test_corrupt_durations_refuses_instead_of_allowing_a_large_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    (tmp_path / "tests" / "large").mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text("{", encoding="utf-8")
+
+    with pytest.raises(DurationsUnreadableError, match="could not be read"):
+        oversized_selection_refusal(["tests/large"], root=tmp_path, sharded=False)
 
 
 def test_explicit_affected_full_run_is_allowed(tmp_path: Path) -> None:
-    assert whole_tree_refusal([], root=tmp_path, sharded=False, full_selected=True) == ""
-    assert whole_tree_refusal([], root=tmp_path, sharded=False)
+    assert oversized_selection_refusal([], root=tmp_path, sharded=False, full_selected=True) == ""
+    assert oversized_selection_refusal([], root=tmp_path, sharded=False)
 
 
 def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Path) -> None:
@@ -63,9 +160,9 @@ def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Pat
     ``tach_active`` (``--tach``'s own parsed option) rather than read either shape as the
     accidental bare invocation it exists to refuse.
     """
-    assert whole_tree_refusal([], root=tmp_path, sharded=False, tach_active=True) == ""
+    assert oversized_selection_refusal([], root=tmp_path, sharded=False, tach_active=True) == ""
     assert (
-        whole_tree_refusal(
+        oversized_selection_refusal(
             ["tests", "src/teatree/config/schema.py", "--doctest-modules"],
             root=tmp_path,
             sharded=False,
@@ -93,6 +190,38 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
     assert result.returncode == 4
     assert "unsharded whole-tree pytest is refused" in result.stderr
     assert "collected" not in result.stdout
+
+
+@pytest.mark.timeout(90)
+def test_real_pytest_refuses_oversized_directory_but_collects_small_one() -> None:
+    env = os.environ.copy()
+    for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
+        env.pop(name, None)
+
+    large = subprocess.run(
+        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/teatree_core"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert large.returncode == 4
+    assert "local pytest directory selection records" in large.stderr
+    assert "collected" not in large.stdout
+
+    small = subprocess.run(
+        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/cli_doctor"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert small.returncode == 0, small.stderr
+    assert "collected" in small.stdout
 
 
 @pytest.mark.timeout(420)

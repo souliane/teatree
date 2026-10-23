@@ -44,13 +44,14 @@ from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
+from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
     SlotLease,
     WorkerSlotPool,
     bounded_auto_workers,
-    whole_tree_refusal,
+    oversized_selection_refusal,
     worker_pool_root,
 )
 from teatree.utils import ram_scope
@@ -155,7 +156,7 @@ _WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--teatree-selected-full", action="store_true", help="Run the affected-test selector's full verdict"
+        "--teatree-selected-full", action="store_true", help="Run a declared whole-suite or curated large selection"
     )
 
 
@@ -178,13 +179,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(
-        config.args,
-        root=config.rootpath,
-        sharded=sharded,
-        tach_active=tach_active,
-        full_selected=bool(config.getoption("teatree_selected_full")),
-    )
+    try:
+        refusal = oversized_selection_refusal(
+            config.args,
+            root=config.rootpath,
+            sharded=sharded,
+            tach_active=tach_active,
+            full_selected=bool(config.getoption("teatree_selected_full")),
+        )
+    except DurationsUnreadableError as exc:
+        raise pytest.UsageError(str(exc)) from exc
     if refusal:
         raise pytest.UsageError(refusal)
     distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly

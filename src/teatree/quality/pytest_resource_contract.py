@@ -16,6 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+from teatree.quality.durations_file import DURATIONS_PATH, read_durations
 from teatree.utils.hook_registry import loop_registry_dir
 
 TOTAL_TEST_WORKERS_PER_CORE = 1
@@ -40,30 +41,42 @@ def bounded_auto_workers(*, cores: int, memory_mib: int | None, explicit: str | 
     return max(1, min(_LOCAL_MAX_WORKERS, max(1, cores), memory_workers))
 
 
-def whole_tree_refusal(
-    args: list[str], *, root: Path, sharded: bool, tach_active: bool = False, full_selected: bool = False
+def oversized_selection_refusal(
+    args: list[str],
+    *,
+    root: Path,
+    sharded: bool,
+    tach_active: bool = False,
+    full_selected: bool = False,
 ) -> str:
-    """Explain an unsharded whole-tree selection before pytest begins collection.
-
-    ``tach_active`` is the impact-analysis plugin's own parsed ``--tach`` option.
-    ``SelectionResult.pytest_args`` emits two SCOPED shapes and neither passes an
-    explicit test id: a flags-only invocation (no changed src modules — ``config.args``
-    is empty) and a ``--doctest-modules`` one that passes the literal ``tests`` root
-    (so the positionals do not clobber ``testpaths``) alongside the changed modules.
-    Read by positional args alone, both look like the accidental bare whole-tree call
-    this guards against; ``--tach`` deselects at collection time regardless of what
-    positionals are given, so it is scoped independently of them.
-    """
     if sharded or tach_active or full_selected:
         return ""
     tests_root = (root / "tests").resolve()
-    selected = [Path(arg) for arg in args if not arg.startswith("-")]
+    selected = [(root / arg).resolve() for arg in args if not arg.startswith("-")]
     whole_roots = {root.resolve(), tests_root}
-    if not selected or any((path if path.is_absolute() else root / path).resolve() in whole_roots for path in selected):
+    if not selected or any(path in whole_roots for path in selected):
         return (
             "unsharded whole-tree pytest is refused locally; run dev/ci-parity-fast.sh for scoped feedback "
             "or use the sharded CI lane. For direct test paths, -n auto is bounded by "
             "PYTEST_XDIST_AUTO_NUM_WORKERS and the memory-aware local default."
+        )
+    if os.environ.get("CI"):
+        return ""
+    directories = {path for path in selected if path.is_dir() and path.is_relative_to(tests_root)}
+    if not directories:
+        return ""
+    recorded = read_durations(root / DURATIONS_PATH)
+    seconds = sum(
+        duration
+        for node_id, duration in recorded.items()
+        if any((root / node_id.split("::", 1)[0]).resolve().is_relative_to(directory) for directory in directories)
+    )
+    budget = 300 * _LOCAL_MAX_WORKERS
+    if seconds > budget:
+        return (
+            f"local pytest directory selection records {seconds:.0f}s, above the {budget}s budget; "
+            "run bash dev/test-affected.sh or select test files/node ids. "
+            "Use bash dev/test-affected.sh --full for a declared whole-suite run; CI owns whole-tree proof."
         )
     return ""
 
@@ -238,6 +251,6 @@ __all__ = [
     "SlotLease",
     "WorkerSlotPool",
     "bounded_auto_workers",
-    "whole_tree_refusal",
+    "oversized_selection_refusal",
     "worker_pool_root",
 ]
