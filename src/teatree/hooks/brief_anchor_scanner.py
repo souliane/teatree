@@ -35,7 +35,11 @@ _FENCED_CODE_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
 
 # A SHA shape carries at least one digit and one letter, which no English word in
 # the hex alphabet does and no bare count does either.
-_SHA = r"\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b"
+_SHA = (
+    r"(?:(?<![\w/\\-])(?<!\w\.)|(?<=/commit/)|(?<=/commits/))"
+    r"(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}"
+    r"(?![\w/\\-]|\.\w)"
+)
 
 _ASSERTION_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("file:line", re.compile(r"\b[\w./-]+\.[A-Za-z]{1,5}:\d+\b")),

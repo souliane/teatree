@@ -57,12 +57,78 @@ def call_is_from_subagent(data: dict) -> bool:
 # keeps the shell-grammar bypass guard intact (``git status && pytest`` still
 # matches); the trailing ``(?![\w-])`` keeps the match pinned to ``pytest`` so
 # wrapper prefixes never widen to other tools (``uvx ruff`` stays unmatched).
-PYTEST_VERB_RE = (
-    r"(?:^|[;&|\n(){}])"
-    r"\s*"
-    r"(?:\w+=\S+\s+)*"
-    r"(?:(?:command|exec|time|nice)\s+)*"
+COMMAND_HEAD = (
+    r"(?:^|[;&|\n(){}`])\s*(?:\w+=\S+\s+)*"
+    r"(?:(?:(?:command|exec|time|nice|sudo|nohup)(?:\s+-\S+)*"
+    r"|env(?:\s+(?:-\S+|\w+=\S+))*)\s+)*"
+)
+PYTEST_VERB_RE = COMMAND_HEAD + (
     r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
     r"pytest(?![\w-])"
 )
 PYTEST_VERB_FINDER = re.compile(PYTEST_VERB_RE)
+
+_PYTEST_TARGETED_RE = re.compile(r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)|::|(?:^|\s)\S*\.py(?:::|\s|$)")
+_HEREDOC_OPEN_RE = re.compile(r"<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+_FILE_WRITER_RE = re.compile(r"(?:^|[;&|])\s*(cat|tee)\b([^\n]*)")
+_FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*(?![(&])\S+")
+
+
+def pytest_command_is_targeted(command: str) -> bool:
+    matches = list(PYTEST_VERB_FINDER.finditer(command))
+    if not matches:
+        return False
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(command)
+        segment = command[match.end() : end]
+        boundary = re.search(r"[;&|\n(){}]", segment)
+        if boundary is not None:
+            segment = segment[: boundary.start()]
+        if not _PYTEST_TARGETED_RE.search(segment):
+            return False
+    return True
+
+
+def without_file_heredoc_bodies(command: str) -> str:
+    lines = command.splitlines(keepends=True)
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        result.append(line)
+        opener = _HEREDOC_OPEN_RE.search(line)
+        if opener is None:
+            index += 1
+            continue
+        segment_start = max(line.rfind(separator, 0, opener.start()) for separator in ";&|(){}`") + 1
+        writer = _FILE_WRITER_RE.match(line[segment_start:])
+        if writer is None:
+            index += 1
+            continue
+        verb, args = writer.groups()
+        file_bound = (
+            bool(_FILE_REDIRECT_RE.search(args))
+            if verb == "cat"
+            else bool(re.search(r"(?:^|\s)(?:-a\s+)?[^\s<|;&-][^\s<|;&]*", args))
+        )
+        if not file_bound or "|" in line[opener.end() :] or re.search(r"[<>]\(", args):
+            index += 1
+            continue
+        delimiter = opener.group(3)
+        end = index + 1
+        while end < len(lines):
+            candidate = lines[end].rstrip("\r\n")
+            if opener.group(1) == "-":
+                candidate = candidate.lstrip("\t")
+            if candidate == delimiter:
+                break
+            end += 1
+        if end == len(lines):
+            index += 1
+            continue
+        if not opener.group(2) and any("$(" in body or "`" in body for body in lines[index + 1 : end]):
+            index += 1
+            continue
+        result.append(lines[end])
+        index = end + 1
+    return "".join(result)

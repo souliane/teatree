@@ -81,6 +81,44 @@ class TestNoFireCorpus:
     def test_a_non_string_payload_is_silent(self) -> None:
         assert scanner.find_unanchored_assertions(None) is None
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/srv/agent/.claude/jobs/4f861e60/tmp/out.md",
+            "/var/tmp/jobs/4f2a9c1e07b3/run.sh",
+            "notes-4f861e60.txt",
+            r"C:\jobs\4f861e60\out.md",
+        ],
+    )
+    def test_a_hex_identifier_inside_a_path_is_not_a_sha(self, path: str) -> None:
+        assert scanner.find_unanchored_assertions(f"Inspect {path} and report the result.") is None
+
+    def test_a_path_identifier_does_not_anchor_a_file_line_assertion(self) -> None:
+        verdict = scanner.find_unanchored_assertions(
+            "Checked at /var/tmp/jobs/4f2a9c1e07b3/run.sh; the guard is in src/a.py:12."
+        )
+        assert verdict is not None
+        assert verdict.kinds == ["file:line"]
+
+
+class TestStandaloneShaForms:
+    @pytest.mark.parametrize(
+        "sha",
+        [
+            "4f861e60",
+            "(4f861e60)",
+            "`4f861e60`",
+            "4f861e60.",
+            "4f861e60:path.py",
+            "4f861e60..a1b2c3d4",
+            "https://github.com/example/repo/commit/4f861e60",
+        ],
+    )
+    def test_standalone_sha_still_fires(self, sha: str) -> None:
+        verdict = scanner.find_unanchored_assertions(f"The baseline is {sha}")
+        assert verdict is not None
+        assert "commit SHA" in verdict.kinds
+
 
 class TestWarningText:
     def test_the_warning_quotes_the_canonical_remedy_clause(self) -> None:

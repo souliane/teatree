@@ -121,9 +121,12 @@ from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detecti
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
+from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestration_boundary_signals import pytest_command_is_targeted as _pytest_command_is_targeted
+from hooks.scripts.orchestration_boundary_signals import without_file_heredoc_bodies as _without_file_heredoc_bodies
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
@@ -1580,11 +1583,6 @@ _ORCHESTRATION_TOOLS = {
 # node-id, OR a specific ``*.py`` test file path. A bare ``pytest`` (no
 # selector), ``pytest -q``, and a DIRECTORY arg (``pytest tests/``) are
 # whole-suite and stay DENIED.
-_PYTEST_TARGETED_RE = re.compile(
-    r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)"  # -k <expr> / --deselect <expr>
-    r"|::"  # a node-id (path::Class::test)
-    r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
-)
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
 # the escape hatch is ``run_in_background: true`` (or, for a whole class
@@ -1607,8 +1605,7 @@ _PYTEST_TARGETED_RE = re.compile(
 # run is exempted in :func:`_deny_heavy_main_agent_bash` (the verb still
 # matches here; the whole-suite-vs-targeted split is applied at deny time).
 _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:" + _PYTEST_VERB_RE + r"|"
-    r"\btox\b|"
+    r"(?:" + _PYTEST_VERB_RE + r"|" + _COMMAND_HEAD + r"(?:tox|webpack|make)(?![\w-])|"
     r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
     r"manage\.py\s+runserver|"
     r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
@@ -1620,9 +1617,7 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\b(?:pipenv|pip)\s+install\b|"
     r"\buv\s+sync\b|"
     r"vite\s+build|"
-    r"\bwebpack\b|"
     r"\bcargo\s+(?:build|test)\b|"
-    r"\bmake\b|"
     r"\bsleep\s+\d{2,}|"
     r"\bfind\s+\S+.*-exec\b|"
     r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
@@ -1745,33 +1740,6 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     )
 
 
-def _pytest_command_is_targeted(command: str) -> bool:
-    """True when EVERY ``pytest`` invocation in ``command`` is a targeted run (#1825).
-
-    A targeted run carries a ``-k``/``--deselect <expr>``, a ``::``
-    node-id, or a specific ``*.py`` test file path in the segment after
-    the verb (see :data:`_PYTEST_TARGETED_RE`). A bare/whole-suite
-    ``pytest`` or a directory arg (``pytest tests/``) is NOT targeted, so
-    a command containing one is whole-suite and stays gated. Each pytest
-    verb's argument span is bounded by the next shell separator so a
-    selector belonging to a LATER chained pytest cannot vouch for an
-    earlier whole-suite one.
-    """
-    matches = list(_PYTEST_VERB_FINDER.finditer(command))
-    if not matches:
-        return False
-    for i, m in enumerate(matches):
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(command)
-        segment = command[start:end]
-        boundary = re.search(r"[;&|\n(){}]", segment)
-        if boundary is not None:
-            segment = segment[: boundary.start()]
-        if not _PYTEST_TARGETED_RE.search(segment):
-            return False
-    return True
-
-
 def _command_matches_non_pytest_heavy(command: str) -> bool:
     """True when ``command`` matches a heavy pattern OTHER than the ``pytest`` verb.
 
@@ -1824,9 +1792,10 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command) or _heavy_command_is_help_only(command):
+    scanned = _without_file_heredoc_bodies(command)
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(scanned) or _heavy_command_is_help_only(scanned):
         return False
-    if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
+    if _pytest_command_is_targeted(scanned) and not _command_matches_non_pytest_heavy(scanned):
         return False
     return _fail_open_or_deny(
         data,

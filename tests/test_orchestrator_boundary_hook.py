@@ -184,6 +184,70 @@ class TestMainAgentHeavyBashBlocked:
         assert "orchestrator_bash_gate_enabled" in reason
 
 
+class TestFileWritingHeredocs:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat > run.sh <<'EOF'\nuv run pytest\nmake lint\nsleep 120\nEOF",
+            "cat <<EOF > run.sh\nuv run pytest\nEOF",
+            "cat >> run.sh <<-EOF\n\tmake lint\n\tEOF",
+            "tee run.sh <<EOF\nuv run pytest\nEOF",
+            "mkdir -p scripts && cat > scripts/run.sh <<EOF\nuv run pytest\nEOF",
+        ],
+    )
+    def test_writing_a_file_does_not_execute_its_body(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash <<EOF\nuv run pytest\nEOF",
+            "cat <<EOF | bash\nuv run pytest\nEOF",
+            "cat > run.sh <<EOF\nuv run pytest\nEOF\nmake all",
+            "cat > run.sh <<EOF\nuv run pytest",
+            "tee run.sh | bash <<EOF\nuv run pytest\nEOF",
+            "tee run.sh; bash <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh && bash <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh <<EOF\n$(uv run pytest)\nEOF",
+            "cat > run.sh <<EOF\n`uv run pytest`\nEOF",
+            "tee >(bash) <<EOF\nuv run pytest\nEOF",
+        ],
+    )
+    def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestHeavyWordIsNotACommand:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 scripts/make-briefs.py",
+            "cat tox.ini",
+            "git commit -m 'make the gate narrower'",
+            "sed -n '1,3p' webpack.config.js",
+        ],
+    )
+    def test_identifier_or_argument_passes(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "make all",
+            "cd src && make test",
+            "FOO=1 make",
+            "tox -e py312",
+            "webpack --mode production",
+            "sudo make all",
+            "sudo -E make all",
+            "env FOO=1 make all",
+            "nohup make all",
+        ],
+    )
+    def test_real_heavy_verb_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
 class TestHeavyBashEscapeHatch:
     def test_heavy_with_run_in_background_is_allowed(self) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest", run_in_background=True)) is False
