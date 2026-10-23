@@ -10,41 +10,31 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 """
 
 import asyncio
-import json
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final
 
-from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
-from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
-    ToolCallPart,
-    ToolReturnPart,
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock
+from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
+from pydantic_ai.exceptions import (
+    ModelAPIError,
+    ModelHTTPError,
+    RunCancelled,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
 )
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_graph import End
 
-from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
+from teatree.agents.lane_b.compaction import LateHistoryCompactor
 from teatree.agents.provider_refusal import hard_refusal_event
-from teatree.agents.pydantic_ai_turn import (
-    SessionRun,
-    ToolCallEntry,
-    ToolCallRecord,
-    TurnSpend,
-    egress_block_in,
-    retry_text,
-)
+from teatree.agents.pydantic_ai_turn import SessionRun, StreamedToolCapture, TurnSpend, egress_block_in
 from teatree.llm.anthropic_limits import EgressBlockedError
 
 if TYPE_CHECKING:
-    from pydantic_ai import AgentRunResult
+    from pydantic_ai import AgentRun, AgentRunResult
     from pydantic_ai.messages import AgentStreamEvent, ModelMessage
-    from pydantic_ai.tools import RunContext
 
 #: The pydantic_ai provider/run failures a turn maps onto an ERROR ``ResultMessage``
 #: instead of letting them escape as a raw exception. NARROW on purpose — it covers the
@@ -58,68 +48,18 @@ if TYPE_CHECKING:
 # openai 3 re-raises a request hook's own exception unwrapped, so the egress refusal is caught by type too.
 _RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded, EgressBlockedError)
 
+
+def _is_context_overflow(exc: ModelHTTPError) -> bool:
+    return exc.status_code in {400, 413} and any(
+        phrase in str(exc).lower() for phrase in ("context window", "context length", "too many tokens")
+    )
+
+
 #: The terminal ``ResultMessage.subtype`` a max-tokens truncation is surfaced under by
 #: :meth:`PydanticAiHarnessSession.receive_response`. Shared with the headless driver
 #: (:func:`teatree.agents.runner._outcome_failure`) so the "detect here, alert the owner
 #: there" seam keys on ONE constant rather than a literal duplicated across two modules.
 MAX_TOKENS_TRUNCATION_SUBTYPE: Final[str] = "error_max_tokens"
-
-
-class _StreamedToolCapture:
-    """The ``event_stream_handler`` whose PRESENCE keeps the run on the streaming path.
-
-    :meth:`~pydantic_ai.agent.AbstractAgent.run` issues a NON-streamed model request
-    unless an ``event_stream_handler`` is supplied (its ``_needs_streaming`` branch),
-    and a long coding turn must stay streamed — the provider rejects a non-streamed
-    request whose token ceiling implies a multi-minute completion.
-
-    It also RECORDS each tool call/result part as it goes, which is the only record of
-    them a turn that RAISES leaves behind: ``run`` returns no result on the error path,
-    so the finished-history read (:func:`_tool_blocks_since`) has nothing to read and
-    the whole trajectory is lost. A model that issued its tool call correctly and then
-    answered nothing exhausts pydantic_ai's single output retry, and the run was graded
-    as if it had called nothing at all. A successful turn ignores this capture and still
-    reads the run's own history, so the recorded path is unchanged.
-    """
-
-    def __init__(self, observer: "Callable[[AgentStreamEvent], None] | None" = None) -> None:
-        self._parts: list[ToolCallPart | ToolReturnPart | RetryPromptPart] = []
-        self._calls: list[ToolCallRecord] = []
-        self._observer = observer
-
-    async def __call__(self, _ctx: "RunContext[None]", events: "AsyncIterable[AgentStreamEvent]") -> None:
-        # Keyed on the EVENT, never on the part it exposes: pydantic_ai surfaces ONE
-        # ``ToolCallPart`` through THREE events (``PartStartEvent``, ``PartEndEvent`` and
-        # ``FunctionToolCallEvent``), so a part-typed filter records every call three
-        # times and a turn-budget assertion reads 3x the calls the model actually made.
-        # These two fire exactly once per call and once per result.
-        async for event in events:
-            if self._observer is not None:
-                self._observer(event)
-            if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
-                self._parts.append(event.part)
-            if isinstance(event, FunctionToolCallEvent):
-                self._calls.append(ToolCallRecord.start(event.part))
-            elif isinstance(event, FunctionToolResultEvent) and (call := self._open_call(event.tool_call_id)):
-                call.finish(event.part)
-
-    def blocks(self) -> "Iterator[AssistantMessage]":
-        """The captured parts in the seam's vocabulary, in the order the run produced them."""
-        for part in self._parts:
-            yield _tool_call_message(part) if isinstance(part, ToolCallPart) else _tool_result_message(part)
-
-    def has_tool_calls(self) -> bool:
-        return any(isinstance(part, ToolCallPart) for part in self._parts)
-
-    def trajectory(self) -> list[ToolCallEntry]:
-        """Every tool call the turn made, success or failure, in the order the model issued them."""
-        return [call.as_record() for call in self._calls]
-
-    def _open_call(self, tool_call_id: str) -> ToolCallRecord | None:
-        # Providers may reuse a call id across requests, so a result pairs with the latest unanswered call.
-        return next(
-            (call for call in reversed(self._calls) if call.tool_call_id == tool_call_id and not call.returned), None
-        )
 
 
 class _MaxTokensTruncationError(RuntimeError):
@@ -157,30 +97,6 @@ def _hit_max_tokens(messages: "list[ModelMessage]") -> bool:
     return False
 
 
-def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[AssistantMessage]":
-    """Yield the tool call/result blocks a turn produced, in the seam's vocabulary.
-
-    Maps each pydantic_ai ``ToolCallPart`` produced this turn onto a
-    :class:`~claude_agent_sdk.ToolUseBlock` and each ``ToolReturnPart`` /
-    ``RetryPromptPart`` (a gate refusal) onto a
-    :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
-    each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
-    what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
-    session the driver (:func:`teatree.agents.runner_stream._collect`) sees in the same
-    vocabulary the ``claude_sdk`` lane yields. *start* is the message count of the
-    (compacted) seed history, so only THIS turn's messages are mapped.
-    """
-    for message in messages[start:]:
-        if isinstance(message, ModelResponse):
-            for part in message.parts:
-                if isinstance(part, ToolCallPart):
-                    yield _tool_call_message(part)
-        elif isinstance(message, ModelRequest):
-            for part in message.parts:
-                if isinstance(part, ToolReturnPart | RetryPromptPart):
-                    yield _tool_result_message(part)
-
-
 #: pydantic_ai's message when a run exhausts its OUTPUT-retry budget. Its
 #: empty-or-non-actionable-response path (``_agent_graph.consume_output_retry``, called with
 #: no ``error``) raises it ``from None``; every other path that raises this same text attaches
@@ -188,7 +104,7 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
 _OUTPUT_RETRY_EXHAUSTED_PREFIX = "Exceeded maximum output retries"
 
 
-def _is_quiet_turn_end(exc: Exception, captured: "_StreamedToolCapture") -> bool:
+def _is_quiet_turn_end(exc: Exception, captured: "StreamedToolCapture") -> bool:
     """A model that did its work and then answered nothing — a turn END, not a provider failure.
 
     An Anthropic model told to emit a tool call and nothing else returns an EMPTY response
@@ -203,44 +119,6 @@ def _is_quiet_turn_end(exc: Exception, captured: "_StreamedToolCapture") -> bool
         and exc.__cause__ is None
         and captured.has_tool_calls()
     )
-
-
-def _tool_call_message(part: ToolCallPart) -> AssistantMessage:
-    """One ``ToolCallPart`` as the seam's tool-use message."""
-    return AssistantMessage(
-        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
-        model="",
-    )
-
-
-def _tool_result_message(part: "ToolReturnPart | RetryPromptPart") -> AssistantMessage:
-    """One tool result as the seam's tool-result message; a ``RetryPromptPart`` is a gate refusal."""
-    if isinstance(part, ToolReturnPart):
-        return AssistantMessage(
-            content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
-            model="",
-        )
-    return AssistantMessage(
-        content=[ToolResultBlock(tool_use_id=part.tool_call_id or "", content=retry_text(part), is_error=True)],
-        model="",
-    )
-
-
-def _as_input(args: object) -> dict[str, Any]:
-    """Coerce a ``ToolCallPart.args`` (dict or JSON string) to a plain dict.
-
-    The return feeds ``ToolUseBlock.input``, whose claude_agent_sdk contract is
-    ``dict[str, Any]`` — a tool's arguments are genuinely arbitrary JSON, so the
-    value type is unavoidably dynamic here.
-    """
-    if isinstance(args, dict):
-        return {str(k): v for k, v in args.items()}
-    if isinstance(args, str):
-        with suppress(json.JSONDecodeError):
-            parsed = json.loads(args)
-            if isinstance(parsed, dict):
-                return {str(k): v for k, v in parsed.items()}
-    return {}
 
 
 def _model_identity_usage(model_name: str) -> dict[str, Any]:
@@ -263,7 +141,7 @@ def _turns_made(run_usage: RunUsage) -> int:
     """The model requests the turn actually made — never zero.
 
     The caller OWNS the :class:`~pydantic_ai.usage.RunUsage` it hands to
-    :meth:`~pydantic_ai.agent.AbstractAgent.run` (pydantic_ai adopts that instance as
+    :meth:`~pydantic_ai.agent.AbstractAgent.iter` (pydantic_ai adopts that instance as
     the run's own usage state and mutates it in place), so the count survives a run
     that raised before returning a result. A ``0`` — the provider refusing the very
     first request — degrades to ``1``: that is still one attempted turn, and recording
@@ -301,9 +179,8 @@ class PydanticAiHarnessSession:
     ``1``), and every terminal message carries the stable per-session
     :attr:`session_id`.
 
-    ``interrupt`` cancels the in-flight run task (which unwinds the streamed
-    provider request, stopping token generation and closing the connection) and
-    sets ``_interrupted`` so ``receive_response`` can tell "I was deliberately
+    ``interrupt`` cancels the active agent run and retains its completed message
+    history. It sets ``_interrupted`` so ``receive_response`` can tell "I was deliberately
     interrupted" apart from an UNRELATED external cancellation of the awaiting
     coroutine itself (e.g. :func:`headless._drive_with_heartbeat`'s
     ``asyncio.wait_for`` runtime ceiling) — awaiting a genuine ``asyncio.Task``
@@ -346,6 +223,7 @@ class PydanticAiHarnessSession:
         # un-phased run stays history-identical to #2885 — a resumed thread is
         # sent verbatim, never trimmed.
         self._phase = phase
+        self._compactor: LateHistoryCompactor | None = None
         # A stable per-session id stamped onto EVERY terminal ``ResultMessage``
         # (success and error), so the attempt recorder (:func:`headless._attempt_usage`)
         # persists a non-empty ``agent_session_id`` — the claude_sdk lane always
@@ -354,6 +232,7 @@ class PydanticAiHarnessSession:
         self._run = run or SessionRun.start()
         self._session_id = self._run.session_id
         self._event_observer: Callable[[AgentStreamEvent], None] | None = None
+        self._input_observer: Callable[[AgentStreamEvent], None] | None = None
         self._hook_events: Sequence[object] | None = None
         self._emitted_hook_events = 0
         # A positive cap becomes ``UsageLimits(request_limit=...)`` on each run so a cheap-model
@@ -361,6 +240,7 @@ class PydanticAiHarnessSession:
         self._request_limit = self._run.request_limit
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[AgentRunResult[str]] | None = None
+        self._active_run: AgentRun[None, str] | None = None
         self._interrupted = False
 
     def observe_transport_hooks(
@@ -371,6 +251,9 @@ class PydanticAiHarnessSession:
         """Attach an optional transport's streamed-event observer and hook ledger."""
         self._event_observer = observer
         self._hook_events = events
+
+    def set_compactor(self, compactor: LateHistoryCompactor) -> None:
+        self._compactor = compactor
 
     @property
     def history(self) -> "list[ModelMessage]":
@@ -388,9 +271,9 @@ class PydanticAiHarnessSession:
     async def receive_response(self) -> AsyncIterator[object]:
         """Drive one queued turn TO COMPLETION, yielding it in the ``claude_agent_sdk`` vocabulary.
 
-        Driven by :meth:`~pydantic_ai.agent.AbstractAgent.run` — the graph-to-completion
-        API — with a capturing ``event_stream_handler`` (:class:`_StreamedToolCapture`) to keep the
-        provider request streamed. NOT ``run_stream``, which pydantic_ai documents as
+        Driven by :meth:`~pydantic_ai.agent.AbstractAgent.iter` through every graph node,
+        streaming model requests and tool events through :class:`StreamedToolCapture`.
+        NOT ``run_stream``, which pydantic_ai documents as
         single-shot: it "will consider the first output matching the ``output_type`` to
         be the final output, [...] stop running the agent graph and [...] not execute any
         tool calls made by the model after this 'final' output". This lane's
@@ -400,7 +283,7 @@ class PydanticAiHarnessSession:
         with one sentence of prose before calling a tool ended the whole run at one model
         request, its tool results never fed back. That is the shape every Anthropic model
         emits, so a coding dispatch could not act: it returned its own preamble as the
-        result and the worktree stayed untouched. ``run`` iterates the graph until the
+        result and the worktree stayed untouched. ``iter`` advances the graph until the
         model itself stops calling tools, which is the ``ClaudeSDKClient`` contract this
         seam exists to match.
 
@@ -416,51 +299,24 @@ class PydanticAiHarnessSession:
             return
         prompt, self._pending_prompt = self._pending_prompt, None
         self._interrupted = False
-        # Compact the conversation the model actually sees (the ``history_processors``
-        # equivalent — trim the stale middle before the turn) ONLY for a phased,
-        # tool-bearing run; a short history is returned unchanged so a normal
-        # phased run is byte-identical. An un-phased run sends its history
-        # verbatim, so a resumed #2885 thread is never trimmed.
-        sent_history = (
-            compact_history(self._history, policy=CompactionPolicy.for_phase(self._phase))
-            if self._phase
-            else self._history
-        )
+        sent_history = self._history
         # Owned by THIS caller rather than read off the result, because a run that
         # raises never returns one — pydantic_ai adopts this instance as the run's
         # usage state and mutates it in place, so the error paths below still report
         # the requests the failed turn actually made.
         run_usage = RunUsage()
-        captured = _StreamedToolCapture(self._event_observer)
+        captured = StreamedToolCapture(self._observe_event)
         first_request = len(self._run.usage_tee.requests)
         try:
-            task = asyncio.ensure_future(
-                self._agent.run(
-                    prompt,
-                    message_history=sent_history,
-                    usage_limits=self._usage_limits(),
-                    usage=run_usage,
-                    event_stream_handler=captured,
-                )
-            )
-            self._active_task = task
-            try:
-                run_result = await task
-            except asyncio.CancelledError:
-                if self._interrupted:
-                    return
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-                raise
-            finally:
-                self._active_task = None
+            run_result = await self._run_with_overflow_retry(prompt, sent_history, run_usage, captured)
         except _RUN_ERRORS as exc:
             spend = self._spend(run_usage, first_request, captured)
             for hook_event in self._new_hook_events():
                 yield hook_event
             for message in self._failed_turn_messages(exc, captured=captured, run_usage=run_usage, spend=spend):
                 yield message
+            return
+        if run_result is None:
             return
         all_messages = run_result.all_messages()
         self._history = all_messages
@@ -481,7 +337,7 @@ class PydanticAiHarnessSession:
         # Surface this turn's tool calls/results in the seam's tool-block
         # vocabulary BEFORE the final text, so a tool-emitting Lane-B session
         # looks to the driver exactly like the claude_sdk lane's.
-        for tool_message in _tool_blocks_since(all_messages, len(sent_history)):
+        for tool_message in captured.blocks():
             yield tool_message
         yield AssistantMessage(content=[TextBlock(text=text)], model=self._model_name)
         spend = self._spend(run_usage, first_request, captured)
@@ -503,6 +359,73 @@ class PydanticAiHarnessSession:
             model_usage=_model_identity_usage(spend.model),
         )
 
+    async def _await_run(
+        self, prompt: str, history: "list[ModelMessage]", usage: RunUsage, captured: StreamedToolCapture
+    ) -> "AgentRunResult[str] | None":
+        task = asyncio.create_task(self._drive_run(prompt, history, usage, captured))
+        self._active_task = task
+        try:
+            return await task
+        except RunCancelled as exc:
+            if not self._interrupted:
+                raise
+            self._history = exc.all_messages()
+            return None
+        except asyncio.CancelledError:
+            if self._interrupted:
+                return None
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            raise
+        finally:
+            self._active_task = None
+
+    async def _run_with_overflow_retry(
+        self, prompt: str, history: "list[ModelMessage]", usage: RunUsage, captured: StreamedToolCapture
+    ) -> "AgentRunResult[str] | None":
+        try:
+            return await self._await_run(prompt, history, usage, captured)
+        except ModelHTTPError as exc:
+            if self._compactor is None or not _is_context_overflow(exc):
+                raise
+            self._compactor.force_next()
+            return await self._await_run("Continue from the last completed step.", self._history, usage, captured)
+
+    def _observe_event(self, event: "AgentStreamEvent") -> None:
+        if self._event_observer is not None:
+            self._event_observer(event)
+        if self._input_observer is not None:
+            self._input_observer(event)
+
+    async def _drive_run(
+        self, prompt: str, history: "list[ModelMessage]", usage: RunUsage, captured: StreamedToolCapture
+    ) -> "AgentRunResult[str]":
+        async with self._agent.iter(
+            prompt, message_history=history, usage_limits=self._usage_limits(), usage=usage
+        ) as run:
+            self._active_run = run
+            try:
+                node = run.next_node
+                while not isinstance(node, End):
+                    if isinstance(node, ModelRequestNode):
+                        async with node.stream(run.ctx) as stream:
+                            await captured.consume(stream)
+                    elif isinstance(node, CallToolsNode):
+                        async with node.stream(run.ctx) as events:
+                            await captured.consume(events)
+                    node = await run.next(node)
+                result = run.result
+                if result is None:
+                    msg = "agent run ended without a result"
+                    raise RuntimeError(msg)
+            except _RUN_ERRORS:
+                self._history = run.all_messages()
+                raise
+            finally:
+                self._active_run = None
+            return result
+
     def _new_hook_events(self) -> "Iterator[object]":
         """Yield hook events appended by an optional transport adapter exactly once."""
         if self._hook_events is None:
@@ -512,7 +435,7 @@ class PydanticAiHarnessSession:
         yield from pending
 
     def _failed_turn_messages(
-        self, exc: Exception, *, captured: _StreamedToolCapture, run_usage: RunUsage, spend: TurnSpend
+        self, exc: Exception, *, captured: StreamedToolCapture, run_usage: RunUsage, spend: TurnSpend
     ) -> "Iterator[AssistantMessage | RateLimitEvent | ResultMessage]":
         """This turn's recovered trajectory, then the terminal message its failure maps to.
 
@@ -593,7 +516,7 @@ class PydanticAiHarnessSession:
             model_usage=_model_identity_usage(spend.model),
         )
 
-    def _spend(self, run_usage: RunUsage, first_request: int, captured: _StreamedToolCapture) -> TurnSpend:
+    def _spend(self, run_usage: RunUsage, first_request: int, captured: StreamedToolCapture) -> TurnSpend:
         return TurnSpend.measure(
             run_usage,
             self._run.usage_tee.requests[first_request:],
@@ -616,12 +539,14 @@ class PydanticAiHarnessSession:
     async def interrupt(self) -> None:
         """Abort the in-flight run, marking the abort as deliberate.
 
-        Cancelling the run task unwinds the streamed provider request, which stops
-        token generation and closes the connection. ``_interrupted`` is what
+        The active run snapshots completed messages when cancelled. ``_interrupted`` is what
         :meth:`receive_response` reads to tell this abort apart from an unrelated
         external cancellation of the awaiting coroutine (class docstring).
         """
         if self._active_task is None:
             return
         self._interrupted = True
-        self._active_task.cancel()
+        if self._active_run is not None:
+            self._active_run.cancel()
+        else:
+            self._active_task.cancel()

@@ -8,6 +8,7 @@ agent_harness
 agent_harness_provider
 agent_honesty_model
 agent_max_turns
+agent_model_context_windows
 agent_phase_harness
 agent_phase_models
 agent_pydantic_ai_tier_models

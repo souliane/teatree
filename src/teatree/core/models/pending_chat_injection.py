@@ -72,6 +72,8 @@ _QUESTION_TEXT_REGEX = (
     r"|.*\?\s*$)"
 )
 
+_SESSION_CLAIM_RECOVERY_AFTER = dt.timedelta(minutes=2)
+
 
 @dataclass(frozen=True, slots=True)
 class DmContext:
@@ -218,11 +220,18 @@ class PendingChatInjection(models.Model):
         Gates on ``loop_replied_at`` (the loop's own column, #1075 / Option B),
         NOT ``answered_at``: the loop posting a reply stamps only
         ``loop_replied_at``, so it never claims the agent personally answered.
+        An unconfirmed session claim returns after two minutes so a crashed
+        sender can retry delivery.
 
         Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
         overlay path uses ``overlay=""`` consistently).
         """
-        qs = cls.objects.filter(loop_replied_at__isnull=True)
+        stale_session = models.Q(
+            answer_kind=cls.AnswerKind.SESSION,
+            loop_response_confirmed_at__isnull=True,
+            loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+        )
+        qs = cls.objects.filter(models.Q(loop_replied_at__isnull=True) | stale_session)
         if overlay:
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
@@ -244,6 +253,21 @@ class PendingChatInjection(models.Model):
         )
         if updated:
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
+        return bool(updated)
+
+    def claim_stale_session_reply(self) -> bool:
+        updated = (
+            type(self)
+            .objects.filter(
+                pk=self.pk,
+                answer_kind=self.AnswerKind.SESSION,
+                loop_response_confirmed_at__isnull=True,
+                loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+            )
+            .update(loop_replied_at=timezone.now())
+        )
+        if updated:
+            self.refresh_from_db(fields=["loop_replied_at"])
         return bool(updated)
 
     def observe_confirmed_loop_reply(self) -> None:

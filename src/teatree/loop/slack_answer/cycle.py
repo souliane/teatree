@@ -13,13 +13,11 @@ agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
-even across cycle re-runs. Then, BEFORE any read, the unit is offered to
-:func:`~teatree.loop.question_binding.bind_reply`: a reply that answers a
-queued ``DeferredQuestion`` resolves it and stops there — an option pick with
-no model turn at all, free text on the single reading the routing would have
-cost anyway. That rung is the whole reason this cycle may drain the queue at
-all: it shares the reply scanner's binder instead of racing it. Otherwise the
-unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
+even across cycle re-runs. A bound thread reaches its ticket's live session
+first, including a reply to a queued ``DeferredQuestion``. When no live
+session accepts it, :func:`~teatree.loop.question_binding.bind_reply` can
+resolve the answer before ordinary routing, without a model turn. Otherwise
+the unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
 model turn, keyword fallback) and routed on what it means, not on which
 keywords it contains:
 
@@ -502,13 +500,13 @@ def _process_unit(
         return
 
     read = _memoized(reader)
+    if binding is not None and _live_receipt(backend, unit, report, binding, read):
+        return
     if _answer_bound_question(backend, unit, read):
         report.answered_question += 1
         return
 
     reading = read(unit.text)
-    if _live_receipt(backend, unit, reading, report, binding):
-        return
     if reading.needs_nothing:
         if _handle_noted(backend, unit):
             report.acked += 1

@@ -203,6 +203,13 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
         stored=dict[str, Any],
         category=Category.PERSONAL,
     ),
+    "agent_model_context_windows": ColdHookSetting(
+        _parse_registry_dict,
+        default={},
+        help="context window tokens by exact model id for the pydantic-ai lane",
+        stored=dict[str, Any],
+        category=Category.PERSONAL,
+    ),
     "agent_tier_effort": ColdHookSetting(
         _parse_registry_dict,
         default={"frontier": "xhigh", "balanced": "xhigh"},

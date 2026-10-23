@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from django.test import TestCase
 
 from teatree.agents._runner_env import DispatchCredential
+from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.prompt import build_system_context
@@ -78,3 +79,23 @@ class TestT3TeatreeSkillDispatch(TestCase):
         prompt = self._prepare("coding", _TEATREE_CHECKOUT).prompt
 
         assert prompt.splitlines().count("  - /internals") == 1
+
+    def test_claude_child_keeps_native_compaction_available(self) -> None:
+        dispatch = DispatchHarness(
+            harness=ClaudeSdkHarness(),
+            name="claude_sdk",
+            provider=None,
+            model="claude-opus-5-5",
+            route_candidate_index=None,
+        )
+        prepared = prepare_run(
+            self._task("coding"),
+            Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+            phase="coding",
+            handoff=None,
+            credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+        )
+
+        assert "DISABLE_COMPACT" not in prepared.options.env
+        assert "PreCompact" not in (prepared.options.hooks or {})
+        assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"

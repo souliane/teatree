@@ -188,6 +188,7 @@ class PydanticAiModelConfig:
     tier: str | None = None
     regulated_path: RegulatedPathPolicy | None = None
     anthropic_credential: Credential | None = None
+    context_windows: Mapping[str, int] = field(default_factory=dict)
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:

@@ -1,4 +1,6 @@
+import asyncio
 import math
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
@@ -12,6 +14,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RunUsage
 
 from teatree.agents.lane_b import compaction as compaction_mod
 from teatree.agents.lane_b.compaction import (
@@ -82,6 +85,80 @@ class TestCompactHistory:
     def test_keep_recent_zero_is_a_noop(self) -> None:
         history = _msgs(50)
         assert compact_history(history, keep_recent=0) == history
+
+
+class TestLateCompaction:
+    def test_explicit_model_window_overrides_a_wrong_registry_window(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "older work"
+
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old " * 700)]),
+            ModelRequest(parts=[UserPromptPart(content="recent direction")]),
+        ]
+        ctx = SimpleNamespace(
+            context_window_used=0.09,
+            model=SimpleNamespace(model_name="router/x", context_window=10_000),
+            usage=RunUsage(),
+        )
+        compactor = compaction_mod.LateHistoryCompactor(
+            summarize, reserve_tokens=160, keep_recent_tokens=200, context_windows={"router/x": 1_000}
+        )
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert summaries
+        assert "recent direction" in repr(result)
+
+    def test_history_stays_intact_below_the_token_reserve_threshold(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "earlier decisions"
+
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(80)]
+        ctx = SimpleNamespace(context_window_used=0.83, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert result == history
+        assert summaries == []
+
+    def test_near_window_summary_preserves_recent_inputs_and_tool_pairs(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "Earlier decision: keep the API"
+
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old decision " * 100)]),
+            ModelRequest(parts=[UserPromptPart(content="old correction")]),
+            ModelResponse(parts=[TextPart(content="old answer " * 100)]),
+            ModelRequest(parts=[UserPromptPart(content="recent operator steer")]),
+            _tool_call("c1"),
+            _tool_return("c1"),
+        ]
+        ctx = SimpleNamespace(context_window_used=0.9, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert len(summaries) == 1
+        assert "old correction" in summaries[0]
+        assert "Earlier decision: keep the API" in repr(result)
+        assert "recent operator steer" in repr(result)
+        assert _orphaned_return_ids(result) == []
 
 
 class TestToolPairingPreserved:

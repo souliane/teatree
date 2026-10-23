@@ -1,12 +1,5 @@
-import asyncio
 import tomllib
 from pathlib import Path
-
-from pydantic_ai import Agent, RunContext
-from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.exceptions import RunCancelled
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
-from pydantic_ai.models.test import TestModel
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -36,19 +29,3 @@ def test_locked_pydantic_packages_match_the_declared_floors() -> None:
         "pydantic-ai-slim": "2.56.0",
         "pydantic-graph": "2.56.0",
     }
-
-
-def test_process_history_receives_run_context_and_cancel_keeps_messages() -> None:
-    seen: list[float | None] = []
-
-    def process(ctx: RunContext[None], messages: list[ModelMessage]) -> list[ModelMessage]:
-        seen.append(ctx.context_window_used)
-        return messages
-
-    result = asyncio.run(Agent(TestModel(), capabilities=[ProcessHistory(process)]).run("hello"))
-    assert result.output
-    assert seen == [None]
-
-    message = ModelRequest(parts=[UserPromptPart(content="resume")])
-    cancelled = RunCancelled("paused", messages=[message])
-    assert cancelled.all_messages() == [message]

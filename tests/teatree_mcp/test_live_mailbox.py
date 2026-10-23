@@ -29,7 +29,6 @@ from django.test import TransactionTestCase
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -38,7 +37,6 @@ from typer.testing import CliRunner
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
-from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import HarnessSession, PydanticAiHarness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_options import HarnessOptions
@@ -53,7 +51,7 @@ from teatree.agents.live_mailbox import (
     shared_broker,
 )
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
-from teatree.agents.pydantic_ai_steering import PeerInputAdmission
+from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.runner_stream import StreamCapture
 from teatree.cli.mcp import serve
@@ -380,11 +378,6 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             )
             pydantic_harness = PydanticAiHarness(model=model, phase="planning")
             original_route = runner_mod.resolve_dispatch_harness
-            self._pydantic_inputs: list[LiveInputQueue] = []
-
-            def capture_admission(inputs: LiveInputQueue) -> PeerInputAdmission:
-                self._pydantic_inputs.append(inputs)
-                return PeerInputAdmission(inputs)
 
             def route(task: Task, *, phase: str | None = None, skills: list[str] | None = None) -> DispatchHarness:
                 if task.pk == recipient_task.pk:
@@ -403,7 +396,6 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             with (
                 patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
                 patch.object(runner_mod, "resolve_dispatch_harness", side_effect=route),
-                patch.object(harness_mod, "PeerInputAdmission", side_effect=capture_admission),
                 patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
                 patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
                 patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
@@ -423,7 +415,7 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
                         recipient.result(timeout=0)
                     sending = _in_background(lambda: asyncio.run(self._send_from_mcp_child(script, recipient_task)))
                     wait_until(
-                        lambda: self._pydantic_inputs and len(self._pydantic_inputs[0]._pending) == 1,
+                        lambda: LiveClient().inspect(recipient_task.pk)["pending_inputs"] == 1,
                         "queued peer input",
                     )
                     assert not sending.done()
@@ -1311,7 +1303,7 @@ class _PydanticHttpScenario:
             admission_patch = (
                 nullcontext()
                 if self.admit
-                else patch.object(PeerInputAdmission, "__call__", _bypass_pydantic_admission)
+                else patch.object(SteerablePydanticAiSession, "_observe_input", _ignore_pydantic_enqueue_event)
             )
             with (
                 patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
@@ -1347,21 +1339,18 @@ class _PydanticHttpScenario:
         return receipt
 
 
-async def _bypass_pydantic_admission(
-    _processor: PeerInputAdmission, messages: list[ModelMessage]
-) -> list[ModelMessage]:
-    await asyncio.sleep(0)
-    return messages
+def _ignore_pydantic_enqueue_event(_session: SteerablePydanticAiSession, _event: object) -> None:
+    pass
 
 
 @pytest.mark.parametrize("mode", ["enabled", "disabled"])
-def test_pydantic_session_accepts_a_peer_before_its_next_request(tmp_path: Path, mode: str) -> None:
+def test_pydantic_session_reports_observed_peer_delivery(tmp_path: Path, mode: str) -> None:
     scenario = _PydanticHttpScenario(tmp_path, mode)
     receipt = scenario.run()
-    expected = ("accepted_current_turn", None, True) if scenario.admit else ("rejected", "not_accepted_in_time", True)
+    expected = ("accepted_current_turn", None, True) if scenario.admit else ("unknown_delivery", None, True)
     assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == expected
     assert "peer nonce" not in json.dumps(scenario.requests[0])
-    assert json.dumps(scenario.requests[1]).count("peer nonce") == int(scenario.admit)
+    assert json.dumps(scenario.requests[1]).count("peer nonce") == 1
 
 
 def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
