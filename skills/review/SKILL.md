@@ -376,6 +376,8 @@ Every on-behalf post DMs the user afterwards, at every tier.
 
 When the PR belongs to the **user themselves**, implement BLOCKING fixes directly and follow [the NIT lane](references/nit-lane.md).
 
+On a **colleague's** PR with only NON-BLOCKING findings, post each finding as an inline comment and then approve with `t3 review approve <REPO> <MR_IID>`. Do not hold, inspect the stack, or wait for a NIT follow-up issue before approving; track that issue afterward.
+
 **Step 0 — Gather Ticket Context:**
 
 Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior. Extract the ticket URL from the PR title/description, then fetch it via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool — falling back to the issue-tracker CLI (`gh issue view`, `glab issue view`) when the MCP server is not connected. Fetch every attached spec and linked external requirement too; attachments are the authoritative spec, and an author's docstring summarising them is not a substitute.
