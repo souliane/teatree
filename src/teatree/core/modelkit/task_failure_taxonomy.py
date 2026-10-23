@@ -249,8 +249,8 @@ _HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKi
 #: Kinds that end a task WITHOUT the repair loop having failed on its own merits — an
 #: operator cancellation, a supersede by rework, or a base that moved under the plan. Public
 #: (not the environmental axis, which the first two are off). The incident detector
-#: and repair-burn factory signal use these kinds when classifying failures; the
-#: repair-budget query checks their anchored prefixes to avoid substring collisions.
+#: uses these kinds when classifying failures; the repair-budget and repair-burn
+#: queries check their anchored prefixes to avoid substring collisions.
 NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED, FailureKind.PLAN_STALE})
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT

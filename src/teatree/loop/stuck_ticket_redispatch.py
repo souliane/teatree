@@ -23,7 +23,7 @@ by exhausting the budget below, which pages a human about a doomed phase rather 
 an honoured decision. Anything the pipeline does afterwards is a newer task, which is
 the "something changed" that puts the ticket back in play.
 
-The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget, on ONE path for
+The re-dispatch is HARD-BOUNDED by the #2009 work budget and the lease-reap bound, on ONE path for
 both classes: a ticket-phase at its iteration cap, stalled on two consecutive
 identical failures, or stalled on two consecutive failures of the same NAMED
 DETERMINISTIC :class:`FailureKind`, is NOT re-dispatched and is escalated LOUDLY via
@@ -400,7 +400,7 @@ def _schedule_planned_work_or_reaffirm(ticket: Ticket) -> Task:
 
 
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
-    """Return the loud halt reason if *ticket*'s phase is out of repair budget, else ``None``."""
+    """Return the loud halt reason if the work or lease-reap bound is spent."""
     attempts = ticket_phase_iterations(ticket.pk, phase)
     observations = ticket_phase_observations(ticket.pk, phase)
     work_ids = {attempt.pk for attempt in attempts}

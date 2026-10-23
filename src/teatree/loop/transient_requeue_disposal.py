@@ -55,9 +55,7 @@ def stale_plan_halt_reason(task: Task) -> str | None:
     )
     if stale_count < max_phase_iterations():
         return None
-    return (
-        f"phase {normalize_phase(task.phase)!r} on ticket {task.ticket_id} reached {stale_count} stale-plan recoveries"
-    )
+    return f"phase {normalize_phase(task.phase)!r} on ticket {task.ticket_id} reached {stale_count} stale-plan failures"
 
 
 def retire_if_dead_artifact(task: Task) -> bool:

@@ -240,7 +240,7 @@ def _answer_moved_target(task: Task, *, error: str) -> bool:
     A stale plan is owed a planning pass and an author ticket's own review of a PR that moved is
     owed a fresh review; no sweep arms either, least of all for a ticket with an open PR. A
     reviewer ticket's moved head is re-armed by the PR sweep, so it is only parked. The recovery
-    spends the failed phase's own budget, and a spent one halts internally instead.
+    uses the work budget or the stale-plan cycle bound; an exhausted one halts internally.
     """
     kind = classify_failure(error)
     if kind not in MOVED_TARGET_KINDS:
