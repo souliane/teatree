@@ -76,11 +76,8 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
         '                     "blast_class": "substrate"|"logic"|"docs",',
-        '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
-        '                                   "summary": "...", "file": "...", "line": 0}]}',
-        "BLOCKING: wrong behaviour, false claim, untested shipped behaviour, vacuous test, redundant",
-        "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
-        "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
+        '  "findings": [{"severity":"...", "kind": "blocking"|"nit", "summary":"...", "file":"...", "line":0}]}',
+        "A vacuous test is BLOCKING; NIT-only: merge_safe + follow-up. Read skills/review/references/nit-lane.md.",
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
         (
@@ -131,7 +128,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ()
         ),
-        "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
+        "A result without `review_verdict` FAILS the phase.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
         "GRADE THE TICKET'S RUBRIC IN THE SAME ENVELOPE — you are its independent verifier (grader != maker):",

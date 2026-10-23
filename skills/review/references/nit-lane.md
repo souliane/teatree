@@ -1,5 +1,9 @@
 # Review NIT lane
 
-BLOCKING findings are fixed before shipping and are not posted on the PR or sent by DM. A NIT-only review does not hold: post each NIT as an inline comment, then track the set in one follow-up issue labelled `nit` and `t3-auto`. On a colleague's PR, approve with `t3 review approve` after posting the inline NITs; issue tracking follows approval and never gates it. Resolve the inline threads only after reading the issue back. A NIT-ticket PR treats every finding as blocking so it cannot defer them again.
+On a colleague's MR, post each BLOCKING finding inline and withhold approval. For a NIT-only review, post each NIT inline, then approve with `t3 review approve`. Create the follow-up issue afterward; issue tracking never gates approval.
 
-On an owner-authored PR, implement BLOCKING fixes directly, commit and push, and summarize them to the owner. Post NITs through this lane because their follow-up issue carries work left after merge.
+On an owner-authored PR, fix BLOCKING findings directly, commit and push, then summarize the fixes to the owner. A NIT-only review does not return `hold`: post each NIT inline.
+
+BLOCKING covers wrong behaviour, false claims, untested shipped behaviour, vacuous or redundant tests, duplicate definitions, and red checks. NIT covers wording, naming, style, and placement.
+
+For each NIT-only review, track the set in one follow-up issue labelled `nit` and `t3-auto`. Read the issue back before resolving its inline threads. On a NIT-ticket PR, treat every finding as blocking so the same work cannot be deferred again.

@@ -61,7 +61,7 @@ Everything you write and everything you review aims at seven attributes. Treat t
 1. Spawn the `t3:reviewer` sub-agent from the main conversation via the `Agent` tool. The full Agent invocation snippet, FSM transition mechanics, and "drive transitions, not visit phases" rules live in [`../ship/SKILL.md`](../ship/SKILL.md) § "Review Gate" — that section is the source of truth.
 2. Apply every finding the sub-agent surfaces. Reviewer agents are read-only; the implementing conversation owns the edits.
 3. Drive the FSM `review` transition by completing the reviewing task (auto-fires `ticket.review()` and keeps the task ledger clean). **Never** use `t3 <overlay> lifecycle visit-phase reviewing` to *skip* the independent reviewer — since #694 the shipping gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* unblock `pr create`; that is precisely why recording `reviewing` without an independent review having happened defeats the gate. Earn the phase first, then record it.
-4. A self-review with a BLOCKING finding returns `hold` and does **not** advance the ticket ([#5076](https://github.com/souliane/teatree/issues/5076)): the ticket stays `tested` and one `coding` task carrying the reviewed SHA and every finding whole is queued; its completion re-enters testing and a fresh self-review. A `hold` owes no `anti_vacuity` block. NIT-only findings follow [the NIT lane](references/nit-lane.md); read it before returning a verdict. A ticket already parked in `self_reviewed` past a `hold` is recovered with `t3 <overlay> ticket rework-hold <id>` (`--dry-run` first).
+4. A self-review that returns `hold` does **not** advance the ticket ([#5076](https://github.com/souliane/teatree/issues/5076)): the ticket stays `tested` and one `coding` task carrying the reviewed SHA and every finding whole is queued; its completion re-enters testing and a fresh self-review. Its findings are fixed before anything ships, never posted on the PR or DM'd. A `hold` owes no `anti_vacuity` block (that proof is `merge_safe` evidence), so return `hold` whenever a finding blocks — it is the verdict that gets the work fixed, not a dead end. A ticket already parked in `self_reviewed` past a `hold` is recovered with `t3 <overlay> ticket rework-hold <id>` (`--dry-run` first: it lists the tasks it would supersede).
 
 When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase evidence gate (#1539) hardens this further: `lifecycle visit-phase <id> reviewing` refuses unless a `review_skill_run` artifact attests the configured skill ran. After running the skill, stamp the evidence with `t3 <overlay> lifecycle record-review-skill-run <id> <skill>`, then record the phase. With `review_skill` unset the gate is a NO-OP (opt-in default).
 
@@ -374,9 +374,7 @@ Every on-behalf post DMs the user afterwards, at every tier.
 
 **Step -1 — Own PR vs External PR:**
 
-When the PR belongs to the **user themselves**, implement BLOCKING fixes directly and follow [the NIT lane](references/nit-lane.md).
-
-On a **colleague's** PR with only NON-BLOCKING findings, post each finding as an inline comment and then approve with `t3 review approve <REPO> <MR_IID>`. Do not hold, inspect the stack, or wait for a NIT follow-up issue before approving; track that issue afterward.
+When the PR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
 
 **Step 0 — Gather Ticket Context:**
 
