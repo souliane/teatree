@@ -38,6 +38,7 @@ from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, Ban
 from teatree.hooks.commit_objects import decode_robust
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+from teatree.hooks.privacy_generic_detectors import generic_findings
 from teatree.hooks.term_fingerprint import FingerprintUnreadableError, unverified_gates
 from teatree.hooks.term_match import matched_term
 from teatree.hooks.term_refs import TermRefs
@@ -48,49 +49,6 @@ PRIVACY_FINDINGS_EXIT_CODE = 3
 REGISTRY_UNAVAILABLE_EXIT_CODE = 4
 REGISTRY_UNVERIFIED_EXIT_CODE = 5
 _UNREADABLE_INPUT_EXIT_CODE = 2
-
-# Require a plausible local part: it may contain ``.+-`` internally but
-# must *end* in an email-local char (alphanumeric/underscore) immediately
-# before ``@``. This drops the decorator/attribute class of false
-# positives — ``+@pytest.fixture`` (diff ``+`` as a fake local part),
-# ``@app.route``, ``@module.attr`` — where the char before ``@`` is a diff
-# marker, whitespace, or absent, while still matching genuine addresses
-# whose local part ends in a real char (including a one-char local part).
-_EMAIL_RE = re.compile(
-    r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}",
-    re.ASCII,
-)
-_HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
-# Every branch must yield a FOUR-octet address. The ``10`` branch carries its own
-# second octet because ``10`` alone left it three-wide, so a three-component string
-# like a doc section reference or a three-part version string matched as a private
-# IP — and a real four-octet address matched only its first three octets. The two
-# guards bound the quad against a LONGER dotted run on either side: a preceding dot
-# would let a five-part build train donate an inner quad, and a following ``.<digit>``
-# the same from the right. A trailing sentence period is not one of them.
-_IP_RE = re.compile(r"\b(?<![\d.])(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b(?!\.\d)")
-_API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
-_HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
-_RESERVED_DOMAIN_RE = re.compile(r"(?:^|\.)(?:example\.(?:com|org|net)|example|invalid|test|localhost)$", re.IGNORECASE)
-
-# An SSH git remote — ``git@<host>:<org>/<repo>(.git)`` — is transport
-# syntax, never an email/PII. ``_EMAIL_RE`` matches the ``git@<host>``
-# prefix, so any test or code carrying a normal SSH remote URL would
-# otherwise trip the public-repo privacy gate (a recurring false
-# positive). The SSH user is always literally ``git`` and the host is
-# followed by ``:<path>`` — a real email never has a ``:path`` after the
-# domain — so this is a tight, non-weakening exclusion.
-_SSH_GIT_REMOTE_RE = re.compile(r"\bgit@[a-zA-Z0-9.-]+:[A-Za-z0-9._/~-]+")
-
-
-def _is_reserved_domain(address_or_host: str) -> bool:
-    return _RESERVED_DOMAIN_RE.search(address_or_host.rpartition("@")[2]) is not None
-
-
-def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
-    """True when an email match is actually the ``git@host`` of an SSH remote."""
-    return any(rm.start() <= match.start() and match.end() <= rm.end() for rm in _SSH_GIT_REMOTE_RE.finditer(line))
-
 
 # Inline allow-annotation, mirroring gitleaks' ``gitleaks:allow`` idiom.
 # A line carrying this literal marker is exempt from all findings — used
@@ -122,23 +80,12 @@ def _masked(match: str, scan: _Scan) -> str:
     return match if term is None else scan.refs.ref(term)
 
 
-def _generic_findings(line: str) -> list[tuple[str, str]]:
-    findings: list[tuple[str, str]] = [
-        ("email", m.group())
-        for m in _EMAIL_RE.finditer(line)
-        if not _is_reserved_domain(m.group()) and not _is_ssh_git_remote(line, m)
-    ]
-    findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
-    findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
-    findings.extend(("api_key", m.group()[:20] + "...") for m in _API_KEY_RE.finditer(line))
-    findings.extend(
-        ("internal_hostname", m.group()) for m in _HOSTNAME_RE.finditer(line) if not _is_reserved_domain(m.group())
-    )
-    return findings
-
-
 def _scan_line(line: str, scan: _Scan) -> list[tuple[str, str]]:
-    found = [] if scan.terms_only or _ALLOW_MARKER in line else _generic_findings(line)
+    found = (
+        []
+        if scan.terms_only or _ALLOW_MARKER in line
+        else [(hit.category, hit.match) for hit in generic_findings(line)]
+    )
     found.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
     findings = [(category, _masked(match, scan)) for category, match in found]
     if term := matched_term(line, scan.terms, scan.allowlist):

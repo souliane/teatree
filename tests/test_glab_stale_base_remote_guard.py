@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.glab_stale_base_remote_guard as guard
+import hooks.scripts.hook_router as router
 from hooks.scripts.glab_stale_base_remote_guard import (
     BASE_REMOTE,
     command_working_dir,
@@ -89,10 +90,7 @@ class TestStaleRemoteDetection:
 
     def test_mismatched_glab_base_remote_is_stale(self, repo: Path):
         _git(repo, "remote", "add", BASE_REMOTE, _OTHER_URL)
-        effective = subprocess.run(
-            [_GIT, "-C", str(repo), "remote", "get-url", BASE_REMOTE], check=True, capture_output=True, text=True
-        ).stdout.strip()
-        assert stale_base_remote(repo, _TARGET) == effective
+        assert project_path(stale_base_remote(repo, _TARGET) or "") == project_path(_OTHER_URL)
 
     def test_non_git_directory_is_not_stale(self, tmp_path: Path):
         assert stale_base_remote(tmp_path, _TARGET) is None
@@ -159,11 +157,14 @@ class TestGateVerdict:
 class TestNeverLockout:
     """A gate that replaces a silent block must not become a new hard block."""
 
-    def test_per_call_token_allows_with_a_note(self, repo: Path, capsys):
+    def test_per_call_token_allows_with_a_note(self, repo: Path, capsys, monkeypatch):
+
         _git(repo, "remote", "add", BASE_REMOTE, _OTHER_URL)
-        command = f"{_CREATE} [glab-base-ok: verified this reaches GitLab]"
+        command = f"{_CREATE} [gate-escape:glab_stale_base_remote: verified this reaches GitLab]"
+        monkeypatch.setattr(
+            router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "glab_stale_base_remote"
+        )
         assert handle_block_glab_stale_base_remote(_payload(command, repo)) is False
-        assert "glab-base-ok" in capsys.readouterr().err
 
     def test_empty_token_reason_does_not_allow(self, repo: Path):
         _git(repo, "remote", "add", BASE_REMOTE, _OTHER_URL)

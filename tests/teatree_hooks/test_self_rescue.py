@@ -51,6 +51,7 @@ class TestIsSelfRescue:
             "t3 acme gate skill-loading disable",
             "t3 acme gate config-overwrite disable",
             "t3 acme gate main-clone disable",  # #2844 #3 — main-clone kill-switch self-rescue
+            "t3 acme gate worktree-containment disable",
             "t3 t3-teatree gate main-clone disable",
             "t3 acme gate raw-merge disable",  # FIX-EXPEDITE PART B — raw-merge kill-switch self-rescue
             "t3 t3-teatree gate raw-merge disable",

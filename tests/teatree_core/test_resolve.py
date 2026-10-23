@@ -1,5 +1,6 @@
 """Tests for teatree.core.intake.resolve — worktree resolution from CWD."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.ticket_workspace import TicketWorkspaceDivergenceError
 from tests._git_repo import make_git_repo, run_git
+from tests._mount_table import missing_mount_table, patched_mount_table
 
 
 class TestParseEnvFile:
@@ -138,6 +140,25 @@ class TestFindEnvCache:
 
 
 class TestMatchWorktreeByPath(TestCase):
+    def test_a_row_recorded_under_a_mount_alias_is_found_from_either_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_root = Path(directory) / "mnt"
+            real = real_root / "T1" / "repo"
+            real.mkdir(parents=True)
+            alias = "/nonexistent-t3/workspace/T1/repo"
+            assert not Path(alias).exists()
+            ticket = Ticket.objects.create()
+            row = Worktree.objects.create(
+                ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": alias}
+            )
+            with patched_mount_table(("259:2", "/ws", str(real_root)), ("259:2", "/ws", "/nonexistent-t3/workspace")):
+                assert match_worktree_by_path(str(real)) == row
+                row.extra["worktree_path"] = str(real)
+                row.save(update_fields=["extra"])
+                assert match_worktree_by_path(alias) == row
+            with missing_mount_table():
+                assert match_worktree_by_path(alias) is None
+
     def test_exact_match(self) -> None:
         ticket = Ticket.objects.create()
         wt = Worktree.objects.create(
@@ -193,6 +214,24 @@ class TestResolveWorktree(TestCase):
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         self._tmp_path = tmp_path
+
+    def test_auto_detect_refusal_quotes_an_unresolvable_declaration(self) -> None:
+        missing = self._tmp_path / "missing"
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(missing))
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+
+        with pytest.raises(WorktreeNotFoundError) as exc:
+            resolve_worktree()
+
+        assert f"{INVOCATION_CWD_ENV}={str(missing)!r} is declared but does not resolve here" in str(exc.value)
+
+    def test_an_explicit_path_refusal_does_not_name_the_declaration(self) -> None:
+        self._monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+
+        with pytest.raises(WorktreeNotFoundError) as exc:
+            resolve_worktree(str(self._tmp_path))
+
+        assert INVOCATION_CWD_ENV not in str(exc.value)
 
     def test_from_env_worktree_file(self) -> None:
         wt_dir = self._tmp_path / "backend"

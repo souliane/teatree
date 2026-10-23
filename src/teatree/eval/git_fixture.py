@@ -16,7 +16,7 @@ described state, and runs the command.
 
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -220,7 +220,7 @@ def _write(repo: Path, name: str, body: str) -> None:
 
 
 @contextmanager
-def provision_fixture(kind: str, *, skill_path: Path | None = None) -> Iterator[Path]:
+def provision_fixture(kind: str, *, skill_path: Path | None = None) -> Generator[Path]:
     """Dispatch to the right throwaway-sandbox provider for *kind*.
 
     The single entry point the runner calls; each known fixture routes to its own
@@ -257,7 +257,7 @@ def provision_fixture(kind: str, *, skill_path: Path | None = None) -> Iterator[
 
 
 @contextmanager
-def provision_agent_skill_dir_fixture(skill_path: Path) -> Iterator[Path]:
+def provision_agent_skill_dir_fixture(skill_path: Path) -> Generator[Path]:
     """Yield a temp dir holding the scenario's own skill at ``skills/<name>/``.
 
     The whole directory is copied, so a ``references/`` doc the prompt tells the agent
@@ -275,7 +275,7 @@ def provision_agent_skill_dir_fixture(skill_path: Path) -> Iterator[Path]:
 
 
 @contextmanager
-def provision_failure_log_fixture() -> Iterator[Path]:
+def provision_failure_log_fixture() -> Generator[Path]:
     """Yield the concrete exception log named by root-cause scenarios."""
     with TemporaryDirectory(prefix="t3-eval-failure-log-") as tmp:
         root = Path(tmp)
@@ -291,7 +291,7 @@ def provision_failure_log_fixture() -> Iterator[Path]:
 
 
 @contextmanager
-def provision_golden_master_project_fixture() -> Iterator[Path]:
+def provision_golden_master_project_fixture() -> Generator[Path]:
     """Yield a runnable golden test and the complete reference it checks."""
     with TemporaryDirectory(prefix="t3-eval-golden-") as tmp:
         repo = Path(tmp) / "repo"
@@ -340,7 +340,7 @@ def provision_golden_master_project_fixture() -> Iterator[Path]:
 
 
 @contextmanager
-def provision_e2e_sibling_repos_fixture() -> Iterator[Path]:
+def provision_e2e_sibling_repos_fixture() -> Generator[Path]:
     """Yield the product-repo cwd with a sibling ``../widget-e2e/specs/`` e2e repo.
 
     The ``test_e2e_specs_live_in_e2e_repo`` prompt names ``../widget-e2e/`` as a
@@ -433,7 +433,7 @@ def _plausible_webm_bytes(pad: int = 16384) -> bytes:
 
 
 @contextmanager
-def provision_e2e_artifacts_fixture() -> Iterator[Path]:
+def provision_e2e_artifacts_fixture() -> Generator[Path]:
     """Yield a temp dir holding ``artifacts/<ticket>/local/{run.webm,step*.png}``.
 
     The screen recording + screenshots the E2E-test-plan prompt says are "already on
@@ -457,7 +457,7 @@ def provision_e2e_artifacts_fixture() -> Iterator[Path]:
 
 
 @contextmanager
-def provision_git_fixture(kind: str) -> Iterator[Path]:
+def provision_git_fixture(kind: str) -> Generator[Path]:
     if kind != GIT_REPO:
         msg = f"unknown eval fixture: {kind!r} (known: {sorted(KNOWN_FIXTURES)})"
         raise ValueError(msg)
@@ -495,7 +495,7 @@ def provision_git_fixture(kind: str) -> Iterator[Path]:
 
 
 @contextmanager
-def provision_uv_project_fixture() -> Iterator[Path]:
+def provision_uv_project_fixture() -> Generator[Path]:
     """Yield a git repo with a real, minimal, pytest-runnable ``pyproject.toml``.
 
     Unlike :func:`provision_git_fixture` (deliberately bare — other scenarios
@@ -529,7 +529,7 @@ def provision_uv_project_fixture() -> Iterator[Path]:
 
 
 @contextmanager
-def provision_python_parser_project_fixture() -> Iterator[Path]:
+def provision_python_parser_project_fixture() -> Generator[Path]:
     """Yield the real red parser project its scenario describes."""
     with TemporaryDirectory(prefix="t3-eval-parserfx-") as tmp:
         repo = Path(tmp) / "repo"

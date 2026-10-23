@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS
+from teatree.agents.live_client import LiveClient
+from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS, LiveFence, LiveTask
 from teatree.agents.live_ingress import OperatorIngress, PeerCredentials, PeerRole, classify_peer, peer_credentials
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.live_registry import LiveSessionRegistry
+from tests.teatree_agents._live_owner import OwnerLoop
 
 _AGENT_CHILD = """
 import asyncio, json, socket, sys
@@ -104,7 +106,14 @@ def _served_by_an_operator(method: str, request: dict[str, object]) -> object:
         return asyncio.run(ingress.serve(method, {"method": method, **request}, left))
 
 
-_STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds": 5}
+_STEER = {
+    "task": 7,
+    "text": "use docs/x.md",
+    "command_id": "c-1",
+    "attempt": "attempt-1",
+    "generation": "generation-1",
+    "wait_seconds": 5,
+}
 
 
 @pytest.mark.parametrize(
@@ -115,13 +124,22 @@ _STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds
         pytest.param("live.inspect", {"task": True}, "positive integer task", id="task-bool"),
         pytest.param("live.inspect", {"task": "7"}, "positive integer task", id="task-string"),
         pytest.param("live.steer", {**_STEER, "text": ""}, "non-empty text", id="empty-text"),
+        pytest.param("live.follow_up", {**_STEER, "text": ""}, "non-empty text", id="follow-up-empty-text"),
         pytest.param("live.steer", {**_STEER, "text": 5}, "non-empty text", id="text-not-a-string"),
         pytest.param("live.steer", {**_STEER, "command_id": ""}, "1-128 byte command_id", id="empty-command-id"),
         pytest.param("live.steer", {**_STEER, "command_id": "é" * 65}, "1-128 byte command_id", id="over-128-bytes"),
+        pytest.param("live.steer", {**_STEER, "attempt": None}, "attempt and generation fence", id="no-attempt"),
+        pytest.param("live.steer", {**_STEER, "generation": None}, "attempt and generation fence", id="no-generation"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": 0}, "wait must be within", id="no-wait"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": 900.5}, "wait must be within", id="wait-over-cap"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": True}, "wait must be within", id="wait-bool"),
         pytest.param("live.steer", {**_STEER, "wait_seconds": "5"}, "wait must be within", id="wait-string"),
+        pytest.param(
+            "live.steer",
+            {**_STEER, "generation": 3},
+            "attempt and generation fence",
+            id="fence-generation-type",
+        ),
         pytest.param("live.kill", {"task": 7}, "Unknown live method", id="unknown-verb"),
     ],
 )
@@ -145,3 +163,57 @@ def test_a_request_at_every_bound_reaches_the_registry() -> None:
         "mode": "active",
         "accepted_at": None,
     }
+
+
+def test_a_valid_follow_up_reaches_the_registry() -> None:
+    receipt = _served_by_an_operator("live.follow_up", _STEER)
+    assert receipt == {
+        "command_id": "c-1",
+        "task": 7,
+        "outcome": "rejected",
+        "code": "unknown_session",
+        "mode": "active",
+        "accepted_at": None,
+    }
+
+
+def test_a_legacy_worker_generation_is_a_valid_fence_value() -> None:
+    request = {**_STEER, "attempt": "worker|session|time", "generation": ""}
+
+    receipt = _served_by_an_operator("live.follow_up", request)
+
+    assert isinstance(receipt, dict)
+    assert receipt["code"] == "unknown_session"
+
+
+def test_operator_socket_carries_the_claim_and_worker_generation_of_the_selected_session(tmp_path: Path) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.delivered: list[str] = []
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.delivered.append(text)
+
+        async def interrupt(self) -> None:
+            return None
+
+    registry = LiveSessionRegistry()
+    task = LiveTask(7, 3, "coding", "claude_sdk", "m", LiveFence("new", "worker-b"))
+    session = Session()
+    ingress = OperatorIngress(lambda: registry, worker_pid=os.getpid())
+    with LiveMailboxBroker(runtime_dir=tmp_path, ingress=ingress), OwnerLoop(registry, task, session):
+        client = LiveClient(live_dir=tmp_path)
+        for old in (
+            {"attempt": "old", "generation": "worker-b"},
+            {"attempt": "new", "generation": "worker-a"},
+        ):
+            request = {"method": "live.steer", **_STEER, **old}
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connected:
+                connected.connect(str(next(iter(client.workers()))))
+                connected.sendall(json.dumps(request).encode() + b"\n")
+                stale = json.loads(connected.makefile("rb").readline())["result"]
+            assert stale["code"] == "stale_command"
+        current = client.steer(task.pk, "current", command_id="current", wait=1)
+
+    assert current["outcome"] == "accepted_current_turn"
+    assert len(session.delivered) == 1

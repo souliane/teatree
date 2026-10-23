@@ -136,13 +136,13 @@ class TestIntHelperSemantics:
     def test_non_teatree_section_missing_returns_default(self, home: Path) -> None:
         from hooks.scripts import teatree_settings  # noqa: PLC0415
 
-        assert teatree_settings.section_int_setting("mysection", "budget", default=3) == 3
+        assert teatree_settings.section_int_setting("mysection", "orchestrator_turn_budget") == 25
 
     def test_no_minimum_allows_any_int(self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         from hooks.scripts import teatree_settings  # noqa: PLC0415
 
-        _seed_db(monkeypatch, tmp_path, [("", "budget", -42)])
-        assert teatree_settings.teatree_int_setting("budget", default=3) == -42
+        _seed_db(monkeypatch, tmp_path, [("", "orchestrator_turn_budget", -42)])
+        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget") == -42
 
 
 class TestDelegatesToColdReader:
@@ -158,7 +158,7 @@ class TestDelegatesToColdReader:
             return cold_reader.SettingRead(17, readable=True)
 
         monkeypatch.setattr(cold_reader, "read_setting_confirmed", _fake)
-        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 17
+        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", minimum=0) == 17
         assert ("orchestrator_turn_budget", "") in seen
 
     def test_reader_fails_open_when_the_db_layer_raises(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,4 +169,4 @@ class TestDelegatesToColdReader:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(cold_reader, "read_setting_confirmed", _boom)
-        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 25
+        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", minimum=0) == 25

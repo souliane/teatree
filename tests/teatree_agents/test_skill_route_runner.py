@@ -1,7 +1,8 @@
 """End-to-end dispatch proofs for ordered per-skill harness routes."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
-from teatree.agents import harness_registry
+from teatree.agents import harness_registry, runner_preparation
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -24,12 +25,14 @@ from teatree.agents.harness_registry import (
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.session_lineage import resume_session_id
 from teatree.agents.skill_routing import clear_route_availability_cache
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Session, Task, TaskAttempt, UsageWindowState
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
+from tests.teatree_agents._route_fakes import scripted_session
+from tests.teatree_agents._sdk_fake import FakeHarnessSession, result_message, success_stream
 
 _CODEX_THREAD_ID = "22222222-2222-4222-8222-222222222222"
 
@@ -66,7 +69,7 @@ class _Harness:
         self.capabilities = capabilities
 
     @contextlib.asynccontextmanager
-    async def open(self, options: object) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
         del options
         yield self._session(success_stream({"summary": "fallback done"}))
 
@@ -87,10 +90,12 @@ class TestSkillRouteRuntimeFallback(TestCase):
         session: type[FakeHarnessSession],
         *,
         spawns_cli_child: bool = False,
+        metered_lane: bool = False,
     ) -> None:
         capabilities = HarnessCapabilities(
             managed_lane=name == "codex_like",
             spawns_cli_child=spawns_cli_child,
+            metered_lane=metered_lane,
         )
 
         def build(context: HarnessBuildContext) -> _Harness:
@@ -113,7 +118,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         ticket = planned_ticket()
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
 
-    def _run(self, config: AgentConfig, *, skills: list[str] | None = None) -> TaskAttempt:
+    def _run(self, config: AgentConfig, *, skills: list[str] | None = None, phase: str = "debugging") -> TaskAttempt:
         task = self._task()
         with (
             patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config),
@@ -121,7 +126,82 @@ class TestSkillRouteRuntimeFallback(TestCase):
             patch.object(Task, "renew_lease", lambda self, **_kw: None),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            return run_agent(task, phase="debugging", overlay_skill_metadata=SkillMetadata())
+            return run_agent(task, phase=phase, overlay_skill_metadata=SkillMetadata())
+
+    def test_coding_failure_parks_before_metered_fallback_unless_enabled_and_alerts_owner(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+        config = AgentConfig(
+            skill_models={
+                "code": (
+                    AgentRouteCandidate("codex_like", "codex-model"),
+                    AgentRouteCandidate("claude_like", "claude-model"),
+                )
+            }
+        )
+
+        parked = self._run(config, skills=["code"], phase="coding")
+
+        parked.task.refresh_from_db()
+        assert parked.task.status == Task.Status.PENDING
+        assert parked.task.not_before > timezone.now()
+        assert not parked.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert "agent_route_paid_fallback" in parked.error
+
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user") as notify,
+        ):
+            paid = self._run(config, skills=["code"], phase="coding")
+            another_paid = self._run(config, skills=["code"], phase="coding")
+
+        assert paid.lane == TaskAttempt.Lane.METERED
+        assert paid.route_candidate_index == 1
+        assert another_paid.lane == TaskAttempt.Lane.METERED
+        assert notify.call_count == 2
+        assert {call.kwargs["idempotency_key"] for call in notify.call_args_list} == {
+            f"agent_route_paid_fallback:{timezone.now().date().isoformat()}"
+        }
+        assert {call.kwargs["audience"] for call in notify.call_args_list} == {NotifyAudience.OWNER_ESCALATION}
+
+    def test_a_metered_first_candidate_is_not_a_fall_through_and_sends_no_owner_alert(self) -> None:
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+
+        with patch.object(runner_mod, "notify_user") as notify:
+            attempt = self._run(self._config("claude_like"))
+
+        assert attempt.lane == TaskAttempt.Lane.METERED
+        notify.assert_not_called()
+
+    def test_a_metered_fall_through_that_fails_still_alerts_the_owner(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        overloaded = result_message(is_error=True, subtype="error_during_execution", result="API Error: 503")
+        self._register("claude_like", scripted_session([overloaded]), metered_lane=True)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user") as notify,
+        ):
+            attempt = self._run(self._config("codex_like", "claude_like"))
+
+        assert attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED, exit_code=1).exists()
+        notify.assert_called()
+
+    def test_a_failing_owner_alert_does_not_fail_the_metered_fall_through(self) -> None:
+        self._register("codex_like", _TypedFailureSession)
+        self._register("claude_like", FakeHarnessSession, metered_lane=True)
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user", side_effect=RuntimeError("slack is down")) as notify,
+        ):
+            attempt = self._run(self._config("codex_like", "claude_like"))
+
+        assert (attempt.lane, attempt.exit_code) == (TaskAttempt.Lane.METERED, 0)
+        notify.assert_called()
 
     def test_typed_codex_runtime_failure_switches_to_claude_and_records_provenance(self) -> None:
         self._register("codex_like", _TypedFailureSession)
@@ -203,7 +283,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         with (
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
-                runner_mod, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
+                runner_preparation, "_provider_child_env", side_effect=runner_mod.CredentialError("credential missing")
             ),
         ):
             final = self._run(self._config("claude_like", "codex_like"))

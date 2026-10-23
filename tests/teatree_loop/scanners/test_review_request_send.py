@@ -11,7 +11,7 @@ import io
 import os
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,10 +47,11 @@ from teatree.loop.scanners.review_request_send import (
     ReviewRequestSendScanner,
 )
 from teatree.types import RawAPIDict
+from tests._file_backed_db import file_backed_default_database
 from tests._owner_channel import answer_on_slack, assert_a_plain_card, owner_card
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
-from tests.teatree_loop.test_followup_dry_run import _file_backed_default_database, _InlineThreadPoolExecutor
+from tests.teatree_loop.test_followup_dry_run import _InlineThreadPoolExecutor
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 _OVERLAY = "t3-teatree"
@@ -167,7 +168,7 @@ def _ready_ticket(
 
 
 @contextmanager
-def _world(slack: _Slack, forge: _Forge) -> Iterator[Path]:
+def _world(slack: _Slack, forge: _Forge) -> Generator[Path]:
     """The four replaced edges; everything between them is the live code."""
     target = GuardTarget(channel_id=_CHANNEL, channel_name="reviews", token="xoxb-bot")
     provider = type("P", (), {"read_recent_review_matches": staticmethod(slack.read_recent_review_matches)})
@@ -866,7 +867,7 @@ class TestTheFollowupPreviewSendsNothing(TransactionTestCase):
         _ready_ticket()
 
         with (
-            _file_backed_default_database(),
+            file_backed_default_database(),
             patch.object(followup_dry_run, "_SubmitterContextPool", _InlineThreadPoolExecutor),
             _world(slack, forge) as data_dir,
         ):

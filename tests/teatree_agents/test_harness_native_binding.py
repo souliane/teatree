@@ -5,14 +5,24 @@ selects the NATIVE binding (real ``cache_control`` reachable), one branch in ``_
 and the metered router's own reported cost is passed through when present.
 """
 
+import asyncio
 import importlib.util
+import json
 import os
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
+import httpx2
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
+from pydantic_ai import Agent
+from pydantic_ai.models import override_allow_model_requests
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.settings import ModelSettings
 
 from teatree.agents.harness import PydanticAiHarness, resolve_harness
 from teatree.agents.harness_options import HarnessOptions
@@ -197,28 +207,29 @@ class TestBindingSpecificEffortSettings:
             self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
         )
         # The regression: NOT ``openai_reasoning_effort``, which AnthropicModel ignores.
-        assert settings == {"anthropic_effort": "high"}
+        assert settings == {"anthropic_effort": "high", "cache": "5m", "anthropic_cache_diagnostics": True}
 
     def test_native_binding_maps_minimal_onto_the_anthropic_vocabulary(self) -> None:
         # ``minimal`` is router-scale only; sent verbatim the Messages API 400s.
         settings = build_model_settings(
             self._XHIGH, "minimal", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
         )
-        assert settings == {"anthropic_effort": "low"}
+        assert settings == {"anthropic_effort": "low", "cache": "5m", "anthropic_cache_diagnostics": True}
 
     def test_native_binding_downgrades_xhigh_when_the_model_lacks_it(self) -> None:
         assert build_model_settings(
             self._XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
-        ) == {"anthropic_effort": "xhigh"}
+        ) == {"anthropic_effort": "xhigh", "cache": "5m", "anthropic_cache_diagnostics": True}
         assert build_model_settings(
             self._NO_XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
-        ) == {"anthropic_effort": "max"}
+        ) == {"anthropic_effort": "max", "cache": "5m", "anthropic_cache_diagnostics": True}
 
-    def test_absent_effort_yields_no_settings_on_either_binding(self) -> None:
+    def test_absent_effort_keeps_native_cache_settings(self) -> None:
         assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=None) is None
-        assert (
-            build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None) is None
-        )
+        assert build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None) == {
+            "cache": "5m",
+            "anthropic_cache_diagnostics": True,
+        }
 
 
 class TestMaxTokensSetting:
@@ -237,7 +248,7 @@ class TestMaxTokensSetting:
 
     def test_native_binding_carries_max_tokens_without_effort(self) -> None:
         settings = build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=16384)
-        assert settings == {"max_tokens": 16384}
+        assert settings == {"max_tokens": 16384, "cache": "5m", "anthropic_cache_diagnostics": True}
 
     def test_router_binding_merges_max_tokens_with_the_effort_key(self) -> None:
         settings = build_model_settings(TestModel(), "high", binding=PydanticAiBinding.ROUTER, max_tokens=8192)
@@ -247,11 +258,79 @@ class TestMaxTokensSetting:
         settings = build_model_settings(
             self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=8192
         )
-        assert settings == {"max_tokens": 8192, "anthropic_effort": "high"}
+        assert settings == {
+            "max_tokens": 8192,
+            "anthropic_effort": "high",
+            "cache": "5m",
+            "anthropic_cache_diagnostics": True,
+        }
 
     def test_zero_or_none_max_tokens_adds_no_ceiling(self) -> None:
         assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=0) is None
         assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=None) is None
+
+
+def test_native_cache_settings_reach_two_anthropic_requests() -> None:
+    sent: list[dict[str, Any]] = []
+
+    def network(request: httpx2.Request) -> httpx2.Response:
+        sent.append(json.loads(request.content))
+        return httpx2.Response(
+            200,
+            json={
+                "id": f"msg_{len(sent)}",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-5-5",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 600, "output_tokens": 2},
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(network))
+    model = AnthropicModel("claude-sonnet-5-5", provider=AnthropicProvider(api_key="offline", http_client=client))
+    settings = build_model_settings(model, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=32)
+    agent: Agent[None, str] = Agent(model, system_prompt="stable instructions", model_settings=settings)
+
+    @agent.tool_plain
+    def lookup(query: str) -> str:
+        return query
+
+    async def send_two_turns() -> None:
+        first = await agent.run("first")
+        await agent.run("second", message_history=first.all_messages())
+
+    with override_allow_model_requests(allow_model_requests=True):
+        asyncio.run(send_two_turns())
+
+    assert len(sent) == 2
+    for payload in sent:
+        assert payload["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+        assert payload["tools"][0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+        assert payload["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+        explicit = sum("cache_control" in tool for tool in payload["tools"]) + sum(
+            "cache_control" in block for block in payload["system"]
+        )
+        assert explicit + 1 <= 4
+    assert sent[0]["diagnostics"] == {"previous_message_id": None}
+    assert sent[1]["diagnostics"] == {"previous_message_id": "msg_1"}
+
+
+def test_native_harness_passes_cache_settings_to_agent() -> None:
+    harness = PydanticAiHarness(
+        model=TestModel(), config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+    )
+
+    async def settings_on_open() -> ModelSettings | None:
+        async with harness.open(ClaudeAgentOptions()) as session:
+            return session._agent.model_settings
+
+    settings = asyncio.run(settings_on_open())
+    assert settings is not None
+    assert settings["cache"] == "5m"
+    assert dict(settings)["anthropic_cache_diagnostics"] is True
 
 
 class TestRouterReportedCost:

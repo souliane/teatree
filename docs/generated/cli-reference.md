@@ -1613,8 +1613,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
-│                           shard or not backed by metered spend.              │
+│ verify-benchmark-publish  Verify complete metered shards and optionally      │
+│                           write the passing scenario names.                  │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -1627,8 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
-│ list                      List discovered eval scenarios as a table (Name,   │
-│                           Scenario, Agent, File, Asserts).                   │
+│ list                      List discovered eval scenarios as a table or one   │
+│                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
 │                           name is given.                                     │
 │ ci-heal                   Operator control of the CI-eval self-healing loop  │
@@ -1641,6 +1641,9 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           a label, review the corpus.                        │
 │ quarantine                The known-red quarantine: scenarios the bounded PR │
 │                           lane does not select.                              │
+│ owed                      The owed-scenario ledger: evals a lane could not   │
+│                           run, re-run by the nightly until they pass.        │
+│ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1961,9 +1964,10 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --require-specs                 Fail loud (exit 2) when the filtered catalog │
 │                                 is empty, instead of skipping like 'nothing  │
 │                                 changed'.                                    │
-│ --diff-file            PATH     Unified diff (git diff --unified=0) for the  │
-│                                 same range, to narrow section-scoped         │
-│                                 scenarios.                                   │
+│ --diff-file            PATH     Unified diff for the same range, to narrow   │
+│                                 section-scoped scenarios.                    │
+│ --deferred-out         PATH     Write the scenario names the cap deferred,   │
+│                                 one per line (redacted).                     │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2058,8 +2062,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when the collected dashboard is short a shard or not backed by metered
- spend.
+ Verify complete metered shards and optionally write the passing scenario
+ names.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2071,6 +2075,8 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                                      collected artifacts refuses the         │
 │                                      publish.                                │
 │                                      [required]                              │
+│    --passed-file            PATH     Write scenario names that passed every  │
+│                                      collected matrix cell.                  │
 │    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2266,11 +2272,13 @@ Usage: t3 eval history [OPTIONS]
 ```
 Usage: t3 eval list [OPTIONS]
 
- List discovered eval scenarios as a table (Name, Scenario, Agent, File,
- Asserts).
+ List discovered eval scenarios as a table or one name per line.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --lane              TEXT                                                     │
+│ --shard             TEXT                                                     │
+│ --names-only                                                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2437,6 +2445,8 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     this many times          │
 │                                                     (pass@k).                │
 │                                                     [default: 1]             │
+│ --verdict-cache                            PATH     Reuse clean passes from  │
+│                                                     this ledger.             │
 │ --require                                  TEXT     With --trials > 1: 'any' │
 │                                                     (pass@k) or 'all'        │
 │                                                     (pass^k regression       │
@@ -2588,8 +2598,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     --trials/--models (a     │
 │                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
-│                                                     fails loud); the flag    │
-│                                                     only matters for the     │
+│                                                     fails loud; cached       │
+│                                                     passes count as coverage │
+│                                                     when --verdict-cache is  │
+│                                                     set); the flag only      │
+│                                                     matters for the          │
 │                                                     transcript backend,      │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
@@ -2684,7 +2697,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     three tier models        │
 │                                                     (frontier, balanced,     │
 │                                                     cheap — resolved through │
-│                                                     the single TIER_MODELS   │
+│                                                     the single tier_models() │
 │                                                     constant) and render a   │
 │                                                     comparison matrix + a    │
 │                                                     self-contained HTML      │
@@ -3119,6 +3132,188 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval owed`
+
+```
+Usage: t3 eval owed [OPTIONS] COMMAND [ARGS]...
+
+ The owed-scenario ledger: evals a lane could not run, re-run by the nightly
+ until they pass.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record   Add the scenario names in --names-file to the --out ledger as owed. │
+│ outputs  Print the parked=/owed= lines a workflow step appends to            │
+│          $GITHUB_OUTPUT.                                                     │
+│ collect  Fold the previous nightly ledger with the owed artifacts of merged  │
+│          PRs and weekly and heal legs.                                       │
+│ next     Print the oldest owed scenarios the catalog still defines, one per  │
+│          line.                                                               │
+│ settle   Clear the owed scenarios that passed and the ones the catalog no    │
+│          longer defines.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed record`
+
+```
+Usage: t3 eval owed record [OPTIONS]
+
+ Add the scenario names in --names-file to the --out ledger as owed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out               PATH                     The owed-ledger JSON file,   │
+│                                                 updated in place.            │
+│                                                 [required]                   │
+│ *  --reason            [parked|deferred|limit]  Why the lane could not run   │
+│                                                 them.                        │
+│                                                 [required]                   │
+│ *  --source            TEXT                     Where the debt came from,    │
+│                                                 e.g. pr#123@<sha> or         │
+│                                                 nightly@<run>.               │
+│                                                 [required]                   │
+│ *  --names-file        PATH                     Scenario names, one per      │
+│                                                 line.                        │
+│                                                 [required]                   │
+│    --now               TEXT                     Override 'now' (ISO-8601);   │
+│                                                 for testing.                 │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed outputs`
+
+```
+Usage: t3 eval owed outputs [OPTIONS] LEDGER
+
+ Print the parked=/owed= lines a workflow step appends to $GITHUB_OUTPUT.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed collect`
+
+```
+Usage: t3 eval owed collect [OPTIONS]
+
+ Fold the previous nightly ledger with the owed artifacts of merged PRs and
+ weekly and heal legs.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --repo                       TEXT                  OWNER/NAME of the      │
+│                                                       repository whose       │
+│                                                       artifacts hold the     │
+│                                                       debt.                  │
+│                                                       [required]             │
+│ *  --out                        PATH                  Where to write the     │
+│                                                       harvested ledger.      │
+│                                                       [required]             │
+│    --now                        TEXT                  Override 'now'         │
+│                                                       (ISO-8601); for        │
+│                                                       testing.               │
+│    --first-lookback-days        INTEGER RANGE [x>=1]  [default: 1]           │
+│    --help                                             Show this message and  │
+│                                                       exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed next`
+
+```
+Usage: t3 eval owed next [OPTIONS] LEDGER
+
+ Print the oldest owed scenarios the catalog still defines, one per line.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --cap                  INTEGER RANGE [x>=1]  The most owed scenarios to   │
+│                                                 run.                         │
+│                                                 [required]                   │
+│    --scenarios-dir        PATH                  Read the catalog from this   │
+│                                                 scenario directory (default: │
+│                                                 the discovered catalog).     │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed settle`
+
+```
+Usage: t3 eval owed settle [OPTIONS]
+
+ Clear the owed scenarios that passed and the ones the catalog no longer
+ defines.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out                   PATH  The owed-ledger JSON file, updated in       │
+│                                  place.                                      │
+│                                  [required]                                  │
+│ *  --passed-file           PATH  Scenario names that passed, one per line.   │
+│                                  [required]                                  │
+│    --attempted-file        PATH  Scenario names attempted tonight.           │
+│    --scenarios-dir         PATH  Read the catalog from this scenario         │
+│                                  directory (default: the discovered          │
+│                                  catalog).                                   │
+│    --help                        Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verdict-cache`
+
+```
+Usage: t3 eval verdict-cache [OPTIONS] COMMAND [ARGS]...
+
+ Manage content-keyed eval pass verdicts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ merge                                                                        │
+│ record                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache merge`
+
+```
+Usage: t3 eval verdict-cache merge [OPTIONS] LEDGER SOURCES...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger       PATH        Ledger JSON to update. [required]              │
+│ *    sources      SOURCES...  Other verdict ledgers to combine. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval verdict-cache record`
+
+```
+Usage: t3 eval verdict-cache record [OPTIONS] LEDGER [SUMMARIES]...
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger         PATH            Ledger JSON to update. [required]        │
+│      summaries      [SUMMARIES]...  Single-trial summary JSON files or       │
+│                                     directories.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --run-url        TEXT  Source run URL shown beside reused verdicts.       │
+│                           [required]                                         │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ### `t3 doctor`
 
 ```
@@ -3251,6 +3446,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ privacy-scan         Scan text for privacy-sensitive patterns (emails, keys, │
 │                      IPs).                                                   │
+│ gate-escape                                                                  │
 │ validate-mr          Validate MR/PR title+description against the active     │
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
@@ -3296,6 +3492,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      whose leader is gone.                                   │
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
+│ review-evidence                                                              │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -3321,6 +3518,16 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   path      [PATH]  File or '-' for stdin [default: -]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool gate-escape`
+
+```
+Usage: t3 tool gate-escape [OPTIONS]
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3888,6 +4095,19 @@ Usage: t3 tool ratchet-prune [OPTIONS]
 │ --write          Delete the stale pins (the only auto-repairable direction). │
 │ --json           Emit machine-readable JSON.                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool review-evidence`
+
+```
+Usage: t3 tool review-evidence [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha        TEXT  Full committed head SHA to measure. [required]  │
+│    --base              TEXT  Target branch ref for the changed set.          │
+│                              [default: origin/main]                          │
+│    --help                    Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5743,8 +5963,8 @@ Usage: t3 loops tick [OPTIONS]
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │
 │                        all).                                                 │
 │ --json                 Emit the tick report as JSON.                         │
-│ --dry-run              Preview followup decisions without posting or         │
-│                        writing.                                              │
+│ --dry-run              Preview built-in followup decisions; report omitted   │
+│                        overlay hooks.                                        │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6487,7 +6707,9 @@ Usage: t3 slack listen [OPTIONS]
  Run the Socket Mode receiver for all (or one) slack-enabled overlays.
 
  Maintains one WebSocket per overlay, writes events to a JSONL queue
- file that the worker's mention scanner drains. Runs until SIGTERM or SIGINT.
+ file that the worker's mention scanner drains, records each DM and wakes the
+ answer cycle, and on every ``hello`` replays what Slack holds since the
+ listener was last alive. Runs until SIGTERM or SIGINT.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay           TEXT  Restrict to a single overlay (default: all).       │
@@ -7264,16 +7486,9 @@ Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 Usage: t3 settings compare [OPTIONS]
 
  What differs between this box and its peers, and whether it can be read as
- drift.
-
- Exits non-zero only when there was nothing to compare — fewer than two
- instances answered. A
- comparison that RAN is a success whatever it found, "not comparable" included:
- that verdict is
- a true reading of boxes running different code, not a failure of this command.
-
- The table is laid out in the terminal's own width, so ``COLUMNS`` sets it for
- a redirected run.
+ drift. Exits non-zero only when fewer than two instances answered. A completed
+ comparison succeeds even when instances are not comparable. COLUMNS sets table
+ width for a redirected run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
@@ -7286,6 +7501,12 @@ Usage: t3 settings compare [OPTIONS]
 │                          registry entry. A forward under load answers late,  │
 │                          and a wait too short reports a live box as one that │
 │                          did not answer.                                     │
+│ --family          TEXT   Show one setting or seed family.                    │
+│ --group           TEXT   Match a setting group by name.                      │
+│ --text            TEXT   Search row names and descriptions.                  │
+│ --scope           TEXT   Global, all, or one overlay scope.                  │
+│                          [default: global]                                   │
+│ --all-rows               Include matching identical rows.                    │
 │ --full                   Do not truncate a value, and print each row's       │
 │                          import reason.                                      │
 │ --json                   Emit the whole view as JSON, nothing summarised     │
@@ -7339,8 +7560,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions running now on this host's workers: inspect them    │
-│                 passively, steer them actively.                              │
+│ live            Sessions on this host's workers: inspect passively, steer or │
+│                 follow up actively.                                          │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -7538,53 +7759,59 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ status              Show whether the orchestrator heavy-Bash gate is         │
-│                     enabled.                                                 │
-│ disable             Disable the gate (self-rescue from a Bash lockout).      │
-│ enable              Re-enable the gate.                                      │
-│ skill-loading       Skill-loading gate kill-switch (self-rescue).            │
-│ plan                Plan-before-code edit-block gate kill-switch             │
-│                     (self-rescue).                                           │
-│ visible-plan        Visible per-target plan-first gate kill-switch           │
-│                     (self-rescue).                                           │
-│ config-overwrite    Read-before-overwrite config/dotfile gate kill-switch    │
-│                     (self-rescue).                                           │
-│ cron-loop-shell     Cron-shells-a-t3-loop gate (the worker owns loop         │
-│                     cadence) kill-switch (self-rescue).                      │
-│ standing-grant-ask  Standing-grant sign-off ask gate (never ask for a merge  │
-│                     the owner already authorized) kill-switch (self-rescue). │
-│ completion-claim    Completion-claim gate (on-target evidence before done)   │
-│                     kill-switch (self-rescue).                               │
-│ answer-first        Answer-first gate (answer the user's question, do not    │
-│                     only dispatch) kill-switch (self-rescue).                │
-│ unbacked-claim      Evidence gate (a diagnosis or an escalation cites what   │
-│                     was read) kill-switch (self-rescue).                     │
-│ brief-anchor        Brief-anchor refusal (a dispatch brief anchors its       │
-│                     assertions or licenses overruling them) kill-switch      │
-│                     (self-rescue).                                           │
-│ main-clone          Main-clone working-tree mutation gate kill-switch        │
-│                     (self-rescue).                                           │
-│ snapshot-baseline   Snapshot-baseline attestation gate kill-switch           │
-│                     (self-rescue).                                           │
-│ gate-relaxation     Anti-relaxation + tach-soundness gate kill-switch        │
-│                     (self-rescue).                                           │
-│ raw-merge           Out-of-band raw-merge gate kill-switch (self-rescue).    │
-│ raw-pr-create       Raw MR/PR-create gate (an owner-authored MR nobody can   │
-│                     approve) kill-switch (self-rescue).                      │
-│ standing-goal       Standing verified-green stop-gate kill-switch            │
-│                     (self-rescue).                                           │
-│ glab-base-remote    Stale `glab-base` remote gate (glab's silent MR-create   │
-│                     no-op) kill-switch (self-rescue).                        │
-│ add-all             Whole-tree `git add -A` / `git add .` gate kill-switch   │
-│                     (self-rescue).                                           │
-│ foreign-push        Foreign-branch push gate (never push onto a branch       │
-│                     another author owns) kill-switch (self-rescue).          │
-│ general-purpose     Blank general-purpose sub-agent dispatch gate            │
-│                     kill-switch (self-rescue).                               │
-│ verbatim-paste      Verbatim operator-paste publish gate kill-switch         │
-│                     (self-rescue).                                           │
-│ delegation          Orchestrator delegation gate (an unbounded read belongs  │
-│                     in a sub-agent) kill-switch (self-rescue).               │
+│ status                Show whether the orchestrator heavy-Bash gate is       │
+│                       enabled.                                               │
+│ disable               Disable the gate (self-rescue from a Bash lockout).    │
+│ enable                Re-enable the gate.                                    │
+│ skill-loading         Skill-loading gate kill-switch (self-rescue).          │
+│ plan                  Plan-before-code edit-block gate kill-switch           │
+│                       (self-rescue).                                         │
+│ visible-plan          Visible per-target plan-first gate kill-switch         │
+│                       (self-rescue).                                         │
+│ config-overwrite      Read-before-overwrite config/dotfile gate kill-switch  │
+│                       (self-rescue).                                         │
+│ cron-loop-shell       Cron-shells-a-t3-loop gate (the worker owns loop       │
+│                       cadence) kill-switch (self-rescue).                    │
+│ standing-grant-ask    Standing-grant sign-off ask gate (never ask for a      │
+│                       merge the owner already authorized) kill-switch        │
+│                       (self-rescue).                                         │
+│ completion-claim      Completion-claim gate (on-target evidence before done) │
+│                       kill-switch (self-rescue).                             │
+│ answer-first          Answer-first gate (answer the user's question, do not  │
+│                       only dispatch) kill-switch (self-rescue).              │
+│ unbacked-claim        Evidence gate (a diagnosis or an escalation cites what │
+│                       was read) kill-switch (self-rescue).                   │
+│ brief-anchor          Brief-anchor refusal (a dispatch brief anchors its     │
+│                       assertions or licenses overruling them) kill-switch    │
+│                       (self-rescue).                                         │
+│ main-clone            Main-clone working-tree mutation gate kill-switch      │
+│                       (self-rescue).                                         │
+│ worktree-containment  Linked worktree destination gate kill-switch           │
+│                       (self-rescue).                                         │
+│ snapshot-baseline     Snapshot-baseline attestation gate kill-switch         │
+│                       (self-rescue).                                         │
+│ gate-relaxation       Anti-relaxation + tach-soundness gate kill-switch      │
+│                       (self-rescue).                                         │
+│ raw-merge             Out-of-band raw-merge gate kill-switch (self-rescue).  │
+│ raw-pr-create         Raw MR/PR-create gate (an owner-authored MR nobody can │
+│                       approve) kill-switch (self-rescue).                    │
+│ standing-goal         Standing verified-green stop-gate kill-switch          │
+│                       (self-rescue).                                         │
+│ glab-base-remote      Stale `glab-base` remote gate (glab's silent MR-create │
+│                       no-op) kill-switch (self-rescue).                      │
+│ add-all               Whole-tree `git add -A` / `git add .` gate kill-switch │
+│                       (self-rescue).                                         │
+│ foreign-push          Foreign-branch push gate (never push onto a branch     │
+│                       another author owns) kill-switch (self-rescue).        │
+│ general-purpose       Blank general-purpose sub-agent dispatch gate          │
+│                       kill-switch (self-rescue).                             │
+│ verbatim-paste        Verbatim operator-paste publish gate kill-switch       │
+│                       (self-rescue).                                         │
+│ delegation            Orchestrator delegation gate (an unbounded read        │
+│                       belongs in a sub-agent) kill-switch (self-rescue).     │
+│ owner-question        Attended owner-question gate (one plain question per   │
+│                       call, no decisions in reply prose) kill-switch         │
+│                       (self-rescue).                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8213,6 +8440,59 @@ Usage: t3 teatree gate main-clone enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree gate worktree-containment`
+
+```
+Usage: t3 teatree gate worktree-containment [OPTIONS] COMMAND [ARGS]...
+
+ Linked worktree destination gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate worktree-containment status`
+
+```
+Usage: t3 teatree gate worktree-containment status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate worktree-containment disable`
+
+```
+Usage: t3 teatree gate worktree-containment disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate worktree-containment enable`
+
+```
+Usage: t3 teatree gate worktree-containment enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree gate snapshot-baseline`
 
 ```
@@ -8800,6 +9080,60 @@ Usage: t3 teatree gate delegation enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree gate owner-question`
+
+```
+Usage: t3 teatree gate owner-question [OPTIONS] COMMAND [ARGS]...
+
+ Attended owner-question gate (one plain question per call, no decisions in
+ reply prose) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question status`
+
+```
+Usage: t3 teatree gate owner-question status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question disable`
+
+```
+Usage: t3 teatree gate owner-question disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate owner-question enable`
+
+```
+Usage: t3 teatree gate owner-question enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree wip`
 
 ```
@@ -9026,6 +9360,8 @@ Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 │ claim-occupancy    Claim a checkout for a hand-driven lane, refusing if an   │
 │                    agent already holds it.                                   │
 │ release-occupancy  Hand a checkout back, naming whose claim was freed.       │
+│ attest             Record the checkout state after the owner has inspected   │
+│                    it.                                                       │
 │ adopt              Register an existing on-disk checkout as a Worktree row.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -9254,6 +9590,21 @@ Usage: t3 teatree worktree release-occupancy [OPTIONS] PATH
  this is the operator's escape for a holder that died without releasing,
  and it is the command every refusal points at. It touches the four claim
  columns and nothing else — no directory, branch, container or process.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree attest`
+
+```
+Usage: t3 teatree worktree attest [OPTIONS] PATH
+
+ Record the present checkout state after the owner has inspected it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    path      TEXT  [required]                                              │
@@ -10644,6 +10995,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │                    discharge.                                                │
 │ void-merge         Void a merge whose content never reached the default      │
 │                    branch (a human at a terminal).                           │
+│ request-void       Ask the owner on Slack to correct a merge whose content   │
+│                    is absent.                                                │
 │ check-gates        Check whether session gates allow a phase transition.     │
 │ fetch-issue        Fetch issue details from the configured tracker.          │
 │ detect-tenant      Detect the current tenant variant from the overlay.       │
@@ -10665,8 +11018,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  queue. The result carries an explicit ``warning`` so a no-worker
  context does not look like a completed ship (#708).
 
- ``--sync``: run ``execute_ship`` inline in this process so the push
- and PR happen before the command returns — no worker required. Use
+ ``--sync``: push and open the PR inline before advancing the FSM, so
+ both finish before the command returns — no worker required. Use
  this for interactive / ``uv run`` invocations where nothing is
  draining the queue.
 
@@ -10674,7 +11027,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  bare issue number (resolved against ``Ticket.issue_url``).
 
  ``--title`` overrides the PR title (default: last commit subject).
- Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+ ``--sync`` hands it to the ship; the queued ship reads
+ ``ticket.extra['pr_title_override']``.
 
  ``--skip-validation`` skips the heavy ship gates (visual QA, branch
  currency, FSM phase check) but STILL runs the cheap MR
@@ -10810,6 +11164,22 @@ Usage: t3 teatree pr void-merge [OPTIONS] PR_URL
 │ --dry-run              Print the forge evidence and planned changes; write   │
 │                        nothing.                                              │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr request-void`
+
+```
+Usage: t3 teatree pr request-void [OPTIONS] PR_URL REASON
+
+ Ask the owner on Slack to approve a merge correction.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+│ *    reason      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11446,18 +11816,20 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions running now on this host's workers: inspect them passively, steer
- them actively.
+ Sessions on this host's workers: inspect passively, steer or follow up
+ actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list     List every live session on this host's workers (passive).           │
-│ inspect  Show one live session's state, tool and progress without contacting │
-│          the agent.                                                          │
-│ steer    Send input into a running agent's current turn and print its        │
-│          receipt (active).                                                   │
+│ list       List every live session on this host's workers (passive).         │
+│ inspect    Show one live session's state, tool and progress without          │
+│            contacting the agent.                                             │
+│ steer      Send input into a running agent's current turn and print its      │
+│            receipt (active).                                                 │
+│ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11507,6 +11879,34 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            returns the first receipt.                        │
 │ --wait              FLOAT  Seconds to wait for the agent's next safe         │
 │                            boundary (at most 900).                           │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live follow-up`
+
+```
+Usage: t3 teatree live follow-up [OPTIONS] TASK
+
+ Start one new turn in a still-open idle session and print its receipt
+ (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input for one new turn in an idle session (at │
+│                            most 16 KiB).                                     │
+│ --command-id        TEXT   Idempotency key; the same text returns the first  │
+│                            receipt.                                          │
+│ --wait              FLOAT  Seconds to wait for the new turn to start (at     │
+│                            most 900).                                        │
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
@@ -11713,7 +12113,8 @@ Usage: t3 teatree handover create [OPTIONS]
  failure this command is supposed to make impossible.
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
- for whichever session starts next. Per directive #8, every in-flight
+ for whichever session starts next. ``--park`` parks even with a live owner
+ and cannot be combined with ``--to``. Per directive #8, every in-flight
  sub-agent worktree is driven through leak-gated fast-push so their work is
  committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
  barrier runs on the refused path too, since a session with nothing to hand
@@ -11742,6 +12143,9 @@ Usage: t3 teatree handover create [OPTIONS]
 │ --json                                             Emit JSON.                │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+│ --park                                             Park for the next session │
+│                                                    instead of the live loop  │
+│                                                    owner.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -13783,9 +14187,9 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
 
  Print the resolved value for *key* and name its source (DB vs env/default).
 
- When a ``ConfigSetting`` row exists in the requested scope it is reported as
- the ``db`` source; otherwise the value falls through to the code layer: a
- cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+ The shared resolver reads overlay aliases and global fallback rows.
+ A selected DB row reports ``db``. Without one, a cold-hook gate key
+ (``COLD_HOOK_SETTINGS``) reports its in-code
  ``ColdHookSetting`` default, every other key its ``UserSettings``
  env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
  an unknown key — a typo is loud, not a silent answer for a non-setting — but
@@ -14562,7 +14966,7 @@ Usage: t3 teatree retro finding [OPTIONS]
  This is what retro persists a lesson WITH: the finding becomes a VERIFIED
  core-gap ledger row queued on the umbrella host's pending ledger — the same
  drain dreaming Pass 2 uses, so the prose retires itself once the host that
- absorbs it merges. With ``memory_promote`` off the row is
+ absorbs it merges. With ``dream_memory_promote`` off the row is
  still recorded and the promotion reported ``deferred``, reaching no umbrella.
  Emits the result as JSON; a refusal prints its payload and raises
  ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real

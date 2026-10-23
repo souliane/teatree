@@ -15,7 +15,7 @@ from unittest import mock
 
 from django.test import TestCase
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.provenance import OVERRIDING_SOURCES, ResolvedSetting, ValueSource, resolve_settings
 from teatree.core.models import ConfigSetting
 
@@ -86,7 +86,7 @@ class TestTheDeclaredTierServesWhatTheDeclarationStates(TestCase):
     def test_every_shipped_key_resolves_to_what_the_rendered_file_carries(self) -> None:
         # Crosses the render/resolve boundary: the file is RENDERED from the declarations,
         # so an unset key resolving to something else means one of the two sides is lying.
-        shipped = shipped_defaults_table()
+        shipped = declared_defaults()
         resolved = resolve_settings(sorted(shipped), persisted_only=True)
         drift = {key: (resolved[key].value, value) for key, value in shipped.items() if resolved[key].value != value}
         assert not drift, f"the declared tier disagrees with the file rendered from it: {drift}"

@@ -2,13 +2,7 @@
 
 import pytest
 
-from teatree.core.gates.standing_grant_ask_gate import (
-    StandingGrantAsk,
-    deny_reason,
-    find_standing_grant_ask,
-    grant_ask_ok_reason,
-    repo_refs,
-)
+from teatree.core.gates.standing_grant_ask_gate import StandingGrantAsk, deny_reason, find_standing_grant_ask, repo_refs
 
 _GRANT_COVERED_ASKS = [
     (
@@ -82,32 +76,6 @@ class TestStatusNoiseStillFlags:
         assert finding == StandingGrantAsk(question=question)
 
 
-class TestOkToken:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            (
-                "[grant-ask-ok: the owner asked to be consulted on this one] May I merge?",
-                "the owner asked to be consulted on this one",
-            ),
-            ("prefix [grant-ask-ok:   spaced   ] suffix", "spaced"),
-            ("[grant-ask-ok: ]", None),
-            ("no token here", None),
-            ("", None),
-        ],
-    )
-    def test_token_extraction(self, text: str, expected: str | None) -> None:
-        assert grant_ask_ok_reason(text) == expected
-
-    def test_token_past_the_scan_window_is_ignored(self) -> None:
-        assert grant_ask_ok_reason("x" * 600 + "[grant-ask-ok: buried]") is None
-
-    def test_an_empty_token_with_a_later_bracket_does_not_escape(self) -> None:
-        text = "[grant-ask-ok: ] Do you approve merging substrate PR [#4892]?"
-
-        assert grant_ask_ok_reason(text) is None
-
-
 class TestRepoRefs:
     def test_forge_urls_and_owner_repo_refs_are_extracted(self) -> None:
         text = "Merge https://github.com/souliane/teatree/pull/4892 and souliane/private-skills!68 or acme/app#7?"
@@ -132,7 +100,7 @@ class TestDenyReason:
         assert "substrate_self_signoff" in reason
         assert "ticket clear" in reason
         assert "ticket merge" in reason
-        assert "[grant-ask-ok: <reason>]" in reason
+        assert "[gate-escape:block-standing-grant-ask: <reason>]" in reason
         assert "t3 <overlay> gate standing-grant-ask disable" in reason
 
     def test_delegation_reason_names_the_configured_authorizer(self) -> None:

@@ -7,7 +7,7 @@ Not a test module — no ``test_`` prefix, so pytest never collects it.
 
 import os
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -100,14 +100,14 @@ def run_before_upload_pack(client: Path, commands: Mapping[int, str]) -> None:
 
 
 @contextmanager
-def as_other_instance(data_home: Path) -> Iterator[None]:
+def as_other_instance(data_home: Path) -> Generator[None]:
     """Act as a separate teatree installation: ``instance_id()`` resolves its own machine data dir."""
     with patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}):
         yield
 
 
 @contextmanager
-def as_twin_instance(data_home: Path) -> Iterator[None]:
+def as_twin_instance(data_home: Path) -> Generator[None]:
     """Act as a separate installation that shares this one's ``instance_id`` but not its ledger."""
     ours = instance_id()
     twin_dir = data_home / "teatree"

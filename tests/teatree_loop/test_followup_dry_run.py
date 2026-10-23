@@ -6,7 +6,7 @@ import io
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -35,20 +35,26 @@ import teatree.loop.scanners.review_request_resume as review_request_resume_modu
 import teatree.loops.loop_table as loop_table_module
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
+from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
+from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import DraftState, PrOpenState
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
 from teatree.core.models import Loop, LoopLease, OnBehalfApproval, OnBehalfAudit, ReviewRequestPost
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfSlackEgress
+from teatree.core.overlay import OverlayReview
 from teatree.core.review.review_candidate import _is_self_authored
-from teatree.loop.followup_dry_run import render_followup_dry_run, run_followup_dry_run
+from teatree.loop.followup_dry_run import FollowupDryRunReport, render_followup_dry_run, run_followup_dry_run
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.overlay_followup_jobs import overlay_followup_jobs, skip_overlay_followup_hooks
 from teatree.loop.phases.scan import ScanOutcome
+from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
 from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
 from teatree.loop.tick import TickRequest
 from teatree.types import RawAPIDict
+from tests._file_backed_db import file_backed_default_database
 from tests._send_gate import allow_slack_channels
 
 _CHANNEL = "C_REVIEW"
@@ -82,6 +88,9 @@ class _Slack:
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
         return ""
+
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return "S0REVIEWERS" if handle == "reviewers-team" else ""
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         self.posts.append((channel, text, thread_ts))
@@ -266,7 +275,7 @@ def _seed_followup_loop(*, enabled: bool) -> Loop:
 
 
 @contextmanager
-def _previewed_jobs(jobs: list[_ScannerJob]) -> Iterator[None]:
+def _previewed_jobs(jobs: list[_ScannerJob]) -> Generator[None]:
     """Hand the command a fixed job selection — ``preview_loop_jobs`` has its own tests."""
     with ExitStack() as stack:
         stack.enter_context(patch.object(loops_tick_module.Command, "_build_request", return_value=TickRequest()))
@@ -292,43 +301,6 @@ def _jobs(slack: _Slack, host: _Host | None = None) -> list[_ScannerJob]:
     ]
 
 
-@contextmanager
-def _file_backed_default_database() -> Iterator[Path]:
-    wrapper = connections["default"]
-    wrapper.ensure_connection()
-    original_name = wrapper.settings_dict["NAME"]
-    original_options = wrapper.settings_dict["OPTIONS"]
-    original_transaction_mode = wrapper.transaction_mode
-    original_raw = wrapper.connection
-    if original_raw is None:
-        msg = "the test database connection did not open"
-        raise RuntimeError(msg)
-
-    with TemporaryDirectory(prefix="followup-source-") as directory:
-        source = Path(directory) / "source.sqlite3"
-        destination = sqlite3.connect(source)
-        try:
-            original_raw.backup(destination)
-        finally:
-            destination.close()
-
-        wrapper.connection = None
-        wrapper.settings_dict["NAME"] = str(source)
-        wrapper.settings_dict["OPTIONS"] = {**original_options, "timeout": 30, "transaction_mode": "IMMEDIATE"}
-        wrapper.transaction_mode = "IMMEDIATE"
-        try:
-            yield source
-        finally:
-            redirected_raw = wrapper.connection
-            if redirected_raw is not None:
-                redirected_raw.close()
-            wrapper.connection = None
-            wrapper.settings_dict["NAME"] = original_name
-            wrapper.settings_dict["OPTIONS"] = original_options
-            wrapper.transaction_mode = original_transaction_mode
-            wrapper.connection = original_raw
-
-
 def _review_request_post_checksum(path: Path) -> tuple[int, str]:
     database = sqlite3.connect(path)
     try:
@@ -342,11 +314,13 @@ def _review_request_post_checksum(path: Path) -> tuple[int, str]:
 
 
 @contextmanager
-def _scanner_dependencies(*, inline_workers: bool = True) -> Iterator[Path]:
-    config = TeaTreeConfig(user=UserSettings(review_nag_max_interval_days=30))
+def _scanner_dependencies(*, inline_workers: bool = True) -> Generator[Path]:
+    config = TeaTreeConfig(
+        user=UserSettings(review_nag_max_interval_days=30, review_nag_reask_mention="reviewers-team")
+    )
     target = GuardTarget(channel_id=_CHANNEL, channel_name="review", token="unused")
     with ExitStack() as stack:
-        source = stack.enter_context(_file_backed_default_database())
+        source = stack.enter_context(file_backed_default_database())
         stack.enter_context(patch.object(config_module, "load_config", return_value=config))
         stack.enter_context(patch.object(cold_reader, "mapping_setting", return_value={}))
         stack.enter_context(
@@ -374,6 +348,79 @@ class TestFollowupDryRun(TransactionTestCase):
     def setUp(self) -> None:
         super().setUp()
         allow_slack_channels(_CHANNEL)
+
+    def test_default_overlay_hook_does_not_make_a_builtin_preview_incomplete(self) -> None:
+        backend = OverlayBackends(name="test", overlay=TeatreeOverlay())
+
+        def build_jobs() -> list[_ScannerJob]:
+            return [
+                _ScannerJob(_ProbeReviewNagScanner(lambda: None, "review_nag"), "test"),
+                *overlay_followup_jobs(backend),
+            ]
+
+        with file_backed_default_database():
+            report = run_followup_dry_run(build_jobs)
+
+        assert report.selected_scanners == ("review_nag",)
+        assert report.not_previewed == ()
+        assert report.as_payload()["not_previewed"] == []
+        assert report.exit_code == 0
+        assert "NOT PREVIEWED" not in render_followup_dry_run(report)
+
+    def _forge_writing_backend(self) -> tuple[OverlayBackends, list[str], list[str]]:
+        forge_writes: list[str] = []
+        hook_calls: list[str] = []
+
+        class ForgeWritingScanner:
+            name = "forge_writer"
+
+            def scan(self) -> list[ScanSignal]:
+                forge_writes.append("reviewer added")
+                return []
+
+        class Review(OverlayReview):
+            def get_followup_scanners(self, backend: OverlayBackends) -> list[Scanner]:
+                hook_calls.append("hook called")
+                return [ForgeWritingScanner()]
+
+        overlay = TeatreeOverlay()
+        overlay.review = Review()
+        return OverlayBackends(name="test", overlay=overlay), forge_writes, hook_calls
+
+    def test_preview_never_calls_an_overlay_hook_and_reports_it(self) -> None:
+        backend, forge_writes, hook_calls = self._forge_writing_backend()
+        with skip_overlay_followup_hooks():
+            assert overlay_followup_jobs(backend) == []
+
+        with file_backed_default_database():
+            report = run_followup_dry_run(lambda: overlay_followup_jobs(backend))
+
+        assert forge_writes == []
+        assert hook_calls == []
+        assert report.not_previewed == ("overlay_followup_scanners[test]",)
+        assert report.as_payload()["not_previewed"] == ["overlay_followup_scanners[test]"]
+        assert "NOT PREVIEWED (external writes possible): overlay_followup_scanners[test]" in render_followup_dry_run(
+            report
+        )
+        assert report.exit_code == 3
+
+    def test_preview_drops_a_prebuilt_overlay_scanner_and_reports_it(self) -> None:
+        backend, forge_writes, _ = self._forge_writing_backend()
+        jobs = overlay_followup_jobs(backend)
+        with file_backed_default_database():
+            report = run_followup_dry_run(jobs)
+
+        assert forge_writes == []
+        assert report.not_previewed == ("forge_writer[test][hook]",)
+
+    def test_selected_builtin_does_not_certify_an_unpreviewed_overlay_scanner(self) -> None:
+        report = FollowupDryRunReport(
+            candidates=[],
+            errors={},
+            selected_scanners=("review_nag",),
+            not_previewed=("overlay_followup_scanners[test]",),
+        )
+        assert report.exit_code == 3
 
     def test_records_every_authorship_verdict_and_suppresses_every_egress_and_write(self) -> None:
         _seed(_SELF_POST, 1)
@@ -491,7 +538,7 @@ class TestFollowupDryRun(TransactionTestCase):
         ]
 
         with (
-            _file_backed_default_database(),
+            file_backed_default_database(),
             patch.dict(connections.databases["default"]["OPTIONS"], {"transaction_mode": "IMMEDIATE"}),
             patch.object(
                 followup_dry_run_module, "collect_scan", wraps=followup_dry_run_module.collect_scan
@@ -580,7 +627,7 @@ class TestFollowupDryRun(TransactionTestCase):
             time.sleep(1.0)
 
             assert _review_request_post_checksum(source) == before
-        assert "waited for it to finish" in report.errors["late"]
+        assert "waited for it to finish" in report.errors["late[test]"]
 
     def test_a_second_interrupt_during_the_join_never_lets_the_held_scanner_reach_the_source_database(self) -> None:
         _seed(_SELF_POST, 1)

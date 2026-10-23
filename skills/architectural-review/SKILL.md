@@ -57,7 +57,7 @@ Judge the tree by `skills/architecture-design/SKILL.md` § "Standing bar" — Re
 
 Your tool grant is whatever `teatree.core.modelkit.phase_tools.tools_for_phase("architectural_review")` returns at dispatch time — that accessor is the authority, never prose about it. The pass needs file reads, tree search, web fetch, shell, and write/edit for § 7. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates --allow-main-clone` there directly — grading the default branch IS this pass's subject, and the flag is what says so out loud; without it the command refuses a clean main clone (exit 2, [#4720](https://github.com/souliane/teatree/issues/4720)), because an unqualified exit 0 there reads as a branch's green-proof.
 
-**All writing happens in your own worktree** — the main-clone guard blocks every mutation of the shared clone: `git worktree add -b review-fixes/<slug> --no-track ../architectural-review origin/main` (`--no-track` keeps `git push` from aiming at `main`). Cut it at the first confirmed finding; § 7 runs there. A missing checkout or tool is a dispatch fault, not an owner question: STOP and return `needs_user_input` with the reason.
+**All writing happens in your own worktree** — the main-clone guard blocks every mutation of the shared clone: `git worktree add -b review-fixes/<slug> --no-track ~/workspace/t3-workspaces/architectural-review origin/main` (`--no-track` keeps `git push` from aiming at `main`). Cut it at the first confirmed finding; § 7 runs there. A missing checkout or tool is a dispatch fault, not an owner question: STOP and return `needs_user_input` with the reason.
 
 ## What to do
 

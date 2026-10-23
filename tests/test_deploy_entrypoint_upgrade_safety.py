@@ -114,6 +114,22 @@ def _control_db(directory: Path, rows: list[tuple[str, str, object]]) -> Path:
 
 
 class TestInitFindsItsTokenThroughTheOverlayRoute:
+    def test_routing_reads_key_committed_only_to_wal(self, tmp_path: Path) -> None:
+        db = _control_db(tmp_path, [("t3-teatree", "github_token_pass_key", "gh/old")])
+        writer = sqlite3.connect(db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute(
+                "UPDATE teatree_config_setting SET value=? WHERE scope=? AND key=?",
+                (json.dumps("gh/new"), "t3-teatree", "github_token_pass_key"),
+            )
+            writer.commit()
+            assert Path(f"{db}-wal").stat().st_size > 0
+            assert self._route(tmp_path) == "gh/new"
+        finally:
+            writer.close()
+
     def _route(self, control_dir: Path) -> str:
         script = "\n".join(
             [_function("gh_repo_slug"), _function("db_routed_github_pass_key"), "db_routed_github_pass_key"]

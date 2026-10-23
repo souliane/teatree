@@ -6,6 +6,7 @@ overlay could not reach it. These tests pin that the entry point now honors both
 arguments while every default preserves teatree's own lane behavior exactly.
 """
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,31 @@ class TestSpecsUnder:
 
 
 class TestSelectChangedScenariosParameters:
+    def test_overlay_local_stub_change_selects_its_scenario(self, tmp_path: Path) -> None:
+        spec = dataclasses.replace(
+            _spec("stubbed", tmp_path / "evals" / "scenarios" / "one.yaml"), cli_stubs=("t3@profile",)
+        )
+        selection = cs.select_changed_scenarios(
+            ["evals/scenarios/cli_stubs/t3@profile.sh"],  # privacy-scan:allow fixture CLI stub filename
+            repo_root=tmp_path,
+            specs=[spec],
+            quarantined=(),
+        )
+        assert selection.names == ["stubbed"]
+
+    def test_agent_skill_reference_change_selects_its_scenario(self, tmp_path: Path) -> None:
+        skill = tmp_path / "skills" / "code" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("agent")
+        spec = dataclasses.replace(
+            _spec("uses_reference", tmp_path / "evals" / "scenarios" / "one.yaml", agent_path=str(skill)),
+            fixture="agent_skill_dir",
+        )
+        selection = cs.select_changed_scenarios(
+            ["skills/code/references/rule.md"], repo_root=tmp_path, specs=[spec], quarantined=()
+        )
+        assert selection.names == ["uses_reference"]
+
     def test_repo_root_and_specs_are_both_honored(self, tmp_path: Path) -> None:
         spec = _spec("only", tmp_path / "evals" / "scenarios" / "x.yaml")
         selection = cs.select_changed_scenarios(["evals/scenarios/x.yaml"], repo_root=tmp_path, specs=[spec])

@@ -16,7 +16,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
@@ -84,6 +84,111 @@ class TestShipExecutor(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_pr_body_with_generic_finding_is_refused_before_create(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        remote = "git@gitlab.corp.example:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("feat: x", "Contact person@firm.tld"),  # privacy-scan:allow synthetic fixture
+            ),  # privacy-scan:allow synthetic fixture
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True) as visibility,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+        visibility.assert_called_with(remote, "")
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_title_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch.object(
+                _MOCK_OVERLAY["test"].metadata,
+                "build_pr_title",
+                return_value="Contact person@firm.tld",  # privacy-scan:allow synthetic fixture
+            ),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: clean", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_generated_section_default_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch.object(_MOCK_OVERLAY["test"].metadata, "get_required_description_sections", return_value=["Contact"]),
+            patch.object(
+                _MOCK_OVERLAY["test"].metadata,
+                "get_description_section_defaults",
+                return_value={"Contact": "Reach person@firm.tld"},  # privacy-scan:allow synthetic fixture
+            ),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: clean", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:email" in result.detail
+        assert "person@firm.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_issue_url_fallback_finding_refuses_before_push(self) -> None:
+        ticket = self._ticket_with_worktree()
+        ticket.issue_url = "https://jira.corp.tld/issues/77"  # privacy-scan:allow synthetic fixture
+        host = MagicMock()
+        remote = "git@gitlab.com:group/repo.git"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("", "clean body")),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert not result.ok
+        assert "generic:internal_hostname" in result.detail
+        assert "jira.corp.tld" not in result.detail  # privacy-scan:allow synthetic fixture
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
 
     def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
         # North-star PR-2: the autonomous loop's task-driven ship reaches
@@ -1138,7 +1243,7 @@ class TestShouldCloseTicket:
 class TestShipExecutorHonorsAutoCloseSetting(TestCase):
     """End-to-end: the PR description the ship path sends to the code host.
 
-    Proves the setting is wired through ``_build_pr_spec`` — the exact
+    Proves the setting is wired through ``build_pr_spec`` — the exact
     regression: a True setting + standalone PR must keep ``Closes #N`` so
     the platform auto-closes on merge; an explicit ``more_prs_coming``
     opt-out (umbrella/partial) must rewrite to ``Relates to``.
@@ -1227,7 +1332,7 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         )
         return ticket
 
-    def _capture_pr_title(self, ticket: Ticket) -> str:
+    def _capture_pr_spec(self, ticket: Ticket) -> PullRequestSpec:
         host = MagicMock()
         host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
         host.current_user.return_value = "souliane"
@@ -1246,9 +1351,13 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
                 return_value=("chore: unrelated subject (#298)", "Body."),
             ),
             patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+            patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40),
         ):
             ShipExecutor(ticket).run()
-        return host.create_pr.call_args[0][0].title
+        return host.create_pr.call_args[0][0]
+
+    def _capture_pr_title(self, ticket: Ticket) -> str:
+        return self._capture_pr_spec(ticket).title
 
     def test_pr_title_override_is_the_shipped_title(self) -> None:
         ticket = self._ticket_with_extra({"pr_title_override": "fix(scope): pinned title (#298)"})
@@ -1259,6 +1368,21 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         ticket = self._ticket_with_extra({})
         title = self._capture_pr_title(ticket)
         assert title == "chore: unrelated subject (#298)"
+
+    def test_recorded_visual_qa_is_in_the_shipped_pr_body(self) -> None:
+        ticket = self._ticket_with_extra(
+            {
+                "visual_qa": {
+                    "repo_path": "/tmp/repo298",
+                    "head_sha": "a" * 40,
+                    "report_markdown": "## Visual QA\n\nChecked 12 of 12 pages.",
+                }
+            }
+        )
+
+        spec = self._capture_pr_spec(ticket)
+
+        assert "## Visual QA\n\nChecked 12 of 12 pages." in spec.description
 
 
 class TestOverlayPrLabels:
@@ -1698,7 +1822,7 @@ class TestPostPushRefusalLeavesAReconcilableState(TestCase):
             patch.object(
                 ShipExecutor,
                 "_fleet_claim_lost",
-                side_effect=[None, RunnerResult(ok=False, detail="fleet claim lost")],
+                side_effect=[None, None, RunnerResult(ok=False, detail="fleet claim lost")],
             ),
         ):
             result = ShipExecutor(ticket).run()

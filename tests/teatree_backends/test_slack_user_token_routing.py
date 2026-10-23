@@ -10,8 +10,8 @@ token.
 
 These tests assert the routing split: ``react`` and ``get_reactions``
 authenticate with the user token when present; ``post_message``,
-``post_reply``, ``open_dm``, ``fetch_dms``, and ``resolve_user_id`` keep
-using the bot token.
+``post_reply``, ``open_dm``, and ``resolve_user_id`` keep using the bot
+token.
 """
 
 from typing import cast
@@ -54,7 +54,7 @@ def _internal_channel_get(url: str, **kwargs: object) -> httpx.Response:
     """Stub ``conversations.info`` as a non-Connect (internal) channel.
 
     Keeps the post/reply token-routing tests hermetic: without this the
-    ``_channel_token`` → ``_is_ext_shared`` → ``_get`` path escapes to a
+    ``_channel_token`` → ``_is_ext_shared`` → ``get`` path escapes to a
     real ``slack.com`` GET. ``is_ext_shared: False`` keeps routing on the
     bot token so the ``Bearer xoxb-bot`` assertions hold (the file's
     ``_capturing_get`` forces ``True`` for the Connect-channel reaction

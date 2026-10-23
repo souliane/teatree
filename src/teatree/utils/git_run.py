@@ -10,7 +10,7 @@ patches the subprocess boundary (``teatree.utils.run``) intercepts all of them.
 
 import contextlib
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_bounded_group, run_checked
 
@@ -107,7 +107,7 @@ def git_env_non_interactive() -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def git_env_hermetic() -> Iterator[None]:
+def git_env_hermetic() -> Generator[None]:
     """Strip every ``GIT_*`` override from ``os.environ`` for the duration, restoring after.
 
     The mutating sibling of :func:`git_env_without_overrides`, for a caller that

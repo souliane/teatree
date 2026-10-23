@@ -49,6 +49,7 @@ from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
+from teatree.core.factory.stalled_checkout_pr import stalled_checkout_pr_signals
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
 from teatree.core.models.known_issue import KnownIssue
@@ -198,6 +199,7 @@ def _stale_tick_signals() -> SignalCollection:
             for row in rows
             if row.name != T3_MASTER_SLOT
             and not is_per_loop_tick_mutex(row.name)
+            and row.acquired_at is not None
             and row.acquired_at < now - timedelta(seconds=_TICK_OVERRUN_MULTIPLE * _lease_reference_seconds(row.name))
         ]
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
@@ -458,6 +460,7 @@ _COLLECTORS = (
     _failed_task_signals,
     _consecutive_harness_crash_signals,
     _stalled_backlog_signals,
+    stalled_checkout_pr_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,

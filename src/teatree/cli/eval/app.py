@@ -3,30 +3,29 @@
 from pathlib import Path
 
 import typer
-from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval._registration import register_imported_commands
-from teatree.cli.eval.all import build_scenarios_table
 from teatree.cli.eval.app_helpers import (
     EVAL_CREDENTIALS,
     RunReportPaths,
     apply_credential_override,
     reject_multi_trial_with_model_override,
     reject_unsupported_run_output,
+    reject_verdict_cache_options,
     require_api_backend_for_fresh_run,
     require_effort,
     require_metering_backend_for_cost_bounds,
     resolve_benchmark_selection,
     resolve_escalation,
 )
-from teatree.cli.eval.catalog_selection import select_specs
+from teatree.cli.eval.catalog_selection import print_selected_catalog, select_specs
 from teatree.cli.eval.full_suite_command import register_full_suite_callback
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import DEFAULT_JUDGE_BUDGET, RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
-from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, FRESH_RUN_BACKENDS, TRANSCRIPT_BACKEND
+from teatree.eval.backends import TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL
@@ -50,15 +49,14 @@ eval_app = typer.Typer(
 register_imported_commands(eval_app)
 
 
-@eval_app.command("list")
-def list_scenarios() -> None:
-    """List discovered eval scenarios as a table (Name, Scenario, Agent, File, Asserts)."""
-    ensure_django()
-    specs = discover_specs()
-    if not specs:
-        typer.echo("(no scenarios discovered)")
-        return
-    Console().print(build_scenarios_table(specs))
+@eval_app.command("list", help="List discovered eval scenarios as a table or one name per line.")
+def list_scenarios(
+    *,
+    lane: str | None = typer.Option(None, "--lane"),
+    shard: str | None = typer.Option(None, "--shard"),
+    names_only: bool = typer.Option(False, "--names-only"),
+) -> None:
+    print_selected_catalog(discover_specs, ensure_django, lane=lane, shard=shard, names_only=names_only)
 
 
 @eval_app.command("run")
@@ -129,6 +127,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         ),
     ),
     trials: int = typer.Option(1, "--trials", help="Re-run each scenario this many times (pass@k)."),
+    verdict_cache: Path | None = typer.Option(None, "--verdict-cache", help="Reuse clean passes from this ledger."),
     require: str = typer.Option(
         "any",
         "--require",
@@ -236,7 +235,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Fail when the suite collected scenarios but executed none (all skipped). "
             "AUTO-ON for the api backend and --trials/--models (a fresh-run lane that "
-            "executes nothing always fails loud); the flag only matters for the "
+            "executes nothing always fails loud; cached passes count as coverage when "
+            "--verdict-cache is set); the flag only matters for the "
             "transcript backend, whose pre-transcript all-skip is legitimate."
         ),
     ),
@@ -302,7 +302,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--benchmark",
         help=(
             "Run every (filtered) scenario against ALL three tier models "
-            "(frontier, balanced, cheap — resolved through the single TIER_MODELS "
+            "(frontier, balanced, cheap — resolved through the single tier_models() "
             "constant) and render a comparison matrix + a self-contained HTML "
             "dashboard. The canonical CI benchmark entry — adopting a new model "
             "needs no flag edit. Routes through the metered matrix lane (--backend api)."
@@ -425,17 +425,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     )
     models = selection.models
     reject_multi_trial_with_model_override(model=selection.model_override, trials=trials)
-    # --benchmark/--model/--preset all grade a FRESH pass, so they imply a fresh-run
-    # LANE, not `api` specifically: only the replay backend (this flag's default) is
-    # rewritten, exactly as make_escalation_runner resolves the same question.
-    if benchmark or selection.model_override is not None or selection.preset is not None:
-        backend = backend if backend in FRESH_RUN_BACKENDS else API_BACKEND
-    metered = (
-        backend in FRESH_CLAUDE_BACKENDS
-        or trials > 1
-        or models is not None
-        or selection.model_override is not None
-        or selection.preset is not None
+    backend, metered = selection.resolve_backend_and_metering(backend, benchmark=benchmark, trials=trials)
+    reject_verdict_cache_options(
+        verdict_cache,
+        incompatible_lane=(trials > 1, models is not None, model is not None, benchmark, backend == TRANSCRIPT_BACKEND),
+        history_gates=(baseline, gate_regressions, gate_cost_regression, gate_cost_bounds),
+        reports=(transcript_html, summary_md, summary_json),
     )
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
     escalation = resolve_escalation(
@@ -473,6 +468,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             transcript_html=transcript_html,
             summary_md=summary_md,
             summary_json=summary_json,
+            verdict_cache=verdict_cache,
             benchmark=benchmark,
             model=model,
             preset=preset,
@@ -514,14 +510,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # --trials/--models lanes) arm the all-skipped gate unconditionally: a fresh run
     # that executes nothing must fail loud, never pass. --require-executed stays only
     # as the opt-in knob for the transcript backend's legitimate pre-transcript all-skip.
-    api_metered = (
-        backend in FRESH_CLAUDE_BACKENDS
-        or trials > 1
-        or models is not None
-        or selection.model_override is not None
-        or selection.preset is not None
-    )
-    require_executed = require_executed or api_metered
+    require_executed = require_executed or metered
     dispatch_resolved_run(
         specs,
         ResolvedRun(
@@ -551,6 +540,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             model_override=selection.model_override,
             benchmark_html=selection.benchmark_html,
             preset=selection.preset,
+            verdict_cache=verdict_cache,
+            judge_budget=judge_budget,
         ),
         grader=grader,
         escalation=escalation,

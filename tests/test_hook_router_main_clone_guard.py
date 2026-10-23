@@ -22,11 +22,15 @@ go RED if the classifier stops finding the mutation (the gate is removed).
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 import hooks.scripts.hook_router as router
+from teatree.core.models.gate_escape import GateEscape
+from tests._gate_escape_audit import audited_escape
 
 _MANAGED_REMOTE = "git@github.com:souliane/teatree.git"
 
@@ -452,12 +456,6 @@ class TestBashMediatedWriteIntoMainClone:
 
 
 class TestNeverLockout:
-    def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        clone = _managed_main_clone(tmp_path / "teatree")
-        event = _bash_event("git checkout feature  [main-clone-ok: rescue]", clone, "sess-token")
-        assert router.handle_block_main_clone_mutation(event) is False
-        assert _deny(capsys) is None
-
     def test_kill_switch_disables_the_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -470,3 +468,25 @@ class TestNeverLockout:
         event = _bash_event("git checkout feature", clone, "sess-killswitch")
         assert router.handle_block_main_clone_mutation(event) is False
         assert _deny(capsys) is None
+
+
+class TestAuditedMainCloneEscape:
+    def test_legacy_marker_no_longer_allows_mutation(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event("git checkout feature # [main-clone-ok: old escape]", clone, "legacy-session")
+        assert router.handle_block_main_clone_mutation(event) is True
+        deny = _deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+
+class TestAuditedMainCloneEscapeIsRecorded(TestCase):
+    def test_a_token_records_the_action_then_allows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = _managed_main_clone(Path(tmp) / "teatree")
+            event = _bash_event("git checkout feature # [gate-escape:main_clone: fixture]", clone, "new-session")
+            event["tool_use_id"] = "call-1"
+            with audited_escape(event, via_cli=True):
+                assert router.handle_block_main_clone_mutation(event) is False
+        row = GateEscape.objects.get()
+        assert (row.gate, row.session_id, row.call_id, row.reason) == ("main_clone", "new-session", "call-1", "fixture")

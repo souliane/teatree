@@ -1,6 +1,6 @@
 """Session start/close pairing and the account check every Codex App Server transport shares."""
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from typing import Protocol
 
@@ -18,7 +18,7 @@ class StartedSession(Protocol):
 
 
 @asynccontextmanager
-async def opened_session(session: StartedSession) -> AsyncIterator[None]:
+async def opened_session(session: StartedSession) -> AsyncGenerator[None]:
     await session.start()
     try:
         yield
@@ -27,7 +27,7 @@ async def opened_session(session: StartedSession) -> AsyncIterator[None]:
 
 
 @asynccontextmanager
-async def opened_shared_session(session: StartedSession) -> AsyncIterator[None]:
+async def opened_shared_session(session: StartedSession) -> AsyncGenerator[None]:
     """A credential failure is a persist failure once a thread exists, else a missing managed login."""
     try:
         async with opened_session(session):

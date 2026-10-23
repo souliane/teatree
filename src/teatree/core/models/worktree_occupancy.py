@@ -21,10 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Q
+from django.dispatch import Signal
 from django.utils import timezone
 
 from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, holder_confirmed_dead
+from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.task import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree import Worktree
@@ -74,6 +77,15 @@ class OccupancyHolder:
         return f"{self.holder}{session}{since}, lease expires {self.expires_at.isoformat()}"
 
 
+@dataclass(frozen=True)
+class TenureOptions:
+    renewal: bool = False
+    namespace: str = ""
+
+
+_DEFAULT_TENURE = TenureOptions()
+
+
 def task_holder_id(task: Task) -> str:
     """The holder id a dispatched agent occupies a checkout under.
 
@@ -82,6 +94,16 @@ def task_holder_id(task: Task) -> str:
     pk and a forge id both number from ~1.
     """
     return f"task:{task.pk}"
+
+
+def _task_pk_from_holder(holder: str) -> int | None:
+    """The ``Task`` pk :func:`task_holder_id` encoded, or ``None`` for any other holder.
+
+    ``isascii`` because ``"²".isdigit()`` is true yet ``int("²")`` raises.
+    """
+    prefix = "task:"
+    suffix = holder.removeprefix(prefix)
+    return int(suffix) if suffix != holder and suffix.isascii() and suffix.isdigit() else None
 
 
 def terminal_task_pk(holder: str) -> int | None:
@@ -101,11 +123,9 @@ def terminal_task_pk(holder: str) -> int | None:
     :func:`terminal_holder_task_pk`. The only caller is the RELEASING self-heal,
     ``core.worktree.occupancy._release_if_finished_task``.
     """
-    prefix = "task:"
-    suffix = holder.removeprefix(prefix)
-    if suffix == holder or not suffix.isdigit():
+    pk = _task_pk_from_holder(holder)
+    if pk is None:
         return None
-    pk = int(suffix)
     row = Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).values("pk", *OWNER_COLUMNS).first()
     if row is None:
         return None
@@ -128,11 +148,9 @@ def terminal_holder_task_pk(holder: str) -> int | None:
     kept (#4872), the old run's heartbeat abort or its lease lapse frees the checkout
     on its own (#4867). A release needs :func:`terminal_task_pk`.
     """
-    prefix = "task:"
-    suffix = holder.removeprefix(prefix)
-    if suffix == holder or not suffix.isdigit():
+    pk = _task_pk_from_holder(holder)
+    if pk is None:
         return None
-    pk = int(suffix)
     return pk if Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists() else None
 
 
@@ -168,6 +186,7 @@ def acquire(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
+    tenure: TenureOptions = _DEFAULT_TENURE,
 ) -> OccupancyHolder:
     """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
 
@@ -191,47 +210,100 @@ def acquire(
         | Q(occupancy_expires_at__lte=now)
         | Q(occupied_by=holder, occupied_by_session=holder_session)
     )
-    won = (
-        Worktree.objects.filter(pk=worktree.pk)
-        .filter(grantable)
-        .update(
-            occupied_by=holder,
-            occupied_by_session=holder_session,
-            occupied_at=now,
-            occupancy_expires_at=expires,
+    with transaction.atomic():
+        won = (
+            Worktree.objects.filter(pk=worktree.pk)
+            .filter(grantable)
+            .update(
+                occupied_by=holder,
+                occupied_by_session=holder_session,
+                occupied_at=now,
+                occupancy_expires_at=expires,
+            )
         )
-    )
+        if won == 1:
+            extra = Worktree.objects.filter(pk=worktree.pk).values_list("extra", flat=True).get() or {}
+            custody = Custody.from_extra(extra)
+            if custody is not None:
+                updated = custody.opened(
+                    holder, holder_session, now, renewal=tenure.renewal, namespace=tenure.namespace
+                )
+                if updated != custody:
+                    Worktree.objects.filter(pk=worktree.pk).update(
+                        extra={**extra, "checkout_custody": updated.as_dict()}
+                    )
     if won != 1:
         raise _occupied_error(worktree)
     worktree.refresh_from_db()
     return OccupancyHolder(holder=holder, holder_session=holder_session, since=now, expires_at=expires)
 
 
-def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> bool:
+_UNOCCUPIED = {"occupied_by": "", "occupied_by_session": "", "occupied_at": None, "occupancy_expires_at": None}
+checkout_capacity_opened = Signal()
+
+
+def release(worktree: Worktree, *, holder: str, holder_session: str = "", attested_state: str | None = None) -> bool:
     """Hand *worktree* back, iff ``(holder, holder_session)`` is the current occupant.
 
     Holder-scoped by CAS so a release can never steal: a caller that no longer
     owns the claim (or never did) updates zero rows and gets ``False``. Returns
-    whether this call is what freed it.
+    whether this call is what freed it. An *attested_state* lands in the same write.
     """
-    freed = (
-        Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session)
-        .exclude(occupied_by="")
-        .update(occupied_by="", occupied_by_session="", occupied_at=None, occupancy_expires_at=None)
+    held = Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session).exclude(
+        occupied_by=""
     )
+    with transaction.atomic():
+        extra = held.select_for_update().values_list("extra", flat=True).first()
+        if extra is None:
+            freed = 0
+        else:
+            custody = Custody.from_extra(extra)
+            if attested_state is None:
+                updated = custody.closed(holder, holder_session, timezone.now()) if custody is not None else None
+                fields = {"extra": {**extra, "checkout_custody": updated.as_dict()}} if updated is not None else {}
+            else:
+                fields = {
+                    "extra": {
+                        **extra,
+                        "attested_state": attested_state,
+                        "checkout_custody": Custody.reanchored(attested_state, None, "", "").as_dict(),
+                    }
+                }
+            freed = held.update(**_UNOCCUPIED, **fields)
+            if freed == 1:
+                Task.objects.filter(ticket_id=worktree.ticket_id).rearm_parked_behind(
+                    holder=holder, holder_session=holder_session
+                )
+                checkout_capacity_opened.send(sender=Worktree)
     if freed == 1:
         worktree.refresh_from_db()
     return freed == 1
 
 
-def release_task_occupancy(task: Task) -> bool:
+def drop_refused_tenure(worktree: Worktree, *, holder: str, holder_session: str) -> None:
+    with transaction.atomic():
+        held = Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session).exclude(
+            occupied_by=""
+        )
+        extra = held.select_for_update().values_list("extra", flat=True).first()
+        if extra is None:
+            return
+        custody = Custody.from_extra(extra)
+        if custody is not None:
+            updated = custody.without_open(holder, holder_session)
+            if updated != custody:
+                held.update(extra={**extra, "checkout_custody": updated.as_dict()})
+
+
+def release_task_occupancy(task: Task, *, attested_state: str | None = None) -> bool:
     """Release *task*'s occupancy claim on its ticket's checkout, iff it holds one (#4867).
 
     Runs in the SAME transaction as the terminal status write, so a process kill
     before ``occupy_ticket_checkout``'s ``finally`` cannot strand the claim. The
-    callers are a holder's own report (``complete_claimed()``, ``fail(by_holder=True)``)
-    and a third-party ``fail`` of a confirmed-dead holder; any other third-party fail
-    keeps the claim for the holder's own unwind (#4872).
+    callers are a holder's own report (``complete_claimed()``, ``fail(by_holder=True)``),
+    which skip it when their exit snapshot found survivors, and a third-party ``fail`` of
+    a confirmed-dead holder; any other third-party fail keeps the claim for the holder's
+    own unwind (#4872).
     Callers MUST run this BEFORE blanking ``claimed_by_session``: :func:`release`'s
     CAS matches on that exact session value, so calling this after clearing the claim
     would silently no-op.
@@ -240,7 +312,23 @@ def release_task_occupancy(task: Task) -> bool:
     worktree = _worktree_at(task.ticket, path) if path else None
     if worktree is None:
         return False
-    return release(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+    return release(
+        worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session, attested_state=attested_state
+    )
+
+
+def held_dispatch_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Worktree | None:
+    """*ticket*'s dispatch checkout row, read fresh, iff ``(holder, holder_session)`` occupies it now."""
+    path = dispatch_worktree_path(ticket)
+    worktree = _worktree_at(ticket, path) if path else None
+    if worktree is None or (worktree.occupied_by, worktree.occupied_by_session) != (holder, holder_session):
+        return None
+    return worktree
+
+
+def task_occupancy_release_deferred(task: Task) -> bool:
+    held = held_dispatch_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+    return held is not None and Task.objects.filter(pk=task.pk, owner_driving_since__isnull=False).exists()
 
 
 def _worktree_at(ticket: "Ticket", path: str) -> Worktree | None:

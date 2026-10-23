@@ -23,6 +23,7 @@ from teatree.agents.result_payloads import (
     suggestion_url,
     verdict_carries_payload,
 )
+from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
@@ -55,6 +56,7 @@ class ReviewFinding(TypedDict, total=False):
     summary: str
     file: str
     line: int
+    kind: str
 
 
 class ArticleSuggestion(TypedDict, total=False):
@@ -128,8 +130,11 @@ class IntegrationReviewEnvelope(TypedDict, total=False):
 
 class CriticItemVerdictDict(TypedDict, total=False):
     slug: str
-    status: str  # "pass" | "fail" | "instrumentation_gap"
+    status: str
     citation: str
+    verified: bool
+    points: list[ReviewFinding]
+    resolutions: list[dict[str, str]]
 
 
 class CriticVerdictEnvelope(TypedDict, total=False):
@@ -152,6 +157,7 @@ class AgentResult(OwnerStop, total=False):
     """Structured result from an agent task execution."""
 
     summary: str
+    push_ownership_venue_fault: bool
     plan_text: str
     base_sha: str
     adequacy: PlanAdequacy
@@ -195,6 +201,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
+        "push_ownership_venue_fault": {"type": "boolean"},
         "skill_application": {
             "type": "array",
             "description": "One honest reference per required skill; self-report, not verified compliance.",
@@ -363,24 +370,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "type": "object",
             "properties": {"repos": {"type": "array", "items": {"type": "string"}}},
         },
-        "critic_verdict": {
-            "type": "object",
-            "description": "The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5).",
-            "properties": {
-                "grader_identity": {"type": "string"},
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {"type": "string"},
-                            "status": {"type": "string", "enum": ["pass", "fail", "instrumentation_gap"]},
-                            "citation": {"type": "string"},
-                        },
-                    },
-                },
-            },
-        },
+        "critic_verdict": CRITIC_VERDICT_SCHEMA_PROPERTY,
         "directive_interpretation": {
             "type": "object",
             "description": "A directive interpreter's typed return, recorded server-side (north-star PR-6).",

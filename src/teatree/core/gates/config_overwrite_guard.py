@@ -224,7 +224,7 @@ def deny_reason(finding: ConfigOverwriteFinding) -> str:
             "committed/stashed version, discarding any uncommitted on-disk edits. "
             "The on-disk content is authoritative — Read it FIRST and confirm you intend "
             "to overwrite it. If the live content is genuinely the one you want to "
-            "replace, put `[config-overwrite-ok: <reason>]` in the `command` string "
+            "replace, put `[gate-escape:config_overwrite: <reason>]` in the `command` string "
             "(the Bash `description` is NOT scanned) to proceed."
         )
     return (
@@ -232,5 +232,5 @@ def deny_reason(finding: ConfigOverwriteFinding) -> str:
         "without you having read its current content this session. The on-disk content is "
         "authoritative (it may carry uncommitted edits) — Read the file FIRST, confirm what "
         "you intend to change, then re-issue the Write. To overwrite deliberately, add "
-        "`[config-overwrite-ok: <reason>]` to the Write content."
+        "`[gate-escape:config_overwrite: <reason>]` to the Write content."
     )

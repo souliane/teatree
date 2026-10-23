@@ -3,8 +3,8 @@
 Two invariants beyond the classification tests in
 ``tests/teatree_loop/test_slack_broadcasts_classify.py``:
 
-* **F5.3** — ``GlabGhMrStateClassifier`` must distinguish a *verdict*
-    (``glab``/``gh`` ran and the MR is not merged → ``merged=False``) from a
+* **F5.3** — ``ForgeMrStateClassifier`` must distinguish a *verdict*
+    (an HTTP or GitHub CLI read found the MR open → ``merged=False``) from a
     *failure to reach a verdict* (binary missing / bad token / rc≠0 / garbage
     output → :class:`ScannerError`). Classifying an unreadable — possibly
     MERGED — MR as open would nag reviewers about already-landed work.
@@ -18,21 +18,30 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 
 _GITLAB_MR = "https://gitlab.com/acme/app/-/merge_requests/7"
 _GITHUB_PR = "https://github.com/souliane/teatree/pull/7"
-_RUN = "teatree.utils.run.run_allowed_to_fail"
+_RUN = "teatree.backends.github.api.run_allowed_to_fail"
 
 
 def _completed(*, returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(args=["glab"], returncode=returncode, stdout=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _http_response(body: str, *, status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status,
+        content=body,
+        request=httpx.Request("GET", "https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7"),
+    )
 
 
 class TestClassifierTransientVsVerdict:
@@ -40,6 +49,7 @@ class TestClassifierTransientVsVerdict:
 
     @pytest.fixture(autouse=True)
     def _routed_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_GITLAB_HTTP_MAX_RETRIES", "0")
         monkeypatch.setattr(
             "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
             lambda _url, *, credential: ForgeTokenResolution(
@@ -48,30 +58,30 @@ class TestClassifierTransientVsVerdict:
         )
 
     def test_parseable_not_merged_stays_merged_false(self) -> None:
-        classifier = GlabGhMrStateClassifier()
-        with patch(_RUN, return_value=_completed(returncode=0, stdout='{"state": "opened", "upvotes": 0}')):
+        classifier = ForgeMrStateClassifier()
+        with patch("httpx.get", return_value=_http_response('{"state": "opened", "upvotes": 0}')):
             [state] = classifier([_GITLAB_MR])
         assert state.merged is False
         assert state.approved is False
 
     def test_parseable_merged_is_a_verdict(self) -> None:
-        classifier = GlabGhMrStateClassifier()
-        with patch(_RUN, return_value=_completed(returncode=0, stdout='{"state": "merged", "upvotes": 2}')):
+        classifier = ForgeMrStateClassifier()
+        with patch("httpx.get", return_value=_http_response('{"state": "merged", "upvotes": 2}')):
             [state] = classifier([_GITLAB_MR])
         assert state.merged is True
         assert state.approved is True
 
     def test_nonzero_rc_raises_scanner_error(self) -> None:
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         with (
-            patch(_RUN, return_value=_completed(returncode=1, stderr="something failed")),
+            patch("httpx.get", return_value=_http_response('{"message": "failed"}', status=500)),
             pytest.raises(ScannerError) as exc,
         ):
             classifier([_GITLAB_MR])
         assert exc.value.scanner == "slack_broadcasts"
 
     def test_expired_token_classifies_auth(self) -> None:
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         with (
             patch(_RUN, return_value=_completed(returncode=1, stderr="401 Bad credentials")),
             pytest.raises(ScannerError) as exc,
@@ -80,14 +90,14 @@ class TestClassifierTransientVsVerdict:
         assert exc.value.error_class is ScannerErrorClass.AUTH
 
     def test_missing_binary_raises_scanner_error(self) -> None:
-        classifier = GlabGhMrStateClassifier()
-        with patch(_RUN, side_effect=FileNotFoundError("glab")), pytest.raises(ScannerError):
-            classifier([_GITLAB_MR])
+        classifier = ForgeMrStateClassifier()
+        with patch(_RUN, side_effect=FileNotFoundError("gh")), pytest.raises(ScannerError):
+            classifier([_GITHUB_PR])
 
     def test_garbage_json_raises_scanner_error(self) -> None:
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         with (
-            patch(_RUN, return_value=_completed(returncode=0, stdout="<html>not json</html>")),
+            patch("httpx.get", return_value=_http_response("<html>not json</html>")),
             pytest.raises(
                 ScannerError,
             ),
@@ -95,19 +105,19 @@ class TestClassifierTransientVsVerdict:
             classifier([_GITLAB_MR])
 
     def test_empty_output_raises_scanner_error(self) -> None:
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         with patch(_RUN, return_value=_completed(returncode=0, stdout="   ")), pytest.raises(ScannerError):
             classifier([_GITHUB_PR])
 
     def test_non_object_json_raises_scanner_error(self) -> None:
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         with patch(_RUN, return_value=_completed(returncode=0, stdout="[1, 2, 3]")), pytest.raises(ScannerError):
             classifier([_GITHUB_PR])
 
     def test_unrecognised_forge_stays_merged_false_not_an_error(self) -> None:
         # A non-GitLab/GitHub URL is a deterministic non-match, not a transient
         # failure — it must not raise.
-        classifier = GlabGhMrStateClassifier()
+        classifier = ForgeMrStateClassifier()
         [state] = classifier(["https://example.com/not/a/pr"])
         assert state.merged is False
 

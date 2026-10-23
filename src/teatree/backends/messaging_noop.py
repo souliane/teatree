@@ -26,11 +26,6 @@ class NoopMessagingBackend:
         return []
 
     @staticmethod
-    def fetch_dms(*, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
-    @staticmethod
     def fetch_reactions(*, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
@@ -103,6 +98,11 @@ class NoopMessagingBackend:
 
     @staticmethod
     def resolve_user_id(handle: str) -> str:
+        _ = handle
+        return ""
+
+    @staticmethod
+    def resolve_unique_active_user_id(handle: str) -> str:
         _ = handle
         return ""
 

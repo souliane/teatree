@@ -15,7 +15,10 @@ def test_full_affected_lane_runs_all_real_shards(tmp_path: Path, arguments: list
     uv.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$UV_CALLS"\n')
     uv.chmod(0o700)
     t3 = tools / "t3"
-    t3.write_text('#!/bin/sh\ncase " $* " in *" --pytest-args "*) exit 0;; esac\necho "affected-tests: FULL"\n')
+    t3.write_text(
+        '#!/bin/sh\ncase " $* " in *" --pytest-args "*) echo "--teatree-selected-full"; exit 0;; esac\n'
+        'echo "affected-tests: FULL"\n'
+    )
     t3.chmod(0o700)
     result = subprocess.run(
         ["/bin/bash", "dev/test-affected.sh", *arguments],

@@ -5,13 +5,15 @@ task lifecycle) because the inbound queue is a separate concern: it answers
 "what is still owed a drain" rather than "where is this unit of work".
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+
+from teatree.utils.forge import FORGES
 
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
@@ -21,9 +23,31 @@ __all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
 #: Neither drained nor poisoned — the in-flight boundary both the drain and the
 #: pruner key on, so they can never disagree about what is still owed.
 _UNSETTLED = Q(processed_at__isnull=True, dead_lettered_at__isnull=True)
+_SETTLED_FORGE = Q(source__in=FORGES, processed_at__isnull=False, dead_lettered_at__isnull=True)
 
 
 class IncomingEventQuerySet(models.QuerySet):
+    @staticmethod
+    def is_settled_forge(source: str, *, settled: bool = True, dead_lettered: bool) -> bool:
+        return source in FORGES and settled and not dead_lettered
+
+    def forge_identity_rows(self, cutoff: datetime) -> models.QuerySet:
+        return self.prunable(cutoff).filter(_SETTLED_FORGE)
+
+    def non_identity_prunable_rows(self, cutoff: datetime) -> models.QuerySet:
+        return self.prunable(cutoff).exclude(_SETTLED_FORGE)
+
+    def webhooks_verified_for(self, source: str, repo_key: str, event_name: str, window: timedelta) -> bool:
+        if not repo_key or not event_name:
+            return False
+        return self.filter(
+            source=source,
+            repo_key=repo_key,
+            event_name=event_name,
+            origin__in=("webhook", "relay"),
+            received_at__gte=timezone.now() - window,
+        ).exists()
+
     def unprocessed(self, now: datetime | None = None) -> models.QuerySet:
         """Events still awaiting a drain: un-processed, not dead-lettered, and due (#673).
 

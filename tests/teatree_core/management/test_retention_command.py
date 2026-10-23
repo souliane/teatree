@@ -147,8 +147,11 @@ class RetentionPruneCommandTestCase(TestCase):
             "Task (failed)",
             "Task (completed)",
             "BotPing (payload)",
+            "IncomingEvent (forge)",
             "IncomingEvent",
             "TicketTransition",
+            "PendingChatInjection",
+            "BotPing (sent text)",
             "DBTaskResult",
         ]
         completed = payload["tables"][2]

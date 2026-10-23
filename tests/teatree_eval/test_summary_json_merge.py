@@ -41,6 +41,15 @@ _SHARD_B = {
 
 
 class TestMergePayloads:
+    def test_cache_metadata_survives_merge(self) -> None:
+        cached = {"name": "cached-one", "lane": "clean_room", "content_key": "a" * 64}
+        first = {**_SHARD_A, "trial_count": 1, "cached": [cached], "totals": {**_SHARD_A["totals"], "cached": 1}}
+        second = {**_SHARD_B, "trial_count": 1, "cached": [], "totals": {**_SHARD_B["totals"], "cached": 0}}
+        merged = merge_summary_payloads([first, second], head_sha=_SHA, generated_at=_AT)
+        assert merged["trial_count"] == 1
+        assert merged["totals"]["cached"] == 1
+        assert merged["cached"] == [cached]
+
     def test_rejects_a_shard_from_another_commit(self) -> None:
         with pytest.raises(ValueError, match="SHA"):
             merge_summary_payloads([{**_SHARD_A, "head_sha": "another"}], head_sha=_SHA, generated_at=_AT)
@@ -85,6 +94,16 @@ class TestMergePayloads:
         assert merged["totals"] == {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "incomplete": 0}
         assert merged["scenarios"] == []
         assert merged["model"] == "unknown"
+
+    def test_a_run_is_parked_when_any_shard_parked(self) -> None:
+        parked_leg = {"head_sha": _SHA, "parked": True}
+        merged = merge_summary_payloads([_SHARD_A, parked_leg], head_sha=_SHA, generated_at=_AT)
+        assert merged["parked"] is True
+        assert merged["totals"]["total"] == 2
+
+    def test_a_run_with_no_parked_shard_is_not_parked(self) -> None:
+        merged = merge_summary_payloads([_SHARD_A, _SHARD_B], head_sha=_SHA, generated_at=_AT)
+        assert merged["parked"] is False
 
     def test_no_transcript_key_can_enter_the_merge(self) -> None:
         # The merge only forwards the already-sanitized per-shard rows; it never

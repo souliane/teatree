@@ -1,9 +1,10 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from teatree.agents import model_tiering
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import TokenUsage
 from teatree.eval.transcript import (
     extract_billed_model,
@@ -229,13 +230,13 @@ class TestRequestedModelPresent:
         # The documented `--models opus,sonnet,haiku` short aliases must normalize
         # to the CURRENT concrete id at the comparison chokepoint, or alias matching
         # breaks (the requested `opus` never matches the reported usage key).
-        key = TIER_MODELS["frontier"]
+        key = tier_models()["frontier"]
         stream = f'{{"type":"result","subtype":"success","model_usage":{{"{key}":{{"input_tokens":80}}}}}}\n'
         events = parse_stream_json(stream)
         assert requested_model_present(events, "opus") is True
 
     def test_short_alias_with_effort_request_matches_full_key(self) -> None:
-        key = f"{TIER_MODELS['balanced']}-20260514"
+        key = f"{tier_models()['balanced']}-20260514"
         stream = f'{{"type":"result","subtype":"success","model_usage":{{"{key}":{{"input_tokens":80}}}}}}\n'
         events = parse_stream_json(stream)
         assert requested_model_present(events, "sonnet@high") is True
@@ -298,7 +299,7 @@ class TestExtractModelCostSplit:
         # and double-count the requested model as background).
         stream = (
             '{"type":"result","subtype":"success","model_usage":'
-            f'{{"{TIER_MODELS["cheap"]}":{{"costUSD":0.02}},"{TIER_MODELS["frontier"]}":{{"costUSD":0.5}}}}}}\n'
+            f'{{"{tier_models()["cheap"]}":{{"costUSD":0.02}},"{tier_models()["frontier"]}":{{"costUSD":0.5}}}}}}\n'
         )
         events = parse_stream_json(stream)
         split = extract_model_cost_split(events, "opus")
@@ -348,13 +349,14 @@ class TestAliasFollowsATierBump:
 
     @pytest.fixture
     def bumped_frontier(self, monkeypatch: pytest.MonkeyPatch) -> str:
-        monkeypatch.setattr(model_tiering, "TIER_MODELS", {**TIER_MODELS, "frontier": self.BUMPED})
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        monkeypatch.setitem(defaults, "frontier", self.BUMPED)
         return self.BUMPED
 
     def _events(self, frontier: str) -> list:
         stream = (
             '{"type":"result","subtype":"success","model_usage":'
-            f'{{"{TIER_MODELS["cheap"]}":{{"costUSD":0.02,"inputTokens":9000}},'
+            f'{{"{tier_models()["cheap"]}":{{"costUSD":0.02,"inputTokens":9000}},'
             f'"{frontier}":{{"costUSD":0.5,"inputTokens":80}}}}}}\n'
         )
         return parse_stream_json(stream)

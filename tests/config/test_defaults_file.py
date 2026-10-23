@@ -20,20 +20,13 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import TypeAdapter
 
-from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
+from teatree.config.declaration import declared_fields
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.schema import (
-    _DEFAULTS_TOML,
-    Category,
-    TeatreeSettingsSchema,
-    _parse_strict_str,
-    _provider_or_none,
-    setting_choices,
-    setting_meta,
-    shipped_defaults,
-)
+from teatree.config.schema import Category, TeatreeSettingsSchema, setting_choices, setting_meta, shipped_defaults
 from teatree.config.secret_settings import is_credential_reference
+from teatree.config.setting_parsers import _parse_strict_str
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.settings import UserSettings
 
@@ -46,7 +39,7 @@ from teatree.config.settings import UserSettings
 _STORAGE_COERCER = {
     **ALL_KNOWN_CONFIG_SETTINGS,
     "handover_mirror_path": _parse_strict_str,
-    "agent_harness_provider": _provider_or_none,
+    "agent_harness_provider": declared_fields(UserSettings)["agent_harness_provider"].storage_parse,
 }
 
 _KEYS = sorted(ALL_KNOWN_CONFIG_SETTINGS)
@@ -59,7 +52,7 @@ def _toml_teatree() -> dict[str, Any]:
     The file nests the keys into group sub-tables; the flat namespace is the contract, so
     every conformance assertion below is made against the flattened parse.
     """
-    return flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"])
+    return flatten_settings_table(tomllib.loads(DEFAULTS_TOML.read_text())["teatree"])
 
 
 def _settings_table_text() -> str:
@@ -68,7 +61,7 @@ def _settings_table_text() -> str:
     The block opens at the first group sub-table: the hierarchy is rendered as real nested
     tables, so ``[teatree]`` itself holds no direct keys and prints no header of its own.
     """
-    raw = _DEFAULTS_TOML.read_text()
+    raw = DEFAULTS_TOML.read_text()
     section = raw[raw.index("\n[teatree.") :]
     return section[: section.index("\n[loops.")]
 
@@ -101,7 +94,7 @@ class TestDefaultsFileShape:
         # The shipped file is one file, several top-level tables: the `[teatree]` settings
         # the resolver's DEFAULTS tier reads, plus a seed table per object family. A table
         # nobody declared here would be read by nothing.
-        assert set(tomllib.loads(_DEFAULTS_TOML.read_text())) == {"teatree", "loops", "modes", "schedules"}
+        assert set(tomllib.loads(DEFAULTS_TOML.read_text())) == {"teatree", "loops", "modes", "schedules"}
 
     def test_no_secret_or_personal_key_name_appears_in_the_settings_table(self) -> None:
         raw = _settings_table_text()
@@ -184,6 +177,8 @@ class TestSafetyAndDarkFlagsPinned:
         "trusted_issue_authors": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
+        "eval_ci_account_allowlist": [],
+        "agent_route_paid_fallback": False,
     }
 
     #: Safety-posture keys deliberately shipped ABOVE their fail-closed value, each with
@@ -204,6 +199,8 @@ class TestSafetyAndDarkFlagsPinned:
         "trusted_issue_authors": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
+        "eval_ci_account_allowlist": [],
+        "agent_route_paid_fallback": False,
         # DARK feature-flags — each pinned to its off value.
     }
 

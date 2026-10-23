@@ -88,6 +88,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree live list": live.Command.list_sessions,
         "teatree live inspect": live.Command.inspect,
         "teatree live steer": live.Command.steer,
+        "teatree live follow-up": live.Command.follow_up,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
         # so its real ``--json`` param lives on the registered typer callback.
@@ -96,6 +97,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree pr discharge-pending": pr.Command.discharge_pending,
         "teatree review apply-reviewer-policy": review.Command.apply_reviewer_policy,
         "teatree ticket backfill-clears": ticket.Command.backfill_clears,
+        "teatree ticket critic-record": ticket.Command.critic_record,
         "teatree ticket list-clears": ticket.Command.list_clears,
         "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,

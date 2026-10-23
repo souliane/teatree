@@ -26,19 +26,23 @@ issue (that is a coordinator-side decision and a colleague-visible
 write that should go through the standard on-behalf gates).
 
 Mirrors :class:`teatree.loop.scanners.slack_review_intent.SlackReviewIntentScanner`
-in shape — drains reactions + DMs from the messaging backend, persists
-durable rows, emits a single signal kind. Each scanner instance is
+in shape — drains reactions from the messaging backend and reads the DMs the
+inbound recorder already persisted, persists durable rows, emits a single
+signal kind. Each scanner instance is
 scoped to one overlay so a multi-overlay deployment dispatches per
 overlay.
 """
 
+import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
 from typing import cast
 
+from django.utils import timezone
+
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import RedCardIntent, RedCardSignal
+from teatree.core.models import PendingChatInjection, RedCardIntent, RedCardSignal
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -57,6 +61,10 @@ _REACTION_KINDS: dict[str, str] = {
 #: like ``"redcard"`` (no separator) or generic uses of ``"red"`` must
 #: not trigger — those would produce false positives on routine chat.
 _RED_CARD_TEXT_RE = re.compile(r"\bred[\s\-]card\b", re.IGNORECASE)
+
+#: How far back recorded DMs are re-read; a row's ``received_at`` is when it was recorded, so a
+#: DM the downtime catch-up recovers late still lands inside it.
+_DM_LOOKBACK = dt.timedelta(hours=24)
 
 
 def _event_user(event: RawAPIDict) -> str:
@@ -155,7 +163,9 @@ class RedCardScanner:
         return list(fetch())
 
     def _drain_dms(self) -> list[RawAPIDict]:
-        return self.backend.fetch_dms()
+        """The overlay's recently recorded DMs; the recorder already dropped the bot's own and on-behalf posts."""
+        rows = PendingChatInjection.objects.recorded_since(timezone.now() - _DM_LOOKBACK, overlay=self.overlay)
+        return [{"text": row.text, "ts": row.slack_ts, "channel": row.channel, "user": row.user_id} for row in rows]
 
     def _handle_reaction(self, event: RawAPIDict, target_user: str) -> ScanSignal | None:
         user = _event_user(event)

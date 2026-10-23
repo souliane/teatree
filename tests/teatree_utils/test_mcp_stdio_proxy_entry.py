@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -27,7 +27,7 @@ def proxy_argv(server_argv: list[str]) -> list[str]:
 
 
 @contextlib.contextmanager
-def running_proxy(fake: FakeChild) -> Iterator[subprocess.Popen[bytes]]:
+def running_proxy(fake: FakeChild) -> Generator[subprocess.Popen[bytes]]:
     proc = subprocess.Popen(
         proxy_argv(fake.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
     )

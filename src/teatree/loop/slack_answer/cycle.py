@@ -1,6 +1,6 @@
 """One reactive Slack-answer cycle (#1014).
 
-Where ``slack_dm_inbound`` only records user DMs, this cycle *answers* them
+Where ``SlackDmRecorder`` only records user DMs, this cycle *answers* them
 out-of-band — event-driven off the inbound-event wake (~1s), with a 5m fallback
 timer — so a quick ack / status question gets a reply in seconds, not at the next
 slower per-loop tick, and at near-zero token cost.
@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
 from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
@@ -455,7 +456,7 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
         return False
-    if not apply_bound_answer(bound, backend=backend):
+    if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
         _unmark_unit_loop_replied(unit)
         return False
     for row in unit.rows:

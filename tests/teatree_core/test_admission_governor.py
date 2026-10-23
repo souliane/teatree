@@ -51,6 +51,7 @@ from teatree.core.admission_pressure import (
 )
 from teatree.core.models import ConfigSetting
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
+from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV, TOTAL_TEST_WORKERS_PER_CORE, worker_pool_root
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB, PINNED_CORES, PINNED_LOAD1
@@ -295,10 +296,13 @@ class TestFailSafeAndFloor:
 
 
 class TestTestWorkerBudget:
-    def test_total_workers_stay_bounded_across_the_governable_agent_range(self) -> None:
-        # Up to the widest count the admission ceiling can ever produce, the TOTAL holds.
-        for agents in range(1, 8 * 2 + 1):
-            assert per_agent_test_workers(cores=8, active_agents=agents) * agents <= 8 * 2
+    def test_requests_floor_at_one_when_agents_exceed_pool_capacity(self) -> None:
+        capacity = 8 * TOTAL_TEST_WORKERS_PER_CORE
+        for agents in range(1, capacity * 2 + 1):
+            share = per_agent_test_workers(cores=8, active_agents=agents)
+            assert share * agents <= max(capacity, agents)
+            if agents > capacity:
+                assert share == 1
 
     def test_the_measured_meltdown_arithmetic_can_no_longer_happen(self) -> None:
         # 12 implementers x auto-detected 8 workers produced ~96 workers, load ~70.
@@ -329,7 +333,8 @@ class TestTestWorkerCapWiring:
     def test_cap_applies_even_when_the_child_inherits_the_ambient_env(self) -> None:
         capped = with_test_worker_cap(None, active_agents=4)
         assert capped is not None
-        assert set(capped) == {XDIST_WORKERS_VAR}
+        assert set(capped) == {XDIST_WORKERS_VAR, POOL_ROOT_ENV}
+        assert capped[POOL_ROOT_ENV] == str(worker_pool_root())
 
 
 class TestTheExportedCapRespondsToMemory:
@@ -431,11 +436,11 @@ class TestTheWorkerBoundReadsMemory:
         assert per_agent_test_workers(
             cores=8, active_agents=4, ram_available_gb=None, per_worker_gb=_P90_WORKER_GB
         ) == per_agent_test_workers(cores=8, active_agents=4)
-        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 4
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 2
 
     def test_an_unsized_worker_returns_exactly_the_cpu_bound(self) -> None:
         # No per-worker size is the same missing evidence as no reading.
-        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 4
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 2
 
     def test_the_total_stays_within_what_memory_pays_for_across_the_agent_range(self) -> None:
         budget = math.floor((20.0 - RAM_BRAKE_FLOOR_GB) / _P90_WORKER_GB)
@@ -858,7 +863,7 @@ class TestWriteConcurrencyRaise:
 
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
-        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8
 
 
 _PER_CORE_SETTING = "admission_write_concurrency_per_core"

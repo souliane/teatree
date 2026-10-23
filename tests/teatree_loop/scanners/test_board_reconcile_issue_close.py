@@ -12,7 +12,7 @@ so they pin the forge read and the rule together.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -53,7 +53,7 @@ class _Overlay:
 
 
 @contextlib.contextmanager
-def _forge(payload: object) -> Iterator[None]:
+def _forge(payload: object) -> Generator[None]:
     """Stand in for the live forge: every issue read answers *payload*, no PR is open."""
     with (
         patch.object(board_reconcile, "pr_open_state", lambda _url: PrOpenState.UNKNOWN),
@@ -270,7 +270,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
 
 
 @contextlib.contextmanager
-def _dirty(paths: list[str]) -> Iterator[None]:
+def _dirty(paths: list[str]) -> Generator[None]:
     """Stand in for the on-disk probe: the ticket's worktrees report *paths* as dirty."""
     with patch(_DIRTY_PROBE, return_value=paths):
         yield

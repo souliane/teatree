@@ -13,7 +13,7 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import cast
@@ -122,7 +122,7 @@ class _Backend:
 
 
 @contextmanager
-def _forge(host: _Host, *, messaging: _Messaging | None = None) -> Iterator[None]:
+def _forge(host: _Host, *, messaging: _Messaging | None = None) -> Generator[None]:
     """Bind *host* to both the batch gate and the draft gate it delegates to."""
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_GATE}.code_host_from_overlay", return_value=host))
@@ -483,7 +483,7 @@ class TestPostChokepoint(_ChokepointCase):
         return code, payload
 
     @contextmanager
-    def _post_path(self, backend: _Backend) -> Iterator[None]:
+    def _post_path(self, backend: _Backend) -> Generator[None]:
         allow_slack_channels(_TARGET.channel_id)
         OnBehalfApproval.record(target=_url(1), action="review_request_post", approver_id="souliane")
         with ExitStack() as stack:

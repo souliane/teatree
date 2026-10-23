@@ -2,13 +2,16 @@
 
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import IO, Annotated, NoReturn, cast
 
+import click
 import typer
 from django.db import DatabaseError
-from django_typer.management import TyperCommand, command
+from django_typer.management import DTCommand, TyperCommand, command
 
 from teatree.agents.live_client import (
+    FenceOverride,
     LiveClient,
     LiveDeliveryUnknownError,
     LiveOfflineError,
@@ -25,7 +28,12 @@ EXIT_UNKNOWN_DELIVERY = 4
 EXIT_OFFLINE = 5
 PASSIVE_LABEL = "PASSIVE — read-only; the agent is not contacted"
 ACTIVE_LABEL = "ACTIVE — enters the agent's context"
-_EXIT_BY_OUTCOME = {"accepted_current_turn": 0, "rejected": EXIT_REJECTED, "unknown_delivery": EXIT_UNKNOWN_DELIVERY}
+_EXIT_BY_OUTCOME = {
+    "accepted_current_turn": 0,
+    "accepted_new_turn": 0,
+    "rejected": EXIT_REJECTED,
+    "unknown_delivery": EXIT_UNKNOWN_DELIVERY,
+}
 
 _JsonOption = Annotated[bool, typer.Option("--json", help="Emit JSON on stdout instead of the human view.")]
 _TaskArgument = Annotated[int, typer.Argument(help="The task id, as `live list` shows it.")]
@@ -77,8 +85,48 @@ def _render_fields(facts: Mapping[str, object], stream: IO[str]) -> None:
         stream.write(f"{key}: {value}\n")
 
 
+def _capture_attempt(ctx: click.Context, _param: click.Parameter, value: str | None) -> None:
+    ctx.meta["steer_attempt"] = value
+
+
+def _capture_generation(ctx: click.Context, _param: click.Parameter, value: str | None) -> None:
+    ctx.meta["steer_generation"] = value
+
+
+class _SteerCommand(DTCommand):
+    """Expose the target-attempt fence without widening the command callback."""
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [
+            *super().get_params(ctx),
+            click.Option(
+                ["--attempt"],
+                callback=_capture_attempt,
+                expose_value=False,
+                help="Refuse unless the session is this attempt; defaults to the attempt `live list` shows.",
+            ),
+            click.Option(
+                ["--generation"],
+                callback=_capture_generation,
+                expose_value=False,
+                help="Refuse unless the worker runs this generation; defaults to the located session's.",
+            ),
+        ]
+
+
+@dataclass(frozen=True)
+class _SendRequest:
+    task: int
+    text: str
+    command_id: str
+    wait: float
+    json_output: bool
+    new_turn: bool
+    fence: FenceOverride | None = None
+
+
 class Command(TyperCommand):
-    """Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active."""
+    """Live sessions: list and inspect are passive; steer and follow-up are active."""
 
     def _out(self) -> IO[str]:
         return cast("IO[str]", self.stdout)
@@ -128,7 +176,7 @@ class Command(TyperCommand):
             human=lambda stream: _render_fields(facts, stream),
         )
 
-    @command()
+    @command(cls=_SteerCommand)
     def steer(
         self,
         task: _TaskArgument,
@@ -143,27 +191,53 @@ class Command(TyperCommand):
         json_output: _JsonOption = False,
     ) -> None:
         """Send input into a running agent's current turn and print its receipt (active)."""
+        meta = click.get_current_context().meta
+        fence = FenceOverride(meta.get("steer_attempt"), meta.get("steer_generation"))
+        self._send(_SendRequest(task, text, command_id, wait, json_output, new_turn=False, fence=fence))
+
+    @command(name="follow-up")
+    def follow_up(
+        self,
+        task: _TaskArgument,
+        *,
+        text: Annotated[str, typer.Option(help="The input for one new turn in an idle session (at most 16 KiB).")] = "",
+        command_id: Annotated[str, typer.Option(help="Idempotency key; the same text returns the first receipt.")] = "",
+        wait: Annotated[
+            float, typer.Option(help="Seconds to wait for the new turn to start (at most 900).")
+        ] = DEFAULT_STEER_WAIT_SECONDS,
+        json_output: _JsonOption = False,
+    ) -> None:
+        """Start one new turn in a still-open idle session and print its receipt (active)."""
+        self._send(_SendRequest(task, text, command_id, wait, json_output, new_turn=True))
+
+    def _send(self, request: _SendRequest) -> None:
         self.print_result = False
-        if not text:
+        if not request.text:
             self._exit("--text is required\n", 2)
         self._err().write(f"{ACTIVE_LABEL}\n")
-        command_id = command_id or uuid.uuid4().hex
+        command_id = request.command_id or uuid.uuid4().hex
         try:
-            receipt = LiveClient().steer(task, text, command_id=command_id, wait=wait)
+            client = LiveClient()
+            command = client.follow_up if request.new_turn else client.steer
+            receipt = command(request.task, request.text, command_id=command_id, wait=request.wait, fence=request.fence)
         except LiveOfflineError as exc:
-            self._exit(_offline_message(task, str(exc)), EXIT_OFFLINE)
+            self._exit(_offline_message(request.task, str(exc)), EXIT_OFFLINE)
         except LiveRefusedError as exc:
-            receipt = self._local_receipt(task, command_id, "rejected", exc.code or "invalid_request")
+            receipt = self._local_receipt(request.task, command_id, "rejected", exc.code or "invalid_request")
             self._err().write(f"{exc}\n")
         except LiveDeliveryUnknownError as exc:
-            receipt = self._local_receipt(task, command_id, "unknown_delivery", None)
+            receipt = self._local_receipt(request.task, command_id, "unknown_delivery", None)
             self._err().write(
                 f"unknown_delivery for command {command_id}: {exc}. It may or may not have reached the agent; "
-                f"never resend blindly — `live inspect {task}` shows whether the agent is still running.\n"
+                f"never resend blindly — `live inspect {request.task}` shows whether the agent is still running.\n"
             )
+        if request.new_turn and receipt["code"] in {"session_closed", "unknown_session"}:
+            self._exit(_offline_message(request.task, receipt["code"] or "session closed"), EXIT_OFFLINE)
+        if request.new_turn and receipt["code"] == "not_idle":
+            self._err().write("The session is busy; use live steer for its current turn.\n")
         emit(
             receipt,
-            json_output=json_output,
+            json_output=request.json_output,
             out=self._out(),
             err=self._err(),
             human=lambda stream: _render_fields(receipt, stream),

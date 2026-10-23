@@ -29,7 +29,7 @@ is what makes the green a measurement rather than an absence of evidence.
 
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -46,8 +46,17 @@ from teatree.core.models.task_enqueue import (
     enqueue_phase_task_once,
 )
 from teatree.core.models.ticket import Ticket
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import (
+    RouteAllToAlias,
+    register_sqlite_alias,
+    run_racing_threads,
+    teardown_sqlite_alias,
+    wal_control_db,
+)
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _PHASE = "reviewing"
 _REASON = "Review now."
@@ -96,7 +105,7 @@ def _migrated_file_backed_db(tmp_path: Path) -> tuple[str, Path]:
 
 
 @contextmanager
-def _default_pointed_at(db_file: Path) -> Iterator[None]:
+def _default_pointed_at(db_file: Path) -> Generator[None]:
     """Point ``default`` at *db_file* under the production write-serialization OPTIONS.
 
     The settings dict is mutated in place rather than replaced: the already-open
@@ -107,7 +116,8 @@ def _default_pointed_at(db_file: Path) -> Iterator[None]:
     cross-connection contention the race needs.
     """
     settings_dict = connections.databases[DEFAULT_DB_ALIAS]
-    original = {key: settings_dict[key] for key in ("NAME", "OPTIONS")}
+    original = {key: settings_dict[key] for key in ("ENGINE", "NAME", "OPTIONS")}
+    settings_dict["ENGINE"] = SQLITE_BOUNDARY_ENGINE
     settings_dict["NAME"] = str(db_file)
     settings_dict["OPTIONS"] = dict(SQLITE_WRITE_SERIALIZATION_OPTIONS)
     try:

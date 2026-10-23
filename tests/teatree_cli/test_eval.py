@@ -34,7 +34,7 @@ from teatree.eval.transcript_conformance import InvariantResult
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
 
 @pytest.fixture(autouse=True)
@@ -1085,7 +1085,7 @@ class TestEvalCostBoundsGate:
     """
 
     @contextmanager
-    def _bounds_file(self, tmp_path: Path, body: str) -> "Iterator[None]":
+    def _bounds_file(self, tmp_path: Path, body: str) -> "Generator[None]":
         bounds = tmp_path / "cost_bounds.yaml"
         bounds.write_text(body, encoding="utf-8")
         with patch("teatree.eval.cost_bounds.COST_BOUNDS_PATH", bounds):
@@ -1896,7 +1896,7 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per model-free lane the b
     replay_results: list[InvariantResult] | None = None,
     coverage_gaps: tuple[str, ...] = (),
     command_validity_ok: bool = True,
-) -> "Iterator[None]":
+) -> "Generator[None]":
     """Patch every model-free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
         patch(

@@ -18,7 +18,6 @@ where it is unreachable.
 
 import json
 from collections.abc import Mapping
-from typing import cast
 
 from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
@@ -100,7 +99,7 @@ def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult
     verdict = evidence.get("review_verdict")
     if not identity or not isinstance(verdict, Mapping):
         return evidence
-    return cast("AgentResult", {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}})
+    return {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}}
 
 
 def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
@@ -175,12 +174,10 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "",
         CONTRACT_HEADING,
         "",
-        "Your work is recorded ONLY if your final output contains the result envelope.",
-        "Prose with no envelope is refused (`no_result_envelope`) and the entire run is",
-        "discarded — there is no partial credit and no envelope is ever synthesised for you.",
+        "Only the final JSON result envelope records this task. Prose alone is refused",
+        "(`no_result_envelope`) and discarded; no partial credit or synthesized envelope.",
         "",
-        "- Emit exactly ONE JSON object as the very last thing you write. Nothing after it.",
-        "- Plain JSON — no markdown code fence, no trailing commentary, no explanation.",
+        "- End with exactly one plain JSON object; no code fence or trailing text.",
         "- `summary` (string) is required on every phase.",
         "- `needs_user_input` is a boolean; when true, set `user_input_reason` (ONE question ending in `?`) and stop.",
         "  Stop for the owner only with `user_input_kind`, `user_input_checked` (facts you checked), `user_input_card`",

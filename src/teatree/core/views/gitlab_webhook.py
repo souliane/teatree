@@ -11,7 +11,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.models import IncomingEvent
 from teatree.core.views._rate_limit import webhook_rate_limiter
-from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
+from teatree.core.views._webhook_persistence import IngestionRecord, ingest_response
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class GitLabWebhookView(View):
         thread_ref = str(attrs.get("iid") or "")
         body_text = attrs.get("title") or payload.get("object_kind") or ""
 
-        persist_incoming_event(
+        return ingest_response(
             IngestionRecord(
                 source=IncomingEvent.Source.GITLAB,
                 idempotency_key=idempotency_key,
@@ -61,4 +61,3 @@ class GitLabWebhookView(View):
                 payload_json=payload,
             ),
         )
-        return HttpResponse(status=200)

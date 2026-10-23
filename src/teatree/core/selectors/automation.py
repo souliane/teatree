@@ -35,7 +35,7 @@ def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
         .order_by("-ended_at")
         .first()
     )
-    last_completed_at = last_attempt.ended_at.isoformat() if last_attempt else ""
+    last_completed_at = last_attempt.ended_at.isoformat() if last_attempt and last_attempt.ended_at else ""
     return AutomationSummary(
         running=running,
         completed_24h=completed_24h,

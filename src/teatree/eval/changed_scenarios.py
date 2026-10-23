@@ -30,8 +30,9 @@ in ONE job at a single trial, so the selection is capped at
 file (a ``model:``→``tier:`` backfill, a mass rename) would otherwise select the
 whole ~210-scenario catalog and blow past the 80-min step cap — the cancellation
 that reddened PR #2726's eval job. Full coverage of a corpus-wide change is the
-WEEKLY sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
-budget-safe shards via :mod:`teatree.eval.lane_shard`); the PR lane stays "bounded
+weekly sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
+budget-safe shards via :mod:`teatree.eval.lane_shard`); the deferred tail is owed
+to the nightly batch. The PR lane stays "bounded
 by what changed" (BLUEPRINT §"Selective-PR eval") by capping at this ceiling.
 
 A scenario listed in the known-red QUARANTINE (:mod:`teatree.eval.quarantine`) is
@@ -51,6 +52,8 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.eval.agent_prompt import resolve_agent_path
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, local_stub_path
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD
 from teatree.eval.models import EvalSpec
@@ -63,8 +66,8 @@ REPO_ROOT = SCENARIOS_DIR.parents[1]
 #: lane's budget-safe per-shard ceiling (:data:`MAX_SCENARIOS_PER_SHARD`): a
 #: sequential single-trial run of this many finishes well inside the 80-min step
 #: cap. A diff that selects MORE than this (a corpus-wide mechanical edit) is
-#: truncated to a deterministic sorted-name prefix — the weekly sharded lane gives
-#: the full-catalog coverage the bounded PR lane intentionally does not.
+#: truncated to a deterministic sorted-name prefix; the deferred tail is owed to the
+#: nightly owed batch, never silently dropped.
 MAX_SELECTIVE_PR_SCENARIOS = MAX_SCENARIOS_PER_SHARD
 
 
@@ -74,13 +77,13 @@ class ScenarioSelection:
 
     ``names`` is the bounded subset the lane runs; ``total_matched`` is how many the
     diff selected BEFORE the cap. When ``total_matched`` exceeds the cap the extra
-    scenarios are deferred to the weekly sharded lane — :meth:`truncation_note` renders
+    scenarios are deferred to the nightly owed batch — :meth:`truncation_note` renders
     the one-line signal so a corpus-wide PR's truncated coverage is visible in the CI
     log instead of hidden.
 
     ``quarantined`` is the disjoint set the diff matched but the known-red registry
     suppressed (#4173). It is kept OUT of ``total_matched`` because "suppressed" and
-    "deferred to the weekly lane" are different claims, and rendered by
+    "deferred to the nightly owed batch" are different claims, and rendered by
     :meth:`quarantine_note` so a suppression is visible in the same CI log rather than
     silently shrinking the lane.
     """
@@ -89,6 +92,7 @@ class ScenarioSelection:
     total_matched: int
     cap: int
     quarantined: tuple[str, ...] = ()
+    deferred_names: tuple[str, ...] = ()
 
     @property
     def truncated(self) -> bool:
@@ -104,7 +108,7 @@ class ScenarioSelection:
         return (
             f"coverage incomplete: {self.deferred} deferred; "
             f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
-            f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
+            f"selective-PR lane; deferred {self.deferred} to the nightly owed batch"
         )
 
     def quarantine_note(self) -> str | None:
@@ -150,6 +154,22 @@ def _relative_to_root(path: Path, repo_root: Path) -> str:
         return candidate.as_posix()
 
 
+def _source_or_fixture_changed(spec: EvalSpec, wanted: set[str], repo_root: Path) -> bool:
+    if _relative_to_root(spec.source_path, repo_root) in wanted:
+        return True
+    if any(
+        _relative_to_root(local, repo_root) in wanted
+        for name in spec.cli_stubs
+        if name not in KNOWN_CLI_STUBS
+        if (local := local_stub_path(name, spec.source_path, include_missing=True)) is not None
+    ):
+        return True
+    if spec.fixture == "agent_skill_dir" and spec.agent_path:
+        agent_dir = _relative_to_root(resolve_agent_path(spec.agent_path, spec.source_path.parent).parent, repo_root)
+        return any(path.startswith(f"{agent_dir}/") for path in wanted)
+    return False
+
+
 def _band(
     spec: EvalSpec,
     wanted: set[str],
@@ -157,7 +177,7 @@ def _band(
     repo_root: Path,
 ) -> int | None:
     """The selection band for *spec*, or ``None`` when this diff does not select it."""
-    if _relative_to_root(spec.source_path, repo_root) in wanted:
+    if _source_or_fixture_changed(spec, wanted, repo_root):
         return _PRECISE
     if not spec.agent_path:
         return None
@@ -192,6 +212,7 @@ def selection_for_changed(
     # deterministic, so the same diff always selects the same bounded subset.
     return ScenarioSelection(
         names=[name for _, name in kept][:MAX_SELECTIVE_PR_SCENARIOS],
+        deferred_names=tuple(name for _, name in kept[MAX_SELECTIVE_PR_SCENARIOS:]),
         total_matched=len(kept),
         cap=MAX_SELECTIVE_PR_SCENARIOS,
         quarantined=tuple(suppressed),

@@ -71,7 +71,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
         return False
     command = data.get("tool_input", {}).get("command", "")
     # No command, or the kill-switch (`t3 <overlay> gate raw-merge disable`) is off → nothing to gate.
-    if not command or not _teatree_bool_setting("out_of_band_merge_gate_enabled", default=True):
+    if not command or not _teatree_bool_setting("out_of_band_merge_gate_enabled"):
         return False
     # Matches the mutation name in argv only: a query loaded from a file or stdin
     # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and

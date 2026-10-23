@@ -60,7 +60,7 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
     """Read valid host-qualified private entries; report malformed legacy rows."""
     from teatree.config.setting_parsers import _parse_private_repos  # noqa: PLC0415 — cold import
 
-    raw = cold_reader.list_setting("private_repos", default=[], db_path=config_path)
+    raw = cold_reader.list_setting("private_repos", db_path=config_path)
     entries = []
     for entry in raw:
         try:

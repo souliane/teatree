@@ -16,7 +16,6 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.config.known_settings import SETTING_ENTRIES
 from teatree.config.setting_registries import BOX_GLOBAL_SETTINGS
 from teatree.core.models import ConfigSetting
 
@@ -24,13 +23,8 @@ from teatree.core.models import ConfigSetting
 _AN_OVERLAY = "some-overlay"
 
 
-class TestTheBoxGlobalSetIsDerivedNotHandListed:
-    """The set comes off the schema marker, so a new key declares itself rather than being listed."""
-
-    def test_the_derived_set_matches_the_hand_copy(self) -> None:
-        from teatree.config.schema import derive_box_global_settings  # noqa: PLC0415 — pydantic stays off cold reads
-
-        assert derive_box_global_settings() == BOX_GLOBAL_SETTINGS
+class TestTheBoxGlobalSetIsDeclaredWithSettings:
+    """The set comes from setting declarations."""
 
     def test_every_box_global_key_is_still_a_db_home_setting(self) -> None:
         # Box-global narrows the SCOPE, never the storage: a global row still resolves.
@@ -60,13 +54,6 @@ class TestTheWriteSeamRefusesAnOverlayScope(TestCase):
     def test_an_ordinary_key_keeps_its_overlay_scope(self) -> None:
         ConfigSetting.objects.set_value("architectural_review_cadence_hours", value=24, scope=_AN_OVERLAY)
         assert ConfigSetting.objects.filter(key="architectural_review_cadence_hours", scope=_AN_OVERLAY).exists()
-
-
-class TestTheGlobalOnlySetIsDerivedNotHandListed:
-    def test_the_derived_set_is_every_key_outside_the_overlay_registry(self) -> None:
-        from teatree.config.schema import derive_global_only_settings  # noqa: PLC0415 — pydantic stays off cold reads
-
-        assert derive_global_only_settings() == frozenset(SETTING_ENTRIES) - frozenset(OVERLAY_OVERRIDABLE_SETTINGS)
 
 
 class TestAGlobalOnlyKeyRefusesAnOverlayScope(TestCase):

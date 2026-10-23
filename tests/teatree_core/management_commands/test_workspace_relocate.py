@@ -9,7 +9,7 @@ idempotent and dry-run-safe, and that one failed move never aborts the rest.
 
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -21,6 +21,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands._workspace.relocate import RelocateIO, run_relocate
 from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
+from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -31,6 +32,7 @@ def _io() -> RelocateIO:
 class _RelocateCase(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        self.enterContext(patch.object(Path, "home", return_value=self._tmp()))
         self.old_ws = self._tmp() / "workspace"
         self.new_ws = self._tmp() / "workspace" / "t3-workspaces" / "test"
         self.clone = self.old_ws / "myrepo"
@@ -78,6 +80,18 @@ class _RelocateCase(TestCase):
 
 
 class TestMove(_RelocateCase):
+    def test_disallowed_target_root_refuses_before_moving(self) -> None:
+        worktree = self._make_row()
+        outside = self._tmp() / "elsewhere"
+
+        result = run_relocate("test", outside, _io(), dry_run=False)
+
+        assert not result.moved
+        assert any("outside allowed worktree roots" in line for line in result.failed)
+        assert self.old_wt.exists()
+        worktree.refresh_from_db()
+        assert worktree.worktree_path == str(self.old_wt)
+
     def test_moves_worktree_updates_git_metadata_and_db_row(self) -> None:
         wt = self._make_row()
         target = self.new_ws / self.branch / "myrepo"
@@ -147,15 +161,37 @@ class TestSkips(_RelocateCase):
 
 
 class TestIdempotentAndDryRun(_RelocateCase):
-    def test_idempotent_when_already_under_target(self) -> None:
-        # Point the target_root at the OLD workspace so the worktree is already under it.
+    def test_disallowed_old_clone_root_is_refused_even_when_worktree_is_already_under_it(self) -> None:
         wt = self._make_row()
         result = run_relocate("test", self.old_ws, _io(), dry_run=False)
         assert not result.moved
-        assert any("already under" in line for line in result.skipped)
+        assert any("outside allowed worktree roots" in line for line in result.failed)
         assert self.old_wt.exists()
         wt.refresh_from_db()
         assert wt.worktree_path == str(self.old_wt)
+
+    def test_idempotent_when_already_under_an_allowed_target(self) -> None:
+        settled = self.new_ws / self.branch / "myrepo"
+        settled.parent.mkdir(parents=True)
+        _run_git("worktree", "move", str(self.old_wt), str(settled), cwd=self.clone)
+        wt = self._make_row(wt_path=settled)
+
+        result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert not result.moved
+        assert not result.failed
+        assert any("already under" in line for line in result.skipped)
+        wt.refresh_from_db()
+        assert wt.worktree_path == str(settled)
+
+    def test_worktree_base_itself_is_an_allowed_target(self) -> None:
+        self._make_row()
+        base = self._tmp() / "workspace" / "t3-workspaces"
+
+        result = run_relocate("test", base, _io(), dry_run=True)
+
+        assert result.moved
+        assert not result.failed
 
     def test_dry_run_plans_without_moving(self) -> None:
         wt = self._make_row()
@@ -182,7 +218,7 @@ class TestMountBoundaryRefusal(_RelocateCase):
     """
 
     @contextmanager
-    def _pinned_table(self, *mount_points: Path) -> Iterator[None]:
+    def _pinned_table(self, *mount_points: Path) -> Generator[None]:
         rows = [f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/vg-root rw" for point in mount_points]
         mountinfo = self._tmp() / "mountinfo"
         mountinfo.write_text("\n".join(rows) + "\n", encoding="utf-8")
@@ -309,17 +345,19 @@ class TestHalfMoveReconcile(_RelocateCase):
         wt = self._make_row()
         target = self.new_ws / self.branch / "myrepo"
 
-        # Make the post-move ``save(update_fields=["extra"])`` throw, leaving git +
+        # Make the post-move ``worktree_path`` write throw, leaving git +
         # disk at ``target`` while the row still records the OLD (now-gone) path.
-        real_save = Worktree.save
+        real_merge_extra = Worktree.merge_extra
 
-        def fail_extra_save(self_wt: Worktree, *args: object, **kwargs: object) -> None:
-            if kwargs.get("update_fields") == ["extra"]:
+        def fail_path_write(
+            self_wt: Worktree, *, set_keys: WorktreeExtra | None = None, also_set: WorktreeSiblingFields | None = None
+        ) -> None:
+            if set_keys and "worktree_path" in set_keys:
                 msg = "simulated DB failure mid-relocate"
                 raise OperationalError(msg)
-            real_save(self_wt, *args, **kwargs)
+            real_merge_extra(self_wt, set_keys=set_keys, also_set=also_set)
 
-        with patch.object(Worktree, "save", fail_extra_save):
+        with patch.object(Worktree, "merge_extra", fail_path_write):
             first = run_relocate("test", self.new_ws, _io(), dry_run=False)
 
         assert target.is_dir()  # the git move happened

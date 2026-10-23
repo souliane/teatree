@@ -5,7 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -62,7 +62,7 @@ exit 0
 
 
 @contextmanager
-def _held_lock(path: Path) -> Iterator[None]:
+def _held_lock(path: Path) -> Generator[None]:
     path.touch()
     assert _FLOCK is not None
     holder = subprocess.Popen([_FLOCK, str(path), "-c", "sleep 60"])

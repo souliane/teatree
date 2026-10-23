@@ -5,10 +5,8 @@ class is self-contained and targets a single finding. Run these against
 the unfixed code to see them go RED, then apply the fix and confirm GREEN.
 """
 
-import tempfile
-from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.db import OperationalError
@@ -16,6 +14,8 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import DraftState
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import PendingChatInjection
+from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.messaging.notify_with_fallback import notify_with_fallback
 from tests._forge_stub import merge_path_stdout
 
@@ -105,82 +105,42 @@ class TestF1NeverRaiseDatabaseError(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# F3: slack_mentions cursor not written when drained events produce no signals
+# F3: slack_mentions must record drained DMs before commit_drain discards the backing file
 # ---------------------------------------------------------------------------
 
 
-class TestF3SlackMentionsCursorPersistedWhenDrainedNoSignals(TestCase):
-    """F3 — cursor ordering: _write_cursors must run before commit_drain.
+class TestF3SlackMentionsRecordsDrainedDmsBeforeCommit(TestCase):
+    """F3 — a drained DM is durably recorded before the drain is committed.
 
-    _write_cursors was guarded by 'if signals:' while commit_drain was
-    guarded by 'if drained_any:'. If drained events produce no signals
-    (unhandled event types), commit_drain deletes the .draining file but the
-    cursor is never persisted — events are re-fetched on the next tick.
-
-    Fix: _write_cursors must run whenever drained_any, independent of signals.
+    ``commit_drain`` deletes the ``.draining`` file; once it runs, a DM that was
+    not yet persisted can never be recovered by the next drain.
     """
 
-    def test_drained_unknown_events_do_not_lose_cursor(self) -> None:
-        """Events of unknown type are drained but produce no signals.
+    def test_drained_dm_row_exists_when_the_drain_commits(self) -> None:
+        backend = MagicMock()
+        backend.fetch_mentions.return_value = []
+        backend.auth_test.return_value = {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
+        backend.get_permalink.return_value = ""
+        dm = {
+            "type": "message",
+            "channel_type": "im",
+            "ts": "1700000099.000001",
+            "user": "U_HUMAN",
+            "channel": "D1",
+            "text": "ping",
+        }
+        rows_at_commit: list[int] = []
 
-        After draining, commit_drain MUST NOT be called if the cursor was
-        not persisted (or equivalently, _write_cursors MUST be called before
-        commit_drain).
-        """
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        with (
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=[{"event": dm}]),
+            patch(
+                "teatree.backends.slack.receiver.commit_drain",
+                side_effect=lambda **_kwargs: rows_at_commit.append(PendingChatInjection.objects.count()),
+            ),
+        ):
+            SlackMentionsScanner(backend=backend).scan()
 
-        from teatree.loop.scanners.slack_mentions import SlackMentionsScanner  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cursor_path = Path(tmpdir) / "slack_cursor.json"
-
-            # Backend that returns no regular mentions/dms from the API
-            backend = MagicMock()
-            backend.fetch_mentions.return_value = []
-            backend.fetch_dms.return_value = []
-
-            # The queue contains one event of an unhandled type — it gets drained
-            # (drained_any=True) but produces no signals.
-            unknown_event = {"event": {"type": "reaction_added", "ts": "1700000099.000001"}}
-
-            commit_drain_called = []
-            write_cursors_called = []
-
-            import teatree.loop.scanners.slack_mentions as sm_mod  # noqa: PLC0415
-
-            original_write_cursors = sm_mod._write_cursors
-
-            def _track_write_cursors(path: Path, data: dict) -> None:
-                write_cursors_called.append(True)
-                original_write_cursors(path, data)
-
-            with (
-                patch(
-                    "teatree.backends.slack.receiver.drain_event_queue",
-                    return_value=[unknown_event],
-                ),
-                patch(
-                    "teatree.backends.slack.receiver.commit_drain",
-                    side_effect=lambda **_kwargs: commit_drain_called.append(True),
-                ),
-                patch.object(sm_mod, "_write_cursors", side_effect=_track_write_cursors),
-            ):
-                scanner = SlackMentionsScanner(
-                    backend=backend,
-                    cursor_path=cursor_path,
-                )
-                scanner.scan()
-
-            # No signals (reaction_added is handled elsewhere, not here)
-            # The key assertion: commit_drain must NOT be called if
-            # _write_cursors was not called (cursor lost).
-            # OR: _write_cursors must be called whenever drained_any.
-            if commit_drain_called:
-                assert write_cursors_called, (
-                    "commit_drain was called but _write_cursors was NOT called — "
-                    "the cursor was not persisted before the backing file was deleted. "
-                    "Events would be re-fetched / lost."
-                )
+        assert rows_at_commit == [1]
 
 
 # ---------------------------------------------------------------------------

@@ -294,7 +294,7 @@ class OverlayCredentialResolutionTests(TestCase):
         with (
             patch("teatree.forge_credentials.resolve_named_overlay_token") as resolve,
             patch(
-                "teatree.loop.scanners.outbound_audit_overlay_verifiers._overlay_gitlab_base_url",
+                "teatree.loop.scanners.outbound_audit_overlay_verifiers.overlay_gitlab_base_url",
                 return_value="https://gl.example/api/v4",
             ),
             patch(

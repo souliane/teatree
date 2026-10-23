@@ -1,11 +1,26 @@
-from typing import ClassVar
+from datetime import datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 
 
 class TicketTransitionQuerySet(models.QuerySet):
+    def merge_entries(self) -> "TicketTransitionQuerySet":
+        return self.filter(to_state=Ticket.State.MERGED).exclude(from_state__in=Ticket.merged_states())
+
+    def recent_merges(self, limit: int) -> list[tuple[int, datetime]]:
+        rows = (
+            self.merge_entries()
+            .filter(ticket__pull_requests__state=PullRequest.State.MERGED)
+            .values("ticket_id")
+            .annotate(merged_at=models.Min("created_at"))
+            .order_by("-merged_at", "-ticket_id")[:limit]
+        )
+        return [(row["ticket_id"], row["merged_at"]) for row in rows]
+
     def state_edges(self) -> "TicketTransitionQuerySet":
         """The rows that record an actual move — the ticket's history.
 
@@ -18,12 +33,7 @@ class TicketTransitionQuerySet(models.QuerySet):
 
     def merge_entry(self) -> "TicketTransition | None":
         """The newest edge that brought a ticket INTO merged from a pre-merged state."""
-        return (
-            self.filter(to_state=Ticket.State.MERGED)
-            .exclude(from_state__in=Ticket.merged_states())
-            .order_by("-created_at", "-pk")
-            .first()
-        )
+        return self.merge_entries().order_by("-created_at", "-pk").first()
 
     def excluding_each_tickets_boundary(self) -> "TicketTransitionQuerySet":
         """Drop each ticket's earliest and latest transition from the candidate set.
@@ -65,6 +75,10 @@ class TicketTransitionQuerySet(models.QuerySet):
 
 class TicketTransition(models.Model):
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="transitions")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        ticket_id: int
+
     session = models.ForeignKey(
         "core.Session",
         on_delete=models.SET_NULL,

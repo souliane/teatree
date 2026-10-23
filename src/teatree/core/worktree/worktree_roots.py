@@ -14,13 +14,16 @@ DRAINED by the reaper rather than left to accumulate — and, once drained, neve
 written to again, collapsing the split without a manual migration.
 """
 
+import os
 from enum import StrEnum
 from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
-from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout
-from teatree.utils.git_run import git_env_without_overrides
+from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout, wrong_venue_reason
+from teatree.core.worktree.worktree_paths import path_is_within
+from teatree.mount_identity import parsed_mount_table, read_mount_table
+from teatree.utils.git_run import git_env_without_overrides, run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -85,6 +88,19 @@ def probe_checkout(path: Path, *, clone: Path | None = None) -> CheckoutState:
     return _refusal_state(path, clone=clone, stderr=result.stderr.lower())
 
 
+def recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
+    """Require positive checkout proof from either its own gitfile or the visible clone."""
+    return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
+
+
+def recorded_checkout_unreadable_reason(checkout: Path) -> str:
+    cause = wrong_venue_reason(checkout)
+    if not cause:
+        probe = run_with_status(repo=str(checkout), args=["rev-parse", "--git-dir"], env=git_env_without_overrides())
+        cause = f"{checkout} is a live checkout git cannot read in this execution context ({probe.stderr.strip()})"
+    return f"{cause}; re-provision or remove it from the context that owns it"
+
+
 def _refusal_state(path: Path, *, clone: Path | None, stderr: str) -> CheckoutState:
     """What git's refusal proves — which is far less than its wording suggests.
 
@@ -140,12 +156,17 @@ def worktrees_outside_the_canonical_root() -> list[Worktree]:
     The namespace-split signal `t3 doctor` reports: each of these is invisible to
     a pass that scans only the canonical root.
     """
-    canonical = canonical_worktree_root().expanduser()
+    canonical = Path(os.path.normpath(canonical_worktree_root().expanduser()))
+    table = parsed_mount_table(read_mount_table())
     outside: list[Worktree] = []
     for worktree in Worktree.objects.all():
         path = worktree.worktree_path
-        if path and not Path(path).expanduser().is_relative_to(canonical):
-            outside.append(worktree)
+        if not path:
+            continue
+        checkout = Path(os.path.normpath(Path(path).expanduser()))
+        if path_is_within(checkout, canonical, mount_table=table):
+            continue
+        outside.append(worktree)
     return outside
 
 
@@ -153,6 +174,8 @@ __all__ = [
     "CheckoutState",
     "canonical_worktree_root",
     "probe_checkout",
+    "recorded_checkout_is_live",
+    "recorded_checkout_unreadable_reason",
     "registered_worktree_paths",
     "registered_worktree_roots",
     "scanned_worktree_roots",

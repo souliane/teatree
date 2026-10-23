@@ -225,13 +225,14 @@ Group root — forces sub-commands to be addressed by name.
 
 ## `live`
 
-Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+Live sessions: list and inspect are passive; steer and follow-up are active.
 
 | Subcommand | Description |
 | --- | --- |
 | `inspect` | Show one live session's state, tool and progress without contacting the agent |
 | `steer` | Send input into a running agent's current turn and print its receipt (active) |
 | `list` | List every live session on this host's workers (passive) |
+| `follow-up` | Start one new turn in a still-open idle session and print its receipt (active) |
 
 ## `loop_directive_set`
 
@@ -405,6 +406,7 @@ Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan 
 | `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
 | `sweep` | List all open PRs/MRs authored by the current user across the forge |
 | `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
+| `request-void` | Ask the owner on Slack to approve a merge correction |
 | `void-merge` | Void a merge the forge records but whose content never reached the default branch |
 | `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
@@ -557,7 +559,7 @@ Session-lifecycle operations.
 
 ## `settings_compare`
 
-Render the same settings comparison as the dashboard, including peers and saved snapshots.
+What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
 
 ## `shipped_seed`
 
@@ -572,7 +574,7 @@ Audit the shipped loop/preset/schedule seed set, and delete from it with a typed
 
 ## `signals`
 
-Print the five factory signals over the trailing window vs its baseline.
+Print the factory signals over the trailing window vs its baseline.
 
 ## `snapshot_settings_defaults`
 
@@ -638,6 +640,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
 | `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
+| `critic-record` | Record a merge critic envelope for the ticket's dispatched head |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `return-gaps` | Return guarded legacy gap members to the dream umbrella |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
@@ -725,6 +728,7 @@ Per-worktree FSM operations.
 | Subcommand | Description |
 | --- | --- |
 | `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `attest` | Record the present checkout state after the owner has inspected it |
 | `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundReader, read_inbound
 from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.scanners.base import ScanSignal
@@ -77,7 +78,7 @@ class AskUserQuestionReplyScanner:
             reply.unmark_loop_replied()
             return
         try:
-            applied = apply_bound_answer(bound, backend=self.backend)
+            applied = apply_bound_answer(bound, backend=self.backend, on_answer=apply_stop_answer)
         except Exception:
             # Nothing was applied, so the claim must go back — otherwise the
             # reply is consumed forever by a failure that never recorded it.

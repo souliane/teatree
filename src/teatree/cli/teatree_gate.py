@@ -45,6 +45,7 @@ ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
 BRIEF_ANCHOR_GATE_KEY = "brief_anchor_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
+WORKTREE_CONTAINMENT_GATE_KEY = "worktree_containment_gate_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
 OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
@@ -56,6 +57,7 @@ FOREIGN_BRANCH_PUSH_GATE_KEY = "foreign_branch_push_gate_enabled"
 GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
 VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
+OWNER_QUESTION_GATE_KEY = "owner_question_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -64,21 +66,18 @@ ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
 # The ``danger_`` prefix makes a forgotten ``true`` unmissable — this switch
 # disables protective gates wholesale.
 DANGER_GATE_FAIL_OPEN_KEY = "danger_gate_fail_open"
-DANGER_GATE_FAIL_OPEN_DEFAULT = False
 
 
-def _gate_key_is_enabled(key: str, *, default: bool = True) -> bool:
-    """Resolve the DB-home ``<key>`` gate, degrading to *default* on a missing/broken DB.
+def _gate_key_is_enabled(key: str) -> bool:
+    """Resolve the DB-home ``<key>`` gate through its declared default.
 
     The per-gate kill-switches default True (enabled unless an explicit ``false``
-    is recorded); the master fail-open switch defaults False, so its callers pass
-    ``default=False`` — reading it through the wrong posture reports a value the
-    switch's own resolver would never return. Reads via the Django-free cold
+    is recorded); the master fail-open switch defaults False. Reads via the Django-free cold
     reader, so ``t3 <overlay> gate status`` reports what the flipped hook sees.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    return cold_reader.bool_setting(key, default=default)
+    return cold_reader.bool_setting(key)
 
 
 def gate_is_enabled() -> bool:
@@ -96,46 +95,26 @@ def danger_gate_fail_open_is_enabled() -> bool:
     must never cause. The over-deny gates consult this; the PUBLIC-egress leak gate
     never does.
     """
-    return _gate_key_is_enabled(DANGER_GATE_FAIL_OPEN_KEY, default=DANGER_GATE_FAIL_OPEN_DEFAULT)
+    return _gate_key_is_enabled(DANGER_GATE_FAIL_OPEN_KEY)
 
 
-def _set_gate_key(key: str, *, enabled: bool) -> Path:
-    """Persist ``<key> = <enabled>`` to the canonical config DB; return the DB path.
-
-    Every gate key is DB-home, so the write goes to the canonical DB via the
-    Django-free cold writer and the returned destination is the canonical DB path.
-    A missing DB tier or a locked write is caught by the caller's read-back-verify —
-    the toggle does not silently land somewhere the reader ignores.
-    """
+def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
+    """Report the write cause, then verify the gate's own resolved value."""
     from teatree.config import cold_writer  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    cold_writer.write_setting(key, enabled)
-    return cold_writer.canonical_config_db()
-
-
-def _write_gate_and_verify(key: str, *, enabled: bool, default: bool = True) -> Path:
-    """Write ``<key>=<enabled>``, verify the toggle actually took, and return the DB destination.
-
-    After the write, read the gate back through :func:`_gate_key_is_enabled` under the
-    key's OWN unresolved-value posture (*default*) — the master fail-open switch
-    resolves default-False, so verifying its ``enable`` through the default-True
-    posture reported success over a write that never landed. If the observed state
-    disagrees with *enabled*, the canonical DB was missing or locked (or the write
-    otherwise failed) and the toggle did NOT take: raise ``typer.Exit(1)`` with a loud
-    message so the command never prints a success line over a stale, still-effective
-    gate. Catching the mismatch by read-back rather than by classifying the write error
-    covers EVERY failure mode, regardless of cause.
-    """
-    destination = _set_gate_key(key, enabled=enabled)
-    if _gate_key_is_enabled(key, default=default) != enabled:
+    outcome = cold_writer.write_setting(key, enabled)
+    if outcome.result is not cold_writer.WriteResult.WROTE:
+        typer.echo(f"ERROR: `{key}` did NOT take at {outcome.db}: {outcome.detail}", err=True)
+        raise typer.Exit(code=1)
+    if _gate_key_is_enabled(key) != enabled:
         still = "ENABLED" if not enabled else "DISABLED"
         typer.echo(
-            f"ERROR: `{key}` did NOT take — the canonical DB is locked or the write failed; "
-            f"the gate is still {still}. Retry once the DB is free.",
+            f"ERROR: `{key}` did NOT take — write landed at {outcome.db}, "
+            f"but read-back says the gate is still {still}.",
             err=True,
         )
         raise typer.Exit(code=1)
-    return destination
+    return outcome.db
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +268,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
 
     _register_keyed_gate(
         gate_group,
+        name="worktree-containment",
+        key=WORKTREE_CONTAINMENT_GATE_KEY,
+        label="Linked worktree destination gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
         name="snapshot-baseline",
         key=SNAPSHOT_BASELINE_GATE_KEY,
         label="Snapshot-baseline attestation gate",
@@ -361,6 +347,12 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         key=ORCHESTRATOR_DELEGATION_GATE_KEY,
         label="Orchestrator delegation gate (an unbounded read belongs in a sub-agent)",
     )
+    _register_keyed_gate(
+        gate_group,
+        name="owner-question",
+        key=OWNER_QUESTION_GATE_KEY,
+        label="Attended owner-question gate (one plain question per call, no decisions in reply prose)",
+    )
 
     overlay_app.add_typer(gate_group, name="gate")
 
@@ -387,17 +379,13 @@ def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
     @fail_open.command(name="enable")
     def enable() -> None:
         """Turn the master fail-open switch ON (self-rescue from an over-deny lockout)."""
-        destination = _write_gate_and_verify(
-            DANGER_GATE_FAIL_OPEN_KEY, enabled=True, default=DANGER_GATE_FAIL_OPEN_DEFAULT
-        )
+        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=True)
         typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {destination}")
 
     @fail_open.command(name="disable")
     def disable() -> None:
         """Turn the master fail-open switch OFF (restore normal gate enforcement)."""
-        destination = _write_gate_and_verify(
-            DANGER_GATE_FAIL_OPEN_KEY, enabled=False, default=DANGER_GATE_FAIL_OPEN_DEFAULT
-        )
+        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=False)
         typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {destination}")
 
     gate_group.add_typer(fail_open, name="fail-open")

@@ -22,10 +22,16 @@ from teatree.core.management.commands.notify import Command as NotifyCommand
 from teatree.core.management.commands.pr import Command as PrCommand
 from teatree.core.management.commands.questions import Command as QuestionsCommand
 from teatree.core.management.commands.run import Command as RunCommand
+from teatree.core.management.commands.worktree import Command as WorktreeCommand
 
 
 def _ticket_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["ticket"].subcommands}
+
+
+def test_worktree_attest_is_reachable() -> None:
+    assert "attest" in {name for name, _desc in DJANGO_GROUPS["worktree"].subcommands}
+    assert hasattr(WorktreeCommand, "attest")
 
 
 def _honesty_subcommands() -> set[str]:

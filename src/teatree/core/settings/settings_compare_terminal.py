@@ -40,16 +40,18 @@ KIND_SLUGS: Final[dict[str, RowKind]] = {
     "values": RowKind.VALUES,
     "override": RowKind.OVERRIDE,
     "code": RowKind.CODE,
+    "same": RowKind.SAME,
 }
 
 #: The order the difference groups are printed in — the page's rank order, named.
-_GROUP_ORDER: Final[tuple[RowKind, ...]] = (RowKind.VALUES, RowKind.OVERRIDE, RowKind.CODE)
+_GROUP_ORDER: Final[tuple[RowKind, ...]] = (RowKind.VALUES, RowKind.OVERRIDE, RowKind.CODE, RowKind.SAME)
 
 #: What each group means, so the heading answers "does it matter?" without a second document.
 _GROUP_NOTE: Final[dict[RowKind, str]] = {
     RowKind.VALUES: "both boxes hold a value and the values disagree",
     RowKind.OVERRIDE: "one box holds a value where the other holds no row at all",
     RowKind.CODE: "a difference in what the code declares, not in configuration",
+    RowKind.SAME: "the instances hold the same value",
 }
 
 _MIN_VALUE_WIDTH: Final = 14
@@ -199,7 +201,7 @@ def _reading_width(labels: Sequence[str], *, width: int, label_width: int) -> in
 def _differences_block(view: CompareView, *, width: int, kinds: Sequence[RowKind], full: bool) -> str:
     if view.error:
         return f"Differences\n{_INDENT}{view.error}"
-    header = f"Differences ({view.total_rows})  {_tally(view.rows)}"
+    header = f"Differences ({sum(row.differs for row in view.rows)})  {_tally(view.rows)}"
     lines = [header]
     if unreachable := view.unreachable:
         # Restated here rather than left to the band above: this is the caveat that applies to

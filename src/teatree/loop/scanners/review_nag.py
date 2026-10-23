@@ -3,13 +3,15 @@
 The user posts MRs to the review channel; the bot tracks each in a
 ``ReviewRequestPost`` row. This scanner walks the open rows each tick and, when
 an MR has had **no activity for its current re-ask interval** — no thread reply,
-no reaction — and is still live-open, non-draft, unapproved and unpaused, posts
-exactly ONE thread reply: the configured re-ask mention + `` :pray:`` on
-``(channel, thread_ts)``. The post stays behind the #960 on-behalf gate
+no qualifying reaction — and is still live-open, non-draft, unapproved and unpaused, posts
+one thread reply for every batch thread: a safe reviewer or configured-group mention
+and a short re-ask on ``(channel, thread_ts)``. A missing safe mention refuses the post.
+The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
 
-Mention. :mod:`teatree.loop.scanners.review_nag_mention` resolves the
-per-overlay ``review_nag_reask_mention`` setting; empty re-asks with no mention.
+Mention. :mod:`teatree.loop.scanners.review_nag_mention` maps engaged forge users,
+thread repliers and reactors only when one active, non-bot, non-guest Slack user matches, then falls back to the
+per-overlay ``review_nag_reask_mention`` setting when nobody maps.
 
 Cadence. The interval is ``TriageThresholds.nag_interval_for_attempt(owner,
 nag_count)`` — the repo owner's base interval times the Fibonacci step for the
@@ -21,15 +23,16 @@ owner question (``ask_mr_state``) instead of nagging again.
 
 Activity is read LIVE via ``conversations.replies`` (``fetch_thread_replies``,
 the same messaging backend the nag posts with):
-``last_activity = max(post_ts, latest reply ts, reaction-present ⇒ now)``.
-Slack exposes no per-reaction timestamp, so a reaction on any thread message
-counts as fresh engagement and suppresses the nag.
+``last_activity = max(post_ts, latest reply ts, reaction not proven requester-only ⇒ now)``.
+Slack exposes no per-reaction timestamp. A reaction counts unless its users are
+provably only the requester; unreadable users and an unresolved requester id
+still count as activity.
 
 Merged/closed safety: a MERGED MR routes through ``react_merge_on_post`` so the
 ``:merge:`` reaction still lands; a CLOSED MR is marked done.
 
 Everything else FAILS CLOSED, because the harmful direction here is POSTING: the
-re-ping is a colleague-visible @-mention of a whole group, so an MR whose state
+re-ping may @-mention colleagues, so an MR whose state
 nothing could establish must not be nagged about. A DRAFT, an APPROVED, a PAUSED
 MR and every unreadable answer — no code-host backend, an ``UNKNOWN`` open state,
 a failed open-state lookup, an unparsable URL, an ``UNKNOWN`` draft state, an
@@ -37,16 +40,13 @@ a failed open-state lookup, an unparsable URL, an ``UNKNOWN`` draft state, an
 the row, so a later merge-react still fires and the next tick retries once the
 read works again.
 
-Unconditional: chasing an unanswered review request is not disableable. What keeps
-a re-ping off a colleague's channel is the repo-exemption guard and the fail-closed
-ladder above, never a flag nobody flipped.
+The scanner is selected without a feature flag, but an empty or unreadable safe
+mention holds its re-ask and leaves the request open.
 
-Concurrency: two ticks both observe the same ``last_nag_at`` and would each
-post. The nag is claimed with an atomic conditional ``UPDATE`` (``last_nag_at``
-and ``nag_count`` advanced only if both still equal the observed values) *before*
-the post — the tick that loses the claim skips, so exactly one re-ping fires per
-window. A blocked or failed post restores BOTH columns, so a re-ask that never
-reached Slack never widens the schedule.
+Concurrency: one transaction claims every open sibling row in a channel/thread
+before posting. A later tick sees the shared stamp and skips. A blocked or failed
+post restores each row's previous stamp and count; a confirmed reply writes its
+timestamp to every sibling in one update.
 """
 
 import datetime as dt
@@ -64,11 +64,14 @@ from teatree.core.review.mr_state_question import ask_mr_state
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner, TriageThresholds
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
-from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.review_nag_mention import reask_mention
+from teatree.loop.scanners.review_nag_activity import thread_activity
+from teatree.loop.scanners.review_nag_claim import ReviewNagClaim, ReviewNagPostReconciliationError
+from teatree.loop.scanners.review_nag_mention import RequesterIdentity, engaged_reask_mention
+from teatree.loop.scanners.review_nag_pause import pause_skip
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
+from teatree.types import RawAPIDict
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -78,10 +81,21 @@ _BACKOFF_EXHAUSTED_OPTIONS = (
     "It is waiting on me — stop asking",
     "Close it",
 )
+_BATCH_ATTEMPT_SIGNALS = frozenset(
+    {"review_nag.ping", "review_nag.gated", "review_nag.post_failed", "review_nag.mention_held"}
+)
 
 
-class ReviewNagPostReconciliationError(RuntimeError):
-    """Slack reported success without the reply coordinate needed to reconcile it."""
+@dataclass(frozen=True, slots=True)
+class ReaskText:
+    text: str
+    held_reason: str
+
+
+def _reask_text(mention: str, mr_url: str) -> ReaskText:
+    if not mention:
+        return ReaskText("", f"No safe reviewer mention for {mr_url}")
+    return ReaskText(f"{mention} could you please have another look?", "")
 
 
 def default_repo_owner(_slug: str) -> RepoOwner:
@@ -96,19 +110,12 @@ def default_repo_owner(_slug: str) -> RepoOwner:
     return RepoOwner.ENGINEERING
 
 
-def _epoch(ts: str) -> float:
-    try:
-        return float(ts)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 @dataclass(slots=True)
 class ReviewNagScanner:
     """Walk ``ReviewRequestPost`` rows and re-ask for review on a widening schedule.
 
     Stateless beyond the DB rows it walks. Safe to invoke from every loop tick —
-    at most one re-ping per row per window, enforced by the ``last_nag_at`` /
+    at most one re-ping per thread per window, enforced by the ``last_nag_at`` /
     ``nag_count`` claim.
 
     ``thresholds`` supplies the per-owner base intervals; its ceiling is always
@@ -119,6 +126,7 @@ class ReviewNagScanner:
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
     identities: tuple[str, ...] = field(default_factory=tuple)
+    requester_slack_id: str = ""
     now: dt.datetime | None = None
     thresholds: TriageThresholds = DEFAULT_THRESHOLDS
     repo_owner: Callable[[str], RepoOwner] = default_repo_owner
@@ -136,11 +144,17 @@ class ReviewNagScanner:
         )
         right_now = self.now or timezone.now()
         signals: list[ScanSignal] = []
+        attempted_threads: set[tuple[str, str]] = set()
         rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
         for post in rows.order_by("created_at"):
+            thread = (post.slack_channel_id, post.slack_thread_ts)
+            if thread in attempted_threads:
+                continue
             signal = self._process_one(post, messaging, right_now, thresholds)
             if signal is not None:
                 signals.append(signal)
+                if signal.kind in _BATCH_ATTEMPT_SIGNALS:
+                    attempted_threads.add(thread)
         return signals
 
     def _process_one(
@@ -156,72 +170,72 @@ class ReviewNagScanner:
         exempt = _review_exempt_skip(post, self.overlay_name)
         if exempt is not None:
             return exempt
-        owner = self._repo_owner_for(post)
-        interval = thresholds.nag_interval_for_attempt(owner, post.nag_count)
-        if not self._due_for_a_re_ask(post, messaging, right_now, interval):
+        window = self._thread_due_window(post, messaging, right_now, thresholds)
+        if window is None:
             return None
-        blocked = self._mr_not_naggable(post, messaging, right_now)
-        if blocked is not None:
-            return blocked
-        if thresholds.nag_backoff_at_cap(owner, post.nag_count):
+        interval, peers, visible_root = window
+        host = self.host
+        blocked = (
+            self._mr_not_naggable(post, messaging, host, right_now, visible_root=visible_root)
+            if host is not None
+            else None
+        )
+        if host is None or blocked is not None:
+            return blocked or _unreadable_state_skip(post, "no code-host backend is configured")
+        if any(thresholds.nag_backoff_at_cap(owner, peer.nag_count) for peer, owner in peers):
             return _ask_owner_for_state(post, interval)
-        return self._post_reask(post, messaging, right_now)
+        return self._post_reask(post, messaging, host, right_now, interval)
 
-    def _due_for_a_re_ask(
+    def _thread_due_window(
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
-        interval: dt.timedelta,
-    ) -> bool:
-        """Whether this row's re-ask window has lapsed with no thread activity inside it.
-
-        An unreadable activity read answers NOT due, so a Slack outage costs a
-        tick rather than a re-ping nobody could show was warranted.
-        """
-        if post.last_nag_at is not None and right_now - post.last_nag_at < interval:
-            return False
-        last_activity = self._last_activity(post, messaging, right_now)
-        if last_activity is None:
-            return False
-        return right_now - last_activity > interval
+        thresholds: TriageThresholds,
+    ) -> tuple[dt.timedelta, list[tuple[ReviewRequestPost, RepoOwner]], RawAPIDict | None] | None:
+        rows = ReviewRequestPost.objects.open_thread(post)
+        peers = list(rows)
+        owned_peers = [(peer, self._repo_owner_for(peer)) for peer in peers]
+        interval = max(thresholds.nag_interval_for_attempt(owner, peer.nag_count) for peer, owner in owned_peers)
+        if rows.nagged_within(right_now, interval):
+            return None
+        observation = self._last_activity(post, messaging, right_now)
+        if observation is None:
+            return None
+        last_activity, visible_root = observation
+        return (interval, owned_peers, visible_root) if right_now - last_activity > interval else None
 
     def _repo_owner_for(self, post: ReviewRequestPost) -> RepoOwner:
         """Which org function reviews this MR's repo — the base interval's selector."""
         ref = pr_ref_from_url(post.mr_url)
         return self.repo_owner(ref.slug if ref is not None else "")
 
-    @staticmethod
     def _last_activity(
+        self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
         right_now: dt.datetime,
-    ) -> dt.datetime | None:
-        """``max(post_ts, latest reply ts, reaction-present ⇒ now)``; ``None`` on read failure."""
+    ) -> tuple[dt.datetime, RawAPIDict | None] | None:
+        """Return last review activity, or ``None`` when the thread read fails."""
         try:
             replies = messaging.fetch_thread_replies(channel=post.slack_channel_id, thread_ts=post.slack_thread_ts)
         except Exception as exc:  # noqa: BLE001 — a thread read must never crash a tick.
             logger.warning("review_nag: thread read failed for %s: %s", post.mr_url, exc)
             return None
-        epochs = [_epoch(post.slack_thread_ts)]
-        for msg in replies:
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("reactions"):
-                return right_now  # a reaction is fresh engagement; Slack carries no reaction ts
-            ts = msg.get("ts")
-            if isinstance(ts, str):
-                epochs.append(_epoch(ts))
-        latest = max((e for e in epochs if e > 0.0), default=0.0)
-        if latest <= 0.0:
-            return post.created_at
-        return dt.datetime.fromtimestamp(latest, tz=dt.UTC)
+        visible_root = next(
+            (reply for reply in replies if isinstance(reply, dict) and reply.get("ts") == post.slack_thread_ts),
+            None,
+        )
+        return thread_activity(post, replies, right_now, requester_slack_id=self.requester_slack_id), visible_root
 
     def _mr_not_naggable(
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
+        host: CodeHostBackend,
         right_now: dt.datetime,
+        *,
+        visible_root: RawAPIDict | None,
     ) -> ScanSignal | None:
         """A skip-signal when the MR must not be nagged about; ``None`` when naggable.
 
@@ -231,18 +245,15 @@ class ReviewNagScanner:
         without closing the row, so a later merge-react still fires and the next
         tick retries.
 
-        The whole guard fails CLOSED. The re-ping @-mentions a group of
-        colleagues, so no unverifiable read may license one: a missing code-host
-        backend, a failed open-state lookup and an ``UNKNOWN`` open state each
+        The whole guard fails CLOSED. The re-ping @-mentions colleagues, so no
+        unverifiable read may license one: a missing code-host backend, a failed
+        open-state lookup and an ``UNKNOWN`` open state each
         skip rather than proceed.
         """
-        host = self.host
-        if host is None:
-            return _unreadable_state_skip(post, "no code-host backend is configured")
         settled = self._open_state_skip(post, messaging, right_now, host)
         if settled is not None:
             return settled
-        paused = _pause_skip(post, messaging)
+        paused = pause_skip(post, messaging, visible_root=visible_root)
         if paused is not None:
             return paused
         return _draft_or_approved_skip(post, host)
@@ -282,22 +293,37 @@ class ReviewNagScanner:
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
+        host: CodeHostBackend,
         right_now: dt.datetime,
+        interval: dt.timedelta,
     ) -> ScanSignal | None:
         reconciled = _consult_guard_before_nag(post, self.overlay_name)
         if reconciled is not None:
             return reconciled
 
-        claim = _NagClaim.take(post, right_now)
+        claim = ReviewNagClaim.take(post, right_now, interval)
         if claim is None:
             return None
 
-        mention = reask_mention(messaging, overlay_name=self.overlay_name)
-        text = f"{mention} :pray:" if mention else ":pray:"
         try:
+            mention = engaged_reask_mention(
+                messaging,
+                host,
+                claim.posts,
+                requester=RequesterIdentity(self.requester_slack_id, self.identities),
+                overlay_name=self.overlay_name,
+            )
+            decision = _reask_text(mention, post.mr_url)
+            if decision.held_reason:
+                claim.release()
+                return ScanSignal(
+                    kind="review_nag.mention_held",
+                    summary=f"Review re-ask held for {post.mr_url}: {decision.held_reason}",
+                    payload={"mr_url": post.mr_url, "error": decision.held_reason, "post_id": post.pk},
+                )
             response = OnBehalfSlackEgress(messaging).post(
                 channel=post.slack_channel_id,
-                text=text,
+                text=decision.text,
                 target=post.mr_url,
                 action="review_nag_post",
                 thread_ts=post.slack_thread_ts,
@@ -324,78 +350,27 @@ class ReviewNagScanner:
         if response.get("ok") is not True:
             claim.release()
             error = str(response.get("error") or "empty response")
-            return ScanSignal(
+            outcome = ScanSignal(
                 kind="review_nag.post_failed",
                 summary=f"Slack post failed for {post.mr_url}: {error}",
                 payload={"mr_url": post.mr_url, "error": error, "post_id": post.pk},
             )
-        reply_ts = str(response.get("ts") or "")
-        if not reply_ts:
-            msg = f"review nag post for {post.mr_url} succeeded without a reply timestamp"
-            raise ReviewNagPostReconciliationError(msg)
-        claim.persist_reply_ts(reply_ts)
+        else:
+            reply_ts = str(response.get("ts") or "")
+            if not reply_ts:
+                msg = f"review nag post for {post.mr_url} succeeded without a reply timestamp"
+                raise ReviewNagPostReconciliationError(msg)
+            claim.persist_reply_ts(reply_ts)
 
-        post.last_nag_at = right_now
-        post.nag_count = claim.nag_count
-        post.last_nag_reply_ts = reply_ts
-        return ScanSignal(
-            kind="review_nag.ping",
-            summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
-            payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _NagClaim:
-    """The won right to post exactly one re-ping, and the means to give it back.
-
-    ``last_nag_at`` and ``nag_count`` advance together in ONE conditional
-    ``UPDATE`` guarded on both observed values, so a losing tick claims neither
-    and :meth:`release` can restore the exact pair it displaced. Splitting them
-    would let a post that never reached Slack still widen the schedule — a
-    permanently-gated row would walk itself out to the ceiling without a single
-    re-ask having been delivered.
-    """
-
-    post_id: int
-    claimed_at: dt.datetime
-    nag_count: int
-    previous_nag_at: dt.datetime | None
-    previous_nag_count: int
-
-    @classmethod
-    def take(cls, post: ReviewRequestPost, right_now: dt.datetime) -> "_NagClaim | None":
-        claimed = ReviewRequestPost.objects.filter(
-            pk=post.pk,
-            last_nag_at=post.last_nag_at,
-            nag_count=post.nag_count,
-        ).update(last_nag_at=right_now, nag_count=post.nag_count + 1)
-        if claimed != 1:
-            return None
-        return cls(
-            post_id=post.pk,
-            claimed_at=right_now,
-            nag_count=post.nag_count + 1,
-            previous_nag_at=post.last_nag_at,
-            previous_nag_count=post.nag_count,
-        )
-
-    def release(self) -> None:
-        ReviewRequestPost.objects.filter(
-            pk=self.post_id,
-            last_nag_at=self.claimed_at,
-            nag_count=self.nag_count,
-        ).update(last_nag_at=self.previous_nag_at, nag_count=self.previous_nag_count)
-
-    def persist_reply_ts(self, reply_ts: str) -> None:
-        updated = ReviewRequestPost.objects.filter(
-            pk=self.post_id,
-            last_nag_at=self.claimed_at,
-            nag_count=self.nag_count,
-        ).update(last_nag_reply_ts=reply_ts)
-        if updated != 1:
-            msg = f"review nag claim {self.post_id} could not persist reply timestamp"
-            raise ReviewNagPostReconciliationError(msg)
+            post.last_nag_at = right_now
+            post.nag_count = claim.nag_count
+            post.last_nag_reply_ts = reply_ts
+            outcome = ScanSignal(
+                kind="review_nag.ping",
+                summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
+                payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
+            )
+        return outcome
 
 
 def _ask_owner_for_state(post: ReviewRequestPost, interval: dt.timedelta) -> ScanSignal | None:
@@ -483,24 +458,6 @@ def _unreadable_state_skip(post: ReviewRequestPost, why: str) -> ScanSignal:
         kind="review_nag.mr_state_unreadable",
         summary=f"Skipping nag for {post.mr_url} — {why}",
         payload={"mr_url": post.mr_url, "post_id": post.pk, "reason": why},
-    )
-
-
-def _pause_skip(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
-    """A skip-signal when the owner is holding this request, or when that cannot be read.
-
-    The hold is the owner's own reaction on the thread root; escalating past it
-    would @-mention a group about work its author has said is not ready. An
-    ``UNKNOWN`` pause state is treated the same way, since a hold nobody can read
-    is exactly the case where the mechanism would silently stop working.
-    """
-    state = read_pause_state(post, messaging)
-    if state is PauseState.NOT_PAUSED:
-        return None
-    return ScanSignal(
-        kind="review_nag.mr_paused",
-        summary=f"Skipping nag for {post.mr_url} — pause state is {state.value}",
-        payload={"mr_url": post.mr_url, "post_id": post.pk, "pause_state": state.value},
     )
 
 

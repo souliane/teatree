@@ -29,7 +29,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import RESUME_ANSWER_PREFIX
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
@@ -131,6 +131,10 @@ class TestThreadedReplyBindsItsOwnQuestion:
         newer.refresh_from_db()
         assert older.answer_text == "use postgres-1"
         assert older.resolved_via == "slack"
+        assert (
+            DeferredQuestionAudit.objects.get(question=older, action="answered").resolver_id
+            == f"slack:{OWNER_SLACK_ID}"
+        )
         assert newer.is_pending, "the newest question was resolved by a reply threaded under another"
 
     def test_threaded_reply_acks_and_claims_the_reply_row(self) -> None:
@@ -504,6 +508,19 @@ class TestABoundAnswerSurvivesARefusedResume(TestCase):
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"
         assert not parked.child_tasks.exists()
+
+
+class TestCheckoutStopAnswer(TestCase):
+    def test_owner_answer_reaches_the_checkout_stop_consumer(self) -> None:
+        question = DeferredQuestion.objects.create(
+            question="Should the verified child writers be stopped?",
+            dedupe_marker="checkout-exit-held:7:session",
+        )
+        answered: list[DeferredQuestion] = []
+        assert apply_bound_answer(
+            BoundAnswer(question=question, answer="Stop verified writers"), on_answer=answered.append
+        )
+        assert [row.resolved_via for row in answered] == [DeferredQuestion.ResolvedVia.SLACK]
 
 
 class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):

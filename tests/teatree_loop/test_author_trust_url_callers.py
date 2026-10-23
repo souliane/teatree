@@ -6,7 +6,7 @@ caller that stops passing its URL asks the probe about a bare slug — and, wher
 verdict, reaches the other verdict.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
@@ -31,7 +31,7 @@ class TestEveryCallerHandsItsUrlToTheDecision(TestCase):
     """
 
     @contextmanager
-    def _private_only_under_its_host(self) -> Iterator[list[str]]:
+    def _private_only_under_its_host(self) -> Generator[list[str]]:
         asked: list[str] = []
 
         def visibility(slug: str, *_args: object, **_kwargs: object) -> str | None:

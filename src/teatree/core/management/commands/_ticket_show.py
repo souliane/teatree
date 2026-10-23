@@ -15,7 +15,6 @@ from django_typer.management import TyperCommand, command
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import TaskAttempt, Ticket
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
@@ -62,10 +61,7 @@ def phase_budget_rows(ticket: Ticket) -> list[PhaseBudgetRow]:
     counts: dict[str, int] = {}
     first_pk: dict[str, int] = {}
     attempts = (
-        TaskAttempt.objects.filter(task__ticket_id=ticket.pk)
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .select_related("task")
-        .order_by("pk")
+        TaskAttempt.objects.filter(task__ticket_id=ticket.pk).excluding_parks().select_related("task").order_by("pk")
     )
     for attempt in attempts:
         if recoverable_exhaustion_cause(attempt.error) is not None:

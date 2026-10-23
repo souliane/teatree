@@ -9,11 +9,14 @@ typer CLI, so the parity with the host's ``scripts/eval/merge_summaries.py`` shi
 is exercised end to end.
 """
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.eval.models import CachedPass
+from teatree.eval.summary_markdown import render_summary_markdown
 
 _META = ["--run-url", "https://x/run/1", "--sha", "deadbeef", "--generated-at", "2026-06-24T06:00:00Z"]
 
@@ -43,6 +46,34 @@ def _write_shards(tmp_path: Path) -> Path:
 
 
 class TestMergeSummaries:
+    def test_cached_source_survives_dashboard_merge(self, tmp_path: Path) -> None:
+        shard = tmp_path / "cached.md"
+        key = "a" * 64
+        shard.write_text(
+            render_summary_markdown(
+                [],
+                cached=[CachedPass("alpha", "clean_room", key, "https://example.test/run/1", "2026-10-16", "head")],
+            ),
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard), *_META])
+        assert result.exit_code == 0, result.output
+        assert f"- alpha: key `{key}` from [run](https://example.test/run/1)" in result.output
+        assert re.search(r"(?<!\]\()https://", result.output) is None
+
+    def test_cached_pass_has_its_own_dashboard_total(self, tmp_path: Path) -> None:
+        shard = tmp_path / "cached.md"
+        shard.write_text(
+            render_summary_markdown(
+                [],
+                cached=[CachedPass("alpha", "clean_room", "a" * 64, "local", "2026-10-16", "head")],
+            ),
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard), *_META])
+        assert result.exit_code == 0, result.output
+        assert "**0 passed**, **0 failed**, **0 skipped**, **0 incomplete**, **1 cached** (of 1)" in result.output
+
     def test_merges_to_one_table_with_summed_totals_and_cost(self, tmp_path: Path) -> None:
         shard_dir = _write_shards(tmp_path)
         result = CliRunner().invoke(app, ["eval", "merge-summaries", str(shard_dir), *_META])

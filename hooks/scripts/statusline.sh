@@ -228,6 +228,9 @@ _statusline_chain_db() {
 # Echoes exactly one of `on`, `off`, `unknown`. `unknown` is NOT `off`: it means a
 # store exists here that no tier could read, so the shipped default is a guess and
 # must not be rendered as the owner's stored choice.
+# BEGIN GENERATED: autoload default
+_AUTOLOAD_DEFAULT=off
+# END GENERATED: autoload default
 autoload_state() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
@@ -243,6 +246,7 @@ autoload_state() {
     value=$(_config_setting_read autoload) || { printf 'unknown'; return 0; }
     case "$value" in
         true) printf 'on' ;;
+        '') printf '%s' "$_AUTOLOAD_DEFAULT" ;;
         *) printf 'off' ;;
     esac
 }

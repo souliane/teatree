@@ -24,6 +24,7 @@ from teatree.cli.review import ReviewService
 from teatree.cli.review.own_mr import owner_authored_mr
 from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval
 from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict, resolve_on_behalf_verdict
+from tests.config._shared import _seed_config_db
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -39,9 +40,12 @@ _TARGET = f"{_REPO}!{_MR}"
 class _AuthoredStubAPI:
     """GitLab API stand-in whose MR carries an explicit author, recording every call."""
 
-    def __init__(self, *, author: str, identity: str = _OWNER) -> None:
+    def __init__(
+        self, *, author: str, identity: str = _OWNER, base_url: str = "https://gitlab.example.com/api/v4"
+    ) -> None:
         self._author = author
         self._identity = identity
+        self.base_url = base_url
         self.calls: list[tuple[str, str]] = []
 
     def current_username(self) -> str:
@@ -92,8 +96,70 @@ def _service(api: object) -> ReviewService:
     return service
 
 
+def _declare_bot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host: str = "gitlab.example") -> None:
+    db = tmp_path / "config.sqlite3"
+    _seed_config_db(db, self_forge_identities={host: ["factory-bot"]})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+
+class TestBotDeclaredForTheApiHostIsOwn:
+    """Unit: the owner-authorship proof uses the API host's declared bots."""
+
+    def test_an_mr_authored_by_a_bot_declared_for_the_api_host_is_own(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _declare_bot(monkeypatch, tmp_path)
+        api = _AuthoredStubAPI(author="factory-bot", identity="owner-account", base_url="https://gitlab.example/api/v4")
+
+        assert owner_authored_mr(api, _REPO, _MR) is True
+
+    def test_a_bot_declared_only_for_another_host_is_not_own(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _declare_bot(monkeypatch, tmp_path, host="other.example")
+        api = _AuthoredStubAPI(author="factory-bot", identity="owner-account", base_url="https://gitlab.example/api/v4")
+
+        assert owner_authored_mr(api, _REPO, _MR) is False
+
+    def test_an_api_without_a_readable_host_declares_no_bot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _NoHostAPI(_AuthoredStubAPI):
+            @property
+            def base_url(self) -> str:
+                msg = "API host unavailable"
+                raise RuntimeError(msg)
+
+            @base_url.setter
+            def base_url(self, value: str) -> None:
+                del value
+
+        _declare_bot(monkeypatch, tmp_path)
+
+        assert owner_authored_mr(_NoHostAPI(author="factory-bot", identity="owner-account"), _REPO, _MR) is False
+
+    def test_a_declared_bot_is_own_even_when_the_posting_identity_is_unresolvable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _NoIdentityAPI(_AuthoredStubAPI):
+            def current_username(self) -> str:
+                msg = "posting identity unavailable"
+                raise RuntimeError(msg)
+
+        _declare_bot(monkeypatch, tmp_path)
+        api = _NoIdentityAPI(author="factory-bot", base_url="https://gitlab.example/api/v4")
+
+        assert owner_authored_mr(api, _REPO, _MR) is True
+
+    def test_case_only_difference_is_not_own(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _declare_bot(monkeypatch, tmp_path)
+        api = _AuthoredStubAPI(author="Factory-Bot", identity="owner-account", base_url="https://gitlab.example/api/v4")
+
+        assert owner_authored_mr(api, _REPO, _MR) is False
+
+
 class TestAuthorSideReplyOnOwnMrPosts:
-    """Direction 1 — the carve-out the owner granted."""
+    """Integration: direction 1 of the carve-out the owner granted."""
 
     def test_reply_on_owner_authored_mr_publishes_without_any_approval(self) -> None:
         """RED before the carve-out: this BLOCKed on the posture."""
@@ -116,9 +182,22 @@ class TestAuthorSideReplyOnOwnMrPosts:
 
         assert code == 0
 
+    def test_reply_recognises_an_mr_authored_by_a_bot_declared_for_the_host(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        seed_forbidding_posture()
+        _declare_bot(monkeypatch, tmp_path)
+        api = _AuthoredStubAPI(author="factory-bot", identity="owner-account", base_url="https://gitlab.example/api/v4")
+
+        msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
+
+        assert code == 0, msg
+        assert any("discussions/d1/notes" in endpoint for endpoint in api.published)
+        assert not OnBehalfApproval.objects.exists()
+
 
 class TestColleagueAuthoredMrStillRefused:
-    """Direction 2 — the control the carve-out must NOT remove."""
+    """Integration: direction 2 keeps a colleague's MR gated."""
 
     def test_reply_on_colleague_authored_mr_is_still_blocked(self) -> None:
         seed_forbidding_posture()
@@ -129,6 +208,19 @@ class TestColleagueAuthoredMrStillRefused:
         assert code == 1
         assert "approve-on-behalf" in msg
         assert api.published == [], "no GitLab write may be attempted on a colleague's MR"
+
+    def test_reply_on_colleague_mr_stays_blocked_when_a_bot_is_declared(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        seed_forbidding_posture()
+        _declare_bot(monkeypatch, tmp_path)
+        api = _AuthoredStubAPI(author=_COLLEAGUE, base_url="https://gitlab.example/api/v4")
+
+        msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert api.published == []
 
     def test_colleague_mr_reply_still_publishes_with_a_recorded_approval(self) -> None:
         """The pre-existing satisfier is untouched — the carve-out adds a path, it replaces none."""

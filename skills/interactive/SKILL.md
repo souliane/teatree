@@ -63,7 +63,7 @@ order being read as wider than it is:
 
 - **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
   ticket the factory already started.
-- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+- **The recorded per-action emergency escape** — `[gate-escape:headless_authoring: <reason>]`, for a
   genuine emergency (the factory itself is down). Single-use, recorded, per action.
 
 The deterministic backstop is the PreToolUse authoring gate
@@ -94,7 +94,7 @@ The deterministic backstop is the PreToolUse delegation gate
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
 `AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
-is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+is its job. Escapes: `[gate-escape:orchestrator_delegation_gate: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)
@@ -136,6 +136,8 @@ Work is *work-bearing* from the moment it exists in the working tree. There are 
 Every state either advances or leaves a durable record that something else drains. Nothing may exit 0 having observed work and stored nothing.
 
 A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger. `workspace emit` now names it (#4579: it unions the ledger with the unregistered checkouts holding work), so it is visible — but visibility is not delivery, and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+
+**Hand work owns its checkout state (#5238).** A manual hand-recorded plan, review or held decision mints no writing factory task and does not attest checkout changes. Claim occupancy while editing, release it after the work stops, then explicitly attest the reviewed checkout state before allowing a factory writer to resume. A `/loop` claim-next → spawn → record-attempt chain holds its checkout as `task:<pk>` in every phase, attests it at record-attempt, then schedules its next phase; any other record counts as hand work. Cancelling a factory task does not release a checkout with live processes; an agent-issued cancel leaves any stop decision to the owner.
 
 ### The mechanisms
 
@@ -220,7 +222,7 @@ so the repetition is automated rather than remembered.
 |---|---|---|---|
 | `standing-golden-rule` | 300s | every attended session | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
 | `standing-todo-consolidate` | 1800s | every attended session | Every user request is captured as a task, and every OPEN task is drained — closed when durable state already satisfies it; reconcile from durable state first, rescan the transcript only if unaccounted for; then implement the outstanding requests, oldest first. |
-| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact; open PRs are listed with age and pending task, started PRs first, oldest first, and a stalled one gets its cause fixed at once. |
 
 Every slot arrives as context on a turn that is already happening: all three when the
 session starts, resumes, clears or compacts, and each again on the first tool call after
@@ -259,19 +261,23 @@ When a running factory task needs something only this session has — a page or 
 1. `t3 <overlay> live list` — the sessions running now on this host's workers, each with its task id and `steerable` flag.
 2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
 3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
+4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
+
+Commands carry the selected session's attempt and worker generation. `stale_command` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 
-Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
+Read the receipt, not the hope. `accepted_current_turn` and `accepted_new_turn` (exit 0) mean the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_idle` (use current-turn steer), `stale_command` (inspect the new attempt), `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task or its session has closed: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. An idle session lists `steerable: false`; use `live follow-up` while its idle window is open. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
-Factory agents use the five `agent_mailbox_*` tools in their own TeaTree-managed
-MCP child to reach live peers across tickets and same-host workers. `self` and
+Claude factory agents use five `agent_mailbox_*` tools in their TeaTree-managed
+MCP child. A `pydantic_ai` task gets four native tools and no `agent_mailbox_self`.
+They reach live peers across tickets and same-host workers. `self` (Claude only) and
 `peers` provide addresses and receive status; `send` returns a receipt after a
 current-turn push or an acknowledged `inbox`/`wait` read. A `rejected` receipt
 gives the cause and says whether the text remains in the inbox;
 `unknown_delivery` keeps the original message on a same-key retry. Acceptance
 means the session took the message, not that the model obeyed it. These tools
-cannot wake an idle or parked task.
+can wake an idle `claude_sdk` session during its window (`accepted_new_turn`), but never a parked task. A restarted worker has no old live session or automatic replay; use the task list for parked work.
 
 ## Claude-only hook automation
 

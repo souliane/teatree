@@ -51,11 +51,11 @@ Channel-list and MR-state lookup are dependency-injected
 Both the per-channel message fetcher and the MR-state classifier are
 function parameters on the scanner, not protocol methods on the
 backend. This keeps the scanner unit-testable without expanding the
-:class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
+:class:`MessagingBackend` protocol.
 The production wiring is :class:`BackendChannelHistoryFetcher` (delegating
 to :meth:`MessagingBackend.fetch_channel_history`) and
-:class:`teatree.loop.scanners.slack_broadcast_mr_classifier.GlabGhMrStateClassifier`
-(``glab mr view`` / ``gh pr view``); the tick-jobs builder resolves the
+:class:`teatree.loop.scanners.slack_broadcast_mr_classifier.ForgeMrStateClassifier`
+(GitLab HTTP / ``gh pr view``); the tick-jobs builder resolves the
 overlay's broadcast channel list and passes it in, keeping the scanner
 overlay-agnostic.
 """
@@ -138,7 +138,7 @@ MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
 """Function that maps a list of MR URLs to per-URL :class:`MrState` records.
 
 Injected into the scanner so tests can supply a fake while the
-production wiring (``glab mr view``) lands separately. The function
+production wiring is a separate classifier. The function
 must preserve URL order and length — the scanner zips back to the
 input list for downstream signal emission.
 """

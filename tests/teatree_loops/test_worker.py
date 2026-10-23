@@ -6,28 +6,38 @@ pool + agent pools sized to the headless lane widths), that a preset admitting z
 quiesces the pool while the PROCESS stays alive, and that a stop signal tears the pool down.
 """
 
+import asyncio
 import contextlib
 import dataclasses
 import datetime as dt
+import functools
 import inspect
 import os
-import sqlite3
+import threading
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 import yaml
-from django.db import connection
+from claude_agent_sdk import ClaudeAgentOptions
+from django.db import OperationalError
 from django.tasks import TaskResultStatus
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
+from django_tasks_db.management.commands import db_worker
 from django_tasks_db.models import DBTaskResult
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_client import LiveClient
-from teatree.core import agent_admission
+from teatree.agents.runner_heartbeat import HeartbeatRuntime, drain_reason_closing_connection, drive_with_heartbeat
+from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
+from teatree.core import agent_admission, managers_task_claim
 from teatree.core.admission_governor import (
     AdmissionCeiling,
     AdmissionDecision,
@@ -42,6 +52,7 @@ from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
 from teatree.loops.enable_verdict import FleetAdmission
+from teatree.loops.executor_thread import Executor, Handle, build_executor, spawn_executor_thread
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
     LOOPS_EXECUTOR_FLOOR,
@@ -54,9 +65,15 @@ from teatree.loops.worker import (
 )
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
+from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
+from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Generator, Sequence
+    from contextlib import AbstractContextManager
+
+    from teatree.agents.runner_stream import HarnessOutcome
 
 
 def _scripted_reader(script: "Sequence[bool]", holder: "list[LoopWorker]") -> "Callable[[], FleetAdmission]":
@@ -91,6 +108,7 @@ class _FakeHandle:
     def __init__(self, *, alive: bool = True) -> None:
         self.joined = False
         self._alive = alive
+        self.degraded = False
 
     def is_alive(self) -> bool:
         return self._alive
@@ -103,6 +121,15 @@ class _FakeHandle:
 class _StuckHandle(_FakeHandle):
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
+
+
+class _RunningHandle(_FakeHandle):
+    def __init__(self, executor: Executor) -> None:
+        super().__init__()
+        self.executor = executor
+
+    def is_alive(self) -> bool:
+        return self.executor.running
 
 
 def _make_worker(*, script, sleep, **seam_overrides):
@@ -224,21 +251,20 @@ def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.Mo
     assert loops_executor_count() == LOOPS_EXECUTOR_FLOOR == 2
 
 
-def _widths(expensive: int, cheap: int) -> LaneWidths:
-    """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
-    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), cheap=cheap)
+def _widths(expensive: int, review: int) -> LaneWidths:
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), review=review)
 
 
-@pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
-def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
-    assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * cheap
+@pytest.mark.parametrize(("expensive", "review"), [(1, 1), (3, 2), (15, 2)])
+def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, review: int) -> None:
+    assert agent_executor_queues(_widths(expensive, review)) == ("default",) * expensive + ("cheap",) * (review + 1)
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
-    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",)
+    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",) * 2
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
-    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",)
+    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",) * 2
 
 
 def test_a_lane_width_read_failure_keeps_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,7 +279,7 @@ def test_the_lane_widths_never_size_the_loops_control_plane() -> None:
         script=[True], sleep=lambda _s: None, loops_executors=3, read_agent_queues=lambda: one_seat
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
 
 
 def test_a_brake_keeps_the_whole_loops_pool() -> None:
@@ -276,7 +302,7 @@ def test_a_machine_brake_keeps_one_executor_per_cheap_seat() -> None:
         read_agent_queues=lambda: lanes,
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap", "cheap"]
 
 
 def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
@@ -299,7 +325,7 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
     )
     worker.run()
 
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
     assert set(started) == {"timer/control", "coding", "reviewing"}
 
 
@@ -517,6 +543,11 @@ def _liveness_seams(*, script, holder, spawn, make_executor, **overrides) -> Wor
         make_executor=make_executor,
         spawn=spawn,
         kill_ticks=lambda: None,
+        claim_master=lambda: None,
+        release_master=lambda: None,
+        reclaim_leases=lambda: None,
+        reap_leases=lambda: None,
+        start_live_ingress=lambda: None,
         sleep=lambda _s: None,
         poll_seconds=0.0,
         loops_executors=1,
@@ -562,6 +593,393 @@ def test_repeated_executor_death_exits_the_worker_non_zero() -> None:
     holder.append(LoopWorker(seams))
     with pytest.raises(LoopWorkerExecutorCrashError):
         holder[0].run()
+
+
+def test_a_healthy_respawn_refunds_its_crash_budget_after_ten_minutes() -> None:
+    clock = [0.0]
+    handles: list[_FakeHandle] = []
+
+    def spawn(_executor: _FakeExecutor) -> _FakeHandle:
+        handle = _FakeHandle(alive=bool(handles))
+        handles.append(handle)
+        return handle
+
+    seams = WorkerSeams(
+        make_executor=_FakeExecutor,
+        spawn=spawn,
+        monotonic=lambda: clock[0],
+        loops_executors=1,
+        read_agent_queues=lambda: (),
+    )
+    worker = LoopWorker(seams)
+    worker._resize_pool(("loops",))
+    for expected in (1, 2, 3):
+        worker._respawn_dead_executors()
+        assert worker._slots[0].respawns == expected
+        handles[-1]._alive = False
+    handles[-1]._alive = True
+
+    clock[0] = 599.0
+    worker._respawn_dead_executors()
+    assert worker._slots[0].respawns == 3
+
+    clock[0] = 600.0
+    worker._respawn_dead_executors()
+    assert worker._slots[0].respawns == 0
+
+    handles[-1]._alive = False
+    worker._respawn_dead_executors()
+    assert worker._slots[0].respawns == 1
+
+
+def test_a_non_zero_exit_waits_only_the_checkpoint_grace(caplog: pytest.LogCaptureFixture) -> None:
+    clock = [0.0]
+    reasons: list[str] = []
+    holder: list[LoopWorker] = []
+
+    def spawn(executor: _FakeExecutor) -> _FakeHandle:
+        return _FakeHandle(alive=False) if executor.queue == "loops" else _StuckHandle()
+
+    seams = dataclasses.replace(
+        _liveness_seams(script=[True] * 10, holder=holder, spawn=spawn, make_executor=_FakeExecutor),
+        read_agent_queues=lambda: ("default",),
+        max_respawns=0,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        begin_exit=reasons.append,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(LoopWorkerExecutorStopError):
+        holder[0].run()
+
+    assert reasons[0].startswith("this worker is exiting non-zero: executor for queue loops (slot 0)")
+    assert len(reasons) == 1
+    assert clock[0] == pytest.approx(300.0)
+    assert "still active after checkpoint grace" in caplog.text
+
+
+def test_sigterm_during_checkpoint_grace_exits_early() -> None:
+    clock = [0.0]
+    holder: list[LoopWorker] = []
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        if clock[0] >= 2.0:
+            holder[0].request_stop()
+
+    seams = dataclasses.replace(
+        _liveness_seams(
+            script=[True] * 10,
+            holder=holder,
+            spawn=lambda executor: _FakeHandle(alive=False) if executor.queue == "loops" else _StuckHandle(),
+            make_executor=_FakeExecutor,
+        ),
+        read_agent_queues=lambda: ("default",),
+        max_respawns=0,
+        monotonic=lambda: clock[0],
+        sleep=sleep,
+        begin_exit=lambda _reason: None,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(LoopWorkerExecutorStopError):
+        holder[0].run()
+
+    assert clock[0] == pytest.approx(2.0)
+
+
+def test_checkpoint_grace_keeps_master_lease_fresh() -> None:
+    clock = [0.0]
+    claims: list[float] = []
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(
+            script=[True] * 10,
+            holder=holder,
+            spawn=lambda executor: _FakeHandle(alive=False) if executor.queue == "loops" else _StuckHandle(),
+            make_executor=_FakeExecutor,
+        ),
+        read_agent_queues=lambda: ("default",),
+        max_respawns=0,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        claim_master=lambda: claims.append(clock[0]),
+        master_refresh_seconds=60.0,
+        begin_exit=lambda _reason: None,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(LoopWorkerExecutorStopError):
+        holder[0].run()
+
+    assert len(claims) >= 6
+    assert max(later - earlier for earlier, later in pairwise(claims)) <= 60.0
+    assert managers_task_claim.process_exit.reason == ""
+
+
+def test_real_lock_tolerant_handle_publishes_degraded_health() -> None:
+    clock = [0.0]
+    degraded_ready = threading.Event()
+    release = threading.Event()
+    beats: list[tuple[str, bool]] = []
+    holder: list[LoopWorker] = []
+
+    class LockedExecutor(_FakeExecutor):
+        calls = 0
+
+        def run(self) -> None:
+            self.calls += 1
+            if self.calls <= 2:
+                message = "database is locked"
+                raise OperationalError(message)
+            release.wait(timeout=10)
+
+    def backoff(_seconds: float) -> None:
+        if executor.calls == 1:
+            clock[0] = 601.0
+        else:
+            degraded_ready.set()
+            release.wait(timeout=10)
+
+    def supervisor_sleep(_seconds: float) -> None:
+        assert degraded_ready.wait(timeout=10)
+
+    polls = [0]
+
+    def read_admission() -> FleetAdmission:
+        polls[0] += 1
+        if polls[0] == 1:
+            return FleetAdmission.ADMITS
+        release.set()
+        holder[0].request_stop()
+        return FleetAdmission.NONE
+
+    executor = LockedExecutor("loops", "worker-0-loops")
+    seams = dataclasses.replace(
+        _liveness_seams(
+            script=[True],
+            holder=holder,
+            spawn=lambda _executor: spawn_executor_thread(executor, sleep=backoff, monotonic=lambda: clock[0]),
+            make_executor=lambda _queue, _id: executor,
+        ),
+        sleep=supervisor_sleep,
+        read_admission=read_admission,
+        publish_health=lambda admission, *, active: beats.append((admission, active)),
+    )
+    holder.append(LoopWorker(seams))
+    try:
+        holder[0].run()
+    finally:
+        release.set()
+
+    assert beats == [("degraded", False)]
+
+
+def test_an_unexpected_supervisor_failure_still_announces_a_checkpoint() -> None:
+    reasons: list[str] = []
+    polls = 0
+
+    def read_admission() -> FleetAdmission:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            return FleetAdmission.ADMITS
+        message = "supervisor failed"
+        raise RuntimeError(message)
+
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(script=[], holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
+        read_admission=read_admission,
+        begin_exit=reasons.append,
+    )
+    holder.append(LoopWorker(seams))
+
+    with pytest.raises(RuntimeError, match="supervisor failed"):
+        holder[0].run()
+
+    assert reasons[0] == "this worker is exiting non-zero: supervisor failed with RuntimeError"
+
+
+def test_a_stop_request_never_announces_a_checkpoint() -> None:
+    reasons: list[str] = []
+    holder: list[LoopWorker] = []
+    seams = dataclasses.replace(
+        _liveness_seams(script=[True] * 5, holder=holder, spawn=_RunningHandle, make_executor=_FakeExecutor),
+        read_agent_queues=lambda: ("default",),
+        sleep=lambda _seconds: holder[0].request_stop(),
+        begin_exit=reasons.append,
+    )
+    holder.append(LoopWorker(seams))
+
+    holder[0].run()
+
+    assert reasons == []
+
+
+@contextlib.contextmanager
+def _lock_first_six_transactions(
+    alias: str, *, attempts: list[int], original: "Callable[[str], AbstractContextManager[None]]"
+) -> "Generator[None]":
+    attempts[0] += 1
+    if attempts[0] <= 6:
+        msg = "database is locked"
+        raise OperationalError(msg)
+    with original(alias):
+        yield
+
+
+class TestLockedExecutorKeepsAgentClaim(TransactionTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(file_backed_default_database())
+
+    def test_six_locked_loop_attempts_keep_the_agent_claim_and_serve_work(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket)
+        agent = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        agent.claim(claimed_by="worker-A", lease_seconds=900)
+        claim_generation = (agent.claimed_by, agent.claimed_by_session, agent.claimed_at)
+        attempts = [0]
+        built: list[str] = []
+        holder: list[LoopWorker] = []
+        enqueued = False
+
+        def make_executor(queue: str, worker_id: str) -> Executor:
+            built.append(queue)
+            return build_executor(queue, worker_id) if queue == "loops" else _FakeExecutor(queue, worker_id)
+
+        def spawn(executor: Executor) -> Handle:
+            if isinstance(executor, db_worker.Worker):
+                return spawn_executor_thread(executor, sleep=lambda _seconds: time.sleep(0.001))
+            return _RunningHandle(executor)
+
+        def supervisor_sleep(_seconds: float) -> None:
+            nonlocal enqueued
+            if attempts[0] >= 6 and not enqueued:
+                refresh_followup_snapshot.using(queue_name="loops").enqueue()
+                enqueued = True
+            if DBTaskResult.objects.filter(queue_name="loops", status=TaskResultStatus.SUCCESSFUL).exists():
+                holder[0].request_stop()
+            time.sleep(0.01)
+
+        seams = dataclasses.replace(
+            _liveness_seams(script=[True] * 1000, holder=holder, spawn=spawn, make_executor=make_executor),
+            read_agent_queues=lambda: ("default",),
+            sleep=supervisor_sleep,
+        )
+        holder.append(LoopWorker(seams))
+        original_transaction = db_worker.exclusive_transaction
+        locked_transactions = functools.partial(
+            _lock_first_six_transactions, attempts=attempts, original=original_transaction
+        )
+        with (
+            override_settings(**_DB_BACKEND),
+            mock.patch.object(db_worker, "exclusive_transaction", locked_transactions),
+        ):
+            holder[0].run()
+
+        agent.refresh_from_db()
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.SUCCESSFUL
+        assert attempts[0] >= 7
+        assert built == ["loops", "default"]
+        assert agent.status == Task.Status.CLAIMED
+        assert (agent.claimed_by, agent.claimed_by_session, agent.claimed_at) == claim_generation
+
+
+class TestAWorkerCrashCheckpointsTheAgent(TransactionTestCase):
+    def test_a_non_lock_crash_parks_the_run_with_its_cause(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket)
+        agent = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        agent.claim(claimed_by="worker-A", lease_seconds=900)
+        session = InterruptibleSession([], session_id="0f1e2d3c-4b5a-4968-8776-655443322110")
+        runtime = HeartbeatRuntime(
+            watchdog=LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0),
+            heartbeat_interval=0.01,
+            sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+            renew_lease=lambda task: None,
+            drain_reason=drain_reason_closing_connection,
+        )
+        outcomes: list[HarnessOutcome] = []
+        checkpoint_ready = threading.Event()
+        park_done = threading.Event()
+        crashes: list[BaseException] = []
+
+        class FailingLoopExecutor(_FakeExecutor):
+            def run(self) -> None:
+                message = "disk I/O error"
+                raise OperationalError(message)
+
+        class AgentThread(threading.Thread):
+            @property
+            def degraded(self) -> bool:
+                return False
+
+        def make_executor(queue: str, worker_id: str) -> _FakeExecutor:
+            if queue == "loops":
+                return FailingLoopExecutor(queue, worker_id)
+            return _FakeExecutor(queue, worker_id)
+
+        def drive_agent() -> None:
+            try:
+                outcome = asyncio.run(
+                    drive_with_heartbeat(agent, "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime)
+                )
+                outcomes.append(outcome)
+                checkpoint_ready.set()
+                park_done.wait(timeout=10)
+            finally:
+                close_thread_db_connections()
+
+        def spawn(executor: _FakeExecutor) -> Handle:
+            if executor.queue == "loops":
+                return spawn_executor_thread(executor)
+            thread = AgentThread(target=drive_agent)
+            thread.start()
+            return thread
+
+        holder: list[LoopWorker] = []
+        seams = dataclasses.replace(
+            _liveness_seams(
+                script=[True] * 10,
+                holder=holder,
+                spawn=spawn,
+                make_executor=make_executor,
+                max_respawns=3,
+            ),
+            read_agent_queues=lambda: ("default",),
+            sleep=lambda _seconds: time.sleep(0.01),
+        )
+        holder.append(LoopWorker(seams))
+
+        with (
+            mock.patch.object(managers_task_claim.process_exit, "reason", ""),
+            mock.patch.object(managers_task_claim, "worker_is_quiescing", return_value=False),
+            mock.patch.object(managers_task_claim, "generation_admission_refusal", return_value=""),
+            mock.patch.object(threading, "excepthook", lambda args: crashes.append(args.exc_value)),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            future = pool.submit(holder[0].run)
+            try:
+                assert checkpoint_ready.wait(timeout=10)
+                assert outcomes[0].checkpointed
+                _record_stuck_outcome(agent, outcomes[0], stuck_reason=outcomes[0].stuck_reason or "")
+            finally:
+                park_done.set()
+            with pytest.raises(LoopWorkerExecutorCrashError):
+                future.result(timeout=10)
+            assert managers_task_claim.process_exit.reason == ""
+
+        agent.refresh_from_db()
+        assert agent.status == Task.Status.PENDING
+        assert agent.claimed_by == ""
+        assert len(crashes) == 4
+        assert all(isinstance(error, OperationalError) and "disk I/O error" in str(error) for error in crashes)
+        assert agent.attempts.latest("pk").error == (
+            "limit_parked: checkpoint: this worker is exiting non-zero: executor for queue loops (slot 0) died 4 times"
+        )
 
 
 def test_shutdown_kills_in_flight_tick_process_groups() -> None:
@@ -640,34 +1058,6 @@ class TestStartupExpiryBeforeSpawn:
         assert all(status == TaskResultStatus.FAILED for status in statuses_at_spawn)
 
 
-class TestExecutorThreadConnectionHygiene(TestCase):
-    """A spawned executor thread must release its raw DB handle on exit.
-
-    ``connections.close_all()`` — what this thread used to call — is a documented
-    no-op for an in-memory sqlite database, so it left the handle stranded for a
-    later GC to finalize as a ``ResourceWarning``. Under ``filterwarnings = error``
-    that fails an unrelated test in the same xdist worker.
-    """
-
-    def test_spawned_thread_closes_its_raw_db_handle(self) -> None:
-        raw_connections: list[sqlite3.Connection] = []
-
-        class _OrmTouchingExecutor:
-            def run(self) -> None:
-                connection.ensure_connection()
-                raw_connections.append(connection.connection)
-
-            def stop(self) -> None:
-                return None
-
-        thread = worker_mod._spawn_executor_thread(_OrmTouchingExecutor())
-        thread.join(timeout=10)
-
-        assert raw_connections, "the executor never opened a connection"
-        with pytest.raises(sqlite3.ProgrammingError):
-            raw_connections[0].execute("SELECT 1")
-
-
 _PACED_QUOTA = QuotaSignal(
     fresh=True,
     all_accounts_exhausted=False,
@@ -739,24 +1129,29 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
 
                 assert self._executors()["default"] == len(seated)
 
-    def test_every_admitted_review_seat_gets_a_cheap_executor(self) -> None:
+    def test_every_admitted_cheap_seat_gets_a_cheap_executor(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
-        seated = self._admit("reviewing")
+        reviews = self._admit("reviewing")
+        retiring = self._admit("shipping")
 
-        assert self._executors()["cheap"] == len(seated) == 2
+        assert len(reviews) == 2
+        assert len(retiring) == 1
+        assert self._executors()["cheap"] == len(reviews) + len(retiring) == 3
 
-    def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
+    def test_a_wider_review_lane_keeps_a_retiring_executor(self) -> None:
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
         seated = self._admit("reviewing")
 
-        assert self._executors()["cheap"] == len(seated) == 3
+        assert len(seated) == 3
+        assert self._executors()["cheap"] == len(seated) + 1 == 4
 
     def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
         coding = self._admit("coding")
         reviews = self._admit("reviewing")
         executors = self._executors()
 
-        assert (executors["default"], executors["cheap"]) == (len(coding), len(reviews)) == (4, 2)
+        assert (len(coding), len(reviews)) == (4, 2)
+        assert (executors["default"], executors["cheap"]) == (4, 3)
 
     def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)

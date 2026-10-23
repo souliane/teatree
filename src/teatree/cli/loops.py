@@ -122,7 +122,9 @@ def tick_command(
     ),
     overlay: str = typer.Option("", "--overlay", help="Restrict scanning to the named overlay (default: all)."),
     json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview followup decisions without posting or writing."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview built-in followup decisions; report omitted overlay hooks."
+    ),
 ) -> None:
     """Run ONE enabled, due loop by name — the per-loop primitive the loop-timer chain drives.
 

@@ -113,7 +113,7 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         )
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
-        return {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        return {"skipped": f"not claimable: {exc}"}
 
     if refusal:
         return _not_admitted(task_id, refusal)
@@ -186,8 +186,12 @@ def drain_queue_body() -> dict[str, list[int]]:
             continue
         reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
         logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
-        task_obj.claim(claimed_by="unknown-overlay-guard")
-        task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
+        with transaction.atomic():
+            try:
+                task_obj.claim(claimed_by="drain-poison", cleanup_unknown_overlay=True)
+            except InvalidTransitionError:
+                continue
+            task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
         failed_unknown_overlay.append(task_obj.pk)
     return {"enqueued": admit_waiting_tasks(at="queue drain"), "failed_unknown_overlay": failed_unknown_overlay}
 
@@ -596,7 +600,8 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    On success, advances ``PR_OPENED → REVIEW_REQUESTED`` via ``request_review()``.
+    On success, advances ``PR_OPENED → REVIEW_REQUESTED`` directly via
+    ``request_review()`` without repeating ``ship()`` gates.
 
     ``ShipExecutor.run()`` runs OUTSIDE the FSM-advance transaction (#1522):
     it calls ``host.create_pr()``, whose live forge PR is an external side
@@ -604,7 +609,7 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     own ``merge_extra`` records the PR url in its own committed transaction
     the instant ``create_pr`` returns, so a later rollback of the FSM advance
     cannot strand the PR. A redelivered job then finds the recorded url and
-    adopts it (``ShipExecutor._recorded_url_for_branch``) instead of
+    adopts it (``adoptable_pr_url``) instead of
     re-calling ``create_pr`` and hitting a 409.
     """
     with transaction.atomic():

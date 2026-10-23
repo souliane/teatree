@@ -4,8 +4,23 @@ import dataclasses
 from pathlib import Path
 from typing import Any, Literal
 
-from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, tier_models
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
+
+
+@dataclasses.dataclass(frozen=True)
+class CachedPass:
+    name: str
+    lane: str
+    content_key: str
+    run_url: str
+    recorded_at: str
+    head_sha: str
+    model: str = ""
+
+    def as_json(self) -> dict[str, str]:
+        return dataclasses.asdict(self)
+
 
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
 #: cost does NOT match the clean billed identity (it paid a partial-or-cap cost).
@@ -24,6 +39,7 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: override (:func:`teatree.eval.api_runner.resolve_max_turns_override`,
 #: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
+DEFAULT_JUDGE_BUDGET = 20
 
 #: Minimum turn budget the clean-room lane grants a scenario regardless of a
 #: lower per-scenario ``max_turns`` declaration. Many catalog scenarios declare a
@@ -292,7 +308,7 @@ class JudgeSpec:
     rubric: str
     #: DERIVED from the tier catalog (the conservative mid tier), never pinned —
     #: a hardcoded id would leave the judge a generation behind the runs it grades.
-    model: str = TIER_MODELS[DEFAULT_TIER]
+    model: str = tier_models()[DEFAULT_TIER]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -351,7 +367,7 @@ class EvalSpec:
     Model resolution is by ABSTRACT TIER, not a concrete model id. A scenario
     declares ``tier`` (``frontier`` / ``balanced`` / ``cheap``) or ``phase`` (a
     teatree FSM phase name) instead of pinning a model; the runner resolves
-    these through the single :data:`teatree.agents.model_tiering.TIER_MODELS`
+    these through the single :data:`teatree.agents.model_tiering.tier_models()`
     constant. ``model`` is the escape hatch for a deliberate concrete-id pin and
     wins when set; ``model`` is ``""`` (unset) on a tier/phase scenario. The
     resolution precedence, highest first: ``model`` > ``tier`` > ``phase`` >
@@ -370,11 +386,11 @@ class EvalSpec:
     #: WINS over ``tier``/``phase``.
     model: str = ""
     #: Abstract model tier (``frontier`` / ``balanced`` / ``cheap``). Resolved to a
-    #: concrete model id through ``TIER_MODELS``. Wins over ``phase`` and the
+    #: concrete model id through ``tier_models()``. Wins over ``phase`` and the
     #: default; loses to an explicit ``model``.
     tier: str = ""
     #: A teatree FSM phase name (``planning`` / ``coding`` / …). Resolved to its
-    #: tier via ``DEFAULT_PHASE_MODELS`` then to a model. Loses to ``model`` and
+    #: tier via ``phase_models()`` then to a model. Loses to ``model`` and
     #: ``tier``; wins over the default tier.
     phase: str = ""
     max_turns: int = DEFAULT_MAX_TURNS

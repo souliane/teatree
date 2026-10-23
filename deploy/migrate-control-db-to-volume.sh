@@ -14,6 +14,7 @@
 # but the per-table row-count equality asserted below only holds against a quiescent
 # source, and that assertion is the point — a mismatch must mean a bad copy, not a
 # concurrent write.
+# The copy inherits the source's journal flag; the first boundary connection on the target volume selects its mode.
 #
 # Idempotent-by-refusal: an existing database in the target is left untouched unless
 # MIGRATE_FORCE=1, so a re-run can never silently overwrite the live control DB.

@@ -1,7 +1,7 @@
 """Concurrency regression for souliane/teatree#804.
 
 The production database is **file-backed SQLite**
-(``src/teatree/settings.py`` → ``django.db.backends.sqlite3``,
+(``src/teatree/settings.py`` → ``teatree.db.sqlite3_boundary``,
 ``NAME = CANONICAL_DB``).  Django's SQLite backend silently ignores
 ``select_for_update()`` — it is a documented no-op (SQLite has no
 row-level locks).  The shared-state read-modify-write sites
@@ -39,7 +39,8 @@ Reverting ``SQLITE_WRITE_SERIALIZATION_OPTIONS`` to ``{}`` in
 ``settings.py`` makes ``..._green`` (and the settings-guard test) fail
 — proving the tests guard the fix and are not vacuous.
 
-Backend under test: **file-backed** ``django.db.backends.sqlite3``
+Backend under test: **file-backed** ``teatree.db.sqlite3_boundary`` for production
+and stock ``django.db.backends.sqlite3`` for the pre-#804 control
 (real ``.sqlite3`` file on disk, two OS threads, two connections).
 """
 
@@ -52,15 +53,16 @@ import pytest
 from django.db import OperationalError, connections, transaction
 
 from teatree.settings import DATABASES as PROD_DATABASES
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.utils.mount_points import MountEntry
 
 
-def _make_alias(tmp_path: Path, options: dict[str, object]) -> str:
+def _make_alias(tmp_path: Path, options: dict[str, object], *, engine: str = "django.db.backends.sqlite3") -> str:
     """Register a Django connection against a fresh file-backed SQLite DB."""
     alias = f"t804_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
     connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": engine,
         "NAME": str(db_file),
         "OPTIONS": dict(options),
         "ATOMIC_REQUESTS": False,
@@ -210,6 +212,7 @@ class TestSqliteWriteSerialization:
     def test_production_options_serialize_concurrent_writers_green(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The #804 production OPTIONS serialize the two writers.
 
@@ -226,8 +229,15 @@ class TestSqliteWriteSerialization:
         config and the assertion fails — proving the test guards the fix
         and is not vacuous.
         """
-        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS)
+        monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path))
+        monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+        monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
+        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
         try:
+            with connections[alias].cursor() as cur:
+                cur.execute("PRAGMA journal_mode")
+                assert cur.fetchone() == ("wal",)
             outcomes = _run_two_writers(alias)
         finally:
             _teardown_alias(alias)
@@ -241,7 +251,7 @@ class TestSqliteWriteSerialization:
         is teatree's boundary-guarded SQLite backend (Django's own SQLite
         backend plus the one-read-write-domain rule, teatree/db/boundary.py)
         and the OPTIONS must contain IMMEDIATE transaction mode, a
-        busy_timeout, and a rollback journal mode.
+        busy_timeout, and a per-path journal choice in the boundary engine.
 
         The assertion messages name the coupling on purpose (#4226): the
         ~40 ``select_for_update()`` call sites in ``src/teatree`` obtain
@@ -264,7 +274,7 @@ class TestSqliteWriteSerialization:
             "write lock is the only thing serializing two concurrent read-modify-writes"
         )
         assert opts["timeout"] == 30, "the blocked writer must wait for the reserved lock, not fail immediately"
-        assert "journal_mode=TRUNCATE" in opts["init_command"]
+        assert "init_command" not in opts
 
     def test_every_configured_database_carries_the_serialization_options(self) -> None:
         """No alias reaches the control DB without the write-serialization OPTIONS.
@@ -283,8 +293,8 @@ class TestSqliteWriteSerialization:
         ]
         assert not unserialized, f"alias(es) reaching the control DB without BEGIN IMMEDIATE: {unserialized}"
 
-    def test_production_options_map_no_shared_memory_sidecar(self, tmp_path: Path) -> None:
-        """A live connection on the production OPTIONS maps no ``-shm``.
+    def test_production_engine_on_host_path_maps_no_shared_memory_sidecar(self, tmp_path: Path) -> None:
+        """A live boundary-engine connection to a host path maps no ``-shm``.
 
         WAL coordinates its writers through a ``-shm`` file every writer
         mmaps shared-writable. Over Docker Desktop's macOS bind-mount layer
@@ -297,7 +307,7 @@ class TestSqliteWriteSerialization:
         unlinks both sidecars on last-connection close, so a post-teardown
         check would pass under WAL too.
         """
-        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS)
+        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
         try:
             with connections[alias].cursor() as cur:
                 cur.execute("PRAGMA journal_mode")
@@ -311,5 +321,5 @@ class TestSqliteWriteSerialization:
         finally:
             _teardown_alias(alias)
 
-        assert mode in _ROLLBACK_JOURNAL_MODES, f"production OPTIONS left the DB in {mode!r}"
-        assert not present, f"production OPTIONS created mmap-backed sidecars: {present}"
+        assert mode in _ROLLBACK_JOURNAL_MODES, f"production engine left the host DB in {mode!r}"
+        assert not present, f"production engine created mmap-backed sidecars: {present}"

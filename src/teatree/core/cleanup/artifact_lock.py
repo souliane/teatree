@@ -9,7 +9,7 @@ link and protects the target.
 
 import fcntl
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -24,7 +24,7 @@ _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os
 
 
 @contextmanager
-def artifact_source_lock(artifact: Path, *, blocking: bool) -> Iterator[bool]:
+def artifact_source_lock(artifact: Path, *, blocking: bool) -> Generator[bool]:
     """Lock *artifact* while a dependency is created or the directory is removed.
 
     The directory inode is the shared anchor: it is visible from every checkout

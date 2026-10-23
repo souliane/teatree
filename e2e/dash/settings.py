@@ -8,6 +8,8 @@ are meaningless for an in-memory live-server DB). Only UPPERCASE names (Django's
 setting convention) are copied, so there is no ``import *`` and nothing suppressed.
 """
 
+import os
+
 import teatree.settings as _base
 
 globals().update({name: value for name, value in vars(_base).items() if name.isupper()})
@@ -16,7 +18,7 @@ DEBUG = True
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",
+        "NAME": "file:visual_qa?mode=memory&cache=shared" if os.environ.get("T3_VISUAL_QA_PORT") else ":memory:",
     },
 }
 # ``live_server`` serves /static/ from the staticfiles finders directly; WhiteNoise

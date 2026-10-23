@@ -36,10 +36,13 @@ nothing matched, so the caller's eval job skips cleanly with no API spend.
 """
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.changed_scenarios import REPO_ROOT, select_changed_scenarios, specs_under
 from teatree.eval.changed_sections import changed_sections_by_path
 from teatree.eval.discovery import discover_specs
@@ -49,60 +52,71 @@ from teatree.utils.django_bootstrap import ensure_django
 _EMPTY_CATALOG_EXIT = 2
 
 
-def changed_scenarios(
-    skip_code: int = typer.Option(1, "--skip-code", help="Exit code when no scenario file changed."),
-    repo_root: Path | None = typer.Option(
-        None,
-        "--repo-root",
-        help="Root the STDIN diff paths are relative to (default: teatree's own repo root).",
-    ),
-    scenarios_dir: Path | None = typer.Option(
-        None,
-        "--scenarios-dir",
-        help="Filter the discovered catalog to specs under this directory (default: the whole union catalog).",
-    ),
-    require_specs: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--require-specs",
-        help="Fail loud (exit 2) when the filtered catalog is empty, instead of skipping like 'nothing changed'.",
-    ),
-    diff_file: Path | None = typer.Option(
-        None,
-        "--diff-file",
-        help="Unified diff (git diff --unified=0) for the same range, to narrow section-scoped scenarios.",
-    ),
-) -> None:
+@dataclass
+class ChangedScenarios:
     """Print the scenario names a PR's STDIN diff touched; exit --skip-code when none."""
-    ensure_django()
-    specs = discover_specs()
-    if scenarios_dir is not None:
-        specs = specs_under(specs, scenarios_dir)
-    if require_specs and not specs:
-        typer.echo(
-            f"no eval scenarios discovered under {scenarios_dir} — the filtered catalog is empty. "
-            "This is NOT 'nothing changed'; refusing to skip (--require-specs).",
-            err=True,
+
+    skip_code: Annotated[int, typer.Option("--skip-code", help="Exit code when no scenario file changed.")] = 1
+    repo_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-root", help="Root the STDIN diff paths are relative to (default: teatree's own repo root)."
+        ),
+    ] = None
+    scenarios_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--scenarios-dir",
+            help="Filter the discovered catalog to specs under this directory (default: the whole union catalog).",
+        ),
+    ] = None
+    require_specs: Annotated[
+        bool,
+        typer.Option(
+            "--require-specs",
+            help="Fail loud (exit 2) when the filtered catalog is empty, instead of skipping like 'nothing changed'.",
+        ),
+    ] = False
+    diff_file: Annotated[
+        Path | None,
+        typer.Option("--diff-file", help="Unified diff for the same range, to narrow section-scoped scenarios."),
+    ] = None
+    deferred_out: Annotated[
+        Path | None,
+        typer.Option("--deferred-out", help="Write the scenario names the cap deferred, one per line (redacted)."),
+    ] = None
+
+    def __post_init__(self) -> None:
+        ensure_django()
+        specs = discover_specs()
+        if self.scenarios_dir is not None:
+            specs = specs_under(specs, self.scenarios_dir)
+        if self.require_specs and not specs:
+            typer.echo(
+                f"no eval scenarios discovered under {self.scenarios_dir} — the filtered catalog is empty. "
+                "This is NOT 'nothing changed'; refusing to skip (--require-specs).",
+                err=True,
+            )
+            raise SystemExit(_EMPTY_CATALOG_EXIT)
+        root = self.repo_root or REPO_ROOT
+        sections = None
+        if self.diff_file is not None:
+            sections = changed_sections_by_path(self.diff_file.read_text(encoding="utf-8"), repo_root=root)
+        selection = select_changed_scenarios(
+            sys.stdin,
+            repo_root=root,
+            specs=specs,
+            changed_sections=sections,
+            quarantined=suppressed_scenario_names(path=quarantine_path_for(self.scenarios_dir)),
         )
-        raise SystemExit(_EMPTY_CATALOG_EXIT)
-    root = repo_root or REPO_ROOT
-    sections = None
-    if diff_file is not None:
-        sections = changed_sections_by_path(diff_file.read_text(encoding="utf-8"), repo_root=root)
-    selection = select_changed_scenarios(
-        sys.stdin,
-        repo_root=root,
-        specs=specs,
-        changed_sections=sections,
-        quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
-    )
-    # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
-    # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
-    if note := selection.truncation_note():
-        typer.echo(note, err=True)
-    # Same reason for a quarantine suppression (#4173) — a shrunken lane must be visible.
-    if note := selection.quarantine_note():
-        typer.echo(note, err=True)
-    if not selection.names:
-        raise SystemExit(skip_code)
-    for name in selection.names:
-        typer.echo(name)
+        if self.deferred_out is not None:
+            write_artifact(self.deferred_out, "".join(f"{name}\n" for name in selection.deferred_names))
+        if note := selection.truncation_note():
+            typer.echo(note, err=True)
+        # Same reason for a quarantine suppression (#4173) — a shrunken lane must be visible.
+        if note := selection.quarantine_note():
+            typer.echo(note, err=True)
+        if not selection.names:
+            raise SystemExit(self.skip_code)
+        for name in selection.names:
+            typer.echo(name)

@@ -44,6 +44,7 @@ refusal and the write, which is why :func:`create_handover` takes a
 Target resolution (``create``):
 
 - explicit ``to_session`` → that session.
+- ``--park`` → the next session to claim, even with a live owner.
 - otherwise the LIVE ``t3-master`` slot holder (``t3 loop owner``).
 - otherwise ``""`` — parked for whichever session starts next to claim.
 """
@@ -320,7 +321,7 @@ class HandoverPayload:
         return ResolvedPayload(text="", source=PayloadSource.EMPTY)
 
 
-def resolve_target_session(explicit_to: str) -> str:
+def resolve_target_session(explicit_to: str, *, park: bool = False) -> str:
     """Resolve the hand-off target: explicit id, else the live loop owner, else ``""``.
 
     ``""`` means "park for the next session to claim". The live loop owner
@@ -339,6 +340,11 @@ def resolve_target_session(explicit_to: str) -> str:
     start claims it — rather than written as a target, and the same normalisation
     applies to an explicit ``--to loop-runner``.
     """
+    if park and explicit_to:
+        msg = "parking and an explicit target are mutually exclusive"
+        raise ValueError(msg)
+    if park:
+        return ""
     if explicit_to:
         return "" if is_loop_runner_session(explicit_to) else explicit_to
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -482,7 +488,9 @@ def claim_handovers(session_id: str) -> tuple[str, str]:
     return render_claimed_payload(claimed), origin
 
 
-def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "") -> ResolvedHandover:
+def resolve_handover(
+    *, from_session: str, explicit_to: str, authored: str = "", park: bool = False
+) -> ResolvedHandover:
     """Where this hand-off would go and what it would carry — WITHOUT writing anything.
 
     Split out of :func:`create_handover` so the CLI can refuse an empty hand-off
@@ -491,7 +499,7 @@ def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "")
     would leave behind is a delivery nobody can act on.
     """
     return ResolvedHandover(
-        to_session=resolve_target_session(explicit_to),
+        to_session=resolve_target_session(explicit_to, park=park),
         resolved=HandoverPayload(from_session, authored=authored).resolve(),
     )
 

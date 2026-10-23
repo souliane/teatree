@@ -14,7 +14,7 @@ evidence). No phase visit is recorded on a no-evidence success.
 
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from typing import Any, Self
 from unittest.mock import patch
 
@@ -66,7 +66,7 @@ class _FakeSdkClient:
 
 
 @contextlib.contextmanager
-def _fake_sdk(agent_text: str) -> Iterator[None]:
+def _fake_sdk(agent_text: str) -> Generator[None]:
     def _make_client(**_: object) -> _FakeSdkClient:
         return _FakeSdkClient(agent_text)
 

@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from teatree.cli.doctor.checks_resources import _check_resume_ceiling_reachable, _check_worker_memory_cap
+from teatree.cli.doctor.checks_resources import (
+    _check_resume_ceiling_reachable,
+    _check_worker_memory_cap,
+    _resolve_agent_role,
+)
 from teatree.utils.ram_scope import AGENT_WORKLOAD_FLOOR_ENV
 
 
@@ -37,6 +41,11 @@ def _cap(tmp_path: Path, gib: float) -> Path:
 
 class TestRoleResolutionIsNotDeploymentSpecific:
     """The role env var differs per deployment; the check must not silently miss one."""
+
+    def test_webhook_listener_alias_is_recognized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEPLOY_ROLE", "webhook-listener")
+
+        assert _resolve_agent_role(None) == "webhook-listener"
 
     def test_an_aliased_role_worker_with_a_low_cap_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # The measured deployed shape: an aliased *_ROLE var set, TEATREE_ROLE absent.

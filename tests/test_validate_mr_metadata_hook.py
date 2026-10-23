@@ -26,6 +26,7 @@ from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
+from tests._gate_escape_audit import audited_escape
 
 _ALLOWANCE_KEY = "hook_validator_timeout_seconds"
 
@@ -243,6 +244,19 @@ class TestUnvalidatedOutcomeIsAnnounced:
         assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
         assert "SKIPPED is not PASSED" in err
 
+    def test_audited_escape_records_the_request_before_it_allows(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        data = _glab_create("bad", "bad")
+        data["tool_input"]["command"] += " # [gate-escape:mr_metadata: validator unavailable]"
+        with audited_escape(data) as requests:
+            assert handle_validate_mr_metadata(data) is False
+        assert [(request["gate"], request["reason"]) for request in requests] == [
+            ("mr_metadata", "validator unavailable")
+        ]
+        assert capsys.readouterr().out == ""
+
     def test_a_clean_pass_stays_silent(self, monkeypatch, capsys):
         # The gate must not become chatty: a validated, valid MR says nothing.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
@@ -366,7 +380,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
     def test_default_allowance_covers_the_measured_validator_cost(self):
         # ~13s cold, 25-50s under load on the reference box — the default must
         # clear the loaded range with headroom, or it rots into a false deny again.
-        assert gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS >= 60
+        assert COLD_HOOK_SETTINGS[_ALLOWANCE_KEY].default >= 60
 
     def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
@@ -421,11 +435,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         assert gate_result.validator_timeout_seconds() == 77
 
     def test_allowance_is_a_registered_cold_hook_budget(self):
-        # The no-silent-drop registry: an unregistered cold budget is dropped by
-        # the TOML->DB import and silently reverts to its in-code default.
-        setting = COLD_HOOK_SETTINGS[_ALLOWANCE_KEY]
-        assert setting.default == gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS
-        assert setting.scope == ""
+        assert COLD_HOOK_SETTINGS[_ALLOWANCE_KEY].scope == ""
 
 
 class TestFileBasedDescriptionIsRead:

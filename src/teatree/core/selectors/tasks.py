@@ -11,8 +11,7 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
         return None
 
     parent = None
-    if task.parent_task_id:
-        p = task.parent_task
+    if (p := task.parent_task) is not None:
         parent = TaskRelatedRow(
             task_id=p.pk,
             phase=p.phase,

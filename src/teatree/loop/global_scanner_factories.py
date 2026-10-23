@@ -39,7 +39,7 @@ from teatree.loop.scanners import (
     SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
-from teatree.loop.scanners.pr_findings import RecordedVerdictReader
+from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.self_update import CORE_REPO_LABEL
 from teatree.loop.scanners.self_update_ci import ForgeMainCiStatus
 
@@ -462,7 +462,14 @@ def build_default_jobs(
         if host is not None:
             jobs.extend(
                 [
-                    _ScannerJob(scanner=MyPrsScanner(host=host, verdict_reader=RecordedVerdictReader()), overlay=""),
+                    _ScannerJob(
+                        scanner=MyPrsScanner(
+                            host=host,
+                            verdict_reader=RecordedVerdictReader(),
+                            critic_reader=RecordedCriticFindingReader(),
+                        ),
+                        overlay="",
+                    ),
                     _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
                 ],
             )

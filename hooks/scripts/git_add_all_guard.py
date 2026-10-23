@@ -14,7 +14,7 @@ The verb is detected on the quote/heredoc-stripped SKELETON
 (``mr_cli_fields.strip_quoted_and_heredoc``, as every sibling gate does), so the
 phrase inside a commit message, a PR body, or a doc string is not an invocation.
 
-NEVER-LOCKOUT: a per-call ``[add-all-ok: <reason>]`` token for the genuine
+NEVER-LOCKOUT: a per-call ``[gate-escape:git_add_all: <reason>]`` token for the genuine
 "yes, the whole tree" case (a first commit on a scaffolded directory), the
 ``[teatree] git_add_all_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate add-all disable``), and the shared ``_fail_open_or_deny``
@@ -45,8 +45,6 @@ from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
 sys.modules.setdefault("git_add_all_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.git_add_all_guard", sys.modules[__name__])
 
-_ADD_ALL_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[add-all-ok:\s*(\S[^\]]*?)\s*\]")
-_TOKEN_SCAN_LIMIT: Final[int] = 512
 _SEGMENT_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"\|\||&&|[;|&\n]")
 _ANSI_C_QUOTE_RE: Final[re.Pattern[str]] = re.compile(r"\$(?=')")
 # Options that take a value, per wrapper `past_leaders` drops; any other option is a bare flag (`sudo -n`, `env -i`).
@@ -84,7 +82,7 @@ def deny_reason() -> str:
         "four times. Stage what you mean: `git add <path> <path>`. A temp file belongs in the "
         "session scratch directory (`~/.claude/jobs/<id>/tmp/`), never beside the code you are "
         "editing. `git add -p` and `git add -u` are fine. Genuinely the whole tree (a first commit "
-        "on a scaffolded directory)? Put `[add-all-ok: <reason>]` in the `command` string."
+        "on a scaffolded directory)? Put `[gate-escape:git_add_all: <reason>]` in the `command` string."
     )
 
 
@@ -130,14 +128,6 @@ def _wrapped_scripts(command: str) -> list[str]:
     return scripts
 
 
-def ok_token(command: str) -> str | None:
-    """Return the reason from an ``[add-all-ok: <reason>]`` token, else None."""
-    match = _ADD_ALL_OK_RE.search(command[:_TOKEN_SCAN_LIMIT])
-    if match is None:
-        return None
-    return match.group(1).strip() or None
-
-
 def handle_block_git_add_all(data: dict) -> bool:
     """Deny a whole-tree ``git add``; allow everything else.
 
@@ -158,12 +148,9 @@ def handle_block_git_add_all(data: dict) -> bool:
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not command:
         return False
-    if not _teatree_bool_setting("git_add_all_gate_enabled", default=True):
+    if not _teatree_bool_setting("git_add_all_gate_enabled"):
         return False
     if not is_whole_tree_stage(command):
-        return False
-    if reason := ok_token(command):
-        sys.stderr.write(f"NOTE: whole-tree stage allowed via [add-all-ok: {reason}].\n")
         return False
     return _fail_open_or_deny(data, deny_reason(), gate_id="git_add_all")
 

@@ -121,7 +121,7 @@ def apply_closed_status(ticket: Ticket, closed_urls: set[str], result: SyncResul
 
     if changed:
         # #800 N3: canonical locked RMW (was an unlocked extra save).
-        ticket.merge_extra(set_keys=cast("TicketExtra", {"prs": prs}))
+        ticket.merge_extra(set_keys={"prs": prs})
 
 
 def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult) -> tuple[bool, bool]:

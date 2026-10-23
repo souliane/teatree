@@ -1,10 +1,12 @@
 """Void a forge merge whose content never reached the default branch: a read-only plan, then one approved write.
 
-Human-only by construction: the operator checks refuse the loop runner and any process a
-dispatched agent spawned, the write needs a real terminal answering yes, and the model
-mutators refuse without the :class:`MergeVoid` row this module alone creates.
+The direct command refuses the loop runner and any process a dispatched agent spawned,
+and it needs a real terminal answering yes. The separate Slack path requires a recorded
+owner answer and rechecks this module's plan before calling its writer.
 """
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -68,6 +70,7 @@ class VoidRefusal(StrEnum):
     AGENT_PROCESS = "agent_process"
     ALREADY_VOIDED = "already_voided"
     FORGE_UNREADABLE = "forge_unreadable"
+    OWNER_QUESTION_UNAVAILABLE = "owner_question_unavailable"
     FORGE_NOT_MERGED = "forge_not_merged"
     CONTENT_ON_DEFAULT = "content_on_default"
     CONTENT_CARRIED_BY_MERGE = "content_carried_by_merge"
@@ -108,6 +111,23 @@ class VoidPlan:
     def fingerprint(self) -> tuple[object, ...]:
         facts = (self.snapshot.merge_commit, self.snapshot.content_head, self.snapshot.default_tip, self.verdict.kind)
         return (*facts, self.restores, self.kept, self.closes)
+
+    def binding(self) -> str:
+        facts = (
+            self.ref.host_kind,
+            self.ref.slug.casefold(),
+            self.ref.pr_id,
+            self.snapshot.merge_commit,
+            self.snapshot.content_head,
+            self.snapshot.default_branch,
+            self.verdict.kind,
+            self.verdict.changed,
+            self.verdict.absent,
+            self.restores,
+            self.kept,
+            self.closes,
+        )
+        return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
     def evidence(self) -> VoidEvidence:
         return VoidEvidence(
@@ -172,18 +192,10 @@ def check_operator(*, reason: str, actor: str) -> None:
         raise VoidRefusedError(VoidRefusal.AGENT_PROCESS, "a process a dispatched agent spawned may not void a merge")
 
 
-def plan_void(pr_url: str) -> VoidPlan:
-    ref = pr_ref(pr_url.strip())
-    if ref is None:
-        raise VoidRefusedError(VoidRefusal.NOT_A_PR_URL, f"{pr_url!r} names no pull or merge request")
+def _ledger_plan(pr_url: str, ref: PrRef, snapshot: PrContentSnapshot, verdict: ContentVerdict) -> VoidPlan:
     voided = MergeVoid.objects.voided_refs()
     if ref in voided:
         raise VoidRefusedError(VoidRefusal.ALREADY_VOIDED, f"the merge of {pr_url} is already voided")
-    try:
-        snapshot = CodeHostQuery.for_ref(ref).pr_content_snapshot()
-    except _FORGE_READ_FAILURES as exc:
-        snapshot = PrContentSnapshot(unreadable=f"forge unreachable: {exc}")
-    verdict = classify_content(snapshot)
     restores: list[TicketRestore] = []
     kept: list[TicketKept] = []
     edgeless: list[int] = []
@@ -215,6 +227,19 @@ def plan_void(pr_url: str) -> VoidPlan:
     return replace(plan, refusal=_refusal(plan, edgeless))
 
 
+def plan_void(pr_url: str) -> VoidPlan:
+    ref = pr_ref(pr_url.strip())
+    if ref is None:
+        raise VoidRefusedError(VoidRefusal.NOT_A_PR_URL, f"{pr_url!r} names no pull or merge request")
+    if ref in MergeVoid.objects.voided_refs():
+        raise VoidRefusedError(VoidRefusal.ALREADY_VOIDED, f"the merge of {pr_url} is already voided")
+    try:
+        snapshot = CodeHostQuery.for_ref(ref).pr_content_snapshot()
+    except _FORGE_READ_FAILURES as exc:
+        snapshot = PrContentSnapshot(unreadable=f"forge unreachable: {exc}")
+    return _ledger_plan(pr_url, ref, snapshot, classify_content(snapshot))
+
+
 def apply_void(plan: VoidPlan, *, reason: str, actor: str, stdin: TextIO, stdout: TextIO) -> MergeVoid:
     check_operator(reason=reason, actor=actor)
     if plan.refusal is not None:
@@ -232,8 +257,32 @@ def apply_void(plan: VoidPlan, *, reason: str, actor: str, stdin: TextIO, stdout
     return _write(fresh, reason=reason.strip(), actor=actor.strip())
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovedVoid:
+    plan: VoidPlan
+    reason: str
+    actor: str
+
+    def write(self) -> MergeVoid:
+        return _write(self.plan, reason=self.reason, actor=self.actor)
+
+
+def approve_owner_void(pr_url: str, *, binding: str, reason: str, actor: str) -> ApprovedVoid:
+    if not reason.strip():
+        raise VoidRefusedError(VoidRefusal.REASON_MISSING, "the reason for voiding the merge is missing")
+    fresh = plan_void(pr_url)
+    if fresh.refusal is not None:
+        raise fresh.refusal
+    if fresh.binding() != binding:
+        raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the forge or ledger changed since the owner answered")
+    return ApprovedVoid(fresh, reason.strip(), actor)
+
+
 @transaction.atomic
 def _write(plan: VoidPlan, *, reason: str, actor: str) -> MergeVoid:
+    fresh = _ledger_plan(plan.pr_url, plan.ref, plan.snapshot, plan.verdict)
+    if fresh.refusal is not None or fresh.evidence() != plan.evidence():
+        raise VoidRefusedError(VoidRefusal.PLAN_CHANGED, "the ledger changed since approval; plan again")
     tickets = list(Ticket.objects.filter(pk__in=[restore["ticket_id"] for restore in plan.restores]).order_by("pk"))
     void = MergeVoid.objects.record(plan.fields(reason=reason, actor=actor), tickets=tickets)
     for row in PullRequest.objects.filter(pk__in=[close["pull_request_id"] for close in plan.closes]):

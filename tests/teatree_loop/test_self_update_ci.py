@@ -10,12 +10,13 @@ decides what the verdict can see; the JSON classification runs for real.
 """
 
 import json
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 import pytest
 
+import teatree.backends.github.api as github_api
 import teatree.loop.scanners.self_update_ci as ci_mod
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.main_check_runs import PAGE_SIZE
@@ -25,7 +26,7 @@ from teatree.loop.scanners.self_update_ci import (
     CiVerdict,
     ForgeMainCiStatus,
     GhMainCiStatus,
-    GlabMainCiStatus,
+    GitLabMainCiStatus,
     _classify_check_runs,
     _classify_pipelines,
 )
@@ -93,7 +94,7 @@ class TestGhMainCiStatusVerdict:
         _on_github(monkeypatch)
         calls: list[object] = []
         monkeypatch.setenv("GH_TOKEN", "ambient-token")
-        monkeypatch.setattr(ci_mod, "run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr(github_api, "run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
         monkeypatch.setattr(
             ci_mod,
             "resolve_repo_token",
@@ -116,13 +117,13 @@ class TestGhMainCiStatusVerdict:
 
     def test_unknown_when_gh_exits_nonzero(self, monkeypatch: pytest.MonkeyPatch, gh_check_runs: StubGh) -> None:
         _on_github(monkeypatch)
-        gh_check_runs(ci_mod, returncode=1)
+        gh_check_runs(github_api, returncode=1)
 
         assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
     def test_green_classified_from_gh_payload(self, monkeypatch: pytest.MonkeyPatch, gh_check_runs: StubGh) -> None:
         _on_github(monkeypatch)
-        fake = gh_check_runs(ci_mod, runs=[check_run(REQUIRED_CHECK_NAME)])
+        fake = gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
 
         assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
         assert any("check-runs" in part for part in fake.argv_log[0])
@@ -135,7 +136,7 @@ class TestGhMainCiStatusVerdict:
         absent (``unknown``) even when main is genuinely green.
         """
         _on_github(monkeypatch)
-        fake = gh_check_runs(ci_mod, runs=[check_run(REQUIRED_CHECK_NAME)])
+        fake = gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
 
         GhMainCiStatus().verdict(repo=Path("/x"))
 
@@ -155,7 +156,7 @@ class TestGhMainCiStatusVerdict:
         """
         _on_github(monkeypatch)
         runs = [check_run(f"job-{i}") for i in range(PAGE_SIZE)] + [check_run(REQUIRED_CHECK_NAME)]
-        fake = gh_check_runs(ci_mod, runs=runs)
+        fake = gh_check_runs(github_api, runs=runs)
 
         verdict = GhMainCiStatus().verdict(repo=Path("/x"))
 
@@ -165,13 +166,13 @@ class TestGhMainCiStatusVerdict:
 
     def test_unknown_on_unparsable_gh_output(self, monkeypatch: pytest.MonkeyPatch, gh_check_runs: StubGh) -> None:
         _on_github(monkeypatch)
-        gh_check_runs(ci_mod, raw_stdout="not json")
+        gh_check_runs(github_api, raw_stdout="not json")
 
         assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
     def test_token_exported_as_gh_token_env(self, monkeypatch: pytest.MonkeyPatch, gh_check_runs: StubGh) -> None:
         _on_github(monkeypatch)
-        fake = gh_check_runs(ci_mod, runs=[check_run(REQUIRED_CHECK_NAME)])
+        fake = gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
 
         GhMainCiStatus().verdict(repo=Path("/x"))
 
@@ -179,13 +180,23 @@ class TestGhMainCiStatusVerdict:
         assert env is not None
         assert env["GH_TOKEN"] == "routed-github_token"
 
+    def test_github_runner_does_not_receive_gitlab_token(
+        self, monkeypatch: pytest.MonkeyPatch, gh_check_runs: StubGh
+    ) -> None:
+        _on_github(monkeypatch)
+        monkeypatch.setenv("GITLAB_TOKEN", "ambient-gitlab")
+        fake = gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
+
+        assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
+        assert "GITLAB_TOKEN" not in fake.env_log[0]
+
     def test_unknown_when_gh_not_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_github(monkeypatch)
 
         def _raise(*_a: object, **_k: object) -> object:
             raise FileNotFoundError
 
-        monkeypatch.setattr(ci_mod, "run_allowed_to_fail", _raise)
+        monkeypatch.setattr(github_api, "run_allowed_to_fail", _raise)
 
         assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
@@ -199,21 +210,21 @@ class TestGhMainCiStatusVerdict:
             raise RuntimeError
 
         monkeypatch.setattr(ci_mod.git, "default_branch", _raise)
-        fake = gh_check_runs(ci_mod, runs=[check_run(REQUIRED_CHECK_NAME)])
+        fake = gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
 
         assert GhMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
         assert any("/commits/main/" in part for part in fake.argv_log[0])
 
 
-def _fake_glab(monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode: int = 0) -> list[list[str]]:
-    """Double the ``glab`` shell-out; the returned list records every argv issued."""
-    issued: list[list[str]] = []
+def _fake_gitlab_http(monkeypatch: pytest.MonkeyPatch, *, stdout: str, status: int = 200) -> list[str]:
+    issued: list[str] = []
 
-    def _run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        issued.append(argv)
-        return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
+    def get(url: str, **_kw: object) -> httpx.Response:
+        issued.append(url)
+        return httpx.Response(status, content=stdout, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(ci_mod, "run_allowed_to_fail", _run)
+    monkeypatch.setattr("httpx.get", get)
+    monkeypatch.setenv("T3_GITLAB_HTTP_MAX_RETRIES", "0")
     return issued
 
 
@@ -253,62 +264,69 @@ class TestClassifyPipelines:
 
 def _on_gitlab(monkeypatch: pytest.MonkeyPatch, *, upstream_sha: str = "abc123") -> None:
     monkeypatch.setattr(ci_mod.git, "remote_url", lambda **_k: "git@gitlab.com:ns/group/repo.git")
+    monkeypatch.setattr(ci_mod.git, "remote_slug", lambda **_k: "ns/group/repo")
     monkeypatch.setattr(ci_mod.git, "default_branch", lambda **_k: "main")
     monkeypatch.setattr(ci_mod, "_upstream_sha", lambda _repo: upstream_sha)
 
 
-class TestGlabMainCiStatusVerdict:
+class TestGitLabMainCiStatusVerdict:
     def test_empty_route_never_inherits_ambient_glab(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
         calls: list[object] = []
         monkeypatch.setenv("GITLAB_TOKEN", "ambient-token")
-        monkeypatch.setattr(ci_mod, "run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr("httpx.get", lambda *a, **k: calls.append((a, k)))
         monkeypatch.setattr(
             ci_mod,
             "resolve_repo_token",
             lambda *_a, **_k: ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.UNSET),
         )
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
         assert calls == []
 
     def test_green_from_the_commits_own_pipeline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
-        _fake_glab(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "success")]))
+        _fake_gitlab_http(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "success")]))
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
 
     def test_a_skipped_main_pipeline_lets_the_pull_proceed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
-        _fake_glab(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "skipped")]))
+        _fake_gitlab_http(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "skipped")]))
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
 
     def test_query_is_keyed_on_the_sha_the_pull_would_land_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch, upstream_sha="deadbeef")
-        issued = _fake_glab(monkeypatch, stdout="[]")
+        issued = _fake_gitlab_http(monkeypatch, stdout="[]")
 
-        GlabMainCiStatus().verdict(repo=Path("/x"))
+        GitLabMainCiStatus().verdict(repo=Path("/x"))
 
-        assert "sha=deadbeef" in issued[0][-1]
-        assert "projects/:fullpath/pipelines" in issued[0][-1]
+        assert "sha=deadbeef" in issued[0]
+        assert "projects/ns%2Fgroup%2Frepo/pipelines" in issued[0]
+
+    def test_malformed_pipeline_entries_do_not_hide_valid_evidence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _on_gitlab(monkeypatch)
+        _fake_gitlab_http(monkeypatch, stdout=json.dumps([None, _pipeline(3, "push", "success")]))
+
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
 
     def test_unknown_when_the_upstream_sha_is_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch, upstream_sha="")
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
-    def test_unknown_when_glab_exits_non_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_when_http_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
-        _fake_glab(monkeypatch, stdout="", returncode=1)
+        _fake_gitlab_http(monkeypatch, stdout="", status=503)
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
     def test_unknown_on_an_unparsable_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
-        _fake_glab(monkeypatch, stdout="not json")
+        _fake_gitlab_http(monkeypatch, stdout="not json")
 
-        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
+        assert GitLabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.UNKNOWN
 
 
 class TestForgeMainCiStatusRouting:
@@ -317,7 +335,7 @@ class TestForgeMainCiStatusRouting:
         # no GitHub slug, so every tick was a fail-closed UNKNOWN and the clone never
         # advanced. Revert the routing and this assertion goes red.
         _on_gitlab(monkeypatch)
-        _fake_glab(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "success")]))
+        _fake_gitlab_http(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "success")]))
 
         assert ForgeMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
 
@@ -327,7 +345,7 @@ class TestForgeMainCiStatusRouting:
         gh_check_runs: StubGh,
     ) -> None:
         _on_github(monkeypatch)
-        gh_check_runs(ci_mod, runs=[check_run(REQUIRED_CHECK_NAME)])
+        gh_check_runs(github_api, runs=[check_run(REQUIRED_CHECK_NAME)])
 
         assert ForgeMainCiStatus(github=GhMainCiStatus()).verdict(repo=Path("/x")) is CiVerdict.GREEN
 

@@ -7,7 +7,7 @@ costs a cached directory listing, and a listed one at most one read per window, 
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
@@ -109,7 +109,7 @@ class WebhookSecrets:
         return listed
 
     @contextmanager
-    def _read_slot(self, target: str) -> Iterator[None]:
+    def _read_slot(self, target: str) -> Generator[None]:
         with self._lock:
             read_lock = self._read_locks.setdefault(target, threading.Lock())
         if not read_lock.acquire(timeout=READ_WAIT_SECONDS):

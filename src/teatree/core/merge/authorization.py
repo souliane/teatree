@@ -430,11 +430,8 @@ def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
     ``is_stale_at`` give the head-SHA bind for free: a force-push moves the head,
     every prior verdict (PASS and HOLD) goes stale, and the gate fails closed.
 
-    Newest-wins semantic (the user's chosen rule B): a later merge_safe overrides
-    an earlier HOLD, an even-later HOLD re-blocks. The two refusal classes carry
-    distinct messages — requirement (a): no non-stale merge_safe at the head
-    (fail closed on no verdict); requirement (b): the most-recent non-stale
-    verdict is a HOLD not superseded by a later merge_safe.
+    A standing HOLD blocks any pass at the same head. A new reviewed head is
+    required to resolve it; a CLEAR cannot lift it.
     """
     head = head_sha.strip().lower()
     state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head)
@@ -450,9 +447,8 @@ def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
         raise MergePreconditionError(msg)
     if state is HeadVerdictState.HOLD:
         msg = (
-            f"an independent reviewer recorded a HOLD at this head ({head}) for {slug}#{pr_id} "
-            f"not superseded by a later merge_safe — refusing to merge (#2829). The newest "
-            f"non-stale verdict at the head is a HOLD; record a later merge_safe to override it."
+            f"an independent reviewer recorded a HOLD at this head ({head}) for {slug}#{pr_id} — "
+            f"refusing to merge: {ReviewVerdict.objects.standing_hold_remedy_at(slug=slug, pr_id=pr_id, head_sha=head)}"
         )
         raise MergePreconditionError(msg)
 

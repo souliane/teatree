@@ -18,8 +18,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
-from teatree.config.cold_defaults import flatten_settings_table
-from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defaults
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
+from teatree.config.schema import setting_choices, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_annotation import choice_token
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
@@ -476,7 +476,7 @@ class TestImportTomlToDb(TestCase):
         # definition equal to the shipped default, so a clean import of the file itself
         # writes NOTHING (preserving zero-seed + `restore = delete row`), and every
         # resolved value still equals what defaults.toml declares.
-        result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
+        result = import_toml_to_db(DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
         assert len(result.skipped_default) > 0
@@ -708,7 +708,7 @@ class TestSeedTableImport(_SeedRowsTestCase):
         # importer UNDERSTANDS every seed entry in the file and finds each equal to what is
         # shipped. The control is the reject cases above — an entry the file does not carry
         # is refused, so "no writes" cannot be an artefact of the tables being ignored.
-        result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
+        result = import_toml_to_db(DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
         seeded = {row.scope.split(".", 1)[0] for row in result.skipped_default if "." in row.scope}

@@ -1,9 +1,9 @@
 """Inbox mini-loop definition.
 
 High-cadence (1m default) scanners that read inbound surfaces: Slack
-mentions/DMs, RED CARD signals, Notion view items, GitLab group-webhook events
-from Pub/Sub. Default cadence is short because user-facing inbox lag is felt
-within seconds.
+mentions/DMs, the Slack listener-downtime catch-up, RED CARD signals, Notion view
+items, GitLab group-webhook events from Pub/Sub. Default cadence is short because
+user-facing inbox lag is felt within seconds.
 """
 
 from typing import TYPE_CHECKING
@@ -27,7 +27,7 @@ def _build_jobs(
     """Consume the per-overlay ``Domain.INBOX`` slice plus the global notion job.
 
     ``Domain.INBOX`` owns the per-overlay inbound Slack scanners
-    (mentions / DM / ask-reply / review-intent / red-card) and excludes
+    (mentions / ask-reply / review-intent / red-card) and excludes
     ``review_nag`` — the followup mini-loop is its single owner, so the registry
     fan-out emits one nag per tick, matching the legacy fan-out. The notion view
     scanner is global / ad-hoc, so it stays wired here; the single-overlay
@@ -35,17 +35,22 @@ def _build_jobs(
     :func:`teatree.loop.domain_jobs.single_overlay_messaging_jobs` SSOT so it
     cannot drift from the per-overlay inbound set (#23). The GitLab-events job is
     global too and exists only while ``gitlab_events_subscription`` is non-empty.
+    Every overlay on the Slack backend also gets one listener-downtime catch-up job.
     """
+    from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop.domain_jobs import jobs_for_domain, single_overlay_messaging_jobs  # noqa: PLC0415 (lazy import)
     from teatree.loop.global_scanner_factories import _gitlab_events_scanner  # noqa: PLC0415 — AppRegistryNotReady
     from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.slack_inbound import slack_catch_up_job  # noqa: PLC0415 — deferred: Django app registry
 
     jobs: list[_ScannerJob] = []
     if backends:
         all_backends = tuple(backends)
         for backend in backends:
             jobs.extend(jobs_for_domain(Domain.INBOX, backend, all_backends=all_backends))
+            if isinstance(backend.messaging, SlackBotBackend):
+                jobs.append(_ScannerJob(scanner=slack_catch_up_job(backend.name), overlay=backend.name))
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
     if (gitlab_events := _gitlab_events_scanner()) is not None:
