@@ -111,3 +111,8 @@ class TestSeedClaudeSettings:
         parsed = json.loads(target.read_text(encoding="utf-8"))
         assert parsed["model"] == "opusplan"  # managed key wins
         assert parsed["statusLine"] == {"type": "command", "command": "mine"}  # unmanaged survives
+
+    def test_existing_skill_listing_cap_is_replaced_by_managed_cap(self, tmp_path: Path) -> None:
+        target, proc = _run_seed(tmp_path, existing=json.dumps({"skillListingMaxDescChars": 120}))
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(target.read_text(encoding="utf-8"))["skillListingMaxDescChars"] == 1

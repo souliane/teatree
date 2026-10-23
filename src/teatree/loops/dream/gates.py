@@ -16,9 +16,9 @@ The seven gates (#1933 § 4; gate (g) added by #2663):
     schema/cluster count INCREASED, AND every pruned index line has a confirmed
     durable home. A no-op pass (size unchanged, schema unchanged) fails; a prune
     with no durable home fails.
-*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under BOTH session-load
-    budgets, ~24 KB of bytes (#2755) and 200 lines (#4057); the loader truncates on
-    either, so the gate fails on whichever is exceeded first.
+*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under BOTH prefix
+    budgets, 2 KiB of bytes and 20 lines (#4997); the gate fails on whichever is
+    exceeded first.
 *   (e) **monotonicity** — two passes over a stable corpus must not LOWER the
     retention pass-rate.
 *   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
@@ -77,43 +77,19 @@ _MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
 #: stays unhomed even if its summary name-drops a surviving memory.
 _MEMORY_LINK_TARGET_RE = re.compile(r"\]\(([\w.\-/]+\.md)\)")
 
-#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one short
-#: line per memory and is read WHOLE at every session load; the loader truncates it on
-#: TWO independent axes, and past EITHER the tail of the index never reaches the agent
-#: and the dream pass has silently failed to keep memory loadable. Both track a
-#: real session-load limit — NOT a 10x regression alarm — so an over-budget index trips
-#: gate (d) RED while it is still recoverable (#2723).
-#:
-#: BYTES (~24 KB). Not a line cap dressed up as bytes: a fixed line cap was a
-#: pessimistic proxy that forced needless archival while byte headroom went unused
-#: (#2755), so this measures the encoded size and nothing else.
-INDEX_BYTE_BUDGET = 24 * 1024
-#: LINES (200). The measured truncation point (#4057): a 306-line index lost every entry
-#: from line 201 on — ~106 memories invisible to recall — while sitting at 69% of the
-#: byte budget, so the byte-only gate reported healthy throughout. The two measures
-#: DIVERGE as the pass compresses better: terser entries lower bytes and leave line count
-#: untouched, which means the better decay compresses, the more confident a byte-only
-#: gate gets about a file that is more truncated. Both axes are therefore load-bearing;
-#: neither substitutes for the other.
-INDEX_LINE_BUDGET = 200
+#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is read WHOLE at every
+#: session start, so these figures are the prefix every session pays: a recall pointer plus about
+#: 15 lines (#4997). Everything else is archived by the decay budget tier and stays findable
+#: through recall. Both axes bite independently: a byte-only gate certified a 306-line index
+#: as healthy while the loader had dropped every entry past line 200 (#4057).
+INDEX_BYTE_BUDGET = 2 * 1024
+INDEX_LINE_BUDGET = 20
 
-#: Where the decay budget tier STOPS draining — deliberately BELOW the budgets above, and
-#: declared beside them so the "ceiling vs target" relationship is one glance (#4385).
-#:
-#: The BUDGET is what gate (d) GRADES; the TARGET is where decay STOPS. Draining to the
-#: ceiling and stopping there leaves ZERO headroom: the pass lands the index on exactly
-#: 200 lines, gate (d) grades it once (200 <= 200, PASS) and never again, and the first
-#: memory written afterwards truncates the tail — which stays truncated until the next
-#: nightly pass. The measured live corpus wrote 25 memories in the 11 hours after one such
-#: landing, so the index was 225 lines by morning. ~60 lines of headroom absorbs ~2.4 days
-#: at that rate. 140 is also the figure the curated index header itself carried.
-#:
-#: The tier still FIRES on the ceiling (:func:`~teatree.loops.dream.decay_signal.index_over_budget`),
-#: not on the target — deliberate hysteresis. Firing on the target too would archive a file
-#: a night forever, undoing #2755's "don't archive for nothing" lesson.
-INDEX_LINE_DRAIN_TARGET = 140
-#: The byte-axis drain target — 70% of the byte budget, the same headroom margin the line
-#: axis takes, so neither axis can strand the other on the ceiling.
+#: Where the budget tier STOPS draining, below the ceiling gate (d) grades. Draining to the ceiling
+#: left zero headroom, so the first memory written afterwards put the index back over (#4385). The
+#: tier still FIRES on the ceiling: that hysteresis keeps a corpus between the two from being
+#: archived a file a night for nothing (#2755).
+INDEX_LINE_DRAIN_TARGET = 15
 INDEX_BYTE_DRAIN_TARGET = (INDEX_BYTE_BUDGET * 7) // 10
 
 
@@ -443,7 +419,7 @@ class Gate:
         size_reduced = snapshot_after.byte_size < snapshot_before.byte_size
         schema_grew = schema_after > schema_before
         distilled = clusters_recorded > 0
-        pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
+        pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines - reindex.GENERATED_HEADER_LINES
         unhomed = sorted(
             line
             for line in pruned_lines

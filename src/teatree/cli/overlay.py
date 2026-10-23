@@ -395,10 +395,10 @@ class OverlayAppBuilder:
                 None,
                 "--skills",
                 "--skill",
-                help="Skills to embed, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
+                help="Skills to include, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
             ),
         ) -> None:
-            """Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry."""
+            """Emit the skill preamble a raw Agent-tool sub-agent brief must carry."""
             names = _split_skill_args(skills or [])
             if not names:
                 typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)

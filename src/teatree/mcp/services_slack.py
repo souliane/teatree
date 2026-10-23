@@ -28,23 +28,6 @@ from teatree.types import ChannelReadRefusedError, ScannerError
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 
-INSTRUCTIONS = (
-    "- slack_mentions(since): queued @-mentions. Errors (never returns an empty list) when "
-    "this process holds no Socket-Mode queue — the receiver writes mentions to a JSONL the "
-    "loop's scanner drains, so `[]` here would mean 'I cannot see mentions', not 'none'.\n"
-    "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
-    "when the selected read is refused. When both tokens are configured, non-DMs use "
-    "the user token and DMs retry a bot membership refusal as the user; bot-only "
-    "reads use the bot, and user-only reads use the user. `[]` means genuinely empty.\n"
-    "- slack_thread_replies(channel, thread_ts): replies under one thread. Errors with Slack's "
-    "error code (never returns an empty list) when the read is refused; a thread in a channel "
-    "the bot is not in retries through the user token when configured, so `[]` means genuinely empty.\n"
-    "- slack_permalink(channel, ts): the permalink for one message.\n"
-    "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
-    "ungated; a colleague/channel reaction goes through the on-behalf gate and "
-    "returns ok=false + a `blocked` remediation when no approval is recorded."
-)
-
 
 def _client() -> MessagingBackend:
     return SLACK.resolve()
@@ -89,10 +72,10 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
 
     An agent asking about ONE channel cannot act on a bare empty list: "the channel
     is quiet" and "the selected token cannot read it" are opposite facts.
-    With both tokens configured, non-DMs use the user and DMs start with the bot,
-    retrying membership refusals as the user. A single-token backend uses its
-    configured token. Backend refusals become ``ToolError`` here because only
-    its text survives ``call_tool``.
+    When both tokens are configured, non-DMs use the user token and DMs retry a bot
+    membership refusal as the user; bot-only reads use the bot, and user-only reads
+    use the user. ``[]`` means genuinely empty. Backend refusals become ``ToolError``
+    here because only its text survives ``call_tool``.
     """
     try:
         return await sync_to_async(
@@ -109,10 +92,11 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
 
 
 async def _slack_thread_replies(channel: str, thread_ts: str) -> list[dict[str, Any]]:
-    """Every message in one thread — raises with Slack's error code rather than returning a misleading ``[]``.
+    """Every message in one thread; errors with Slack's error code (never returns an empty list) when refused.
 
-    "Nobody replied" and "this token may not read that channel" are opposite facts; the
-    backend retries a bot ``not_in_channel`` through the user token and raises what is left.
+    "Nobody replied" and "this token may not read that channel" are opposite facts; the backend
+    retries a bot ``not_in_channel`` through the user token when configured and raises what is
+    left, so ``[]`` means genuinely empty.
     """
     if not channel or not thread_ts:
         msg = "slack_thread_replies needs a non-empty channel and thread_ts; Slack was not asked."
@@ -123,6 +107,7 @@ async def _slack_thread_replies(channel: str, thread_ts: str) -> list[dict[str, 
 
 
 async def _slack_permalink(channel: str, ts: str) -> str:
+    """The permalink for one message."""
     return await sync_to_async(lambda: _client().get_permalink(channel=channel, ts=ts), thread_sensitive=True)()
 
 

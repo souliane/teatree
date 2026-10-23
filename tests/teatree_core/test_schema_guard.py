@@ -224,7 +224,10 @@ class BehindSelfDbReportingTest(TransactionTestCase):
         # The `t3 doctor check` aggregation wires the schema-guard surface
         # into its pass/fail result, so the gap shows at session start.
         buffer = io.StringIO()
-        with redirect_stdout(buffer):
+        with (
+            patch("teatree.cli.doctor.run_checks._check_teatree_mcp_liveness", return_value=True),
+            redirect_stdout(buffer),
+        ):
             ok = doctor_check()
         assert ok is False
         assert "unapplied migration" in buffer.getvalue()

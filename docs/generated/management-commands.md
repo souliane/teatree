@@ -538,6 +538,14 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 
 Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
+## `secrets`
+
+| Subcommand | Description |
+| --- | --- |
+| `status` | Report key health without disclosing stored values |
+| `ls` | List sealed row names without decrypting values |
+| `import-pass` | Classify password-store names without copying their values |
+
 ## `seed_loops`
 
 Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).

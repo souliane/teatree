@@ -7557,13 +7557,14 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 window (SIG-PR-1).                                           │
 │ agent           Launch the configured agent with overlay context and         │
 │                 auto-detected skills.                                        │
-│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
-│                 brief must carry.                                            │
+│ skill-preamble  Emit the skill preamble a raw Agent-tool sub-agent brief     │
+│                 must carry.                                                  │
 │ config          Overlay configuration.                                       │
 │ loops           Run DB-configured autonomous loops for this overlay.         │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
+│ secrets         Inspect sealed credentials and plan a password-store import. │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
 │                 ticket).                                                     │
@@ -7723,10 +7724,10 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 ```
 Usage: t3 teatree skill-preamble [OPTIONS]
 
- Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+ Emit the skill preamble a raw Agent-tool sub-agent brief must carry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│ --skills,--skill        TEXT  Skills to include, comma-separated and/or      │
 │                               repeated (e.g. --skills t3:rules,t3:e2e).      │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -9290,6 +9291,62 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
 │ --global               Write the workspace-wide  default instead of a        │
 │                        per-overlay value.                                    │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree secrets`
+
+```
+Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
+
+ Inspect sealed credentials and plan a password-store import.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status       Show sealed-store key health and key IDs.                       │
+│ ls           List sealed entry names.                                        │
+│ import-pass  Classify password-store entries without copying values.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets status`
+
+```
+Usage: t3 teatree secrets status [OPTIONS]
+
+ Report key health without disclosing stored values.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets ls`
+
+```
+Usage: t3 teatree secrets ls [OPTIONS] [PREFIX]
+
+ List sealed row names without decrypting values.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   prefix      [PREFIX]  Only names starting with this prefix.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets import-pass`
+
+```
+Usage: t3 teatree secrets import-pass [OPTIONS]
+
+ Classify password-store names without copying their values.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

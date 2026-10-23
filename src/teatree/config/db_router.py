@@ -1,4 +1,4 @@
-"""Pin the ``ConfigSetting`` store to the canonical DB, never a worktree-isolated copy.
+"""Pin install-wide settings and sealed secrets to the canonical DB.
 
 :func:`teatree.paths.resolve_data_dir` deliberately auto-isolates a worktree
 checkout onto a sibling per-worktree ``db.sqlite3``, so unmerged control-DB
@@ -14,7 +14,9 @@ The Django-free cold path already encodes the right rule —
 DB — the named volume for the canonical data dir — even from inside a worktree. This module is
 its ORM twin: a database router that pins the ``ConfigSetting`` model, on READ as
 well as WRITE, to a :data:`CONFIG_DB_ALIAS` connection bound to that same file,
-so the two tiers can no longer disagree about where config lives.
+so the two tiers can no longer disagree about where config lives. The sealed
+instance credentials (``SealedSecret``) and their one-shot cutover marker
+(``SecretCutover``) are install-wide for the same reason and are pinned with it.
 
 The alias is registered by the settings module ONLY when the default connection
 resolves somewhere else — i.e. an auto-isolated worktree. In a primary clone (and
@@ -47,6 +49,7 @@ CONFIG_DB_ALIAS = "canonical_config"
 #: ``ConfigSetting._meta.label_lower`` — matched as a string so this platform-layer
 #: module never imports the domain-layer model (a backwards tach edge).
 CONFIG_MODEL_LABEL = "core.configsetting"
+PINNED_MODEL_LABELS = frozenset({CONFIG_MODEL_LABEL, "core.sealedsecret", "core.secretcutover"})
 
 
 def pinned_config_db(
@@ -60,7 +63,8 @@ def pinned_config_db(
     ``None`` means "the default connection is the canonical DB" — the primary
     clone and the explicit-sandbox cases — so no second alias is registered and
     the router stays inert. A path means the caller is running from an
-    auto-isolated worktree and config must be routed away from its local DB.
+    auto-isolated worktree and install-wide config, sealed secrets and the
+    cutover marker must be routed away from its local DB.
 
     Both sides are resolved before comparison so a symlinked home or data root
     (``/tmp`` → ``/private/tmp`` on macOS) cannot fake a difference and register
@@ -81,14 +85,13 @@ def pinned_config_db(
 
 
 class ConfigSettingRouter:
-    """Route ``ConfigSetting`` reads and writes to :data:`CONFIG_DB_ALIAS` when it exists.
+    """Route the :data:`PINNED_MODEL_LABELS` models to :data:`CONFIG_DB_ALIAS` when it exists.
 
-    Returning ``None`` from every hook for every other model leaves the rest of
-    the control DB exactly where it was — this router only ever moves config.
+    Returning ``None`` for other models leaves their database selection unchanged.
     """
 
     def _pinned_alias(self, model: type[Model]) -> str | None:  # noqa: PLR6301 — Django router contract: instance method
-        if model._meta.label_lower != CONFIG_MODEL_LABEL:  # noqa: SLF001 — Django's documented Model._meta API
+        if model.__dict__["_meta"].label_lower not in PINNED_MODEL_LABELS:
             return None
         return CONFIG_DB_ALIAS if CONFIG_DB_ALIAS in connections.databases else None
 
