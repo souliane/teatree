@@ -2,7 +2,7 @@
 
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -351,7 +351,7 @@ install_store = _store_slot.install
 
 
 @contextmanager
-def use_store(store: SecretStore) -> Iterator[SecretStore]:
+def use_store(store: SecretStore) -> Generator[SecretStore]:
     previous = _store()
     install_store(store)
     try:

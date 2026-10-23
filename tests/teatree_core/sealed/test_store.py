@@ -1,7 +1,7 @@
 import base64
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -44,7 +44,7 @@ BREAKAGES = ("key removed", "key mode 0644", "wrong key", "tampered ciphertext")
 
 
 @contextmanager
-def fake_pass_store(root: Path) -> Iterator[PassStore]:
+def fake_pass_store(root: Path) -> Generator[PassStore]:
     binary = root / "bin"
     binary.mkdir()
     (binary / "pass").write_text(FAKE_PASS)
