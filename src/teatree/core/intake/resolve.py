@@ -198,7 +198,7 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
         # would fan out to EVERY pk-fallback ticket (blank ``issue_number``) and
         # then fail loud as a false collision, so refuse it up front.
         return None
-    real = Ticket.objects.exclude(issue_url__startswith="auto:")
+    real = Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
     matches = list(real.filter(issue_number=number))
     if number.isdigit():
         # ``issue_number`` is blank exactly when ``ticket_number`` falls back to
