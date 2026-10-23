@@ -148,6 +148,9 @@ from hooks.scripts.question_gates import (
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
 from hooks.scripts.question_handback import hand_back_context, handle_hand_back_answers
+from hooks.scripts.question_ledger import resolved_terminal_question
+from hooks.scripts.question_ledger import run_id as _run_id
+from hooks.scripts.question_ledger import supersede_pending_questions as _supersede_pending_questions
 from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from hooks.scripts.raw_issue_write_guard import handle_block_raw_issue_write
@@ -3151,6 +3154,19 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
+    first = _first_question(data)
+    options = first.get("options", []) if isinstance(first.get("options"), list) else []
+    try:
+        resolved = resolved_terminal_question(str(first.get("question", "")).strip(), _options_hash(options))
+    except Exception as exc:  # noqa: BLE001 — a hook must report unreadable state and preserve the tool path
+        sys.stderr.write(f"Question ledger read failed: {exc}\n")
+        resolved = None
+    if resolved is not None:
+        row_id, decision = resolved
+        return emit_pretooluse_deny(
+            f"Question #{row_id} was already {decision}. Apply that recorded decision; do not ask again.",
+            gate_id="deferred_question",
+        )
     if attended_turn(data):
         _supersede_pending_questions(data)
         return False
@@ -3167,39 +3183,6 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
         f"A loop-driven AskUserQuestion cannot block here: decide it yourself and proceed. {OWNER_QUESTION_ROUTE}"
     )
     return emit_pretooluse_deny(reason, gate_id="deferred_question")
-
-
-def _supersede_pending_questions(data: dict) -> None:
-    """Stale-mark this (session, run)'s pending rows — an in-client ask replaces them.
-
-    A loop-driven row the agent later re-asks on an attended turn would otherwise keep
-    nagging from ``reask_escalated_questions`` after the owner has already answered.
-
-    Scoped by ``supersedable``: a raw ``pending()`` filter dismisses a DELIVERED row a Slack reply binds to,
-    sweeps the INTERNAL health queue, and — on the common run-less payload — erases the session's backlog (#4721).
-    """
-    if not bootstrap_teatree_django():
-        return
-    try:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
-
-        for prior in DeferredQuestion.supersedable(session_id=str(data.get("session_id", "")), run_id=_run_id(data)):
-            prior.mark_stale("superseded by an in-client question")
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-
-
-def _run_id(data: dict) -> str:
-    """Harness run id when the payload exposes one; empty when it names no run.
-
-    The (session, run) pair scopes the generation cursor and what a newer question may supersede; empty rather
-    than the session id, whose fallback widened that scope to the session's whole backlog (#4721).
-    """
-    for key in ("run_id", "agent_run_id", "tool_use_id"):
-        value = str(data.get(key, "")).strip()
-        if value:
-            return value
-    return ""
 
 
 def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:

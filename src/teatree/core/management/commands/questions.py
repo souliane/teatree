@@ -31,10 +31,13 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.question_text import question_fingerprint
+from teatree.core.models.task_handoff import DelegatedAnswerError, delegate_answer
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
 from teatree.core.table_output import print_table
 
@@ -49,6 +52,10 @@ class DeferredQuestionRow(TypedDict):
     question: str
     evidence: Mapping[str, object]
     answer: str
+    resolved_by: str
+    resolution_reason: str
+    resolved_at: str | None
+    applied_at: str | None
     created_at: str | None
     escalated_at: str | None
     escalation_count: int
@@ -207,22 +214,34 @@ class Command(MachineOutputCommand):
         ] = False,
     ) -> list[DeferredQuestionRow]:
         """List open questions, oldest first."""
-        rows = list(DeferredQuestion.objects.order_by("-created_at")) if all_rows else list(DeferredQuestion.pending())
-        payload: list[DeferredQuestionRow] = [
-            {
-                "id": row.pk,
-                "status": row.status,
-                "audience": row.audience,
-                "dedupe_marker": row.dedupe_marker,
-                "question": row.question,
-                "evidence": row.evidence,
-                "answer": row.answer_text,
-                "created_at": row.created_at.isoformat() if row.created_at is not None else None,
-                "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,
-                "escalation_count": row.escalation_count,
-            }
-            for row in rows
-        ]
+        query = DeferredQuestion.objects.order_by("-created_at") if all_rows else DeferredQuestion.pending()
+        rows = list(query.prefetch_related("audits"))
+        payload: list[DeferredQuestionRow] = []
+        for row in rows:
+            resolution = next(
+                (audit for audit in row.audits.all() if audit.action in {"answered", "delegated_answer", "dismissed"}),
+                None,
+            )
+            payload.append(
+                {
+                    "id": row.pk,
+                    "status": row.status,
+                    "audience": row.audience,
+                    "dedupe_marker": row.dedupe_marker,
+                    "question": row.question,
+                    "evidence": row.evidence,
+                    "answer": row.answer_text,
+                    "resolved_by": resolution.resolver_id if resolution is not None else "",
+                    "resolution_reason": (resolution.note or resolution.dismissed_reason)
+                    if resolution is not None
+                    else "",
+                    "resolved_at": resolution.resolved_at.isoformat() if resolution is not None else None,
+                    "applied_at": row.applied_at.isoformat() if row.applied_at is not None else None,
+                    "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+                    "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,
+                    "escalation_count": row.escalation_count,
+                }
+            )
         self.print_result = False
         emit(
             payload,
@@ -283,7 +302,7 @@ class Command(MachineOutputCommand):
         ] = None,
         agent_surface: Annotated[bool, typer.Option("--agent-surface", hidden=True)] = False,
     ) -> str:
-        """Resolve pending internal questions; an owner question is answered only in its Slack thread.
+        """Resolve pending internal questions; use ``delegate`` for a bounded owner decision.
 
         ``--also`` exists because one decision routinely settles several questions:
         a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -333,6 +352,43 @@ class Command(MachineOutputCommand):
         if not answered:
             raise SystemExit(1)
         return f"answered {len(answered)}: {', '.join(f'#{pk}' for pk in answered)}."
+
+    @command()
+    def delegate(
+        self,
+        question_id: int,
+        text: Annotated[str, typer.Argument(help="The bounded card option to apply.")],
+        *,
+        resolver_id: Annotated[str, typer.Option("--resolver", help="The answering agent identity.")] = "",
+        evidence: Annotated[str, typer.Option("--evidence", help="The decision evidence read by the agent.")] = "",
+    ) -> str:
+        """Answer a bounded owner decision under Rule -1, audited and applied at once."""
+        try:
+            row = delegate_answer(question_id, text, resolver_id=resolver_id, evidence=evidence)
+        except DelegatedAnswerError as exc:
+            if DeferredQuestionAudit.objects.filter(question_id=question_id, action="delegation_skipped").exists():
+                reason = str(exc)
+                transaction.on_commit(
+                    lambda: notify_user(
+                        f"Kept owner decision #{question_id}: {reason}.",
+                        kind=NotifyKind.INFO,
+                        idempotency_key=f"delegation-skipped:{question_id}",
+                        audience=NotifyAudience.OWNER_ESCALATION,
+                    ),
+                    robust=True,
+                )
+            self.stderr.write(str(exc))
+            raise SystemExit(2) from exc
+        transaction.on_commit(
+            lambda: notify_user(
+                f"Answered owner decision #{row.pk} with {text} and resumed its step.",
+                kind=NotifyKind.INFO,
+                idempotency_key=f"delegated-answer:{row.pk}",
+                audience=NotifyAudience.OWNER_ESCALATION,
+            ),
+            robust=True,
+        )
+        return f"delegated answer applied #{row.pk}."
 
     @command()
     def dismiss(

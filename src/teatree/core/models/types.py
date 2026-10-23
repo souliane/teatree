@@ -747,6 +747,15 @@ class WorktreeSiblingFields(TypedDict, total=False):
     branch: str
 
 
+class Rule1CheckoutAudit(TypedDict):
+    actor: str
+    reason: str
+    digest: str
+    pull_request: str
+    forge_head: str
+    at: str
+
+
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
@@ -754,6 +763,7 @@ class WorktreeExtra(TypedDict, total=False):
     direct_attested_at: str
     checkout_custody: CheckoutCustody
     auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
+    rule1_checkout_audit: Rule1CheckoutAudit
     deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]

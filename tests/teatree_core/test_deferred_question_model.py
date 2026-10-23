@@ -190,7 +190,7 @@ class TestAnOwnerQuestionIsNeverReAsked:
         )
         DeferredQuestion.consume(first.pk, answer="keep them")
         again = DeferredQuestion.record(
-            "Reclaim the 4 leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "4 dirs")
+            "Would you reclaim the leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "3 dirs")
         )
         assert again.pk == first.pk
 
@@ -378,7 +378,8 @@ class TestAnAnswerIsPostedToTheSessionThatAsked(TestCase):
 
         assert answer_handback.collect("s-ask") == [{"id": question.pk, "answer": "use postgres-1"}]
         question.refresh_from_db()
-        assert question.applied_at is not None
+        assert question.delivered_at is not None
+        assert question.applied_at is None
 
     def test_a_locked_database_while_posting_never_aborts_the_answers(self) -> None:
         first, second = self._asked(), self._asked()

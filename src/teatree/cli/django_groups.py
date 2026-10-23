@@ -421,6 +421,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List open questions, oldest first."),
             ("reachability", "Report which automated resolvers can decide each pending question."),
             ("answer", "Resolve a pending question with a user answer."),
+            ("delegate", "Answer a bounded owner decision under Rule -1, audited and applied at once."),
             ("dismiss", "Dismiss a pending question without answering it."),
             ("resurface", "Re-post the pending backlog to the user's Slack DM (away→present drain)."),
         ],

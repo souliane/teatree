@@ -88,11 +88,17 @@ class TestCheckoutAttestation(TestCase):
         self.worktree = WorktreeFactory(ticket=self.task.ticket, extra={"worktree_path": str(self.checkout)})
 
     def _park_on_a_foreign_edit(self) -> DeferredQuestion:
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
+            patch("teatree.core.worktree.checkout_fence.notify_user"),
+        ):
             verify_task_checkout(self.task, str(self.checkout))
             (self.checkout / "new.txt").write_text("foreign edit")
             assert claim_task_checkout_or_park(self.task) is not None
-        row = self.task.deferred_questions.get()
+        row = ask_owner_to_attest(
+            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+        assert row is not None
         assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
         return row
 
@@ -349,16 +355,19 @@ class TestCheckoutAttestation(TestCase):
 
         assert self._carry_out() == [f"carried out {row.pk}"]
 
-    def test_latest_waiting_task_is_released_by_a_reused_card(self) -> None:
+    def test_acceptance_releases_a_later_task_parked_on_the_same_checkout(self) -> None:
         row = self._park_on_a_foreign_edit()
         later = TaskFactory(ticket=self.task.ticket, phase="coding")
         state = checkout_state(self.checkout)
-        park_task_checkout(
-            later, reason="foreign edit", attestable=CheckoutAttestation(self.worktree, state, host_evidence=True)
-        )
-        reused = DeferredQuestion.objects.get(pk=row.pk)
-        assert reused.pk == row.pk
-        self._answer(reused, "Accept")
+        park_task_checkout(later, reason="foreign edit")
+        parked_attempt = later.attempts.order_by("-pk").first()
+        assert parked_attempt is not None
+        parked_attempt.result = {**parked_attempt.result, "checkout_worktree_id": self.worktree.pk}
+        parked_attempt.save(update_fields=["result"])
+        later_card = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
+        assert later_card is not None
+        assert later_card.pk != row.pk
+        self._answer(row, "Accept")
 
         assert self._carry_out() == [f"carried out {row.pk}"]
         self.task.refresh_from_db()
@@ -401,15 +410,25 @@ class TestCheckoutAttestation(TestCase):
         assert self.task.not_before is None
         assert other_task.not_before is not None
 
+    def test_carrying_out_an_owner_action_stamps_that_its_answer_was_applied(self) -> None:
+        row = self._park_on_a_foreign_edit()
+        self._answer(row, "Accept")
+        row.refresh_from_db()
+        assert row.applied_at is None
+
+        assert self._carry_out() == [f"carried out {row.pk}"]
+
+        row.refresh_from_db()
+        assert row.applied_at is not None
+
     def test_accept_keeps_a_declined_step_parked_on_the_same_checkout(self) -> None:
         coding = self._park_on_a_foreign_edit()
         retro = TaskFactory(ticket=self.task.ticket, phase="retro")
-        park_task_checkout(
-            retro,
-            reason="foreign edit",
-            attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
+        park_task_checkout(retro, reason="foreign edit")
+        declined = ask_owner_to_attest(
+            retro, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
         )
-        declined = retro.deferred_questions.get()
+        assert declined is not None
         assert declined.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000200")
         self._answer(declined, "Decline")
         assert self._carry_out() == [f"declined {declined.pk}"]
@@ -430,7 +449,10 @@ class TestCheckoutAttestation(TestCase):
         self.worktree.merge_extra(set_keys={"attested_state": "e" * 64})
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             assert claim_task_checkout_or_park(self.task) is not None
-        row = self.task.deferred_questions.get()
+        row = ask_owner_to_attest(
+            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+        assert row is not None
         assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
         self._answer(row, "Decline")
         assert self._carry_out() == [f"declined {row.pk}"]
@@ -533,7 +555,11 @@ class TestCheckoutAttestation(TestCase):
         unavailable = ProcessTable(frozenset(), "")
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):
             assert claim_task_checkout_or_park(self.task) is not None
-        row = self.task.deferred_questions.get()
+        row = ask_owner_to_attest(
+            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=False)
+        )
+        assert row is not None
+        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
         self._answer(row, "Accept")
 
         assert self._carry_out() == [f"carried out {row.pk}"]
@@ -548,7 +574,7 @@ class TestCheckoutAttestation(TestCase):
 
         old.refresh_from_db()
         assert old.dismissed_at is not None
-        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
+        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 0
 
     def test_a_checkout_changed_after_the_card_is_refused_with_one_notice(self) -> None:
         row = self._park_on_a_foreign_edit()

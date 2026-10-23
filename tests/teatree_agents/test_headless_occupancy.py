@@ -34,6 +34,7 @@ from teatree.agents.runner_stream import StreamCapture
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
+from teatree.core.worktree.checkout_auto import CheckoutAutoProof
 from teatree.core.worktree.checkout_fence import CheckoutFenceError
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
@@ -124,16 +125,22 @@ class OccupiedCheckoutTests(_DispatchCase):
 
 
 class CheckoutFenceDispatchTests(_DispatchCase):
-    def test_a_real_foreign_edit_asks_the_owner_to_attest(self) -> None:
+    def test_a_real_foreign_edit_is_decided_without_asking_the_owner(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
         self.addCleanup(shutil.rmtree, self.checkout)
         self.worktree.merge_extra(set_keys={"attested_state": checkout_state(self.checkout).digest})
         clear = ProcessTable(frozenset(), "/proc")
-        with mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+        unsafe = CheckoutAutoProof(safe=False, reason="a container process cannot be ruled out")
+        with (
+            mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            mock.patch("teatree.core.worktree.checkout_auto.prove_checkout_for_rule1", return_value=unsafe),
+        ):
             (self.checkout / "foreign.txt").write_text("foreign edit")
             runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
 
-        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
+        decision = self.task.deferred_questions.get()
+        assert decision.audience == "internal"
+        assert decision.dismissed_reason == "a container process cannot be ruled out"
 
     def test_a_refused_checkout_never_opens_the_harness(self) -> None:
         driver = mock.Mock()

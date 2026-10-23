@@ -1,11 +1,14 @@
 """Dedupe and answer helpers for durable owner action questions."""
 
+from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Self
 
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.question_card import match_action_option
+from teatree.core.modelkit.question_card import QuestionCard, match_action_option
 from teatree.core.models.question_text import question_fingerprint
 
 if TYPE_CHECKING:
@@ -26,32 +29,88 @@ def owner_declined(row: "DeferredQuestion") -> bool:
 
 
 def held_question(
-    marked: "QuerySet[DeferredQuestion]", question: str, *, owner: bool, action: bool
+    marked: "QuerySet[DeferredQuestion]", question: str, *, card: "QuestionCard | None", options_json: str = ""
 ) -> "DeferredQuestion | None":
     pending = marked.filter(answered_at__isnull=True, dismissed_at__isnull=True)
-    if not owner:
+    if card is None:
         return pending.first()
-    if action:
-        if held := pending.filter(audience=marked.model.Audience.OWNER_QUESTION).first():
-            return held
-        waiting = marked.filter(audience=marked.model.Audience.OWNER_QUESTION, answered_at__isnull=False).exclude(
-            audits__action__in=ACTION_OUTCOMES
-        )
-        if held := next((row for row in waiting if not owner_declined(row)), None):
-            return held
-        for internal in pending:
-            internal.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
-        return None
-    fingerprint = question_fingerprint(question)
-    for row in marked.filter(audience=marked.model.Audience.OWNER_QUESTION):
-        if row.dismissed_at is None or question_fingerprint(row.question) == fingerprint:
-            return row
-    for internal in pending:
-        internal.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
+    if card.action is not None:
+        return _held_action(marked, pending)
+    return _held_decision(marked, pending, question, card.to_evidence(), options_json)
+
+
+def _held_action(
+    marked: "QuerySet[DeferredQuestion]", pending: "QuerySet[DeferredQuestion]"
+) -> "DeferredQuestion | None":
+    if held := pending.filter(audience=marked.model.Audience.OWNER_QUESTION).first():
+        return held
+    waiting = marked.filter(audience=marked.model.Audience.OWNER_QUESTION, answered_at__isnull=False).exclude(
+        audits__action__in=ACTION_OUTCOMES
+    )
+    if held := next((row for row in waiting if not owner_declined(row)), None):
+        return held
+    _supersede(pending)
     return None
 
 
+def _held_decision(
+    marked: "QuerySet[DeferredQuestion]",
+    pending: "QuerySet[DeferredQuestion]",
+    question: str,
+    evidence: Mapping[str, object],
+    options_json: str,
+) -> "DeferredQuestion | None":
+    fingerprint = question_fingerprint(question)
+    for row in marked.filter(audience=marked.model.Audience.OWNER_QUESTION):
+        if row.dismissed_at is not None:
+            if question_fingerprint(row.question) == fingerprint:
+                return row
+        elif _facts_unchanged(row, evidence, options_json):
+            return row
+    _supersede(pending)
+    return None
+
+
+def _supersede(pending: "QuerySet[DeferredQuestion]") -> None:
+    for previous in pending:
+        previous.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
+
+
+def _facts_unchanged(row: "DeferredQuestion", evidence: Mapping[str, object], options_json: str) -> bool:
+    previous = row.evidence if isinstance(row.evidence, dict) else {}
+    if "decision" not in previous or "checked" not in previous:
+        return True
+    return (
+        previous["decision"] == evidence.get("decision")
+        and previous["checked"] == evidence.get("checked")
+        and row.options_json == options_json
+    )
+
+
+def mark_escalated(row: "DeferredQuestion", note: str, audit_model: type["DeferredQuestionAudit"]) -> bool:
+    with transaction.atomic():
+        current = (
+            type(row)
+            .objects.select_for_update()
+            .filter(pk=row.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+            .first()
+        )
+        if current is None:
+            return False
+        current.escalated_at = timezone.now()
+        current.escalation_count += 1
+        current.save(update_fields=["escalated_at", "escalation_count"])
+        audit_model.objects.create(question=current, action="escalated", note=note)
+        row.escalated_at = current.escalated_at
+        row.escalation_count = current.escalation_count
+        return True
+
+
 class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
+    def decided_since(self, since: datetime) -> Self:
+        decided = models.Q(answered_at__gte=since) | models.Q(dismissed_at__gte=since)
+        return self.filter(decided).exclude(resolved_via=self.model.ResolvedVia.STALE)
+
     def awaiting_action_outcome(self) -> Self:
         return (
             self.filter(

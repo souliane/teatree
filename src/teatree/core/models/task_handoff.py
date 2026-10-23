@@ -11,9 +11,13 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 
 import logging
 
+from django.db import transaction
+from django.utils import timezone
+
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import QuestionCard, match_action_option
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.question_subject import finished_subject_reason
@@ -25,6 +29,64 @@ from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 _DEFAULT_REASON = "Agent needs human input"
 
 logger = logging.getLogger(__name__)
+
+
+class DelegatedAnswerError(ValueError):
+    pass
+
+
+def _delegation_skip_reason(row: DeferredQuestion, answer: str) -> str:
+    if not isinstance(row.evidence, dict) or row.evidence.get("decision") not in {
+        OwnerDecision.PRODUCT_SCOPE,
+        OwnerDecision.ARCHITECTURE,
+    }:
+        return "the card's decision class may include an owner-only effect"
+    if read_action(row.evidence) is not None:
+        return "an owner action requires its own verified handler"
+    option = match_action_option(row.options_json, answer)
+    if option is None:
+        return "the answer must name a card option"
+    if option.effect != "bounded":
+        return "the selected effect is not a bounded, delegated action"
+    if row.parked_task_id is None:
+        return "no waiting task can apply this decision"
+    return ""
+
+
+def delegate_answer(question_id: int, answer: str, *, resolver_id: str, evidence: str) -> DeferredQuestion:
+    if not resolver_id.startswith("agent:") or not evidence.strip():
+        message = "a delegated answer needs an agent identity and evidence"
+        raise DelegatedAnswerError(message)
+    skipped = ""
+    with transaction.atomic():
+        row = DeferredQuestion.objects.select_for_update().filter(pk=question_id).first()
+        if row is None or not row.is_pending or row.audience != DeferredQuestion.Audience.OWNER_QUESTION:
+            message = "the owner question is missing or already resolved"
+            raise DelegatedAnswerError(message)
+        skipped = _delegation_skip_reason(row, answer)
+        if skipped:
+            if not DeferredQuestionAudit.objects.filter(question=row, action="delegation_skipped").exists():
+                DeferredQuestionAudit.objects.create(
+                    question=row, action="delegation_skipped", resolver_id=resolver_id, note=f"Rule -1: {skipped}"
+                )
+        else:
+            applied = row.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.DELEGATED)
+            if applied is None:
+                message = "the question was already resolved"
+                raise DelegatedAnswerError(message)
+            DeferredQuestionAudit.objects.create(
+                question=applied,
+                action="delegated_answer",
+                answer_text=answer,
+                resolver_id=resolver_id,
+                note=f"Rule -1; evidence: {evidence.strip()}",
+            )
+            if resume_on_answer(applied, applied.parked_task) is None:
+                message = "the decision could not be applied to its waiting task"
+                raise DelegatedAnswerError(message)
+            return applied
+    raise DelegatedAnswerError(skipped)
+
 
 #: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
@@ -66,15 +128,18 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
         task is None
         or read_action(row.evidence) is not None
         or row.audience != DeferredQuestion.Audience.OWNER_QUESTION
-        or not row.answered_on_owner_channel
+        or not (row.answered_on_owner_channel or row.resolved_via == DeferredQuestion.ResolvedVia.DELEGATED)
         or finished_subject_reason(row) is not None
     ):
         return None
     try:
-        return schedule_resume(task, answer=row.answer_text)
+        resumed = schedule_resume(task, answer=row.answer_text)
     except NoPlanArtifactError:
         logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
         return None
+    else:
+        DeferredQuestion.objects.filter(pk=row.pk, applied_at__isnull=True).update(applied_at=timezone.now())
+        return resumed
 
 
 def release_checkout_park(task: Task) -> bool:

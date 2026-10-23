@@ -20,6 +20,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.worktree.checkout_auto import CheckoutAutoProof
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
 from teatree.core.worktree.checkout_state import checkout_state
@@ -151,12 +152,15 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
             patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=forge_stdout),
-            patch("teatree.core.worktree.checkout_fence.ask_owner_to_attest") as card,
+            patch(
+                "teatree.core.worktree.checkout_fence.resolve_checkout_park",
+                return_value=(CheckoutAutoProof(safe=False, reason="not proven in this test"), "marker"),
+            ) as decision,
             patch("teatree.core.worktree.checkout_fence.notify_user") as page,
         ):
             result = claim_task_checkout_or_park(self.claimant)
         if result is None:
-            card.assert_not_called()
+            decision.assert_not_called()
             page.assert_not_called()
         return result
 

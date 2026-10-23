@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
+from django.utils import timezone
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_mirror_question_to_slack
@@ -228,6 +229,29 @@ class TestAttendedTurnNeverReachesSlack:
         assert stranded.dismissed_at is not None, "the superseded loop row still nags on Slack"
         assert DeferredQuestion.objects.count() == 1, "the attended re-ask must not record its own row"
 
+    @pytest.mark.parametrize(
+        ("resolution", "answer"),
+        [({"answer": "ship it"}, "ship it"), ({"dismissed_reason": "already settled"}, "already settled")],
+    )
+    def test_an_attended_reask_uses_a_resolved_answer_from_another_session(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        resolution: dict[str, str],
+        answer: str,
+    ) -> None:
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-first", tool_use_id="t-1"))
+        capsys.readouterr()
+        resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, **resolution)
+        assert resolved is not None
+        monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
+
+        verdict = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-second", tool_use_id="t-2"))
+
+        assert verdict is True
+        assert answer in _stdout(capsys)["permissionDecisionReason"]
+        assert DeferredQuestion.objects.count() == 1
+
 
 class TestALoopDrivenQuestionNeverReachesTheOwner:
     """A loop-driven ``AskUserQuestion`` is recorded internal and never DM'd (#5096).
@@ -300,19 +324,42 @@ class TestALoopDrivenQuestionNeverReachesTheOwner:
         ("resolution", "label"),
         [({"answer": "ship it"}, "answered"), ({"dismissed_reason": "stale"}, "dismissed")],
     )
-    def test_a_reask_after_the_row_resolved_gets_a_fresh_row(
+    def test_a_reask_after_the_row_resolved_reuses_the_decision(
         self, capsys: pytest.CaptureFixture[str], resolution: dict[str, str], label: str
     ) -> None:
-        """The dedupe lookup reads ``pending()``, so a RESOLVED internal row is never reused."""
         handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14"))
         capsys.readouterr()
         resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, **resolution)
         assert resolved is not None
         handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-15"))
-        capsys.readouterr()
 
-        assert DeferredQuestion.objects.count() == 2, f"the re-ask after a {label} row was swallowed"
-        assert DeferredQuestion.pending().get().pk != resolved.pk
+        assert DeferredQuestion.objects.count() == 1, f"the re-ask after a {label} row was recorded again"
+        assert resolved.pk == DeferredQuestion.objects.get().pk
+        assert label in _stdout(capsys)["permissionDecisionReason"]
+
+    def test_another_sessions_decision_older_than_the_correlation_window_is_asked_again(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14"))
+        capsys.readouterr()
+        resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, answer="ship it")
+        assert resolved is not None
+        DeferredQuestion.objects.filter(pk=resolved.pk).update(answered_at=timezone.now() - timedelta(days=31))
+
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-15"))
+
+        assert DeferredQuestion.objects.count() == 2, "a 31-day-old answer to free text still blocked the ask"
+
+    def test_another_sessions_stale_dismissal_is_not_a_decision_to_reuse(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14"))
+        capsys.readouterr()
+        DeferredQuestion.objects.get().mark_stale("superseded by newer question")
+
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-15"))
+
+        assert DeferredQuestion.objects.count() == 2, "a superseded question was refused as if the owner had decided it"
 
     def test_a_second_session_asking_the_same_question_gets_its_own_row(
         self, capsys: pytest.CaptureFixture[str]

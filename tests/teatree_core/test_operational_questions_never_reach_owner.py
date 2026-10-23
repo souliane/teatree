@@ -38,6 +38,7 @@ from teatree.core.question_heal import record_withheld
 from teatree.core.repair_loop import MAX_REOFFERS, IterationStalled, MaxIterationsExceeded, max_phase_iterations
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
+from teatree.core.worktree.checkout_auto import CheckoutAutoProof, resolve_checkout_park
 from teatree.loop.ci_eval_heal_advance import advance_open_sessions
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
@@ -58,7 +59,7 @@ from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import owner_card
 from tests.conformance._src_tree import REPO_ROOT
 from tests.conformance.test_owner_decision_allowlist import _calls
-from tests.factories import planned_ticket
+from tests.factories import WorktreeFactory, planned_ticket
 from tests.teatree_agents.test_runner_review_verdict import _LIVE_RED, _contradiction_envelope, _exhaust_dispatch
 from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review, head
 from tests.teatree_core.gates.test_review_request_batch_gate import _TICKET, _forge
@@ -173,6 +174,15 @@ def _hold_past_the_rework_cap() -> None:
     latest = completed_self_review(ticket, "hold", reviewed_sha=head(999))
     with patch.object(Ticket, "has_shippable_diff", return_value=True):
         latest._apply_phase_transition()
+
+
+def _decide_a_checkout_park() -> None:
+    ticket = Ticket.objects.create()
+    unsafe = CheckoutAutoProof(safe=False, reason="the checkout is on the wrong branch")
+    with patch("teatree.core.worktree.checkout_auto.prove_checkout_for_rule1", return_value=unsafe):
+        resolve_checkout_park(
+            _task("coding", ticket=ticket), WorktreeFactory(ticket=ticket), SimpleNamespace(digest="a" * 64)
+        )
 
 
 def _wedge_a_finished_phase() -> None:
@@ -334,6 +344,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/models/task_repair.py", "_escalate_stall"): _stall_a_repair_loop,
     ("src/teatree/core/provision/failure_question.py", "record_provision_failure_question"): _fail_a_provision,
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
+    ("src/teatree/core/worktree/checkout_auto.py", "resolve_checkout_park"): _decide_a_checkout_park,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,
     ("src/teatree/loop/persistence_reviewer.py", "_escalate_unrecordable_review"): _refuse_an_unrecordable_review,

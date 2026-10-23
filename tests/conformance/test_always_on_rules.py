@@ -8,6 +8,17 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULES_FILE = _REPO_ROOT / "skills" / "rules" / "RULES.md"
 
+_RULE_MINUS_ONE = (
+    "Rule -1 - Impersonate the owner. Any question addressed to the owner (a Slack card, a terminal question, "
+    "a halt notice) is answered in the owner's place by the session that meets it, from the owner's recorded "
+    "decisions and standing rules, choosing the recommended or the safest option when nothing settles it. "
+    "The answer is recorded with who gave it and why, applied at once, and reported to the owner afterwards in one "
+    "line; the owner is not waited for and not asked. A question that was answered or dismissed is never asked "
+    "again. The owner keeps four things: spending money, irreversible deletion of work that exists on no remote, "
+    "widening a security posture or a credential's use, and anything said to a colleague in the owner's name. "
+    "Those are skipped and reported, not asked."
+)
+
 _TITLES = (
     "Nothing may endanger security or leak",
     "Do not waste work, time, tokens, money or the owner's energy",
@@ -45,6 +56,12 @@ def _links_before_first_section(page: Path, target: Path) -> bool:
 def test_the_rules_are_numbered_from_zero_by_importance() -> None:
     entries = _ENTRY_RE.findall(_RULES_FILE.read_text(encoding="utf-8"))
     assert entries == [(str(rank), title) for rank, title in enumerate(_TITLES)]
+
+
+def test_rule_minus_one_is_verbatim_and_above_rule_zero() -> None:
+    text = _RULES_FILE.read_text(encoding="utf-8")
+    assert text.count(_RULE_MINUS_ONE) == 1
+    assert text.index(_RULE_MINUS_ONE) < text.index("0. **Nothing may endanger security or leak:")
 
 
 @pytest.mark.parametrize(

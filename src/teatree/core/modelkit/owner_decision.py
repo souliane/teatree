@@ -15,7 +15,9 @@ class OwnerDecision(enum.StrEnum):
 
 
 OWNER_QUESTION_ROUTE = (
-    "Ask the owner only via `t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
+    "Read the decision ledger and decide in the owner's place under Rule -1; use `questions delegate` "
+    "for a bounded card. Record an unresolved owner-only hard limit only via "
+    "`t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
     "--checked '<fact>' --why '<one sentence on why you ask>' --blocker '<what stops you>' "
     '--options \'[{"label": "<answer>", "description": "<what happens next>", "recommended": true}, ...]\'`, '
     f"<kind> being one of {', '.join(OwnerDecision)} (an access or permission grant is credentials), "
@@ -25,7 +27,9 @@ OWNER_QUESTION_ROUTE = (
 )
 
 OWNER_ANSWER_ROUTE = (
-    "an owner question is answered only by the owner, in its Slack thread; if it no longer applies, "
+    "Read the decision ledger first. A bounded decision card may be answered with "
+    "`t3 <overlay> questions delegate <id> <option> --resolver agent:<name> --evidence '<facts>'`; "
+    "owner-only effects stay with the owner. Dismiss an obsolete card with "
     "`t3 <overlay> questions dismiss <id> --reason '<evidence>'`."
 )
 

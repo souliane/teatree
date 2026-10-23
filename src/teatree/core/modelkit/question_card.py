@@ -133,6 +133,7 @@ class OptionDict(TypedDict):
     label: str
     description: str
     recommended: NotRequired[bool]
+    effect: NotRequired[str]
 
 
 class CardEvidence(TypedDict):
@@ -153,11 +154,14 @@ class CardOption:
     label: str
     description: str
     recommended: bool = dataclasses.field(default=False, kw_only=True)
+    effect: str = dataclasses.field(default="", kw_only=True)
 
     def as_dict(self) -> OptionDict:
         option = OptionDict(label=self.label, description=self.description)
         if self.recommended:
             option["recommended"] = True
+        if self.effect:
+            option["effect"] = self.effect
         return option
 
     @classmethod
@@ -166,7 +170,10 @@ class CardOption:
             return cls(raw, "")
         if isinstance(raw, Mapping):
             return cls(
-                str(raw.get("label", "")), str(raw.get("description", "")), recommended=raw.get("recommended") is True
+                str(raw.get("label", "")),
+                str(raw.get("description", "")),
+                recommended=raw.get("recommended") is True,
+                effect=str(raw.get("effect", "")),
             )
         return None
 

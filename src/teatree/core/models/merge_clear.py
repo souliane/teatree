@@ -95,6 +95,7 @@ _SUBSTRATE_PATH_PREFIXES = (
     "docs/blueprint/",
 )
 _SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
+_SUBSTRATE_EXACT_PATHS = frozenset({"skills/rules/RULES.md"})
 
 
 def _substrate_candidates(normalized: str) -> tuple[str, ...]:
@@ -138,7 +139,9 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
         if not normalized:
             continue
         for candidate in _substrate_candidates(normalized):
-            if any(candidate.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
+            if candidate in _SUBSTRATE_EXACT_PATHS or any(
+                candidate.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES
+            ):
                 return True
         if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
             return True

@@ -40,6 +40,7 @@ from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
+from teatree.core.merge.rules_owner_review import assert_rules_owner_review
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
@@ -331,7 +332,7 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, seven gates run — the single chokepoint BOTH merge paths cross
+    retry loop, eight gates run — the single chokepoint BOTH merge paths cross
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
     via ``merge_pr_bound`` with NO preconditions run): ``assert_review_verdict_gate``
     (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
@@ -339,7 +340,8 @@ def execute_bound_merge(
     recorded merge-quality verdict at the shipped head), ``assert_ticket_scoped_gates``
     (the anti-vacuity attestation + rubric done-gate, resolved by PR identity so the
     no-CLEAR paths are graded instead of merging past them silently), the #18 not-draft +
-    FAILED-live-CI floor, and the published-message scan (``merge_message_gate``), whose
+    FAILED-live-CI floor, the head-bound owner review a rules-file change needs (``assert_rules_owner_review``),
+    and the published-message scan (``merge_message_gate``), whose
     scanned title/body every attempt then sends as the commit message. The floor re-reads
     the forge's LIVE state at the merge chokepoint so a green→red / open→draft flip in the TOCTOU window between a
     caller's snapshot and this PUT is refused here — the solo lane had NO such
@@ -380,6 +382,7 @@ def execute_bound_merge(
     assert_ticket_scoped_gates(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_not_draft(query)
     assert_ci_not_failed(query)
+    assert_rules_owner_review(query, expected_head=expected_head_oid)
     message = merge_message_gate.scanned_merge_message(ref, query.pr_message())
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:

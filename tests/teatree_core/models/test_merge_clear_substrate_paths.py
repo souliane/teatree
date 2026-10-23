@@ -45,6 +45,9 @@ class TestDiffPathsAreSubstrate:
     def test_governance_agents_md_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["AGENTS.md"]) is True
 
+    def test_rules_file_is_substrate(self) -> None:
+        assert diff_paths_are_substrate(["skills/rules/RULES.md"]) is True
+
     def test_nested_governance_doc_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/core/CLAUDE.md"]) is True
 

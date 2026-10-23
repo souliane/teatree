@@ -848,8 +848,12 @@
           "name": "reachability"
         },
         {
-          "help": "Resolve pending internal questions; an owner question is answered only in its Slack thread",
+          "help": "Resolve pending internal questions; use ``delegate`` for a bounded owner decision",
           "name": "answer"
+        },
+        {
+          "help": "Answer a bounded owner decision under Rule -1, audited and applied at once",
+          "name": "delegate"
         },
         {
           "help": "Dismiss pending questions without answering them",

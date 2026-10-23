@@ -182,6 +182,7 @@ def _carry_one(
         DeferredQuestionAudit.objects.create(
             question=row, action=decision.outcome, resolver_id=_resolver(answer), note=note
         )
+        DeferredQuestion.objects.filter(pk=row.pk, applied_at__isnull=True).update(applied_at=timezone.now())
     return decision
 
 

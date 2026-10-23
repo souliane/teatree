@@ -27,12 +27,8 @@ from teatree.core.models.worktree_occupancy import (
     task_holder_id,
 )
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import (
-    CheckoutAttestation,
-    ask_owner_to_attest,
-    checkout_rows,
-    declined_attest_tasks,
-)
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, checkout_rows, declined_attest_tasks
+from teatree.core.worktree.checkout_auto import resolve_checkout_park
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
@@ -201,15 +197,30 @@ def park_task_checkout(
         checkout_capacity_opened.send(sender=Task)
     if rearmed:
         return attempt
+    marker = ""
     if attestable is not None:
-        question = ask_owner_to_attest(task, attestable)
-        if question is not None:
+        proof, marker = resolve_checkout_park(task, attestable.worktree, attestable.state)
+        if proof.safe:
+            try:
+                notify_user(
+                    f"Ticket {task.ticket.pk}: checkout attested under Rule -1 ({proof.reason}).",
+                    kind=NotifyKind.INFO,
+                    idempotency_key=f"checkout-rule1:{marker}:attested",
+                    audience=NotifyAudience.OWNER_ESCALATION,
+                )
+            except Exception:
+                logger.exception("Could not report Rule -1 checkout attestation for task %s", task.pk)
             return attempt
+        reason = f"{reason}; Rule -1 skipped attestation: {proof.reason}"
     try:
         notify_user(
             f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
             kind=NotifyKind.INFO,
-            idempotency_key=f"checkout-hold:{task.ticket.pk}:{attempt.result['checkout_episode']}",
+            idempotency_key=(
+                f"checkout-rule1:{marker}:skipped"
+                if attestable is not None
+                else f"checkout-hold:{task.ticket.pk}:{attempt.result['checkout_episode']}"
+            ),
             audience=NotifyAudience.OWNER_ESCALATION,
         )
     except Exception:
