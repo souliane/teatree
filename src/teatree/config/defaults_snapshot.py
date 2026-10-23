@@ -22,8 +22,7 @@ overlay-scope rows and stale/retired keys are reported, never emitted.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-
-import tomlkit
+from importlib import import_module
 
 from teatree.config.feature_flags import FEATURE_FLAGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
@@ -350,6 +349,7 @@ def render_toml(emitted: Mapping[str, SettingValue], *, base_text: str = "") -> 
     sub-tables, and reads back flat through
     :func:`~teatree.config.cold_defaults.flatten_settings_table`.
     """
+    tomlkit = import_module("tomlkit")
     document = tomlkit.parse(base_text) if base_text else tomlkit.document()
     document["teatree"] = grouped_settings_table(emitted)
     return tomlkit.dumps(document) if base_text else _HEADER + "\n" + tomlkit.dumps(document)
