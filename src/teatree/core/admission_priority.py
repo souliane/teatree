@@ -33,6 +33,7 @@ _CONTINUING_STAGE = 100
 _NEW_TICKET_STAGE = 0
 #: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
 _EXPEDITED_PRIORITY = 200
+_NIT_PRIORITY = -1000
 
 
 def _new_ticket_autostart_q() -> Q:
@@ -47,6 +48,7 @@ def _new_ticket_autostart_q() -> Q:
 def _priority_part() -> Case:
     """P, the ticket's priority — today ``Ticket.expedited``, the one source a label-driven priority replaces."""
     return Case(
+        When(ticket__extra__nit_follow_up=True, then=Value(_NIT_PRIORITY)),
         When(ticket__expedited=True, then=Value(_EXPEDITED_PRIORITY)),
         default=Value(0),
         output_field=IntegerField(),

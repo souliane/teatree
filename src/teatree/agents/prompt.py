@@ -12,6 +12,7 @@ from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
+    round_brief_lines,
     rubric_brief_lines,
 )
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
@@ -170,6 +171,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
                 "",
                 "PHASE: coding",
                 *head_state_brief_lines(task),
+                *round_brief_lines(task),
                 *declared_seams_brief_lines(task),
                 *_coding_phase_directive(skills, stage_exclude=stage_exclude),
             )

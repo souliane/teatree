@@ -78,7 +78,7 @@ from teatree.loop.scanners import (
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
-from teatree.loop.scanners.pr_findings import RecordedVerdictReader
+from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.scanners.review_nag_mention import IDENTITY_LOOKUP_ERRORS
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -213,6 +213,7 @@ def _ship_jobs_for_overlay(
                         competing_url_prefixes=competing_prefixes,
                         ci_enricher=ci_enricher,
                         verdict_reader=RecordedVerdictReader(),
+                        critic_reader=RecordedCriticFindingReader(),
                     ),
                     overlay=tag,
                 ),

@@ -142,7 +142,7 @@ def module_test_paths(module: str, settings: MutationSettings) -> tuple[str, ...
     return settings.module_tests.get(module, settings.module_tests.get("default", ("tests/",)))
 
 
-def build_mutmut_config(modules: Sequence[str], *, tests_dir: Sequence[str]) -> str:
+def build_mutmut_config(modules: Sequence[str], *, tests_dir: Sequence[str], test_selection: Sequence[str] = ()) -> str:
     """Render the ``[mutmut]`` ``setup.cfg`` section scoping the run.
 
     mutmut reads ``[tool.mutmut]`` from ``pyproject.toml`` first; with no such
@@ -186,6 +186,7 @@ def build_mutmut_config(modules: Sequence[str], *, tests_dir: Sequence[str]) -> 
         f"also_copy ={_ini_list(also_copy)}\n"
         "debug = true\n"
         f"pytest_add_cli_args ={_ini_list(pytest_args)}\n"
+        + (f"pytest_add_cli_args_test_selection ={_ini_list(test_selection)}\n" if test_selection else "")
     )
 
 
@@ -446,14 +447,23 @@ def _mutmut_env() -> dict[str, str]:
 _MUTANTS_PYTEST_INI = "[pytest]\naddopts =\nDJANGO_SETTINGS_MODULE = tests.django_settings\n"
 
 
-def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, timeout: int) -> MutationResult:
+def _run_mutmut(
+    modules: Sequence[str],
+    *,
+    tests_dir: Sequence[str],
+    repo: str,
+    timeout: int,
+    test_selection: Sequence[str] = (),
+) -> MutationResult:
     config_path = Path(repo) / "setup.cfg"
     pytest_ini = Path(repo) / "pytest.ini"
     for path in (config_path, pytest_ini):
         if path.exists():
             msg = f"{path} already exists; refusing to overwrite the scoped mutation config"
             raise FileExistsError(msg)
-    config_path.write_text(build_mutmut_config(modules, tests_dir=tests_dir), encoding="utf-8")
+    config_path.write_text(
+        build_mutmut_config(modules, tests_dir=tests_dir, test_selection=test_selection), encoding="utf-8"
+    )
     pytest_ini.write_text(_MUTANTS_PYTEST_INI, encoding="utf-8")
     env = _mutmut_env()
     cpu_max = _read_cgroup_cpu_max()

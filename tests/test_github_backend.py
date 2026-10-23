@@ -828,6 +828,13 @@ class TestGitHubCodeHost:
         assert "error" in result
         mock_patch.assert_not_called()
 
+    def test_add_issue_labels_uses_additive_endpoint(self) -> None:
+        url = "https://github.com/org/repo/issues/9"
+        with patch.object(github_mod, "_gh_api_post", return_value=[{"name": "nit"}]) as mock_post:
+            result = GitHubCodeHost(token="tok").add_issue_labels(issue_url=url, labels=("nit", "t3-auto"))
+        assert result == {"labels": [{"name": "nit"}]}
+        mock_post.assert_called_once_with("repos/org/repo/issues/9/labels", {"labels": ["nit", "t3-auto"]}, token="tok")
+
     def test_post_pr_comment(self) -> None:
         with patch.object(github_pr_notes_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
             host = GitHubCodeHost()

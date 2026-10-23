@@ -6,6 +6,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.push_gate import PushGatePlan, PushGateResult
 
 runner = CliRunner()
@@ -66,6 +67,21 @@ class TestPlanModes:
 
 
 class TestRunMode:
+    def test_plain_word_constraint_refuses_before_doctest(self) -> None:
+        with (
+            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value="No migration."),
+            patch(
+                "teatree.cli.push_gate_tools.run_brief_constraints",
+                return_value=(ConstraintViolation("no_migration", "0002.py", "migration changed: 0002.py"),),
+            ),
+            patch("teatree.cli.push_gate_tools.run_push_gate") as sweep,
+        ):
+            result = runner.invoke(app, ["tool", "push-gate", "--run"])
+        assert result.exit_code == 1
+        assert "brief constraint FAILED (no_migration)" in result.output
+        sweep.assert_not_called()
+
     def test_run_exit_zero_when_clean(self) -> None:
         ok = PushGateResult(
             ok=True,
@@ -78,6 +94,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=ok),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 0
@@ -95,6 +112,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=bad),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 1
@@ -112,6 +130,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=aborted),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
 

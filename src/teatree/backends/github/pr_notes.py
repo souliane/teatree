@@ -1,8 +1,9 @@
 """A GitHub PR's conversation notes and submitted reviews, split out of ``client.py``."""
 
+import json
 from typing import cast
 
-from teatree.backends.github.api import _gh_api_patch, _gh_api_post
+from teatree.backends.github.api import _gh_api_patch, _gh_api_post, _run_gh
 from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.claims import record_github_note_claim
 from teatree.core.backend_protocols import PrReview
@@ -12,6 +13,34 @@ from teatree.types import RawAPIDict
 class GitHubPrNotes:
     def __init__(self, token: str) -> None:
         self._token = token
+
+    @staticmethod
+    def list_discussions(*, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        _ = (repo, pr_iid)
+        return []
+
+    def resolve_thread(self, *, thread_id: str) -> RawAPIDict:
+        query = (
+            "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) "
+            "{ thread { id isResolved } } }"
+        )
+        result = _run_gh(
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"threadId={thread_id}",
+            token=self._token,
+            timeout=60,
+        )
+        payload = json.loads(result.stdout or "{}")
+        thread = payload.get("data", {}).get("resolveReviewThread", {}).get("thread")
+        if not isinstance(thread, dict) or thread.get("id") != thread_id or thread.get("isResolved") is not True:
+            message = "Review thread resolution not confirmed"
+            raise RuntimeError(message)
+        return thread
 
     def post_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         data = _gh_api_post(f"repos/{repo}/issues/{pr_iid}/comments", {"body": body}, token=self._token)

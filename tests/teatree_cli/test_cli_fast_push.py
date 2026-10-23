@@ -48,7 +48,7 @@ def _success() -> FastPushOutcome:
 
 class TestFastPushCommand:
     def test_refusal_prints_findings_and_exits_1(self) -> None:
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = _refusal()
             result = runner.invoke(_app, [])
         assert result.exit_code == 1
@@ -56,7 +56,7 @@ class TestFastPushCommand:
         assert "[banned-terms] notes.md: banned term 'x'" in result.output
 
     def test_success_prints_pr_url(self) -> None:
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = _success()
             result = runner.invoke(_app, ["-m", "feat: x", "--remaining", "wire docs"])
         assert result.exit_code == 0
@@ -65,7 +65,7 @@ class TestFastPushCommand:
         assert pusher.call_args.kwargs["remaining"] == "wire docs"
 
     def test_json_output(self) -> None:
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = _success()
             result = runner.invoke(_app, ["--json"])
         assert result.exit_code == 0
@@ -78,7 +78,7 @@ class TestFastPushCommand:
         outcome.pr_action = EMPTY_DELTA_PR_SKIP
         outcome.pr_skip_reason = "branch 'feature' carries no changes over origin/main"
 
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = outcome
             result = runner.invoke(_app, [])
 
@@ -92,7 +92,7 @@ class TestFastPushCommand:
         outcome.pr_action = UNAPPROVABLE_AUTHOR_PR_REFUSAL
         outcome.pr_skip_reason = "git@gitlab.com:org/group/factory.git would be authored by the owner"
 
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = outcome
             result = runner.invoke(_app, [])
 
@@ -110,7 +110,7 @@ class TestFastPushActsWhereTheOperatorStood:
         monkeypatch.chdir(workdir)
         monkeypatch.setenv(INVOCATION_CWD_ENV, str(checkout))
 
-        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+        with patch("teatree.core.push.fast_push.FastPusher") as pusher:
             pusher.return_value.run.return_value = _success()
             result = runner.invoke(_app, [])
 

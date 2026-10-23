@@ -117,8 +117,7 @@ class TestForgeIssueWriteTools(TestCase):
         assert result["issue_url"] == "https://github.com/acme/widgets/issues/5"
         assert _writes(fake)[0][0] == "create_issue"
         assert _writes(fake)[0][1]["title"] == "bug"
-        # The dedupe audit rides the body, so an empty backlog is recorded as one.
-        assert "No open candidates existed" in _writes(fake)[0][1]["body"]
+        assert _writes(fake)[0][1]["body"] == "it breaks"
 
     def test_issue_note_appends_a_requirement_to_the_description(self) -> None:
         """A requirement in a comment is invisible to a lane, so #162 routes it to the body."""
@@ -267,7 +266,7 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert [name for name, _ in _writes(fake)] == ["update_issue"]
         assert "also handle the empty case" in fake.description
 
-    def test_a_rejected_candidate_is_recorded_in_the_new_ticket_body(self) -> None:
+    def test_a_rejected_candidate_does_not_add_audit_text_to_the_new_ticket_body(self) -> None:
         fake = _FakeForge([self._candidate()])
         judged = {
             "snapshot": ["https://github.com/acme/widgets/issues/3"],
@@ -281,7 +280,7 @@ class TestIssueCreateDedupesFirst(TestCase):
             )
 
         assert result["outcome"] == "created_new"
-        assert "different subsystem" in _writes(fake)[0][1]["body"]
+        assert _writes(fake)[0][1]["body"] == "b"
 
     def test_an_unjudged_open_ticket_refuses_the_file(self) -> None:
         judged = {"snapshot": ["https://github.com/acme/widgets/issues/3"], "decisions": []}

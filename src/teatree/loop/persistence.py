@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core import on_behalf_gate_recorded
+from teatree.core.intake.nit_priority import nit_ticket_extra
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
 from teatree.loop.dispatch import ActionPayload, DispatchAction
@@ -158,6 +159,11 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         issue_url=issue_url,
         defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
+    raw_issue = payload.get("raw")
+    if isinstance(raw_issue, dict):
+        updated_extra = nit_ticket_extra(ticket.extra, raw_issue)
+        if updated_extra != ticket.extra:
+            ticket.merge_extra(set_keys={"nit_follow_up": True})
     _reconcile_existing_overlay(ticket, created=created)
     _link_claimed_marker(ticket, issue_url)
     # #748: a loop/coordinator-built ticket must have a durable phase-
@@ -284,7 +290,8 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
 
 _REVIEW_FINDINGS_BASE = (
     "Auto-scheduled review-findings fix — read unresolved discussions on {pr_url} and "
-    "recorded findings via t3 <overlay> review findings <pr-url>, IMPLEMENT them on that "
+    "recorded findings via t3 <overlay> review findings <pr-url>, plus prior merge-critic "
+    "findings in the coding brief. IMPLEMENT them on that "
     "PR's own branch, run the tests and push once. "
 )
 _VOICED_REVIEW_FINDINGS_REASON = _REVIEW_FINDINGS_BASE + (
