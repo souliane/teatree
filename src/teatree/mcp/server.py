@@ -213,11 +213,20 @@ def _write_tool_names(overlay_groups: list[tuple[str, McpToolGroup]]) -> frozens
 
 
 def _read_only_instructions(instructions: str, *, withheld: frozenset[str], allowed_writes: frozenset[str]) -> str:
-    withheld_lines = tuple(f"- {name}(" for name in withheld - allowed_writes)
+    withheld_names = withheld - allowed_writes
+    withheld_lines = tuple(f"- {name}(" for name in withheld_names)
     sections: list[str] = []
     for section in instructions.split("\n\n"):
         lines = section.split("\n")
-        kept = [line for line in lines if not line.startswith(withheld_lines)]
+        kept = []
+        for line in lines:
+            if line.startswith(withheld_lines):
+                continue
+            if line.startswith("Mailbox tools: "):
+                names = line.removeprefix("Mailbox tools: ").split(", ")
+                kept.append("Mailbox tools: " + ", ".join(name for name in names if name not in withheld_names))
+            else:
+                kept.append(line)
         # A section that lost every tool line would leave its header advertising nothing.
         if len(kept) == len(lines) or any(line.startswith("- ") for line in kept):
             sections.append("\n".join(kept))

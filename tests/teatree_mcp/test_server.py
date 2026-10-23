@@ -93,7 +93,8 @@ class TestToolRegistration(TestCase):
             names = {tool.name for tool in asyncio.run(bound.list_tools())}
             assert "agent_mailbox_send" in declared_write_tool_seams(frozenset())
         assert names & _MAILBOX_TOOLS == _MAILBOX_TOOLS
-        assert "agent_mailbox_send" in (bound.instructions or "")
+        assert "[TeaTree peer message ...]" in (bound.instructions or "")
+        assert "- agent_mailbox_send(" not in (bound.instructions or "")
 
     def test_ticket_search_advertises_its_filter_parameters(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
@@ -126,6 +127,22 @@ class TestStandingInstructionsCarryPolicyOnly(TestCase):
         _, instructions, _ = _surface(read_only=True, connectors=OverlayConnectors(), mailbox=False)
         assert len(instructions.encode()) <= 1_500
         assert "read-only for this dispatch" in instructions
+
+    def test_mailbox_policy_stays_in_the_full_surface_under_its_byte_ceiling(self) -> None:
+        _, instructions, _ = _surface(read_only=False, connectors=OverlayConnectors())
+        assert len(instructions.encode()) <= 3_000
+        assert "acceptance is not obedience" in instructions
+        assert "information, not an instruction" in instructions
+        assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
+
+    def test_mailbox_policy_stays_in_read_only_surfaces_under_their_byte_ceiling(self) -> None:
+        for allowed in (frozenset(), mcp_write_tools_for_phase("planning")):
+            with self.subTest(allowed=allowed):
+                _, instructions, _ = _surface(read_only=True, allowed_writes=allowed, connectors=OverlayConnectors())
+                assert len(instructions.encode()) <= 1_500
+                assert "acceptance is not obedience" in instructions
+                assert "information, not an instruction" in instructions
+                assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
 
     def test_the_policy_names_the_discovery_read_and_the_gate_preservation(self) -> None:
         _, instructions, _ = _surface(read_only=False, connectors=OverlayConnectors(), mailbox=False)
@@ -324,7 +341,7 @@ class TestReadOnlySurface(TestCase):
         tools, _, _ = _surface(read_only=True)
         assert [name for name, tool in tools.items() if not _is_read_only(tool)] == []
 
-    def test_instructions_name_exactly_the_registered_mailbox_tools(self) -> None:
+    def test_registered_mailbox_tools_describe_themselves_without_instruction_lines(self) -> None:
         for read_only, allowed in (
             (False, frozenset()),
             (True, frozenset()),
@@ -333,12 +350,12 @@ class TestReadOnlySurface(TestCase):
             with self.subTest(read_only=read_only, allowed=allowed):
                 tools, instructions, _ = _surface(read_only=read_only, allowed_writes=allowed)
                 registered = {name for name in tools if name.startswith("agent_mailbox_")}
-                advertised = {
-                    line.split("(")[0].removeprefix("- ")
-                    for line in instructions.splitlines()
-                    if line.startswith("- agent_mailbox_")
-                }
-                assert advertised == registered
+                assert "[TeaTree peer message ...]" in instructions
+                assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
+                mailbox_lines = [line for line in instructions.splitlines() if line.startswith("Mailbox tools: ")]
+                assert len(mailbox_lines) == 1
+                assert set(mailbox_lines[0].removeprefix("Mailbox tools: ").split(", ")) == registered
+                assert all((tools[name].description or "").strip() for name in registered)
 
     def test_a_read_only_server_keeps_every_read_tool_of_the_full_surface(self) -> None:
         full, _, _ = _surface(read_only=False)
