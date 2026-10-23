@@ -50,6 +50,8 @@ class GhPrJson(TypedDict, total=False):
     isDraft: bool
     url: str
     title: str
+    createdAt: str
+    updatedAt: str
     reviews: list[object]
     statusCheckRollup: list[object]
     mergeable: str
@@ -106,6 +108,8 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         rollup=tuple(cast("RawAPIDict", item) for item in rollup if isinstance(item, dict)),
         url=url,
         title=title,
+        created_at=_as_str(raw.get("createdAt")),
+        updated_at=_as_str(raw.get("updatedAt")),
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_reports_behind(raw),
         base_ref=_as_str(raw.get("baseRefName")),
@@ -194,7 +198,7 @@ class GhPrApiClient:
             str(OPEN_PR_CEILING + 1),
             "--json",
             (
-                "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
+                "number,headRefOid,isDraft,url,title,createdAt,updatedAt,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
                 "baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
             ),
         ]

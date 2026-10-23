@@ -1,6 +1,7 @@
 """``build_kanban_columns`` groups tickets by FSM state with the right card badges (#3162)."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -88,6 +89,27 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert card is not None
         assert card.last_error == "boom: it failed"
 
+    def test_redispatch_hides_obsolete_cancellation_without_erasing_audit(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        old_task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        attempt = TaskAttemptFactory(task=old_task, error="cancelled: re-dispatched tomorrow")
+        TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="pending")
+
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == ""
+        assert TaskAttempt.objects.filter(pk=attempt.pk).exists()
+
+    def test_new_task_does_not_hide_unrelated_failure(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        old_task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        TaskAttemptFactory(task=old_task, error="review found a defect")
+        TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="pending")
+
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == "review found a defect"
+
     def test_last_error_cleared_when_latest_attempt_succeeded(self) -> None:
         # A later successful attempt (no error) must clear the red: the board
         # surfaces an error only when the MOST RECENT attempt carries one, so a
@@ -155,3 +177,24 @@ class BuildKanbanColumnsTestCase(TestCase):
         board = build_kanban_columns(BoardFilters(text="widget"))
         ids = [c.ticket_id for cards in _cards_by_state(board).values() for c in cards]
         assert ids == [keep.pk]
+
+
+class DwellMinutePrecisionTestCase(TestCase):
+    def test_dwell_stays_constant_within_a_minute_and_never_shows_seconds(self) -> None:
+        baseline = timezone.now().replace(second=0, microsecond=0)
+        ticket = TicketFactory(state=State.WORK_STARTED)
+        transition = TicketTransition.objects.create(
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+        )
+        TicketTransition.objects.filter(pk=transition.pk).update(created_at=baseline)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=5)):
+            first = _find_card(build_kanban_columns(), ticket.pk)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=15)):
+            second = _find_card(build_kanban_columns(), ticket.pk)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=65)):
+            third = _find_card(build_kanban_columns(), ticket.pk)
+        assert first is not None
+        assert second is not None
+        assert third is not None
+        assert first.dwell == second.dwell == "< 1 min"
+        assert third.dwell == "1 min"

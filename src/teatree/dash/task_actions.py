@@ -13,7 +13,10 @@ every card so the poll costs one query rather than one per card.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.models.plan_decision import has_plan_decision
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.task import Task
+from teatree.core.models.task_phase_disposition import transition_source_states
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -53,12 +56,12 @@ def enqueue_buttons(ticket: Ticket) -> tuple[EnqueueButton, ...]:
     A button whose phase already has an unstarted task is disabled naming that task,
     so a click that would be refused is never offered in the first place.
     """
-    return _buttons(_oldest_pending_task_per_phase(ticket), ENQUEUEABLE_PHASES)
+    return _buttons(_oldest_pending_task_per_phase(ticket), ENQUEUEABLE_PHASES, ticket=ticket)
 
 
-def board_enqueue_buttons(queued: "Mapping[str, int]") -> tuple[EnqueueButton, ...]:
+def board_enqueue_buttons(queued: "Mapping[str, int]", *, ticket: Ticket) -> tuple[EnqueueButton, ...]:
     """A card's button row, built from *queued* — the card's slice of the batched read."""
-    return _buttons(queued, BOARD_PHASES)
+    return _buttons(queued, BOARD_PHASES, ticket=ticket)
 
 
 def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str, int]]:
@@ -81,16 +84,29 @@ def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str
     return queued
 
 
-def _buttons(queued: "Mapping[str, int]", phases: tuple[str, ...]) -> tuple[EnqueueButton, ...]:
-    return tuple(
-        EnqueueButton(
-            phase=phase,
-            label=_LABELS[phase],
-            enabled=phase not in queued,
-            reason=f"TODO-{queued[phase]} is already queued for {phase}" if phase in queued else "",
-        )
-        for phase in phases
-    )
+def phase_eligible(ticket: Ticket, phase: str) -> bool:
+    state = str(ticket.state)
+    if ticket.role == Ticket.Role.REVIEWER:
+        return phase == "reviewing" and state in transition_source_states("mark_reviewed_externally")
+    if phase == "coding":
+        if state in transition_source_states("code"):
+            return True
+        if state in transition_source_states("code_direct"):
+            return has_plan_decision(ticket)
+        return state in transition_source_states("address_self_review") and SelfReview.open_hold_for(ticket) is not None
+    transition_name = {"scoping": "scope", "testing": "test", "reviewing": "review", "shipping": "ship"}.get(phase)
+    return transition_name is not None and state in transition_source_states(transition_name)
+
+
+def _buttons(queued: "Mapping[str, int]", phases: tuple[str, ...], *, ticket: Ticket) -> tuple[EnqueueButton, ...]:
+    buttons: list[EnqueueButton] = []
+    for phase in phases:
+        if not phase_eligible(ticket, phase):
+            continue
+        task_id = queued.get(phase)
+        reason = f"TODO-{task_id} is already queued for {phase}" if task_id is not None else ""
+        buttons.append(EnqueueButton(phase=phase, label=_LABELS[phase], enabled=task_id is None, reason=reason))
+    return tuple(buttons)
 
 
 def _oldest_pending_task_per_phase(ticket: Ticket) -> dict[str, int]:

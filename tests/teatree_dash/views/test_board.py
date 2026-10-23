@@ -1,16 +1,23 @@
 """The board page + column poll partial render tickets grouped by FSM state (#3162)."""
 
+import os
 import re
+from datetime import timedelta
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
+from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.core.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.dash.selectors import BOARD_COLUMNS
-from tests.factories import TaskFactory, TicketFactory
+from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
 State = Ticket.State
 
@@ -19,10 +26,134 @@ _NON_LOOPBACK = "203.0.113.7"
 _HX_GET_RE = re.compile(r'id="board"[^>]*\shx-get="([^"]*)"', re.DOTALL)
 
 
+class PrBoardAcceptanceTestCase(TestCase):
+    def test_default_board_shows_all_twenty_five_open_prs_with_action_groups(self) -> None:
+        for number in range(25):
+            ticket = TicketFactory(state=State.PR_OPENED, short_description=f"PR card {number}")
+            PullRequestFactory(ticket=ticket)
+
+        response = self.client.get(reverse("dash:board"))
+        body = response.content.decode()
+        assert response.status_code == 200
+        assert body.count("data-pr-card=") == 25
+        for label in ("Needs you", "Waiting on colleagues", "Factory working", "Ready to merge", "Blocked"):
+            assert label in body
+        assert "Lifecycle" in body
+
+    def test_pr_card_keeps_the_same_dom_identity_across_poll(self) -> None:
+        PullRequestFactory(ticket=TicketFactory())
+        first = self.client.get(reverse("dash:board")).content.decode()
+        polled = self.client.get(reverse("dash:board_prs")).content.decode()
+        match = re.search(r'id="(pr-[0-9a-f]{16})"', first)
+        assert match is not None
+        assert match.group(0) in polled
+
+    def test_pr_card_offers_only_fsm_eligible_actions(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        PullRequestFactory(ticket=ticket)
+        body = self.client.get(reverse("dash:board")).content.decode()
+        assert "Review now" in body
+        assert "Ship now" not in body
+
+        ticket.state = State.SELF_REVIEWED
+        ticket.save(update_fields=["state"])
+        body = self.client.get(reverse("dash:board")).content.decode()
+        assert "Review now" not in body
+        assert "Ship now" in body
+
+    def test_pr_cards_expose_review_wait_and_active_factory_work(self) -> None:
+        waiting_ticket = TicketFactory(state=State.REVIEW_REQUESTED)
+        waiting = PullRequestFactory(ticket=waiting_ticket)
+        waiting_ticket.extra = {
+            "prs": {waiting.url: {"review_permalink": "https://app.slack.com/archives/C1/p1234567890000000"}}
+        }
+        waiting_ticket.save(update_fields=["extra"])
+        ReviewRequestPost.objects.create(
+            mr_url=waiting.url,
+            slack_channel_id="C1",
+            slack_thread_ts="1234567890.000000",
+            nag_count=2,
+            last_nag_at=timezone.now() - timedelta(days=1),
+        )
+        working_ticket = TicketFactory(state=State.PR_OPENED)
+        PullRequestFactory(ticket=working_ticket)
+        task = TaskFactory(
+            ticket=working_ticket,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+            claimed_by="agent-1",
+            claimed_at=timezone.now() - timedelta(hours=2),
+        )
+        TaskAttemptFactory(task=task, exit_code=0, result={"summary": "tests passed"})
+
+        body = self.client.get(reverse("dash:board")).content.decode()
+        assert "Review request" in body
+        assert "Re-asks: 2" in body
+        assert "Earliest re-ask" in body
+        assert "agent-1" in body
+        assert "tests passed" in body
+
+    def test_unlinked_open_pr_from_tick_inventory_has_age_and_next_task(self) -> None:
+        entry = PrInventoryEntry(
+            url="https://github.com/souliane/teatree/pull/5007",
+            repo="souliane/teatree",
+            iid=5007,
+            title="Unlinked pull request",
+            created_at="2026-10-01T10:00:00Z",
+            updated_at="2026-10-22T10:00:00Z",
+            next_task="Run independent review",
+            decision="flag_no_review",
+            ci="unknown",
+            approvals="unknown",
+            threads="unknown",
+            draft=False,
+        )
+        with TemporaryDirectory() as root, patch.dict(os.environ, {"T3_DATA_DIR": root}):
+            write_inventory("teatree", [entry])
+            body = self.client.get(reverse("dash:board")).content.decode()
+        assert "Unlinked pull request" in body
+        assert "Run independent review" in body
+        assert "unknown" in body
+        assert "age" in body.lower()
+
+    def test_pr_card_refuses_unsafe_external_links(self) -> None:
+        url = "javascript:alert(1)"
+        ticket = TicketFactory(extra={"prs": {url: {"state": "opened", "review_permalink": url}}})
+        PullRequestFactory(ticket=ticket, url=url)
+
+        body = self.client.get(reverse("dash:board")).content.decode()
+        assert 'href="javascript:' not in body
+        assert "Review request" not in body
+        assert "data-pr-card=" in body
+
+    def test_lifecycle_backlog_and_delivered_page_independently_at_fifty(self) -> None:
+        backlog = [TicketFactory(state=State.NOT_STARTED) for _ in range(55)]
+        delivered = [TicketFactory(state=State.DELIVERED) for _ in range(55)]
+
+        first = self.client.get(reverse("dash:board_lifecycle")).content.decode()
+        assert first.count("data-ticket=") == 100
+        assert f'data-ticket="{backlog[-1].pk}"' in first
+        assert f'data-ticket="{backlog[0].pk}"' not in first
+        assert f'data-ticket="{delivered[0].pk}"' not in first
+        assert 'data-state="not_started"' in first
+        assert 'data-state="delivered"' in first
+
+        second = self.client.get(reverse("dash:board_lifecycle"), {"page_not_started": "1"}).content.decode()
+        assert f'data-ticket="{backlog[0].pk}"' in second
+        assert f'data-ticket="{delivered[-1].pk}"' in second
+        assert f'data-ticket="{delivered[0].pk}"' not in second
+
+    def test_lifecycle_is_a_separate_board_tab(self) -> None:
+        ticket = TicketFactory(state=State.WORK_STARTED, short_description="lifecycle-only ticket")
+        response = self.client.get(reverse("dash:board_lifecycle"))
+        assert response.status_code == 200
+        assert f'data-ticket="{ticket.pk}"' in response.content.decode()
+
+
 class BoardPageTestCase(TestCase):
     def test_board_renders_and_lists_tickets(self) -> None:
         ticket = TicketFactory(state=State.WORK_STARTED, short_description="a board ticket")
-        resp = self.client.get(reverse("dash:board"))
+        resp = self.client.get(reverse("dash:board_lifecycle"))
         assert resp.status_code == 200
         body = resp.content.decode()
         assert "a board ticket" in body
@@ -85,7 +216,7 @@ class BoardPollUrlEncodingTestCase(TestCase):
     """
 
     def _poll_filters(self, **params: str) -> dict[str, list[str]]:
-        resp = self.client.get(reverse("dash:board"), params)
+        resp = self.client.get(reverse("dash:board_lifecycle"), params)
         assert resp.status_code == 200
         match = _HX_GET_RE.search(resp.content.decode())
         assert match is not None, "board poll (hx-get on #board) not found"
@@ -119,6 +250,12 @@ class BoardAccessGateTestCase(TestCase):
         resp = self.client.get(reverse("dash:board_columns"), REMOTE_ADDR=_NON_LOOPBACK)
         assert resp.status_code == 403
 
+    def test_off_loopback_anonymous_pr_poll_and_lifecycle_are_refused(self) -> None:
+        for route in ("dash:board_prs", "dash:board_lifecycle"):
+            with self.subTest(route=route):
+                response = self.client.get(reverse(route), REMOTE_ADDR=_NON_LOOPBACK)
+                assert response.status_code == 403
+
     def test_loopback_board_page_still_serves(self) -> None:
         # 127.0.0.1 is the default test-client REMOTE_ADDR — the loopback bind the deploy relies on.
         assert self.client.get(reverse("dash:board")).status_code == 200
@@ -140,16 +277,32 @@ class CardEnqueueButtonsTestCase(TestCase):
     def _card(self) -> str:
         return self.client.get(reverse("dash:board_columns")).content.decode()
 
-    def test_the_card_carries_review_now_and_ship_now_wired_to_the_enqueue_post(self) -> None:
+    def test_the_card_hides_fsm_invalid_buttons(self) -> None:
+        body = self._card()
+        assert "Review now" not in body
+        assert "Ship now" not in body
+
+    def test_the_card_carries_valid_review_button(self) -> None:
+        self.ticket.state = State.TESTED
+        self.ticket.save(update_fields=["state"])
         body = self._card()
         assert f'hx-post="{self.action}"' in body
         assert "Review now" in body
+        assert "Ship now" not in body
+
+    def test_the_card_carries_valid_ship_button(self) -> None:
+        self.ticket.state = State.SELF_REVIEWED
+        self.ticket.save(update_fields=["state"])
+        body = self._card()
+        assert "Review now" not in body
         assert "Ship now" in body
 
     def test_the_button_does_not_also_open_the_drawer(self) -> None:
         assert "event.stopPropagation()" in self._card()
 
     def test_a_queued_phase_renders_disabled_with_its_reason(self) -> None:
+        self.ticket.state = State.TESTED
+        self.ticket.save(update_fields=["state"])
         task = TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.PENDING)
         body = self._card()
         assert "disabled" in body

@@ -153,6 +153,8 @@ def _decode_mr(*, slug: str, raw: RawAPIDict) -> PrSummary:
         has_changes_requested=raw.get("blocking_discussions_resolved") is False,
         url=_as_str(raw.get("web_url")),
         title=_as_str(raw.get("title")),
+        created_at=_as_str(raw.get("created_at")),
+        updated_at=_as_str(raw.get("updated_at")),
         is_conflicted=_is_conflicted(raw),
         author=_author_username(raw),
         same_repo=_same_repo(raw),

@@ -30,33 +30,51 @@ class EnqueueButtonsTestCase(TestCase):
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create(overlay="test")
 
-    def test_one_button_per_offered_phase_in_that_order(self) -> None:
+    def test_only_fsm_eligible_phases_are_offered(self) -> None:
         buttons = enqueue_buttons(self.ticket)
-        assert tuple(button.phase for button in buttons) == ENQUEUEABLE_PHASES
+        assert tuple(button.phase for button in buttons) == ("scoping",)
 
-    def test_every_button_is_enabled_with_no_reason_when_nothing_is_queued(self) -> None:
-        for button in enqueue_buttons(self.ticket):
-            assert button.enabled
-            assert button.reason == ""
+    def test_merged_ticket_offers_no_buttons(self) -> None:
+        self.ticket.state = Ticket.State.MERGED
+        assert enqueue_buttons(self.ticket) == ()
 
     def test_the_label_reads_as_a_now_verb(self) -> None:
         labels = {button.phase: button.label for button in enqueue_buttons(self.ticket)}
         assert labels["reviewing"] == "Review now"
         assert labels["shipping"] == "Ship now"
 
+    def test_not_started_offers_only_the_fsm_scoping_phase(self) -> None:
+        buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
+        assert buttons["scoping"].enabled
+        assert set(buttons) == {"scoping"}
+
+    def test_tested_author_can_review_but_cannot_ship_early(self) -> None:
+        self.ticket.state = Ticket.State.TESTED
+        buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
+        assert buttons["reviewing"].enabled
+        assert "shipping" not in buttons
+
+    def test_reviewer_role_can_review_from_an_early_fsm_state(self) -> None:
+        self.ticket.role = Ticket.Role.REVIEWER
+        buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
+        assert buttons["reviewing"].enabled
+
     def test_a_pending_task_disables_its_own_phase_and_names_the_task(self) -> None:
+        self.ticket.state = Ticket.State.TESTED
         task = TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.PENDING)
         buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
         assert not buttons["reviewing"].enabled
         assert f"TODO-{task.pk}" in buttons["reviewing"].reason
-        assert buttons["shipping"].enabled
+        assert "shipping" not in buttons
 
     def test_a_claimed_task_leaves_its_phase_enqueueable(self) -> None:
+        self.ticket.state = Ticket.State.TESTED
         TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.CLAIMED)
         buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
         assert buttons["reviewing"].enabled
 
     def test_the_disabled_button_names_the_oldest_task_the_post_would_refuse_against(self) -> None:
+        self.ticket.state = Ticket.State.SELF_REVIEWED
         """The drawer half of the guarantee the board sibling already pins (#4271).
 
         Flip the ordering in ``_oldest_pending_task_per_phase`` and the button names the
@@ -77,7 +95,7 @@ class EnqueueButtonsTestCase(TestCase):
         for scale in (2, 20):
             for index in range(scale):
                 TaskFactory(ticket=self.ticket, phase=f"free-form-{index}", status=Task.Status.PENDING)
-            with self.assertNumQueries(1, msg=f"at scale {scale}"):
+            with self.assertNumQueries(2, msg=f"at scale {scale}"):
                 enqueue_buttons(self.ticket)
 
 
@@ -88,15 +106,18 @@ class BoardEnqueueButtonsTestCase(TestCase):
         self.tickets = [Ticket.objects.create(overlay="test") for _ in range(3)]
 
     def test_the_card_offers_only_the_two_phases_the_owner_asked_for(self) -> None:
-        buttons = board_enqueue_buttons({})
-        assert tuple(button.phase for button in buttons) == BOARD_PHASES
+        self.tickets[0].state = Ticket.State.TESTED
+        buttons = board_enqueue_buttons({}, ticket=self.tickets[0])
+        assert tuple(button.phase for button in buttons) == ("reviewing",)
+        assert BOARD_PHASES == ("reviewing", "shipping")
         assert BOARD_PHASES == ("reviewing", "shipping")
 
     def test_a_queued_phase_arrives_disabled_naming_its_task(self) -> None:
-        buttons = {button.phase: button for button in board_enqueue_buttons({"reviewing": 7})}
+        self.tickets[0].state = Ticket.State.TESTED
+        buttons = {button.phase: button for button in board_enqueue_buttons({"reviewing": 7}, ticket=self.tickets[0])}
         assert not buttons["reviewing"].enabled
         assert "TODO-7" in buttons["reviewing"].reason
-        assert buttons["shipping"].enabled
+        assert "shipping" not in buttons
 
     def test_the_whole_board_costs_one_query_whatever_the_ticket_count(self) -> None:
         for scale in (1, 3):

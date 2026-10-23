@@ -88,6 +88,8 @@ class PrSummary:
     rollup: tuple[RawAPIDict, ...] = field(default_factory=tuple)
     url: str = ""
     title: str = ""
+    created_at: str = ""
+    updated_at: str = ""
     is_conflicted: bool = False
     behind_main: bool = False
     # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is

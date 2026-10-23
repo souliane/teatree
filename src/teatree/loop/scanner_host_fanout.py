@@ -12,6 +12,7 @@ import logging
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.pr_inventory import write_inventory
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factory_config import stranger_pr_admission
 from teatree.loop.scanners import (
@@ -64,6 +65,8 @@ def _jobs_for_backend_hosts(
                 _ScannerJob(
                     scanner=MyPrsScanner(
                         host=code_host,
+                        overlay_name=tag,
+                        inventory_writer=write_inventory,
                         identities=backend.identities,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,

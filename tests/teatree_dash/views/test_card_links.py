@@ -13,14 +13,14 @@ class TestCardForgeLinks(TestCase):
     def test_the_card_number_links_to_the_forge_issue(self) -> None:
         Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=_ISSUE_URL, short_description="clickable cards")
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert f'href="{_ISSUE_URL}"' in body
 
     def test_a_synthetic_loop_key_never_renders_a_dead_anchor(self) -> None:
         Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="scanning-news://t3-teatree")
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert "scanning-news://" not in body
 
@@ -33,7 +33,7 @@ class TestCardForgeLinks(TestCase):
             url="https://github.com/souliane/teatree/pull/3624",
         )
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert 'href="https://github.com/souliane/teatree/pull/3624"' in body
 

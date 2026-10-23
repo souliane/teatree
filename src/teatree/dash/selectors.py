@@ -24,7 +24,6 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.selectors import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 from teatree.url_classify import pr_ref
@@ -50,6 +49,9 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 # a failure from a prior deployment presented as if it were live. The attempt row
 # itself is never touched (it is audit); only the board stops showing it.
 STALE_ERROR_AFTER = timedelta(days=2)
+_SECONDS_PER_MINUTE = 60
+_MINUTES_PER_HOUR = 60
+_HOURS_PER_DAY = 24
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
@@ -163,10 +165,15 @@ class KanbanColumn:
     state: str
     label: str
     cards: tuple[KanbanCard, ...]
+    total_count: int | None = None
+    page: int = 0
+    next_url: str = ""
+    prev_url: str = ""
+    collapsed: bool = False
 
     @property
     def count(self) -> int:
-        return len(self.cards)
+        return self.total_count if self.total_count is not None else len(self.cards)
 
     @property
     def meaning(self) -> str:
@@ -339,11 +346,31 @@ def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]
         .annotate(latest_pk=Max("pk"))
         .values_list("latest_pk", flat=True)
     )
-    attempts = TaskAttempt.objects.filter(
-        pk__in=list(latest_pks),
-        started_at__gte=timezone.now() - STALE_ERROR_AFTER,
-    ).select_related("task")
-    return {attempt.task.ticket_id: (attempt.error, attempt.failure_kind) for attempt in attempts if attempt.error}
+    attempts = list(
+        TaskAttempt.objects.filter(
+            pk__in=list(latest_pks),
+            started_at__gte=timezone.now() - STALE_ERROR_AFTER,
+        ).select_related("task")
+    )
+    cancelled = [attempt for attempt in attempts if attempt.failure_kind == FailureKind.CANCELLED]
+    latest_tasks = {
+        (row["ticket_id"], row["phase"]): row["latest_pk"]
+        for row in Task.objects.filter(
+            ticket_id__in=[attempt.task.ticket_id for attempt in cancelled],
+            phase__in=[attempt.task.phase for attempt in cancelled],
+        )
+        .values("ticket_id", "phase")
+        .annotate(latest_pk=Max("pk"))
+    }
+    return {
+        attempt.task.ticket_id: (attempt.error, attempt.failure_kind)
+        for attempt in attempts
+        if attempt.error
+        and not (
+            attempt.failure_kind == FailureKind.CANCELLED
+            and latest_tasks.get((attempt.task.ticket_id, attempt.task.phase), 0) > attempt.task_id
+        )
+    }
 
 
 def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
@@ -387,14 +414,23 @@ def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
         failure_environmental=is_environmental(kind),
         dwell=_dwell(context.latest_transition_at.get(ticket.pk)),
         pr_chips=context.pr_chips.get(ticket.pk, ()),
-        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {})),
+        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {}), ticket=ticket),
     )
 
 
 def _dwell(latest_transition_at: datetime | None) -> str:
     if latest_transition_at is None:
         return ""
-    return _humanize_duration((timezone.now() - latest_transition_at).total_seconds())
+    minutes = max(0, int((timezone.now() - latest_transition_at).total_seconds() // _SECONDS_PER_MINUTE))
+    if minutes == 0:
+        return "< 1 min"
+    if minutes < _MINUTES_PER_HOUR:
+        return f"{minutes} min"
+    hours, remaining_minutes = divmod(minutes, _MINUTES_PER_HOUR)
+    if hours < _HOURS_PER_DAY:
+        return f"{hours} h {remaining_minutes:02d} min"
+    days, remaining_hours = divmod(hours, _HOURS_PER_DAY)
+    return f"{days} d {remaining_hours} h"
 
 
 def _label(state: str) -> str:

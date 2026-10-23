@@ -15,6 +15,7 @@ from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.pr_inventory import write_inventory
 from teatree.core.review.mr_triage import RepoOwner
 from teatree.loop.dispatch import agent_dispatching_kinds
 from teatree.loop.domain_optional_scanner_jobs import (
@@ -208,6 +209,8 @@ def _ship_jobs_for_overlay(
                 _ScannerJob(
                     scanner=MyPrsScanner(
                         host=code_host,
+                        overlay_name=tag,
+                        inventory_writer=write_inventory,
                         identities=backend.identities,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
