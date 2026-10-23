@@ -86,6 +86,16 @@ class TestRelayAttendedAsk(TestCase):
         assert len(dm.posts) == 1
         assert PendingChatInjection.objects.count() == 1
 
+    def test_prompts_that_differ_by_relay_id_or_session_are_each_posted_and_queued(self) -> None:
+        asks = {"first ask": ("r1", "sess-1"), "second ask": ("r2", "sess-1"), "third ask": ("r1", "sess-2")}
+        dm = FakeOwnerDm()
+        with live_factory_slack(dm):
+            receipts = [_relay(ask, relay_id=relay_id, session=session) for ask, (relay_id, session) in asks.items()]
+
+        assert all(isinstance(receipt, RelayReceipt) and receipt.created for receipt in receipts)
+        assert all(post["text"].endswith(ask) for post, ask in zip(dm.posts, asks, strict=True))
+        assert sorted(PendingChatInjection.objects.values_list("text", flat=True)) == sorted(asks)
+
     def test_a_prompt_of_exactly_the_slack_limit_is_still_relayed(self) -> None:
         with live_factory_slack(FakeOwnerDm()):
             receipt = _relay("x" * RELAY_MAX_CHARS)
