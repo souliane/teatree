@@ -12,7 +12,7 @@ tier_models() / resolve_tier.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from teatree.agents.model_tiering import resolve_tier, tier_models
 from teatree.cli import app
 from teatree.cli.eval.app_helpers import BENCHMARK_TIERS
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 
@@ -109,7 +110,8 @@ class TestBenchmark:
 
     def test_a_model_shared_by_two_tiers_runs_once_per_scenario(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
-        with patch.dict(tier_models(), {"cheap": tier_models()["balanced"]}):
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"cheap": tier_models()["balanced"]}):
             out = _invoke(["--benchmark", "--no-persist"], specs)
         assert out.exit_code == 0, out.output
         assert sorted(_StubRunner.seen_models) == sorted(

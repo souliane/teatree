@@ -9,6 +9,7 @@ import itertools
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +18,7 @@ from typer.testing import CliRunner
 
 from teatree.agents.model_tiering import tier_models
 from teatree.cli import app
-from teatree.cli.eval import set_baseline
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import EvalSpec
 
 _HAIKU = "claude-haiku-4-5"
@@ -27,10 +28,8 @@ _OPUS = tier_models()["frontier"]
 
 @pytest.fixture(autouse=True)
 def _three_distinct_tier_models() -> Iterator[None]:
-    with (
-        patch.dict(tier_models(), {"cheap": _HAIKU}),
-        patch.dict(set_baseline._TIER_BY_MODEL, {_HAIKU: "cheap", _SONNET: "balanced"}),
-    ):
+    defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+    with patch.dict(defaults, {"cheap": _HAIKU}):
         yield
 
 

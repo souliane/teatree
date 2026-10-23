@@ -41,11 +41,6 @@ from teatree.eval.matrix_payload import MatrixCell, MatrixPayloadError, load_mat
 from teatree.eval.presets import BASELINE_HEADER, BASELINE_PRESET_PATH
 from teatree.utils.django_bootstrap import ensure_django
 
-#: Model id -> strongest matching abstract tier, so shared ids never imply a cheaper pass.
-_TIER_BY_MODEL: dict[str, str] = {
-    model: tier for tier, model in sorted(tier_models().items(), key=lambda entry: tier_rank(entry[0]))
-}
-
 _FRONTIER_TIER = "frontier"
 
 _REGENERATE_HINT = (
@@ -104,6 +99,9 @@ def set_baseline(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     discovered = {spec.name for spec in discover_specs()}
+    tier_by_model = {
+        model: tier for tier, model in sorted(tier_models().items(), key=lambda entry: tier_rank(entry[0]))
+    }
     scenario_tiers: dict[str, str] = {}
     frontier_ok: set[str] = set()
     unresolved: list[str] = []
@@ -112,8 +110,8 @@ def set_baseline(
         if entry.name not in discovered:
             continue
         passing = _passing_models(entry.results)
-        stale_columns.update(model for model in passing if model not in _TIER_BY_MODEL)
-        tier = _cheapest_passing_tier(passing)
+        stale_columns.update(model for model in passing if model not in tier_by_model)
+        tier = _cheapest_passing_tier(passing, tier_by_model)
         if tier is None:
             unresolved.append(entry.name)
             continue
@@ -130,7 +128,7 @@ def set_baseline(
     for column, affected in sorted(stale_columns.items()):
         typer.echo(
             f"WARNING matrix column {column!r} is not one of the shipped tier models "
-            f"({sorted(tier_models().values())}) — its passing cells are ignored on {affected} scenario(s). "
+            f"({sorted(tier_by_model)}) — its passing cells are ignored on {affected} scenario(s). "
             f"{_REGENERATE_HINT}",
             err=True,
         )
@@ -156,22 +154,17 @@ def _passing_models(results: dict[str, MatrixCell | None]) -> list[str]:
     ]
 
 
-def _cheapest_passing_tier(passing_models: list[str]) -> str | None:
+def _cheapest_passing_tier(passing_models: list[str], tier_by_model: dict[str, str]) -> str | None:
     """The cheapest tier whose cell PASSED, or ``None`` if no CURRENT tier model passed.
 
-    A column outside :data:`_TIER_BY_MODEL` is dropped: it carries no evidence
+    A column outside the current tier catalog is dropped: it carries no evidence
     about any tier model shipped today. Dropping a candidate can only raise the
     derived tier or remove the pin, never cheapen it below a measured pass.
     """
-    known = [model for model in passing_models if model in _TIER_BY_MODEL]
+    known = [model for model in passing_models if model in tier_by_model]
     if not known:
         return None
-    return _TIER_BY_MODEL[min(known, key=_model_tier_rank)]
-
-
-def _model_tier_rank(model: str) -> int:
-    """Rank a matrix column by its preserved abstract tier."""
-    return tier_rank(_TIER_BY_MODEL[model])
+    return tier_by_model[min(known, key=lambda model: tier_rank(tier_by_model[model]))]
 
 
 def _write_baseline(path: Path, scenario_tiers: dict[str, str], frontier_ok: set[str]) -> None:

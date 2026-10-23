@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from teatree.agents.model_tiering import tier_models
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import TokenUsage
 from teatree.eval.transcript import (
     extract_billed_model,
@@ -347,7 +349,8 @@ class TestAliasFollowsATierBump:
 
     @pytest.fixture
     def bumped_frontier(self, monkeypatch: pytest.MonkeyPatch) -> str:
-        monkeypatch.setitem(tier_models(), "frontier", self.BUMPED)
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        monkeypatch.setitem(defaults, "frontier", self.BUMPED)
         return self.BUMPED
 
     def _events(self, frontier: str) -> list:

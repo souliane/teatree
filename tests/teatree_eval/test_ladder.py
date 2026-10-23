@@ -8,11 +8,13 @@ the dispatch record itself — no metered run, no API.
 
 from collections import Counter
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
 from teatree.agents.model_tiering import tier_models
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.ladder import LadderPolicy, laddered_tier_models, resolve_ladder_tiers, run_escalation_ladder
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
@@ -91,11 +93,13 @@ class _RecordingTrial:
 
 class TestLadderedTierModels:
     def test_orders_the_three_tier_models_cheapest_first(self) -> None:
-        with patch.dict(tier_models(), {"frontier": _OPUS, "balanced": _SONNET, "cheap": _HAIKU}):
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"frontier": _OPUS, "balanced": _SONNET, "cheap": _HAIKU}):
             assert laddered_tier_models() == [_HAIKU, _SONNET, _OPUS]
 
     def test_tiers_sharing_one_model_are_one_rung(self) -> None:
-        with patch.dict(tier_models(), {"frontier": _OPUS, "balanced": _SONNET, "cheap": _SONNET}):
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"frontier": _OPUS, "balanced": _SONNET, "cheap": _SONNET}):
             assert laddered_tier_models() == [_SONNET, _OPUS]
 
 
