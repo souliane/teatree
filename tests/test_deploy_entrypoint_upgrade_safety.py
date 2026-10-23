@@ -29,6 +29,12 @@ DOCKERFILE = DEPLOY / "Dockerfile"
 _BASH = shutil.which("bash") or "bash"
 
 
+def test_deploy_shells_load_the_git_pin_helper_baked_into_both_images() -> None:
+    for script in (ENTRYPOINT, DEPLOY / "fast-forward-checkout.sh", DEPLOY / "roll.sh"):
+        assert '. "$SCRIPT_DIR/git-pins.sh"' in script.read_text(encoding="utf-8")
+    assert DOCKERFILE.read_text(encoding="utf-8").count("deploy/git-pins.sh /usr/local/bin/git-pins.sh") == 2
+
+
 def _function(name: str) -> str:
     lines = ENTRYPOINT.read_text(encoding="utf-8").splitlines()
     start = lines.index(f"{name}() {{")
@@ -82,7 +88,7 @@ class TestAnOldImageRunsItsOwnEntrypoint:
         assert self._boot(tmp_path, "garbage") == "baked-entrypoint"
 
     def test_an_image_meeting_the_contract_runs_the_checkout_entrypoint(self, tmp_path: Path) -> None:
-        assert self._boot(tmp_path, "1\n") == "checkout-entrypoint"
+        assert self._boot(tmp_path, "2\n") == "checkout-entrypoint"
 
     def test_the_dockerfile_bakes_the_contract_the_entrypoint_requires(self) -> None:
         required = re.search(r"^ENTRYPOINT_IMAGE_CONTRACT=(\d+)$", ENTRYPOINT.read_text(encoding="utf-8"), re.MULTILINE)
