@@ -133,6 +133,16 @@ def test_a_bare_git_honours_the_planted_config(planted: Checkout, verb: str) -> 
         )
 
 
+def test_a_bare_merge_runs_the_planted_post_merge_hook(planted: Checkout) -> None:
+    run_git(planted.repo, "fetch", "-q", "origin")
+    run_git(planted.repo, "reset", "--hard")
+    planted.marker.unlink(missing_ok=True)
+
+    run_git(planted.repo, "merge", "--ff-only", "origin/main")
+
+    assert "post-merge" in planted.fired
+
+
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)
 @pytest.mark.parametrize("verb", VERBS)
 def test_no_planted_command_runs_through_a_control_plane_spawn(planted: Checkout, entry_point: str, verb: str) -> None:
