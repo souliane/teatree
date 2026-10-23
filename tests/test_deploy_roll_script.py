@@ -64,7 +64,7 @@ def _fork(tmp_path: Path, *, nested_core: bool = True, record_refresh_seconds: i
     root = tmp_path / ("fork" if nested_core else "teatree")
     deploy = root / "vendor" / "teatree" / "deploy" if nested_core else root / "deploy"
     deploy.mkdir(parents=True)
-    for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh"):
+    for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh", "git-pins.sh"):
         shutil.copy2(DEPLOY / name, deploy / name)
         (deploy / name).chmod((deploy / name).stat().st_mode | stat.S_IXUSR)
     roll = deploy / "roll.sh"
