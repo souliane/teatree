@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.167",
+  "claude-agent-sdk==0.2.173",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -775,10 +775,35 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 override-dependencies = [  ]
 
 [tool.uv.exclude-newer-package]
-certifi = "2026-10-20T02:24:17Z"
+anthropic = "2026-10-23T13:10:34Z"
+asgiref = "2026-10-23T08:13:15Z"
+certifi = "2026-10-23T11:36:17Z"
+chardet = "2026-10-18T00:06:26Z"
+claude-agent-sdk = "2026-10-22T23:14:32Z"
+coverage = "2026-10-22T16:06:51Z"
+googleapis-common-protos = "2026-10-22T23:43:37Z"
+griffelib = "2026-10-22T11:20:04Z"
+httpcore2 = "2026-10-21T07:09:46Z"
+httpx2 = "2026-10-21T07:09:47Z"
+jiter = "2026-10-23T13:51:14Z"
+jsonpointer = "2026-10-19T10:33:25Z"
+logfire-api = "2026-10-23T15:11:03Z"
+markdown = "2026-10-19T19:41:43Z"
+markitdown = "2026-10-21T19:41:20Z"
+openai = "2026-10-22T20:04:40Z"
+pandas = "2026-10-22T11:57:04Z"
 pillow = "2026-10-16T22:18:10Z"
-pydantic-ai-slim = "2026-10-13T23:50:13Z"
-pydantic-graph = "2026-10-13T23:50:17Z"
+platformdirs = "2026-10-19T01:02:12Z"
+playwright = "2026-10-22T16:30:33Z"
+pycparser = "2026-10-22T13:40:04Z"
+pydantic-ai-slim = "2026-10-23T02:02:08Z"
+pydantic-graph = "2026-10-23T02:02:12Z"
+pydantic-settings = "2026-10-20T11:37:20Z"
+python-dateutil = "2026-10-21T23:41:46Z"
+soupsieve = "2026-10-22T00:45:27Z"
+starlette = "2026-10-18T15:50:34Z"
+wcwidth = "2026-10-20T16:02:44Z"
+xlsxwriter = "2026-10-22T00:26:04Z"
 
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
