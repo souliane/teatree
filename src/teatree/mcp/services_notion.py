@@ -102,31 +102,6 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
-INSTRUCTIONS = (
-    "- notion_page_status(page_id, property_name): one Notion page's status property value.\n"
-    "- notion_discussions(page, verify, overlay): every open discussion under a page or block; a part of "
-    "the page that could not be read is an error naming it, never a shorter list.\n"
-    "- notion_replace(page, old_text, new_text, dry_run, overlay): replace text that occurs exactly once on "
-    "an internal page, inside one block, keeping its formatting. dry_run=true (the default) returns the "
-    "block and the diff and writes nothing. A real write needs an approval the OWNER recorded for exactly "
-    "that diff (the dry run returns the command); with none it exits 23, and with one recorded for other "
-    "text, 20.\n"
-    "- notion_create(parent, title, body, icon, dry_run, overlay): create a child page under a page or "
-    "database the integration reaches; same dry run and recorded-approval rule; a page already carrying "
-    "the title is reported as existing.\n"
-    "- notion_comment(page, body, quote, discussion, marker, dry_run, overlay): post ONE comment on the "
-    "page, on the block holding `quote`, or as a reply in `discussion`; a marker already there is a "
-    "duplicate; same dry run and recorded-approval rule.\n"
-    "- notion_archive(page, archived, dry_run, overlay): move a page or database row to the Notion trash "
-    "(archived=true, the default) or restore it (archived=false); same dry run and recorded-approval rule, "
-    "the approval covering exactly that page, that direction and that overlay.\n"
-    "- notion_property_set(page, name, value, dry_run, overlay): set one property of a page or row, typed by "
-    "that property's own type, with the same dry run and recorded-approval rule; a type with no plain-text "
-    "form is refused.\n"
-    "Every Notion failure is an error reading `notion exit <N> (<Class>): <message>`, N being the exit "
-    "code `t3 notion` would exit with."
-)
-
 
 def _client() -> NotionPageClient:
     return NOTION.resolve()
@@ -159,6 +134,7 @@ def _live_page_status(page_id: str, property_name: str) -> str | None:
 
 
 async def _notion_page_status(page_id: str, *, property_name: str = "Status") -> str | None:
+    """One Notion page's status property value; refuses a page that is archived or not provably current."""
     return await sync_to_async(lambda: _live_page_status(page_id, property_name), thread_sensitive=True)()
 
 
@@ -175,6 +151,8 @@ async def _notion_replace(
     """Replace text occurring exactly once on an internal page, inside one block, keeping its formatting.
 
     dry_run=true (the default) writes nothing and returns the diff with the approval the owner must record.
+    A real write needs the approval the OWNER recorded for exactly that diff: none exits 23, one for other
+    text 20. Failures read ``notion exit <N> (<Class>): <message>``.
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).replace(page, old_text, new_text, dry_run=dry_run), thread_sensitive=True
@@ -186,6 +164,8 @@ async def _notion_create(page: NewNotionPage, *, dry_run: bool = True, overlay: 
     """Create a child page (Markdown body) under a page or database the integration reaches.
 
     dry_run=true (the default) writes nothing and returns what would be created with the approval to record.
+    A page already carrying the title is reported as existing; a real write needs the owner's recorded
+    approval, as for ``notion_replace``.
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).create(page, dry_run=dry_run), thread_sensitive=True
@@ -197,7 +177,8 @@ async def _notion_comment(comment: NotionComment, *, dry_run: bool = True, overl
     """Post one comment on the page, on the one block holding `quote`, or as a reply in `discussion`.
 
     A marker already in the destination is a duplicate and posts nothing. dry_run=true (the default) writes
-    nothing and returns what would be posted with the approval to record.
+    nothing and returns what would be posted with the approval to record; a real write needs the owner's
+    recorded approval, as for ``notion_replace``.
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).comment(comment, dry_run=dry_run), thread_sensitive=True
@@ -210,6 +191,7 @@ async def _notion_archive(
     """Move a page or database row to the Notion trash (archived=true), or restore it (archived=false).
 
     dry_run=true (the default) writes nothing and returns the page, what would change and the approval to record.
+    A real write needs the owner's recorded approval covering exactly that page, that direction and that overlay.
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).archive(page, archived=archived, dry_run=dry_run), thread_sensitive=True
@@ -221,7 +203,8 @@ async def _notion_property_set(
 ) -> dict[str, Any]:
     """Set one property of a page or database row to a literal, shaped by the property's own type.
 
-    dry_run=true (the default) writes nothing and returns the old and new value with the approval to record.
+    dry_run=true (the default) writes nothing and returns the old and new value with the approval to record;
+    a real write needs the owner's recorded approval. A type with no plain-text form is refused.
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).property_set(page, name, value, dry_run=dry_run), thread_sensitive=True

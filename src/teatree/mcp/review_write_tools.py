@@ -102,9 +102,10 @@ def _seam_note(finding: dict[str, Any]) -> SeamNote | str:
 
 
 async def _review_post_comment(repo: str, mr: int, finding: dict[str, Any], *, live: bool = False) -> dict[str, Any]:
-    """Post one review comment — DRAFT by default, inline when the finding names an anchor.
+    """Post one review comment — DRAFT by default, one finding per anchor.
 
-    ``finding`` takes the same shape :func:`_review_post_comments` accepts per entry.
+    ``finding`` is {note, anchor='path/to/file.py:LINE', evidence, force_general, allow_bloat}, the shape
+    :func:`_review_post_comments` accepts per entry; ``evidence`` is a JSON object or its JSON string.
     Routes through the registered review seam — the exact ``t3 review post-comment``
     service — so ``live=true`` requires the recorded authorization (#1207) plus the
     on-behalf verdict, identically to the CLI. Without ``evidence`` a
@@ -123,9 +124,10 @@ async def _review_post_comment(repo: str, mr: int, finding: dict[str, Any], *, l
 async def _review_post_comments(
     repo: str, mr: int, comments: list[dict[str, Any]], *, live: bool = False
 ) -> dict[str, Any]:
-    """Post a whole review's findings on one MR in a SINGLE gated batch.
+    """Post a whole review's findings on one MR in a SINGLE gated batch. Prefer this over N single posts.
 
-    Each entry is one finding in the shape above. Every field is per-COMMENT because
+    ``comments`` is [{note, anchor='path/to/file.py:LINE', evidence, ...}, …]; ``evidence`` is
+    a JSON object or its JSON string. Every field is per-COMMENT because
     every gate it feeds is: one finding needs the #1280 evidence receipts and the nit
     beside it does not. Every body runs the same pre-publish gates as a single
     ``review_post_comment``; what the batch shares is the authorization — one recorded
