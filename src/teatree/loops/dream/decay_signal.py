@@ -61,8 +61,8 @@ def over_budget(byte_size: int, line_count: int) -> bool:
 
     The one place the §4 gate-(d) budgets are compared, so the decay-pressure trigger and
     the gate that grades the result can never disagree on "over budget" (#2723). The
-    loader truncates ``MEMORY.md`` on BOTH axes, so either alone is over: bytes at ~24 KB
-    (#2755) and lines at 200 (#4057). Reading only bytes leaves decay idle under line
+    gate grades ``MEMORY.md`` on BOTH axes, so either alone is over: bytes (#2755) and
+    lines (#4057). Reading only bytes leaves decay idle under line
     pressure — precisely the case where a comfortable byte figure certifies a truncated
     file.
     """
@@ -79,7 +79,7 @@ def under_drain_target(byte_size: int, line_count: int) -> bool:
 
     The sibling of :func:`over_budget`, reading the drain targets rather than the budgets:
     the budget is the CEILING gate (d) grades, this is where the tier STOPS. Stopping on
-    the ceiling landed the index on exactly 200 lines with zero headroom, so the first
+    the ceiling landed the index exactly on the line budget with zero headroom, so the first
     memory written after the pass truncated the tail and it stayed truncated until the next
     nightly pass (#4385). The two predicates are deliberately NOT the same call — the tier
     still FIRES on the ceiling (:func:`index_over_budget`) and drains to here, which is the

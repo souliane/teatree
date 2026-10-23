@@ -340,6 +340,38 @@ class TestGateC(SimpleTestCase):
         assert gates._line_targets(line, {"feedback_low_signal.md"})
         assert not gates._line_targets(line, set())
 
+    def test_a_pass_that_rewrites_the_generated_header_prunes_no_lesson(self) -> None:
+        # The re-index's own boilerplate is not a lesson: replacing it (a new header text, or a
+        # MEMORY_PRIORITY.md block taking its place) must not read as a lost index line.
+        old_header = "\n".join(sorted(reindex.GENERATED_HEADER_LINES)) + "\n"
+        before = _snapshot({"mem_a.md": "x" * 50}, index=f"# Auto Memory — Index\n\n{old_header}\n- mem_a.md\n")
+        after = _snapshot({"mem_a.md": "x" * 50}, index="# Auto Memory — Index\n\n> new guidance\n\n- mem_a.md\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=0,
+            maintenance_performed=True,
+        )
+        assert result.passed, result.detail
+
+    def test_a_hand_written_quote_line_is_still_a_pruned_lesson(self) -> None:
+        # Teeth: only the lines the re-index itself writes are exempt, never a human's blockquote.
+        before = _snapshot({"mem_a.md": "x" * 50}, index="> NEVER force-push a shared branch\n- mem_a.md\n")
+        after = _snapshot({"mem_a.md": "x" * 50}, index="- mem_a.md\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=0,
+            maintenance_performed=True,
+        )
+        assert not result.passed
+
     def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
         # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
         # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link
@@ -416,26 +448,14 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert result.passed
 
-    def test_short_lines_between_the_retired_cap_and_the_line_budget_pass(self) -> None:
-        # #2755's behavioural win, preserved: an index of short lines FAR over the retired
-        # 150-line proxy cap must not be archived while it fits BOTH real loader limits.
-        # Anti-vacuous — reintroduce a 150-line cap and this goes RED.
-        big_index = "\n".join(f"- m{i}.md — s" for i in range(180))
-        after = _snapshot({}, index=big_index)
-        assert after.index_line_count == 180  # well over the retired 150-line cap
-        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... under the byte budget
-        assert after.index_line_count <= gates.INDEX_LINE_BUDGET  # ... and under the line budget
-        result = Gate.index_budget(after)
-        assert result.passed
+    def test_an_index_exactly_on_the_line_budget_passes_and_one_more_line_fails(self) -> None:
+        # The ceiling is inclusive; the first line past it fails on the LINE axis alone.
+        on_budget = _snapshot({}, index="\n".join(f"- m{i}.md" for i in range(gates.INDEX_LINE_BUDGET)))
+        assert on_budget.index_byte_size < gates.INDEX_BYTE_BUDGET // 2  # bytes are nowhere near biting
+        assert Gate.index_budget(on_budget).passed
 
-    def test_fails_over_line_budget_though_far_under_byte_budget(self) -> None:
-        # #4057, the exact measured shape: 306 lines / 11.7 KB — 69% of the byte budget, so
-        # the byte-only gate PASSED, while every entry past line 200 was truncated at load
-        # (~106 memories invisible to recall). The gate must fail on the LINE dimension.
-        big_index = "\n".join(f"- m{i}.md — s" for i in range(306))
-        after = _snapshot({}, index=big_index)
-        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET // 2  # comfortable byte headroom
-        result = Gate.index_budget(after)
+        over = _snapshot({}, index="\n".join(f"- m{i}.md" for i in range(gates.INDEX_LINE_BUDGET + 1)))
+        result = Gate.index_budget(over)
         assert not result.passed
         assert "line" in result.detail
 
@@ -450,12 +470,12 @@ class TestGateD(SimpleTestCase):
         after = _snapshot({}, index="# Header\n\n> note\n\n- a.md\n- b.md\n")
         assert after.index_line_count == 6
 
-    def test_budget_tracks_the_real_session_load_limits(self) -> None:
-        # #2723/#2755/#4057: the budget tracks the REAL session-load truncation points on
-        # both axes — ~24 KB of bytes and 200 lines — not a proxy cap or a regression alarm.
-        # Pin both so a future widening past loadability fails here.
-        assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
-        assert gates.INDEX_LINE_BUDGET <= 200
+    def test_budget_is_the_prefix_cost_target(self) -> None:
+        # #4997: the index is read whole at every session start, so the budget is the prefix
+        # every session pays — a recall pointer plus about 15 lines. Pin both axes so a
+        # future widening fails here.
+        assert gates.INDEX_BYTE_BUDGET <= 2 * 1024
+        assert gates.INDEX_LINE_BUDGET <= 20
 
     def test_drain_targets_sit_strictly_below_the_budgets(self) -> None:
         # #4385 AV-5: the BUDGET is what this gate grades; the TARGET is where decay stops.
@@ -469,7 +489,7 @@ class TestGateD(SimpleTestCase):
 class TestGateDLoadability(SimpleTestCase):
     """#2723 anti-vacuous: a real over-budget corpus index FAILS, a small one passes.
 
-    The 2026-06-25 live index was 682 files / ~196KB — 8x the ~24KB load budget —
+    The 2026-06-25 live index was 682 files / ~196KB — far over the load budget —
     yet the dream pass stamped "all gates passed". This pins that a real corpus of
     that size renders an index gate (d) REFUSES, while a handful of memories pass.
     """
@@ -487,8 +507,7 @@ class TestGateDLoadability(SimpleTestCase):
             )
 
     def test_large_real_corpus_index_fails_the_budget(self) -> None:
-        # The bare-pointer index is compact, so it takes ~1000 pointers to exceed the
-        # ~24 KB byte budget — gate (d) must still catch a genuinely over-budget index.
+        # Gate (d) must still catch a genuinely over-budget index at corpus scale.
         self._write_corpus(1000)
         rendered = reindex.render_index(self.dir)
         after = _snapshot({}, index=rendered)
@@ -496,18 +515,17 @@ class TestGateDLoadability(SimpleTestCase):
         assert not result.passed, "a 1000-pointer index exceeds the session-load budget and must FAIL gate (d)"
 
     def test_real_corpus_over_the_line_budget_fails_while_bytes_are_comfortable(self) -> None:
-        # #4057: bare pointers are so compact that a corpus goes over the LINE limit long
-        # before the byte one — the divergence that let a truncated index read as healthy.
-        # The more successfully decay compresses each entry, the wider the two measures drift.
-        self._write_corpus(300)
+        # #4057: bare pointers are so compact that a corpus goes over the LINE limit before the
+        # byte one — the divergence that let a truncated index read as healthy.
+        self._write_corpus(30)
         rendered = reindex.render_index(self.dir)
         after = _snapshot({}, index=rendered)
         assert after.index_byte_size < gates.INDEX_BYTE_BUDGET, "the byte budget is not what bites here"
         result = Gate.index_budget(after)
-        assert not result.passed, "a 300-pointer index truncates at load and must FAIL gate (d)"
+        assert not result.passed, "a 30-pointer index is over the line budget and must FAIL gate (d)"
 
     def test_small_corpus_index_passes_the_budget(self) -> None:
-        self._write_corpus(20)
+        self._write_corpus(10)
         rendered = reindex.render_index(self.dir)
         after = _snapshot({}, index=rendered)
         result = Gate.index_budget(after)
