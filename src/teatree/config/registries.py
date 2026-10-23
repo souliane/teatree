@@ -224,14 +224,6 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
         stored=dict[str, Any],
         category=Category.PERSONAL,
     ),
-    # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
-    "agent_compaction_keep_recent": ColdHookSetting(
-        _parse_registry_dict,
-        default={},
-        help="per-phase count of recent messages a compacted history keeps",
-        stored=dict[str, Any],
-        category=Category.PERSONAL,
-    ),
     # Per-phase depth at which that lane stubs a stale tool result (#4816).
     "agent_compaction_keep_tool_results": ColdHookSetting(
         _parse_registry_dict,
