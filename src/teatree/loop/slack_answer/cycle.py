@@ -56,13 +56,22 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
 from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
+from teatree.loop.slack_answer.session_routing import (
+    _command_reply,
+    _live_receipt,
+    _mark_unit_loop_replied,
+    _post_live_reply,
+    _reject_foreign_bound_unit,
+    _unmark_unit_loop_replied,
+)
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
-from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
+from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
 logger = logging.getLogger(__name__)
@@ -163,6 +172,8 @@ class SlackAnswerReport:
     dispatched: int = 0
     covered: int = 0
     answered_question: int = 0
+    steered: int = 0
+    inspected: int = 0
     errors: int = 0
     skipped_no_backend: int = 0
 
@@ -179,7 +190,7 @@ def verify_reply_visible(
     channel: str,
     thread_root: str,
     after_ts: str | None = None,
-    expected_ts: str | None = None,
+    expected_ts: str | ExpectedReply | None = None,
 ) -> bool:
     """Confirm the just-posted reply is visible under its thread ROOT (#2061).
 
@@ -192,30 +203,12 @@ def verify_reply_visible(
     — releases the provisional claim; no confirmed receipt is stamped.
     """
     return bot_reply_present_in_thread(
-        backend, channel=channel, thread_root=thread_root, after_ts=after_ts, expected_ts=expected_ts
+        backend,
+        channel=channel,
+        thread_root=thread_root,
+        after_ts=after_ts,
+        expected_ts=expected_ts,
     )
-
-
-def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
-    """CAS ``mark_loop_replied`` on the lead; stamp every coalesced row to match.
-
-    The lead's CAS is the single idempotency boundary (the row that wins
-    creates the side effect). The follow-up rows are stamped best-effort
-    so they drop out of ``loop_unreplied()`` together with the lead — one
-    logical turn, one loop reply, no orphaned follow-up re-processed alone.
-    Stamps only ``loop_replied_at`` (#1075); never ``answered_at``, the agent's own reply.
-    """
-    if not unit.lead.mark_loop_replied(kind):
-        return False
-    for follow in unit.rows[1:]:
-        follow.mark_loop_replied(kind)
-    return True
-
-
-def _unmark_unit_loop_replied(unit: _Unit) -> None:
-    """Release the whole unit's loop-reply claim — the rollback of :func:`_mark_unit_loop_replied`."""
-    for row in unit.rows:
-        row.unmark_loop_replied()
 
 
 def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
@@ -333,7 +326,13 @@ def _react_done(backend: MessagingBackend, unit: _Unit) -> None:
         logger.warning("Completion react failed for %s/%s: %s", unit.channel, unit.slack_ts, exc)
 
 
-def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading, report: SlackAnswerReport) -> None:
+def _orchestrate(
+    backend: MessagingBackend,
+    unit: _Unit,
+    reading: InboundReading,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None = None,
+) -> None:
     """Dedupe the request, then either dispatch ONE lane or report the covering one.
 
     The lead's CAS ``mark_loop_replied("delegated")`` is claimed FIRST and stays
@@ -351,22 +350,24 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
     (:attr:`~teatree.loop.slack_answer.orchestration.CoverageKind.THIS_MESSAGE`),
     so it re-reacts instead of dispatching twice.
 
-    No prose is posted on a fresh dispatch (#1155): the user reads Slack DMs
-    only, every thread reply is a phone notification, and 🔧 already says a lane
-    exists. A COVERED request does post, because which lane has it is
-    information the reaction cannot carry and the owner would otherwise wait for.
+    An unbound fresh dispatch posts no prose (#1155); a bound thread gets a
+    receipt naming the queued follow-up. A COVERED request names its lane.
     """
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
         return
     try:
-        _dispatch_or_report(backend, unit, reading, report)
+        _dispatch_or_report(backend, unit, reading, report, binding)
     except Exception:
         _unmark_unit_loop_replied(unit)
         raise
 
 
 def _dispatch_or_report(
-    backend: MessagingBackend, unit: _Unit, reading: InboundReading, report: SlackAnswerReport
+    backend: MessagingBackend,
+    unit: _Unit,
+    reading: InboundReading,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None,
 ) -> None:
     """The claimed body of :func:`_orchestrate` — dispatch ONE lane, or name the covering one."""
     coalesced = tuple(row.slack_ts for row in unit.rows)
@@ -393,12 +394,18 @@ def _dispatch_or_report(
                 slack_ts=unit.slack_ts,
                 coalesced_ts=coalesced,
                 text=unit.text,
+                thread_root=unit.lead.thread_ts,
             ),
         )
     reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
     if reaction.get("ok") is not True and reaction.get("error") != "already_reacted":
         msg = "in-flight reaction was not confirmed by Slack"
         raise RuntimeError(msg)
+    if binding is not None and coverage is None:
+        command = SessionCommand.objects.get(command_id=slack_command_id(unit.overlay, unit.slack_ts))
+        if not _post_live_reply(backend, unit, _command_reply(command)):
+            msg = "queued follow-up receipt was not confirmed by Slack"
+            raise RuntimeError(msg)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     report.dispatched += 1
@@ -486,12 +493,22 @@ def _process_unit(
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
 
+    binding = (
+        ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts).first()
+        if unit.lead.thread_ts
+        else None
+    )
+    if _reject_foreign_bound_unit(backend, unit, report, binding):
+        return
+
     read = _memoized(reader)
     if _answer_bound_question(backend, unit, read):
         report.answered_question += 1
         return
 
     reading = read(unit.text)
+    if _live_receipt(backend, unit, reading, report, binding):
+        return
     if reading.needs_nothing:
         if _handle_noted(backend, unit):
             report.acked += 1
@@ -504,7 +521,7 @@ def _process_unit(
         if outcome == "retry":
             return  # leave unanswered, retry next cycle
         # else: the cheap answer bailed → the question needs a lane after all
-    _orchestrate(backend, unit, reading, report)
+    _orchestrate(backend, unit, reading, report, binding)
 
 
 def run_slack_answer_cycle(
