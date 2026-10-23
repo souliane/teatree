@@ -170,10 +170,12 @@ class TestHooksTheGateLayerDependsOn:
         assert hooked.fired == ["pre-commit", "commit-msg"]
 
     def test_a_refusing_pre_push_hook_still_refuses_the_push(self, hooked: Checkout) -> None:
-        executable(hooked.hooks_dir / "pre-push", "exit 1")
+        executable(hooked.hooks_dir / "pre-push", "printf 'pre-push-denied\\n' >&2\nexit 1")
 
-        with pytest.raises(CommandFailedError):
+        with pytest.raises(CommandFailedError) as raised:
             run_checked(hooked.argv("push", "origin", "main"), env=git_identity_env())
+
+        assert "pre-push-denied" in raised.value.stderr
 
     def test_a_local_hooks_path_refuses_the_pre_push_gate(self, hooked: Checkout, tmp_path: Path) -> None:
         planted_hooks = tmp_path / "planted-hooks"

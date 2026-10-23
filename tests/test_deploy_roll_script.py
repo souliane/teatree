@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+from tests._planted_git_config import plant_exec_config
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 BASH = shutil.which("bash") or ""
@@ -120,6 +121,19 @@ def test_rolls_origins_default_branch_tip_from_its_own_image(tmp_path: Path) -> 
         run,
     )
     assert f"image=teatree-factory:{fork.sha}" in (tmp_path / "roll.env").read_text()
+
+
+def test_roll_does_not_run_planted_git_commands(tmp_path: Path) -> None:
+    fork = _fork(tmp_path)
+    planted = plant_exec_config(fork.root, tmp_path / "planted")
+    _git(fork.root, "status", "--porcelain")
+    assert planted.fired
+    planted.marker.unlink()
+
+    result = _roll(tmp_path, fork)
+
+    assert result.returncode == 0, result.stderr
+    assert planted.fired == []
 
 
 def _forwarded(*extra: str) -> str:
