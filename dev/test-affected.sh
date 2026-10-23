@@ -77,7 +77,7 @@ run_full_sharded() {
 
 if [[ "$FULL" == "1" ]]; then
     echo "=== affected-tests: --full — running the whole suite ==="
-    run_full_sharded ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    run_full_sharded --teatree-selected-full ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
     exit 0
 fi
 
