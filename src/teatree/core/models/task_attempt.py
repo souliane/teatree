@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 #: Room a resume needs beyond the conversation: teatree's dispatch prompts measure 39k-78k tokens (#4817).
 RESUME_HEADROOM_TOKENS = 80_000
 
+#: A conversation past this size is neither resumed nor held open for follow-ups: each turn re-reads it.
+RESUME_CONTEXT_CAP_TOKENS = 200_000
+
 #: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
 BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 
@@ -42,6 +45,22 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def excluding_parks(self) -> "TaskAttemptQuerySet":
         return self.exclude(PARK_ERROR_Q)
+
+    def real_dispatches(self) -> "TaskAttemptQuerySet":
+        return (
+            self.excluding_parks()
+            .filter(output_tokens__isnull=False, usage_unknown=False)
+            .select_related("task", "task__parent_task")
+        )
+
+    def context_trail(self) -> dict[int, list[tuple[int, int | None]]]:
+        """Each task's non-park attempts as ``(attempt id, context_tokens)``, oldest first."""
+        trail: dict[int, list[tuple[int, int | None]]] = {}
+        for task_id, attempt_id, context in (
+            self.excluding_parks().order_by("task_id", "pk").values_list("task_id", "pk", "context_tokens")
+        ):
+            trail.setdefault(task_id, []).append((attempt_id, context))
+        return trail
 
     def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (

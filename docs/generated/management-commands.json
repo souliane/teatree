@@ -76,6 +76,11 @@
       "subcommands": []
     },
     {
+      "help": "Profile real dispatches: read share, resume-context cost and addressable upper bounds.",
+      "name": "cost_profile",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [
