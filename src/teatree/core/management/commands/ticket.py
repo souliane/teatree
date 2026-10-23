@@ -15,6 +15,7 @@ from teatree.core.management.commands._clear_backfill_commands import ClearBackf
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
+from teatree.core.management.commands._critic_record_commands import CriticRecordCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._note_commands import NoteCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
@@ -124,6 +125,7 @@ class Command(
     CloseCommands,
     AttachmentCommands,
     MergeKeystoneCommands,
+    CriticRecordCommands,
     NoteCommands,
     SweepCommands,
     TargetBranchCommands,

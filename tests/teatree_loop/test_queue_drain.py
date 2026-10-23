@@ -580,6 +580,14 @@ class TestAdmissionScore:
             new_ticket.pk,
         ]
 
+    def test_a_nit_follow_up_ranks_after_real_work_even_during_review(self) -> None:
+        nit_review = self._task(phase="reviewing", expedited=True)
+        nit_review.ticket.extra = {"nit_follow_up": True}
+        nit_review.ticket.save(update_fields=["extra"])
+        real_new_ticket = self._task(phase="planning")
+
+        assert self._admission_order([nit_review, real_new_ticket]) == [real_new_ticket.pk, nit_review.pk]
+
     def test_the_older_row_wins_a_tie(self) -> None:
         older, newer = self._task(phase="coding"), self._task(phase="coding")
 

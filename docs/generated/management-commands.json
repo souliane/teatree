@@ -1276,6 +1276,10 @@
           "name": "reconcile-overlay"
         },
         {
+          "help": "Record a merge critic envelope for the ticket's dispatched head",
+          "name": "critic-record"
+        },
+        {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
           "name": "bulk-close"
         },

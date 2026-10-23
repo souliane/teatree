@@ -67,8 +67,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "b9658434278799b06f559d532c44129bdb8244d1fc02ebeffb70f5b93ec0d511"
-_SYSTEM_CONTEXT_SHA256 = "758dd7bfcbf9170f15c750479eb9e0e3cd5c9e374a84951b829b5b8e0300e65b"
+_OPTIONS_SHA256 = "42c8cf5a49f4f809e574e50e7cb54b67140b89c52d4e0e44b0a7a40a33aa1435"
+_SYSTEM_CONTEXT_SHA256 = "bb04cf62ed0861ea3764880bf25fad8536034fe486e7dc5965f580d2592b41e5"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 

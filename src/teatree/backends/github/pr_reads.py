@@ -44,7 +44,7 @@ query {{
         pullRequest(number: {number}) {{
             reviewThreads(first: 100{after}) {{
                 pageInfo {{ hasNextPage endCursor }}
-                nodes {{ isResolved }}
+                nodes {{ id isResolved comments(first: 1) {{ nodes {{ body url path line }} }} }}
             }}
         }}
     }}
@@ -220,6 +220,35 @@ def count_unresolved_review_threads(*, repo: str, pr_iid: int, token: str) -> in
             return unresolved
         after = f', after: "{end_cursor}"'
     return None
+
+
+def list_review_threads(*, repo: str, pr_iid: int, token: str) -> list[RawAPIDict]:
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        message = "Cannot read review threads for invalid repo"
+        raise RuntimeError(message)
+    threads: list[RawAPIDict] = []
+    after = ""
+    for _ in range(_REVIEW_THREADS_MAX_PAGES):
+        page = _review_threads_page(owner=owner, name=name, pr_iid=pr_iid, after=after, token=token)
+        if page is None:
+            message = "Cannot read review threads"
+            raise RuntimeError(message)
+        nodes, end_cursor = page
+        for node in nodes:
+            if not isinstance(node, dict):
+                message = "Malformed review threads"
+                raise TypeError(message)
+            comments = dig(node, "comments", "nodes")
+            if not isinstance(comments, list):
+                message = "Malformed review threads"
+                raise TypeError(message)
+            threads.append({"id": node.get("id"), "isResolved": node.get("isResolved"), "notes": comments})
+        if end_cursor is None:
+            return threads
+        after = f', after: "{end_cursor}"'
+    message = "Review threads exceed page budget"
+    raise RuntimeError(message)
 
 
 def _review_threads_page(

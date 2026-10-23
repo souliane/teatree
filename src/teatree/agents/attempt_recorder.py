@@ -44,6 +44,8 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
+from teatree.core.models.critic_dispatch import CriticDispatch as _CriticDispatch
+from teatree.core.models.critic_verdict import CRITIC_EVIDENCE_UNAVAILABLE_PREFIX as _CRITIC_EVIDENCE_UNAVAILABLE_PREFIX
 from teatree.core.models.task_claim import atomic_after_checkout_exit
 
 if TYPE_CHECKING:
@@ -429,4 +431,6 @@ def _record_failure(
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)
+    if error.startswith(_CRITIC_EVIDENCE_UNAVAILABLE_PREFIX):
+        _CriticDispatch.rearm_unverified(task)
     return attempt

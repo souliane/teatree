@@ -13,6 +13,33 @@ class GitLabMrNotes:
         self._client = client
         self._resolve_project = resolve_project
 
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        project = self._resolve_project(repo)
+        if project is None:
+            message = "Cannot read review threads for unresolved project"
+            raise RuntimeError(message)
+        return self._client.get_mr_discussions(project.project_id, pr_iid)
+
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> RawAPIDict:
+        project = self._resolve_project(repo)
+        if project is None:
+            message = "Cannot resolve review thread for unresolved project"
+            raise RuntimeError(message)
+        result = self._client.put_json(
+            f"projects/{project.project_id}/merge_requests/{pr_iid}/discussions/{thread_id}",
+            {"resolved": True},
+        )
+        if not isinstance(result, dict) or result.get("resolved") is not True:
+            message = "Review thread resolution not confirmed"
+            raise RuntimeError(message)
+        return result
+
+    def list_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        return self._client.get_mr_discussions(project.project_id, pr_iid)
+
     def post_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
         if project is None:
