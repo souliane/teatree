@@ -66,3 +66,28 @@ PYTEST_VERB_RE = (
     r"pytest(?![\w-])"
 )
 PYTEST_VERB_FINDER = re.compile(PYTEST_VERB_RE)
+
+ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
+    r"(?:" + PYTEST_VERB_RE + r"|"
+    r"\btox\b|"
+    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
+    r"manage\.py\s+runserver|"
+    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
+    r"\bnx\s+(?:serve|run|e2e)\b|"
+    r"docker\s+compose\s+(?:up|build)|"
+    r"\bdocker\s+build\b|"
+    r"(?:npx\s+)?playwright\s+test|"
+    r"\bnpm\s+(?:run|install|ci)\b|"
+    r"\b(?:pipenv|pip)\s+install\b|"
+    r"\buv\s+sync\b|"
+    r"vite\s+build|"
+    r"\bwebpack\b|"
+    r"\bcargo\s+(?:build|test)\b|"
+    r"\bmake\b|"
+    r"\bsleep\s+\d{2,}|"
+    r"\bfind\s+\S+.*-exec\b|"
+    r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
+    r")",
+)
+HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
+NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b")
