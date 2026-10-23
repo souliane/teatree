@@ -1,7 +1,7 @@
 """Durable delivery of Slack thread input to a live ticket session."""
 
+import re
 from dataclasses import dataclass
-from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -22,6 +22,8 @@ from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_p
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
     from teatree.loop.slack_answer.cycle import SlackAnswerReport, _Unit
+
+SLACK_STEER_WAIT_SECONDS = 10.0
 
 
 def _mark_unit_loop_replied(unit: "_Unit", kind: str) -> bool:
@@ -65,7 +67,12 @@ class _LiveInput:
     bound_answer: BoundAnswer | None
 
 
-def _live_session(binding: ThreadBinding) -> _BoundLiveSession | None:
+@dataclass(frozen=True, slots=True)
+class _AmbiguousSessions:
+    tasks: tuple[int, ...]
+
+
+def _live_session(binding: ThreadBinding, text: str) -> _BoundLiveSession | _AmbiguousSessions | None:
     client = LiveClient()
     try:
         sessions = client.sessions()
@@ -75,7 +82,12 @@ def _live_session(binding: ThreadBinding) -> _BoundLiveSession | None:
         return None
     matching = [row for row in sessions if row["ticket"] == binding.ticket_id]
     if matching:
-        return _BoundLiveSession(binding, client, max(matching, key=itemgetter("task")))
+        selected = re.match(r"^#(\d+)(?:\s|$)", text)
+        if selected is not None:
+            matching = [row for row in matching if row["task"] == int(selected.group(1))]
+        if len(matching) == 1:
+            return _BoundLiveSession(binding, client, matching[0])
+        return _AmbiguousSessions(tuple(sorted(row["task"] for row in sessions if row["ticket"] == binding.ticket_id)))
     if client.unreachable:
         msg = "live worker list is incomplete; ticket session ownership is unknown"
         raise LiveOfflineError(msg)
@@ -96,7 +108,7 @@ def _direction_reply(client: LiveClient, unit: "_Unit", binding: ThreadBinding, 
     if created or not command.outcome:
         try:
             send = client.follow_up if idle else client.steer
-            receipt = send(task_pk, unit.text, command_id=command_id)
+            receipt = send(task_pk, unit.text, command_id=command_id, wait=SLACK_STEER_WAIT_SECONDS)
         except LiveOfflineError:
             if created:
                 command.delete()
@@ -194,7 +206,23 @@ def _live_receipt(
     bound_answer = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
     if _replay_bound_command(backend, unit, report, binding, bound_answer):
         return True
-    if (session := _live_session(binding)) is None:
+    session = _live_session(binding, unit.text)
+    if isinstance(session, _AmbiguousSessions):
+        if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.ACK):
+            return True
+        choices = " or ".join(f"#{task}" for task in session.tasks)
+        reply = f"Several tasks are live for this ticket. Start your reply with {choices} to choose one."
+        try:
+            if not _post_live_reply(backend, unit, reply):
+                _unmark_unit_loop_replied(unit)
+                return True
+        except Exception:
+            _unmark_unit_loop_replied(unit)
+            raise
+        _confirm_unit_loop_replied(unit)
+        report.acked += 1
+        return True
+    if session is None:
         command_id = slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
         if SessionCommand.objects.filter(command_id=command_id).exists():
             msg = "unsettled session command has no reachable owner"

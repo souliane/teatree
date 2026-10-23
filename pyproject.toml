@@ -133,8 +133,7 @@ dependencies = [
   # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
   # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
   # above, so it must be in the installed tool env, not only transitively via
-  # ``mcp``. The ``>=2.14.2`` floor stays in ``constraint-dependencies`` below
-  # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
+  # ``mcp``. The floor in ``constraint-dependencies`` below also gates this direct dependency.
   "pydantic-settings>=2.16",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
@@ -754,7 +753,7 @@ exclude-newer = "7 days"
 # >= 2.12.0, < 2.14.2 carry GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource
 # follows symlinks outside secrets_dir). Patched in 2.14.2. Drop the entry once
 # `mcp` floors it itself.
-constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
+constraint-dependencies = [ "pydantic-settings>=2.16.0" ]
 
 # Empty, not deleted: `uv-overrides.txt` and the `--overrides`/`UV_OVERRIDE`
 # every unattended `uv tool install` passes stay wired, so the next entry is a
@@ -777,11 +776,6 @@ override-dependencies = [  ]
 [tool.uv.exclude-newer-package]
 certifi = "2026-10-20T02:24:17Z"
 pillow = "2026-10-16T22:18:10Z"
-pydantic = "2026-10-11T18:37:56Z"
-pydantic-core = "2026-10-11T18:35:45Z"
-pydantic-settings = "2026-10-14T12:44:10Z"
-pydantic-ai-slim = "2026-10-13T23:50:13Z"
-pydantic-graph = "2026-10-13T23:50:17Z"
 
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`

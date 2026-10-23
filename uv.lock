@@ -15,14 +15,9 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 certifi = "2026-10-20T02:24:17Z"
 pillow = "2026-10-16T22:18:10Z"
-pydantic = "2026-10-11T18:37:56Z"
-pydantic-ai-slim = "2026-10-13T23:50:13Z"
-pydantic-core = "2026-10-11T18:35:45Z"
-pydantic-graph = "2026-10-13T23:50:17Z"
-pydantic-settings = "2026-10-14T12:44:10Z"
 
 [manifest]
-constraints = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
+constraints = [{ name = "pydantic-settings", specifier = ">=2.16.0" }]
 
 [[package]]
 name = "annotated-doc"

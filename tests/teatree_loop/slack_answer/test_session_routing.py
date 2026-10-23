@@ -109,7 +109,7 @@ class TestBoundTicketThread(TestCase):
         assert report.dispatched == 0
         assert Task.objects.count() == 1
         client.steer.assert_called_once_with(
-            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", "101.0")
+            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", "101.0"), wait=10.0
         )
         assert "accepted_current_turn" in backend.replies[0][2]
         row.refresh_from_db()
@@ -141,7 +141,7 @@ class TestBoundTicketThread(TestCase):
 
         assert report.steered == 1
         client.steer.assert_called_once_with(
-            work_task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", row.slack_ts)
+            work_task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", row.slack_ts), wait=10.0
         )
         assert Task.objects.count() == 2
 
@@ -204,10 +204,60 @@ class TestBoundTicketThread(TestCase):
         assert report.dispatched == 0
         assert Task.objects.count() == 1
         client.follow_up.assert_called_once_with(
-            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", row.slack_ts)
+            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", row.slack_ts), wait=10.0
         )
         client.steer.assert_not_called()
         assert "accepted_new_turn" in backend.replies[0][2]
+
+    def test_two_live_sessions_without_a_task_id_get_a_choice_receipt(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(
+            ticket=first.ticket, session=first.session, phase=first.phase, status=Task.Status.PENDING
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": first.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+            {"task": second.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+        ]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.steered == 0
+        assert report.dispatched == 0
+        assert Task.objects.count() == 2
+        client.steer.assert_not_called()
+        assert f"#{first.pk}" in backend.replies[0][2]
+        assert f"#{second.pk}" in backend.replies[0][2]
+
+    def test_a_selected_session_receives_a_short_wait(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(
+            ticket=first.ticket, session=first.session, phase=first.phase, status=Task.Status.PENDING
+        )
+        row = self._message(f"#{first.pk} Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": first.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+            {"task": second.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+        ]
+        client.steer.return_value = {"outcome": "accepted_current_turn", "code": None, "accepted_at": "now"}
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.steered == 1
+        client.steer.assert_called_once_with(
+            first.pk,
+            f"#{first.pk} Use the new API",
+            command_id=slack_command_id("", "C1", row.slack_ts),
+            wait=10.0,
+        )
 
     def test_unreachable_worker_does_not_start_another_task(self) -> None:
         self._bound_task()
@@ -302,7 +352,7 @@ class TestBoundTicketThread(TestCase):
             run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         client.steer.assert_called_once_with(
-            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", "101.0")
+            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", "101.0"), wait=10.0
         )
         assert "accepted_current_turn" in backend.replies[0][2]
         command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", "101.0"))
