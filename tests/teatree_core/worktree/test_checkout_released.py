@@ -260,7 +260,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
     def test_git_failure_parks_and_releases_occupancy(self) -> None:
         original = self.worktree.get_extra()["attested_state"]
         unreadable_reflog = (
-            'if [ "$3" = "reflog" ]; then\n  printf "%s\\n" "fatal: unreadable reflog" >&2\n  exit 128\nfi\n'
+            'case " $* " in *" reflog "*) printf "%s\\n" "fatal: unreadable reflog" >&2; exit 128;; esac\n'
         )
         with self.git_shim(unreadable_reflog):
             parked = self.claim()
@@ -275,7 +275,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         first_read = marks / "first-head-read"
         substituted = marks / "substituted-head-read"
         substitute_second_head_read = (
-            'if [ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "HEAD" ]; then\n'
+            'case " $* " in *" rev-parse --verify HEAD "*)\n'
             f"  if [ -f {shlex.quote(str(first_read))} ]; then\n"
             f"    rm {shlex.quote(str(first_read))}\n"
             f"    touch {shlex.quote(str(substituted))}\n"
@@ -283,7 +283,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
             "    exit 0\n"
             "  fi\n"
             f"  touch {shlex.quote(str(first_read))}\n"
-            "fi\n"
+            ";; esac\n"
         )
         with self.git_shim(substitute_second_head_read):
             self.assert_parked(response=ForgeResponse(forge_head=self.anchor_head, remote_head=self.anchor_head))

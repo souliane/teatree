@@ -21,12 +21,57 @@ from pathlib import Path
 
 import pytest
 
+from tests._git_repo import git_identity_env, make_git_repo, run_git
+from tests._planted_git_config import plant_exec_config
+
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 ENTRYPOINT = DEPLOY / "entrypoint.sh"
 DOCKERFILE = DEPLOY / "Dockerfile"
 _BASH = shutil.which("bash") or "bash"
+
+
+def test_deploy_shells_load_the_git_pin_helper_baked_into_both_images() -> None:
+    for script in (ENTRYPOINT, DEPLOY / "fast-forward-checkout.sh", DEPLOY / "roll.sh"):
+        assert '. "$SCRIPT_DIR/git-pins.sh"' in script.read_text(encoding="utf-8")
+    assert DOCKERFILE.read_text(encoding="utf-8").count("deploy/git-pins.sh /usr/local/bin/git-pins.sh") == 2
+
+
+def test_ensure_clone_fast_forward_does_not_run_planted_git_commands(tmp_path: Path) -> None:
+    origin = make_git_repo(tmp_path / "origin", bare=True)
+    work = make_git_repo(tmp_path / "work")
+    run_git(work, "remote", "add", "origin", str(origin))
+    run_git(work, "push", "-q", "origin", "main")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        [shutil.which("git") or "git", "clone", "-q", str(origin), str(clone)],
+        check=True,
+        capture_output=True,
+        env=git_identity_env(),
+    )
+    (work / "next.txt").write_text("next\n", encoding="utf-8")
+    run_git(work, "add", "next.txt")
+    run_git(work, "commit", "-q", "-m", "next")
+    run_git(work, "push", "-q", "origin", "main")
+    expected = run_git(work, "rev-parse", "HEAD")
+    planted = plant_exec_config(clone, tmp_path / "planted")
+    run_git(clone, "status", "--porcelain")
+    assert planted.fired
+    planted.marker.unlink()
+    script = (
+        f'. "{DEPLOY / "git-pins.sh"}"\n'
+        f"{_function('ensure_clone')}\n"
+        "detect_host_root() { :; }\n"
+        "network_up() { return 0; }\n"
+        "ensure_clone"
+    )
+
+    result = _bash(script, {"CLONE_DIR": str(clone), "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull})
+
+    assert result.returncode == 0, result.stderr
+    assert run_git(clone, "rev-parse", "HEAD") == expected
+    assert planted.fired == []
 
 
 def _function(name: str) -> str:
@@ -82,7 +127,7 @@ class TestAnOldImageRunsItsOwnEntrypoint:
         assert self._boot(tmp_path, "garbage") == "baked-entrypoint"
 
     def test_an_image_meeting_the_contract_runs_the_checkout_entrypoint(self, tmp_path: Path) -> None:
-        assert self._boot(tmp_path, "1\n") == "checkout-entrypoint"
+        assert self._boot(tmp_path, "2\n") == "checkout-entrypoint"
 
     def test_the_dockerfile_bakes_the_contract_the_entrypoint_requires(self) -> None:
         required = re.search(r"^ENTRYPOINT_IMAGE_CONTRACT=(\d+)$", ENTRYPOINT.read_text(encoding="utf-8"), re.MULTILINE)
