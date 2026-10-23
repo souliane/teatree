@@ -143,6 +143,20 @@ class PrBoardAcceptanceTestCase(TestCase):
         assert f'data-ticket="{delivered[-1].pk}"' in second
         assert f'data-ticket="{delivered[0].pk}"' not in second
 
+    def test_a_visible_column_over_fifty_pages_on_its_own_state_parameter(self) -> None:
+        for _ in range(55):
+            TicketFactory(state=State.WORK_STARTED)
+
+        first = self.client.get(reverse("dash:board_lifecycle")).content.decode()
+        second = self.client.get(reverse("dash:board_lifecycle"), {"page_work_started": "1"}).content.decode()
+
+        assert first.count("data-ticket=") == 50
+        assert "page_work_started=1" in first
+        assert second.count("data-ticket=") == 5
+        poll = _HX_GET_RE.search(second)
+        assert poll is not None
+        assert parse_qs(urlsplit(poll.group(1)).query)["page_work_started"] == ["1"]
+
     def test_lifecycle_is_a_separate_board_tab(self) -> None:
         ticket = TicketFactory(state=State.WORK_STARTED, short_description="lifecycle-only ticket")
         response = self.client.get(reverse("dash:board_lifecycle"))

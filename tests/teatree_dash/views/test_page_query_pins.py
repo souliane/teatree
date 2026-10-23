@@ -70,13 +70,14 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
 #: and flat at both. The two land together: 21 -> 23, not 22.
 #: The lifecycle board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: The lifecycle board counts every column in one grouped read before fetching pages: +1, O(1), flat at both.
 #: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
 MERGE_READ_QUERIES = 9
 #: The cycle-time page reads merged and open pull-request flow once each: +2, O(1), flat at both.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 11,
-    "dash:board_lifecycle": 14,
-    "dash:board_columns": 11,
+    "dash:board_lifecycle": 15,
+    "dash:board_columns": 12,
     "dash:cycle_time": 13,
     "dash:health": 23,
     "dash:health_bands": 23,

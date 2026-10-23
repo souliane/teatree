@@ -9,6 +9,7 @@ from django.utils import timezone
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.dash import selectors
 from teatree.dash.selectors import STALE_ERROR_AFTER, BoardFilters, KanbanBoard, KanbanCard, build_kanban_columns
 from tests.factories import PullRequestFactory, SessionFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
@@ -31,6 +32,41 @@ def _find_card(board: KanbanBoard, ticket_id: int) -> KanbanCard | None:
             if card.ticket_id == ticket_id:
                 return card
     return None
+
+
+def _column(board: KanbanBoard, state: str) -> selectors.KanbanColumn:
+    return next(column for group in board.groups for column in group.columns if column.state == state)
+
+
+class KanbanColumnPagingTestCase(TestCase):
+    def test_each_column_is_counted_in_the_database_and_builds_only_its_slice(self) -> None:
+        for _ in range(120):
+            TicketFactory(state=State.DELIVERED)
+        TicketFactory(state=State.WORK_STARTED)
+
+        with patch("teatree.dash.selectors._card", wraps=selectors._card) as build_card:
+            board = build_kanban_columns(BoardFilters(pages={State.DELIVERED: 1}))
+
+        delivered = _column(board, State.DELIVERED)
+        assert (delivered.count, len(delivered.cards), delivered.page) == (120, 50, 1)
+        assert _column(board, State.WORK_STARTED).count == 1
+        assert build_card.call_count == 51
+
+    def test_a_page_past_the_end_shows_the_last_page(self) -> None:
+        for _ in range(55):
+            TicketFactory(state=State.NOT_STARTED)
+
+        column = _column(build_kanban_columns(BoardFilters(pages={State.NOT_STARTED: 99})), State.NOT_STARTED)
+
+        assert (column.page, len(column.cards)) == (1, 5)
+
+    def test_a_column_that_fits_one_page_is_not_split(self) -> None:
+        for _ in range(50):
+            TicketFactory(state=State.SCOPED)
+
+        column = _column(build_kanban_columns(), State.SCOPED)
+
+        assert (column.page, len(column.cards), column.count) == (0, 50, 50)
 
 
 class BuildKanbanColumnsTestCase(TestCase):

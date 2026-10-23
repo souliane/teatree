@@ -9,11 +9,11 @@ board. The column set is a module constant a conformance test pins against the F
 enum, so a future ``Ticket.State`` value cannot silently drop off the board.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from django.db.models import Max
+from django.db.models import Count, Max, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
@@ -49,6 +49,7 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 # a failure from a prior deployment presented as if it were live. The attempt row
 # itself is never touched (it is audit); only the board stops showing it.
 STALE_ERROR_AFTER = timedelta(days=2)
+BOARD_PAGE_SIZE = 50
 _SECONDS_PER_MINUTE = 60
 _MINUTES_PER_HOUR = 60
 _HOURS_PER_DAY = 24
@@ -176,6 +177,10 @@ class KanbanColumn:
         return self.total_count if self.total_count is not None else len(self.cards)
 
     @property
+    def has_next_page(self) -> bool:
+        return (self.page + 1) * BOARD_PAGE_SIZE < self.count
+
+    @property
     def meaning(self) -> str:
         return STATE_MEANINGS.get(self.state, "")
 
@@ -205,6 +210,7 @@ class BoardFilters:
     kind: str = ""
     text: str = ""
     include_ignored: bool = False
+    pages: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,38 +230,53 @@ class _CardContext:
 def build_kanban_columns(filters: BoardFilters | None = None) -> KanbanBoard:
     """Group the ticket set into FSM-state columns with per-card badge signals.
 
-    Read-only: it issues ORM reads only and never touches the FSM. Every
-    per-ticket badge (active-work dot, active phase / claimed-by, last task
-    error, dwell-in-column, PR chips) is bulk-fetched once for the whole board
-    rather than per card, so the render is a small fixed number of queries.
+    Read-only: it issues ORM reads only and never touches the FSM. Each column is
+    counted in the database and only its requested page of cards is fetched, then
+    every per-ticket badge (active-work dot, active phase / claimed-by, last task
+    error, dwell-in-column, PR chips) is bulk-fetched once for those cards rather
+    than per card, so the render is a small fixed number of queries.
     """
     active = filters or BoardFilters()
     tickets = _filtered_tickets(active)
-    ticket_ids = [t.pk for t in tickets]
-    context = _card_context(ticket_ids)
+    totals = {str(state): total for state, total in tickets.order_by().values_list("state").annotate(total=Count("pk"))}
+    pages = {state: _clamped_page(active.pages.get(state, 0), total) for state, total in totals.items()}
+    page_tickets = _page_tickets(tickets, totals, pages)
+    context = _card_context([t.pk for t in page_tickets])
 
     by_state: dict[str, list[KanbanCard]] = {state: [] for state in (*BOARD_COLUMNS, *HIDDEN_STATES)}
-    for ticket in tickets:
+    for ticket in page_tickets:
         by_state.setdefault(str(ticket.state), []).append(_card(ticket, context))
 
-    groups = tuple(
-        KanbanGroup(
-            name=name,
-            columns=tuple(
-                KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in states
-            ),
+    def column(state: str) -> KanbanColumn:
+        return KanbanColumn(
+            state=state,
+            label=_label(state),
+            cards=tuple(by_state[state]),
+            total_count=totals.get(state, 0),
+            page=pages.get(state, 0),
         )
-        for name, states in COLUMN_GROUPS
+
+    groups = tuple(
+        KanbanGroup(name=name, columns=tuple(column(state) for state in states)) for name, states in COLUMN_GROUPS
     )
-    hidden = (
-        tuple(KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in HIDDEN_STATES)
-        if active.include_ignored
-        else ()
-    )
+    hidden = tuple(column(state) for state in HIDDEN_STATES) if active.include_ignored else ()
     return KanbanBoard(groups=groups, include_ignored=active.include_ignored, hidden=hidden)
 
 
-def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
+def _clamped_page(page: int, total: int) -> int:
+    return max(0, min(page, (total - 1) // BOARD_PAGE_SIZE)) if total else 0
+
+
+def _page_tickets(tickets: QuerySet[Ticket], totals: Mapping[str, int], pages: Mapping[str, int]) -> list[Ticket]:
+    whole = [state for state, total in totals.items() if total <= BOARD_PAGE_SIZE]
+    rows = list(tickets.filter(state__in=whole).order_by("-id"))
+    for state in totals.keys() - set(whole):
+        start = pages[state] * BOARD_PAGE_SIZE
+        rows.extend(tickets.filter(state=state).order_by("-id")[start : start + BOARD_PAGE_SIZE])
+    return rows
+
+
+def _filtered_tickets(filters: BoardFilters) -> QuerySet[Ticket]:
     columns = (*BOARD_COLUMNS, *HIDDEN_STATES) if filters.include_ignored else BOARD_COLUMNS
     qs = Ticket.objects.filter(state__in=columns)
     if filters.overlay:
@@ -266,7 +287,7 @@ def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
         qs = qs.filter(kind=filters.kind)
     if filters.text:
         qs = qs.filter(short_description__icontains=filters.text) | qs.filter(issue_url__icontains=filters.text)
-    return list(qs.order_by("-id"))
+    return qs
 
 
 def _card_context(ticket_ids: list[int]) -> _CardContext:

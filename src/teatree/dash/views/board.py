@@ -18,24 +18,14 @@ if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
-_LIFECYCLE_PAGE_SIZE = 50
-_PAGE_KEYS = {Ticket.State.NOT_STARTED: "page_not_started", Ticket.State.DELIVERED: "page_delivered"}
+_PAGE_PREFIX = "page_"
+_COLLAPSED_STATES = (Ticket.State.NOT_STARTED, Ticket.State.DELIVERED)
 
 
 class BoardContext(TypedDict):
     board: KanbanBoard
     filters: BoardFilters
-
-
-def _filters(request: "HttpRequest") -> BoardFilters:
-    params = request.GET
-    return BoardFilters(
-        overlay=params.get("overlay", "").strip(),
-        role=params.get("role", "").strip(),
-        kind=params.get("kind", "").strip(),
-        text=params.get("text", "").strip(),
-        include_ignored=params.get("ignored") in {"1", "true", "on"},
-    )
+    page_params: tuple[tuple[str, int], ...]
 
 
 def _page_number(raw: str) -> int:
@@ -45,27 +35,34 @@ def _page_number(raw: str) -> int:
         return 0
 
 
-def _page_url(request: "HttpRequest", key: str, page: int) -> str:
+def _filters(request: "HttpRequest") -> BoardFilters:
+    pages = {
+        key.removeprefix(_PAGE_PREFIX): _page_number(value)
+        for key, value in request.GET.items()
+        if key.startswith(_PAGE_PREFIX)
+    }
+    return BoardFilters(
+        overlay=request.GET.get("overlay", "").strip(),
+        role=request.GET.get("role", "").strip(),
+        kind=request.GET.get("kind", "").strip(),
+        text=request.GET.get("text", "").strip(),
+        include_ignored=request.GET.get("ignored") == "1",
+        pages=pages,
+    )
+
+
+def _page_url(request: "HttpRequest", state: str, page: int) -> str:
     params = request.GET.copy()
-    params[key] = str(page)
+    params[f"{_PAGE_PREFIX}{state}"] = str(page)
     return f"{reverse('dash:board_lifecycle')}?{params.urlencode()}"
 
 
-def _page_column(request: "HttpRequest", column: KanbanColumn) -> KanbanColumn:
-    key = _PAGE_KEYS.get(column.state)
-    if key is None:
-        return column
-    page = _page_number(request.GET.get(key, "0"))
-    start = page * _LIFECYCLE_PAGE_SIZE
-    total = len(column.cards)
+def _with_pager(request: "HttpRequest", column: KanbanColumn) -> KanbanColumn:
     return replace(
         column,
-        cards=column.cards[start : start + _LIFECYCLE_PAGE_SIZE],
-        total_count=total,
-        page=page,
-        next_url=_page_url(request, key, page + 1) if start + _LIFECYCLE_PAGE_SIZE < total else "",
-        prev_url=_page_url(request, key, page - 1) if page > 0 else "",
-        collapsed=True,
+        next_url=_page_url(request, column.state, column.page + 1) if column.has_next_page else "",
+        prev_url=_page_url(request, column.state, column.page - 1) if column.page else "",
+        collapsed=column.state in _COLLAPSED_STATES,
     )
 
 
@@ -73,10 +70,16 @@ def _board_context(request: "HttpRequest") -> BoardContext:
     filters = _filters(request)
     board = build_kanban_columns(filters)
     groups = tuple(
-        replace(group, columns=tuple(_page_column(request, column) for column in group.columns))
+        replace(group, columns=tuple(_with_pager(request, column) for column in group.columns))
         for group in board.groups
     )
-    return {"board": replace(board, groups=groups), "filters": filters}
+    hidden = tuple(_with_pager(request, column) for column in board.hidden)
+    paged = tuple(
+        (f"{_PAGE_PREFIX}{column.state}", column.page)
+        for column in (*(column for group in groups for column in group.columns), *hidden)
+        if column.page
+    )
+    return {"board": replace(board, groups=groups, hidden=hidden), "filters": filters, "page_params": paged}
 
 
 @require_loopback_or_staff
