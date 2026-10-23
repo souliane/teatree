@@ -12,6 +12,7 @@ through an unscrubbed path.
 from unittest.mock import patch
 
 import pytest
+from django.db import DatabaseError
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, SendAudit
@@ -23,6 +24,7 @@ from teatree.core.send_proxy import (
     SendChannel,
     channel_for_forge,
     forge_from_url,
+    record_private_audit,
     route_forge_write,
 )
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -38,6 +40,33 @@ class TestChannelForForge:
     def test_unknown_forge_falls_back_to_other(self) -> None:
         assert channel_for_forge("") is SendChannel.OTHER
         assert channel_for_forge("bitbucket") is SendChannel.OTHER
+
+
+class TestPrivateForgeAudit(TestCase):
+    def test_keeps_the_full_judgment_without_a_send_allowlist(self) -> None:
+        text = "candidate rejected: " + "x" * 240
+        record_private_audit(
+            forge="github",
+            repo="acme/unlisted",
+            action="github_issue_create_judgment",
+            target="https://github.com/acme/unlisted/issues/5",
+            text=text,
+        )
+        row = SendAudit.objects.get(action="github_issue_create_judgment")
+        assert row.payload_summary == text
+        assert row.target == "https://github.com/acme/unlisted/issues/5"
+        assert row.destination == "github:acme/unlisted"
+
+    def test_database_failure_does_not_raise(self) -> None:
+        with patch("teatree.core.models.send_audit.SendAudit.objects.create", side_effect=DatabaseError("unavailable")):
+            record_private_audit(
+                forge="github",
+                repo="acme/unlisted",
+                action="github_issue_create_judgment",
+                target="https://github.com/acme/unlisted/issues/5",
+                text="candidate rejected",
+            )
+        assert SendAudit.objects.count() == 0
 
 
 class TestForgeFromUrl:
@@ -65,6 +94,16 @@ class TestRouteForgeWriteCleanPath(TestCase):
         assert row.channel == SendChannel.GITHUB.value
         assert row.destination == "github:souliane/teatree"
         assert row.action == "issue_create"
+
+    def test_outbound_payload_summary_keeps_its_existing_preview_cap(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["github:souliane/teatree"])
+        body = "x" * 240
+        with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False):
+            assert (
+                route_forge_write(forge="github", repo="souliane/teatree", text=body, action="issue_create", target="t")
+                == body
+            )
+        assert SendAudit.objects.get().payload_summary == body[:200]
 
     @pytest.mark.usefixtures("configured_banned_term_registry")
     def test_documentation_ip_to_a_public_target_passes_through(self) -> None:

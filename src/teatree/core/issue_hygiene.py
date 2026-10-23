@@ -10,7 +10,7 @@ Five rules, each enforced here rather than in an agent-authored skill:
 
 1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until every
     OPEN ticket in the repo has been judged. A fitting ticket is extended; a new
-    one records every rejected candidate and why, in its own body.
+    one keeps every rejected candidate and why in a private audit row.
 2.  **No requirement comments.** :func:`record_issue_note` takes a closed
     :class:`NotePurpose`. The four normative purposes append a dated description
     section; only ``status`` and ``evidence`` remain comments. There is no untyped
@@ -56,7 +56,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
-from teatree.core.send_proxy import forge_from_url, route_forge_write
+from teatree.core.send_proxy import forge_from_url, record_private_audit, route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import project_slug_from_ref
 
@@ -64,7 +64,6 @@ logger = logging.getLogger(__name__)
 
 MAX_APPEND_ATTEMPTS = 4
 _MARKER_PREFIX = "<!-- t3-hygiene:"
-_DEDUPE_HEADING = "Dedupe check"
 
 
 class NotePurpose(StrEnum):
@@ -168,7 +167,7 @@ class CreateDecision:
 
     ``fits`` marks the candidate the request should be folded into; otherwise
     *reason* must say why it was rejected, and that reason is written into the
-    new ticket's body so the next reader can see the search actually happened.
+    private audit row so the judgment remains inspectable without publishing it.
     """
 
     candidate_url: str
@@ -396,8 +395,8 @@ def create_or_extend(
 
     *decisions* must cover every currently-open ticket: one marked ``fits`` folds
     the request into that ticket's description instead of filing; otherwise every
-    candidate needs a rejection *reason*, and those reasons are written into the
-    new ticket so the dedupe is auditable rather than asserted.
+    candidate needs a rejection *reason*, and those reasons are stored privately
+    so the dedupe is auditable without adding them to the new ticket.
 
     *snapshot_urls*, when given, is the backlog the decisions were made against.
     A ticket filed since then makes the judgment set incomplete, so the outcome is
@@ -470,14 +469,22 @@ def _commit(
 
     fitting = [decision for decision in decisions if decision.fits]
     if fitting:
-        return _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+        outcome = _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+    else:
+        unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
+        if unexplained:
+            msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
+            raise ValueError(msg)
+        outcome = _create(host=host, draft=draft, sweep_run_id=sweep_run_id)
 
-    unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
-    if unexplained:
-        msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
-        raise ValueError(msg)
-
-    return _create(host=host, draft=draft, decisions=decisions, sweep_run_id=sweep_run_id)
+    record_private_audit(
+        forge=draft.forge or forge_from_url(outcome.issue_url),
+        repo=draft.repo,
+        action=f"{draft.action}_judgment",
+        target=outcome.issue_url,
+        text=_judgment_record(decisions, outcome),
+    )
+    return outcome
 
 
 def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
@@ -499,10 +506,8 @@ def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_
     return CreateOutcome(kind="extended_existing", issue_url=target)
 
 
-def _create(
-    *, host: CodeHostBackend, draft: IssueDraft, decisions: Sequence[CreateDecision], sweep_run_id: str
-) -> CreateOutcome:
-    """File the new ticket with the dedupe audit appended to its body.
+def _create(*, host: CodeHostBackend, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
+    """File the new ticket with the caller's scrubbed body.
 
     A label rides the leak scrub too — a forge auto-creates a missing one, so a
     customer codename in a label reaches a public forge exactly like a body would.
@@ -511,12 +516,11 @@ def _create(
     clean_title = _scrub(draft.title, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_body = _scrub(draft.body, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_labels = [_scrub(label, target=repo, repo=repo, action=action, forge=draft.forge) for label in draft.labels]
-    clean_dedupe_audit = _scrub(_dedupe_audit(decisions), target=repo, repo=repo, action=action, forge=draft.forge)
     raw = _raise_on_transport_error(
         host.create_issue(
             repo=repo,
             title=clean_title,
-            body=f"{clean_body}\n\n{clean_dedupe_audit}",
+            body=clean_body,
             labels=clean_labels or None,
         )
     )
@@ -525,16 +529,13 @@ def _create(
     return CreateOutcome(kind="created_new", issue_url=issue_url)
 
 
-def _dedupe_audit(decisions: Sequence[CreateDecision]) -> str:
-    """The searched-and-rejected record that goes into a newly filed ticket's body.
-
-    An empty backlog says so explicitly. "No candidates" and "nobody looked" read
-    identically otherwise, and the second is the one worth catching.
-    """
-    if not decisions:
-        return f"## {_DEDUPE_HEADING} ({_today()})\n\nNo open candidates existed on this repo."
-    lines = [f"- {d.candidate_url} — {d.reason.strip()}" for d in decisions if not d.fits]
-    return f"## {_DEDUPE_HEADING} ({_today()})\n\nRejected candidates:\n" + "\n".join(lines)
+def _judgment_record(decisions: Sequence[CreateDecision], outcome: CreateOutcome) -> str:
+    lines = [f"{outcome.kind} {outcome.issue_url}: {len(decisions)} candidates judged"]
+    lines.extend(
+        f"{decision.candidate_url} {'fits' if decision.fits else f'rejected: {decision.reason.strip()}'}"
+        for decision in decisions
+    )
+    return "\n".join(lines)
 
 
 def _raise_on_transport_error(raw: RawAPIDict) -> RawAPIDict:

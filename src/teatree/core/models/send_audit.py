@@ -12,6 +12,9 @@ claimed actually land): ``OnBehalfAudit`` audits the *approval*, ``OutboundClaim
 audits *delivery drift*, and ``SendAudit`` audits the *policy decision* at the one
 outbound chokepoint.
 
+Issue-create judgments also live here with an ``_judgment`` action and full private
+payload summary; they are records of a completed decision, not outbound text.
+
 The row is best-effort — a failed audit write never blocks or rolls back the send
 (the proxy swallows the DB error) — so it can lag the wire call but never breaks it.
 """
@@ -23,7 +26,7 @@ from django.utils import timezone
 
 
 class SendAudit(models.Model):
-    """One outbound send the proxy evaluated — its destination, verdict, and delegation.
+    """One outbound send or private issue judgment — its destination, verdict, and delegation.
 
     ``allowlist_verdict`` records the allowlist decision: a non-allowlisted
     destination is :attr:`Verdict.DENIED`; an allowlisted destination or the

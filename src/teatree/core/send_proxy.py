@@ -290,7 +290,9 @@ def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
         return request.payload, ()
 
 
-def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
+def _record_audit(
+    request: SendRequest, verdict: SendVerdict, *, summary_chars: int | None = _PAYLOAD_SUMMARY_CHARS
+) -> None:
     """Write the per-send :class:`SendAudit` row — best-effort, never raises.
 
     Fields are pre-truncated to their column widths here (SQLite does not enforce
@@ -314,7 +316,7 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
                 provenance=request.provenance[:32],
                 authorized_by=request.authorized_by[:255],
                 agent_session_id=(current_session_id() or "")[:255],
-                payload_summary=request.payload[:_PAYLOAD_SUMMARY_CHARS],
+                payload_summary=request.payload[:summary_chars],
             )
     except DatabaseError as exc:
         logger.warning("send_proxy: audit write failed for destination=%s: %s", request.destination, exc)
@@ -392,6 +394,19 @@ def forge_from_url(url: str) -> str:
     return ""
 
 
+def record_private_audit(*, forge: str, repo: str, action: str, target: str, text: str) -> None:
+    """Keep a full issue judgment in the control DB without routing it to a forge."""
+    channel = channel_for_forge(forge)
+    request = SendRequest(
+        channel=channel,
+        destination=f"{channel.value}:{normalized_forge_repo(repo)}",
+        payload=text,
+        action=action,
+        target=target,
+    )
+    _record_audit(request, SendVerdict(allowed=True, payload=text, allowlist_ok=True), summary_chars=None)
+
+
 def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
     """Screen one outbound forge body through the leak gate + #117 send-proxy, or refuse.
 
@@ -445,6 +460,7 @@ __all__ = [
     "destination_allowed",
     "forge_from_url",
     "read_posting_credential",
+    "record_private_audit",
     "redact_payload",
     "route_forge_write",
     "route_send",

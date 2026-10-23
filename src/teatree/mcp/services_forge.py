@@ -183,9 +183,8 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         comes back as ``candidates`` plus the ``snapshot`` it was read at. Judge each
         one and call again with ``dedupe={"snapshot": [...], "decisions": [...]}`` —
         one ``fits`` folds the request into that ticket's description instead of
-        filing, and every rejection's reason is written into the new ticket so the
-        search is auditable rather than asserted. A ticket filed in between makes the
-        judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
+        filing, and every rejection's reason is kept in a private audit row. A ticket
+        filed in between makes the judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
         again. The two travel as one argument because a judgment set without the
         backlog it was made against cannot be checked for completeness.
         """
@@ -202,7 +201,7 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
                     "Nothing was written. Judge EVERY candidate, then call again with dedupe={'snapshot': "
                     "<this snapshot>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
                     "One fits -> the request is appended to that ticket's description; none fits -> a new "
-                    "ticket is filed recording every rejection."
+                    "ticket is filed with the supplied body; judgments are kept privately."
                 ),
             }
 
@@ -347,7 +346,7 @@ def _instructions(prefix: str) -> str:
         f"Called WITHOUT dedupe it writes nothing and returns the open backlog as `candidates` + the "
         f"`snapshot` it was read at; judge each one and call again with dedupe={{'snapshot': ..., "
         f"'decisions': [{{'url','fits','reason'}}]}}. One `fits` APPENDS the request to that ticket's "
-        f"description instead of filing; none fits files once, recording every rejection in the new body. "
+        f"description instead of filing; none fits files once with the supplied body and a private judgment record. "
         f"Body, title + labels are leak-scrubbed (a customer codename bound for a public forge is REFUSED) "
         f"and #117-audited.\n"
         f"- {prefix}_issue_note(issue_url, purpose, body, sweep_run_id): record a note where its PURPOSE "
