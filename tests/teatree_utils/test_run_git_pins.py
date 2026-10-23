@@ -335,6 +335,26 @@ def test_an_unreadable_common_dir_never_starts_a_hook_bearing_command(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("verb", ["commit", "push"])
+def test_a_common_dir_ending_in_space_keeps_its_gate_hook(tmp_path: Path, verb: str) -> None:
+    repo = tmp_path / "repo"
+    common_dir = tmp_path / "separate git dir "
+    run_git(tmp_path, "init", "-q", "-b", "main", "--separate-git-dir", str(common_dir), str(repo))
+    run_git(repo, "commit", "-q", "--allow-empty", "-m", "initial")
+    if verb == "push":
+        origin = make_git_repo(tmp_path / "origin", bare=True)
+        run_git(repo, "remote", "add", "origin", str(origin))
+    marker = tmp_path / "hook-fired"
+    hook = "pre-commit" if verb == "commit" else "pre-push"
+    executable(common_dir / "hooks" / hook, f"touch '{marker}'\nexit 1")
+    args = ("commit", "-q", "--allow-empty", "-m", "next") if verb == "commit" else ("push", "origin", "main")
+
+    with pytest.raises(CommandFailedError):
+        run_checked(["git", "-C", str(repo), *args], env=git_identity_env())
+
+    assert marker.exists()
+
+
 @pytest.mark.parametrize("runner", ["allowed-to-fail", "bounded-group"])
 def test_a_lenient_push_from_a_non_repo_returns_a_failed_result(tmp_path: Path, runner: str) -> None:
     argv = ["git", "-C", str(tmp_path), "push", "origin", "main"]

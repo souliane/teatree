@@ -173,7 +173,7 @@ def _pinned_git_argv(
         timeout=_git_probe_timeout(cmd, timeout, started),
         check=False,
     )
-    common_dir = probe.stdout.strip()
+    common_dir = probe.stdout.removesuffix("\n")
     if probe.returncode != 0 or not common_dir or "\n" in common_dir or not Path(common_dir).is_absolute():
         raise CommandFailedError(cmd, probe.returncode or 1, probe.stdout, probe.stderr)
     hooks_path = _trusted_hooks_path(
