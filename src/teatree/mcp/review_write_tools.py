@@ -126,8 +126,8 @@ async def _review_post_comments(
 ) -> dict[str, Any]:
     """Post a whole review's findings on one MR in a SINGLE gated batch. Prefer this over N single posts.
 
-    ``comments`` is [{note, anchor='path/to/file.py:LINE', evidence, ...}, …]; ``evidence`` is
-    a JSON object or its JSON string. Every field is per-COMMENT because
+    ``comments`` is [{note, anchor='path/to/file.py:LINE', evidence, force_general, allow_bloat}, …];
+    ``evidence`` is a JSON object or its JSON string. Every field is per-COMMENT because
     every gate it feeds is: one finding needs the #1280 evidence receipts and the nit
     beside it does not. Every body runs the same pre-publish gates as a single
     ``review_post_comment``; what the batch shares is the authorization — one recorded

@@ -234,13 +234,15 @@ def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Pa
     bodies: list[str] = []
     resolved: list[str] = []
     missing: list[str] = []
+    seen: set[str] = set()
     for name in skills:
         bare = bare_skill_name(name)
-        if bare in resolved:
+        if bare in seen:
             continue
+        seen.add(bare)
         skill_md = resolve_skill_md(name, skills_dirs)
         if skill_md is None:
-            missing.append(name)
+            missing.append(bare)
         elif _is_stack_skill(bare):
             stack.append(bare)
             resolved.append(bare)

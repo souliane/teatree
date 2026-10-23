@@ -34,7 +34,7 @@ def _client() -> "SharePointReadClient":
 
 
 async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[SharePointEntry]:
-    """Entries under *subpath* in the read-only SharePoint document library."""
+    """Entries under *subpath* in the read-only SharePoint library: Path/Name/Size/IsDir/ModTime."""
     return await sync_to_async(lambda: _client().list_files(subpath, recursive=recursive), thread_sensitive=True)()
 
 

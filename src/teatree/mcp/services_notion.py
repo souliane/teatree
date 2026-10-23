@@ -166,6 +166,7 @@ async def _notion_create(page: NewNotionPage, *, dry_run: bool = True, overlay: 
     dry_run=true (the default) writes nothing and returns what would be created with the approval to record.
     A page already carrying the title is reported as existing; a real write needs the owner's recorded
     approval, as for ``notion_replace``.
+    Failures read ``notion exit <N> (<Class>): <message>`` (23 no approval, 20 mismatched approval).
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).create(page, dry_run=dry_run), thread_sensitive=True
@@ -179,6 +180,7 @@ async def _notion_comment(comment: NotionComment, *, dry_run: bool = True, overl
     A marker already in the destination is a duplicate and posts nothing. dry_run=true (the default) writes
     nothing and returns what would be posted with the approval to record; a real write needs the owner's
     recorded approval, as for ``notion_replace``.
+    Failures read ``notion exit <N> (<Class>): <message>`` (23 no approval, 20 mismatched approval).
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).comment(comment, dry_run=dry_run), thread_sensitive=True
@@ -192,6 +194,7 @@ async def _notion_archive(
 
     dry_run=true (the default) writes nothing and returns the page, what would change and the approval to record.
     A real write needs the owner's recorded approval covering exactly that page, that direction and that overlay.
+    Failures read ``notion exit <N> (<Class>): <message>`` (23 no approval, 20 mismatched approval).
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).archive(page, archived=archived, dry_run=dry_run), thread_sensitive=True
@@ -205,6 +208,7 @@ async def _notion_property_set(
 
     dry_run=true (the default) writes nothing and returns the old and new value with the approval to record;
     a real write needs the owner's recorded approval. A type with no plain-text form is refused.
+    Failures read ``notion exit <N> (<Class>): <message>`` (23 no approval, 20 mismatched approval).
     """
     return await sync_to_async(
         lambda: notion_write_seam(overlay).property_set(page, name, value, dry_run=dry_run), thread_sensitive=True

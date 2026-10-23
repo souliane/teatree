@@ -357,6 +357,21 @@ class TestGateC(SimpleTestCase):
         )
         assert result.passed, result.detail
 
+    def test_priority_title_replacing_generated_title_is_not_a_lost_lesson(self) -> None:
+        before = _snapshot({"mem_a.md": "lesson"}, index=reindex.render_index_lines(["- mem_a.md"]))
+        after = _snapshot({"mem_a.md": "lesson"}, index="# Priority\n\n- mem_a.md\n")
+
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            maintenance_performed=True,
+        )
+
+        assert result.passed, result.regressions
+
     def test_a_hand_written_quote_line_is_still_a_pruned_lesson(self) -> None:
         # Teeth: only the lines the re-index itself writes are exempt, never a human's blockquote.
         before = _snapshot({"mem_a.md": "x" * 50}, index="> NEVER force-push a shared branch\n- mem_a.md\n")

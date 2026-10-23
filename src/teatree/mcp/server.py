@@ -488,7 +488,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     *read_only* withholds every write tool not named in *allowed_writes* and drops
-    its line from the instructions.
+    its contributed overlay instruction line when present.
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)

@@ -299,7 +299,7 @@ def _surface(
     """Every tool, the instructions and the seamed writes of a server carrying each kind of tool."""
     overlays = {"a": _ServiceOverlay(*_EVERY_SURFACE_SERVICE, connectors=connectors or _ContributingConnectors())}
     with (
-        patch.dict("os.environ", _MAILBOX_ENV if mailbox else {}),
+        patch.dict("os.environ", _MAILBOX_ENV if mailbox else dict.fromkeys(_MAILBOX_ENV, "")),
         patch("teatree.mcp.server.get_all_overlays", return_value=overlays),
     ):
         server = build_server(read_only=read_only, allowed_writes=allowed_writes)
@@ -379,6 +379,22 @@ class TestReadOnlySurface(TestCase):
         assert {"pr_merge", "overlay_stamp"} <= set(tools)
         assert tools["pr_merge"].description
         assert "read-only for this dispatch" not in instructions
+
+    def test_tool_descriptions_keep_per_tool_contracts(self) -> None:
+        tools, _, _ = _surface(read_only=False, mailbox=False)
+
+        assert "force_general" in tools["review_post_comments"].description
+        assert "allow_bloat" in tools["review_post_comments"].description
+        for name in ("notion_create", "notion_comment", "notion_archive", "notion_property_set"):
+            assert all(detail in tools[name].description for detail in ("notion exit", "23", "20"))
+        assert "Path/Name/Size/IsDir/ModTime" in tools["sharepoint_list"].description
+
+    def test_no_mailbox_environment_keeps_mailbox_off_the_surface(self) -> None:
+        with patch.dict("os.environ", _MAILBOX_ENV):
+            tools, instructions, _ = _surface(read_only=False, mailbox=False)
+
+        assert not {name for name in tools if name.startswith("agent_mailbox_")}
+        assert "Live agent mailbox" not in instructions
 
 
 class TestPhaseWriteAllowance(TestCase):

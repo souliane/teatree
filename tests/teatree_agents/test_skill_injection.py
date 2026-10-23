@@ -466,6 +466,13 @@ def test_subagent_preamble_deduplicates_skill_aliases(tmp_path: Path) -> None:
     assert preamble.missing == []
 
 
+def test_subagent_preamble_deduplicates_missing_skill_aliases(tmp_path: Path) -> None:
+    preamble = build_subagent_skill_preamble(["t3:ghost", "ghost", "skills/ghost/SKILL.md"], skills_dirs=[tmp_path])
+
+    assert preamble.text == ""
+    assert preamble.missing == ["ghost"]
+
+
 def test_subagent_preamble_loads_stack_skills_without_embedding_bodies(installed: Path) -> None:
     framework = installed
     _write_skill(framework, "rules", "# Rules body")
