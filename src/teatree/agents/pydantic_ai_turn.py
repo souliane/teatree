@@ -59,11 +59,12 @@ class ToolCallRecord:
 
     @classmethod
     def start(cls, part: ToolCallPart) -> "ToolCallRecord":
+        args_json = part.args if isinstance(part.args, str) else part.args_as_json_str()
         return cls(
             tool_call_id=part.tool_call_id,
             tool=part.tool_name,
             arg_keys=list(part.args_as_dict()),
-            args_bytes=len(part.args_as_json_str().encode()),
+            args_bytes=len(args_json.encode()),
             started_at=time.monotonic(),
         )
 
