@@ -452,6 +452,10 @@ t3 directive tick               # cadence-gated step the worker's off-live-tick 
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 
+### Slack ticket thread control
+
+An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. When no live session is available, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
+
 ### Live agent mailbox
 
 Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. A Codex task without MCP is an addressable, push-only recipient. Workers

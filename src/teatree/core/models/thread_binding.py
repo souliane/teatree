@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 
-def slack_command_id(overlay: str, slack_ts: str) -> str:
-    payload = json.dumps([overlay, slack_ts], ensure_ascii=False, separators=(",", ":"))
+def slack_command_id(overlay: str, channel: str, slack_ts: str) -> str:
+    payload = json.dumps([overlay, channel, slack_ts], ensure_ascii=False, separators=(",", ":"))
     return f"slack:{hashlib.sha256(payload.encode()).hexdigest()}"
 
 

@@ -402,7 +402,7 @@ def _dispatch_or_report(
         msg = "in-flight reaction was not confirmed by Slack"
         raise RuntimeError(msg)
     if binding is not None and coverage is None:
-        command = SessionCommand.objects.get(command_id=slack_command_id(unit.overlay, unit.slack_ts))
+        command = SessionCommand.objects.get(command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts))
         if not _post_live_reply(backend, unit, _command_reply(command)):
             msg = "queued follow-up receipt was not confirmed by Slack"
             raise RuntimeError(msg)

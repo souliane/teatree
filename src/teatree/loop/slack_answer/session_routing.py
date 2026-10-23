@@ -56,13 +56,20 @@ def _live_session(binding: ThreadBinding) -> _BoundLiveSession | None:
     try:
         sessions = client.sessions()
     except LiveOfflineError:
+        if client.workers():
+            raise
         return None
     matching = [row for row in sessions if row["ticket"] == binding.ticket_id]
-    return _BoundLiveSession(binding, client, max(matching, key=itemgetter("task"))) if matching else None
+    if matching:
+        return _BoundLiveSession(binding, client, max(matching, key=itemgetter("task")))
+    if client.unreachable:
+        msg = "live worker list is incomplete; ticket session ownership is unknown"
+        raise LiveOfflineError(msg)
+    return None
 
 
-def _steer_reply(client: LiveClient, unit: "_Unit", binding: ThreadBinding, task_pk: int) -> str:
-    command_id = slack_command_id(unit.overlay, unit.slack_ts)
+def _direction_reply(client: LiveClient, unit: "_Unit", binding: ThreadBinding, task_pk: int, *, idle: bool) -> str:
+    command_id = slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
     command, created = SessionCommand.objects.get_or_create(
         command_id=command_id,
         defaults={"ticket_id": binding.ticket_id, "task_id": task_pk, "text": unit.text, "outcome": "unknown_delivery"},
@@ -71,7 +78,11 @@ def _steer_reply(client: LiveClient, unit: "_Unit", binding: ThreadBinding, task
         return f"Task {task_pk}: rejected (duplicate_mismatch)."
     if created:
         try:
-            receipt = client.steer(task_pk, unit.text, command_id=command_id)
+            send = client.follow_up if idle else client.steer
+            receipt = send(task_pk, unit.text, command_id=command_id)
+        except LiveOfflineError:
+            command.delete()
+            raise
         except LiveDeliveryUnknownError:
             receipt = {"outcome": "unknown_delivery", "code": None, "accepted_at": None}
         except LiveRefusedError as exc:
@@ -120,7 +131,9 @@ def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> 
 def _replay_bound_command(
     backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding
 ) -> bool:
-    command = SessionCommand.objects.filter(command_id=slack_command_id(unit.overlay, unit.slack_ts)).first()
+    command = SessionCommand.objects.filter(
+        command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
+    ).first()
     if command is None:
         return False
     if command.ticket_id != binding.ticket_id or command.text != unit.text:
@@ -175,7 +188,7 @@ def _apply_live_session(
 ) -> bool:
     task_pk = session.facts["task"]
     inspect = reading.intent is InboundIntent.QUESTION and reading.answerable
-    if not inspect and not session.facts["steerable"]:
+    if not inspect and not session.facts["steerable"] and session.facts["state"] != "idle":
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SESSION):
         return True
@@ -184,7 +197,9 @@ def _apply_live_session(
             details = session.client.inspect(task_pk)
             reply = f"Task {task_pk}: {details['state']}; {details['tool_calls']} tool calls."
         else:
-            reply = _steer_reply(session.client, unit, session.binding, task_pk)
+            reply = _direction_reply(
+                session.client, unit, session.binding, task_pk, idle=session.facts["state"] == "idle"
+            )
         if not _post_live_reply(backend, unit, reply):
             _unmark_unit_loop_replied(unit)
             return True

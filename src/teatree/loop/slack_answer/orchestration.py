@@ -191,7 +191,11 @@ def dispatch_work(
         )
         if (
             binding is not None
-            and (existing := SessionCommand.objects.filter(command_id=slack_command_id(overlay, slack_ts)).first())
+            and (
+                existing := SessionCommand.objects.filter(
+                    command_id=slack_command_id(overlay, channel, slack_ts)
+                ).first()
+            )
             is not None
         ):
             if existing.ticket_id != binding.ticket_id or existing.text != text:
@@ -250,7 +254,7 @@ def dispatch_work(
         )
         if binding is not None:
             SessionCommand.objects.create(
-                command_id=slack_command_id(overlay, slack_ts),
+                command_id=slack_command_id(overlay, channel, slack_ts),
                 ticket=ticket,
                 task=task,
                 text=text,
