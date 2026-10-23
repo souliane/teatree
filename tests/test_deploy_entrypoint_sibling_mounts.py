@@ -1,32 +1,20 @@
 # test-path: cross-cutting — checks entrypoint sourcing against compose mounts.
-import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import TypedDict
+from typing import Any
 
 import pytest
 import yaml
-
-
-class RenderedVolume(TypedDict):
-    source: str
-    target: str
-    type: str
-
-
-class RenderedService(TypedDict):
-    entrypoint: list[str]
-    volumes: list[RenderedVolume]
-
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 ENTRYPOINT = DEPLOY / "entrypoint.sh"
 BASH = shutil.which("bash") or "/bin/bash"
 SOURCED = set(re.findall(r'(?m)^\s*(?:\.|source)\s+["\']?\$SCRIPT_DIR/([\w.-]+)', ENTRYPOINT.read_text()))
-SERVICES = yaml.safe_load((DEPLOY / "docker-compose.yml").read_text())["services"]
+VARIABLE_WITH_DEFAULT = re.compile(r"\$\{\w+:-([^}]*)\}")
+SERVICES = yaml.safe_load(VARIABLE_WITH_DEFAULT.sub(r"\1", (DEPLOY / "docker-compose.yml").read_text()))["services"]
 ENTRYPOINT_SERVICES = {
     name: service
     for name, service in SERVICES.items()
@@ -34,41 +22,16 @@ ENTRYPOINT_SERVICES = {
 }
 
 
-@pytest.fixture(scope="module")
-def rendered_services() -> dict[str, RenderedService]:
-    docker = shutil.which("docker")
-    assert docker is not None, "Docker Compose is required to check mounted entrypoint files"
-    env = {key: value for key, value in os.environ.items() if not key.startswith("TEATREE_")}
-    run = subprocess.run(
-        [
-            docker,
-            "compose",
-            "--profile",
-            "roll",
-            "--profile",
-            "ro-executor",
-            "-f",
-            str(DEPLOY / "docker-compose.yml"),
-            "config",
-            "--format",
-            "json",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    assert run.returncode == 0, run.stderr
-    return json.loads(run.stdout)["services"]
-
-
-def _mounts(service: RenderedService) -> dict[PurePosixPath, PurePosixPath]:
-    return {
-        PurePosixPath(volume["target"]): PurePosixPath(volume["source"])
-        for volume in service["volumes"]
-        if volume["type"] == "bind"
-    }
+def _mounts(service: dict[str, Any]) -> dict[PurePosixPath, PurePosixPath]:
+    mounts = {}
+    for volume in service["volumes"]:
+        if isinstance(volume, dict):
+            source, target = volume.get("source", ""), volume["target"]
+        else:
+            source, target = volume.split(":")[:2]
+        if source.startswith("/"):
+            mounts[PurePosixPath(target)] = PurePosixPath(source)
+    return mounts
 
 
 def _mounted(mounts: dict[PurePosixPath, PurePosixPath], path: PurePosixPath) -> bool:
@@ -76,10 +39,10 @@ def _mounted(mounts: dict[PurePosixPath, PurePosixPath], path: PurePosixPath) ->
 
 
 @pytest.mark.parametrize("name", ENTRYPOINT_SERVICES)
-def test_entrypoint_sourced_siblings_are_mounted(name: str, rendered_services: dict[str, RenderedService]) -> None:
+def test_entrypoint_sourced_siblings_are_mounted(name: str) -> None:
     assert "git-pins.sh" in SOURCED
     assert {"teatree-webhooks", "teatree-worker", "teatree-watchdog"} <= ENTRYPOINT_SERVICES.keys()
-    service = rendered_services[name]
+    service = ENTRYPOINT_SERVICES[name]
     entrypoint = PurePosixPath(service["entrypoint"][-1])
     mounts = _mounts(service)
 
@@ -89,10 +52,8 @@ def test_entrypoint_sourced_siblings_are_mounted(name: str, rendered_services: d
 
 
 @pytest.mark.parametrize("name", ENTRYPOINT_SERVICES)
-def test_entrypoint_reaches_role_dispatch_from_its_mounted_files(
-    name: str, tmp_path: Path, rendered_services: dict[str, RenderedService]
-) -> None:
-    service = rendered_services[name]
+def test_entrypoint_reaches_role_dispatch_from_its_mounted_files(name: str, tmp_path: Path) -> None:
+    service = ENTRYPOINT_SERVICES[name]
     entrypoint = PurePosixPath(service["entrypoint"][-1])
     mounts = _mounts(service)
     mounted_dir = tmp_path / "deploy"
