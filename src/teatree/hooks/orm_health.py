@@ -34,7 +34,7 @@ def health_path(*, interpreter: str | None = None, venue: str | None = None) -> 
     return shared_hook_state_root() / f"hook-orm-health-{digest}.json"
 
 
-def record_orm_health(status: str, db_path: str, cause: str = "") -> None:
+def record_orm_health(status: str, db_path: str, cause: str = "") -> bool:
     path = health_path()
     now = time.time()
     try:
@@ -44,7 +44,7 @@ def record_orm_health(status: str, db_path: str, cause: str = "") -> None:
             except (OSError, ValueError, TypeError):
                 previous = {}
             if isinstance(previous, dict) and previous.get("status") == "ok":
-                return
+                return True
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "status": status,
@@ -62,7 +62,8 @@ def record_orm_health(status: str, db_path: str, cause: str = "") -> None:
         finally:
             temp_path.unlink(missing_ok=True)
     except (OSError, ValueError, TypeError):
-        return
+        return False
+    return True
 
 
 def read_orm_health(*, now: float | None = None) -> list[OrmHealthRecord]:

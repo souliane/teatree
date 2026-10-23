@@ -216,3 +216,14 @@ class TestReopenedIssueRule(TestCase):
         assert result is None
         assert ticket.state == Ticket.State.DELIVERED
         assert ticket.extra["reopen_revivals"] == issue_reopen.MAX_REOPEN_REVIVALS
+
+    def test_overlapping_ticks_revive_a_reopened_ticket_once(self) -> None:
+        ticket = self._delivered()
+        first, second = Ticket.objects.get(pk=ticket.pk), Ticket.objects.get(pk=ticket.pk)
+
+        assert issue_reopen._revive_reopened(first, dry_run=False) is not None
+        assert issue_reopen._revive_reopened(second, dry_run=False) is None
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.extra["reopen_revivals"] == 1

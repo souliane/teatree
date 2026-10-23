@@ -58,6 +58,18 @@ def _probe_orm() -> tuple[str, str, BaseException | None]:
     return "ok", db_path, None
 
 
+def _record_health(status: str, db_path: str, cause: str) -> None:
+    try:
+        from teatree.hooks.orm_health import record_orm_health  # noqa: PLC0415 — deferred cold-hook import
+
+        if record_orm_health(status, db_path, cause):
+            return
+        problem = "the health directory is not writable"
+    except Exception as exc:  # noqa: BLE001 — the hook still must allow the call
+        problem = f"{type(exc).__name__}: {exc}"
+    sys.stderr.write(f"NOTE: hook ORM health marker could not be recorded ({problem}); doctor cannot see this venue.\n")
+
+
 def bootstrap_teatree_django() -> bool:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     if str(src_dir) not in sys.path:
@@ -66,21 +78,14 @@ def bootstrap_teatree_django() -> bool:
         _django_setup()
     except Exception as exc:  # noqa: BLE001 — cold hooks must allow unbootstrappable calls with a warning
         _warn_missing_capability(exc)
-        try:
-            from teatree.hooks.orm_health import record_orm_health  # noqa: PLC0415 — deferred cold-hook import
-
-            record_orm_health("error", "unresolved", f"{type(exc).__name__}: {exc}")
-        except Exception as marker_exc:  # noqa: BLE001 — the hook still must allow the call
-            sys.stderr.write(f"NOTE: hook ORM health marker could not be recorded ({marker_exc}).\n")
+        _record_health("error", "unresolved", f"{type(exc).__name__}: {exc}")
         return False
     try:
         status, db_path, cause = _probe_orm()
     except Exception as exc:  # noqa: BLE001 — a failed ORM probe must not become a measured allow
         status, db_path, cause = "error", "unresolved", exc
     if os.environ.get("DJANGO_SETTINGS_MODULE") == "teatree.settings":
-        from teatree.hooks.orm_health import record_orm_health  # noqa: PLC0415 — deferred cold-hook import
-
-        record_orm_health(status, db_path, "" if cause is None else f"{type(cause).__name__}: {cause}")
+        _record_health(status, db_path, "" if cause is None else f"{type(cause).__name__}: {cause}")
     if cause is not None:
         _warn_orm_unavailable(status, db_path, cause)
         return False

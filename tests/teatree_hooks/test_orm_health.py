@@ -52,3 +52,15 @@ def test_healthy_probe_replaces_corrupt_recent_record(tmp_path: Path, monkeypatc
     orm_health.record_orm_health("ok", "/working/db")
 
     assert orm_health.read_orm_health()[0]["status"] == "ok"
+
+
+def test_record_reports_whether_the_state_was_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orm_health, "shared_hook_state_root", lambda: tmp_path / "state")
+    assert orm_health.record_orm_health("unreachable", "/missing/db", "gone") is True
+    assert orm_health.record_orm_health("ok", "/working/db") is True
+    assert orm_health.record_orm_health("ok", "/working/db") is True
+
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(orm_health, "shared_hook_state_root", lambda: blocker / "state")
+    assert orm_health.record_orm_health("unreachable", "/missing/db", "gone") is False

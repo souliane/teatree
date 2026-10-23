@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 from contextlib import redirect_stderr
+from pathlib import Path
 
 import pytest
 from django.test import TestCase
@@ -22,11 +23,13 @@ from django.test import TestCase
 from hooks.scripts import django_bootstrap
 from teatree.hooks import orm_health
 
+_RECORD_ORM_HEALTH = orm_health.record_orm_health
+
 
 @pytest.fixture(autouse=True)
 def _reset_warn_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(django_bootstrap, "_MISSING_CAPABILITY_WARNED", False)
-    monkeypatch.setattr(orm_health, "record_orm_health", lambda *_args: None)
+    monkeypatch.setattr(orm_health, "record_orm_health", lambda *_args: True)
 
 
 _NO_DJANGO = ModuleNotFoundError("No module named 'django'")
@@ -79,6 +82,32 @@ class TestFailureIsAudible:
         err = capsys.readouterr().err
         assert "SKIPPED" in err
         assert "health marker" in err
+
+    @pytest.mark.parametrize("django_importable", [False, True])
+    def test_unwritable_health_record_is_named_on_stderr(
+        self,
+        *,
+        django_importable: bool,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        blocker = tmp_path / "blocked"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(orm_health, "shared_hook_state_root", lambda: blocker / "state")
+        monkeypatch.setattr(orm_health, "record_orm_health", _RECORD_ORM_HEALTH)
+        if django_importable:
+            monkeypatch.setattr(django_bootstrap, "_django_setup", lambda: None)
+            monkeypatch.setattr(
+                django_bootstrap, "_probe_orm", lambda: ("unreachable", "/missing/db", FileNotFoundError("/missing/db"))
+            )
+            monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        else:
+            _break_django_setup(monkeypatch)
+
+        assert django_bootstrap.bootstrap_teatree_django() is False
+
+        assert "health marker could not be recorded" in capsys.readouterr().err
 
     def test_the_warning_is_emitted_once_per_process(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
