@@ -51,21 +51,30 @@ from django.utils import timezone
 
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
+from teatree.core.modelkit.task_failure_taxonomy import (
+    LEASE_EXPIRED_PREFIX,
+    FailureKind,
+    stall_fingerprints,
+    stall_kinds,
+)
 from teatree.core.models import PlanArtifact, PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.self_review import SelfReview
-from teatree.core.models.task_repair import ticket_phase_iterations, ticket_phase_observations
+from teatree.core.models.task_repair_queries import (
+    adjacent_work_attempts,
+    ticket_phase_iterations,
+    ticket_phase_observations,
+)
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
     schedule_external_review,
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -393,14 +402,27 @@ def _schedule_planned_work_or_reaffirm(ticket: Ticket) -> Task:
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
     """Return the loud halt reason if *ticket*'s phase is out of repair budget, else ``None``."""
     attempts = ticket_phase_iterations(ticket.pk, phase)
-    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    observations = ticket_phase_observations(ticket.pk, phase)
+    work_ids = {attempt.pk for attempt in attempts}
+    lease_reaps = 0
+    for attempt in reversed(observations):
+        if attempt.pk in work_ids:
+            break
+        lease_reaps += attempt.error.startswith(LEASE_EXPIRED_PREFIX)
+    if lease_reaps >= max_phase_iterations():
+        return (
+            f"phase {normalize_phase(phase)!r} on ticket {ticket.pk} had "
+            f"{lease_reaps} lease reaps since its last work attempt"
+        )
+    adjacent = adjacent_work_attempts(attempts, observations)
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in adjacent)
     try:
         requeue_verdict(
             ticket_id=ticket.pk,
             phase=normalize_phase(phase),
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,
-            last_two_deterministic_kinds=_deterministic_kinds(attempts),
+            last_two_deterministic_kinds=_deterministic_kinds(adjacent),
         )
     except (MaxIterationsExceeded, IterationStalled) as exc:
         return str(exc)

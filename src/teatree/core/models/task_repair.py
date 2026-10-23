@@ -5,24 +5,16 @@ it reads the recorded ``TaskAttempt`` rows of a ticket-phase, applies the pure
 :func:`teatree.core.repair_loop.requeue_verdict`, and on a stall records a
 durable user-facing ``DeferredQuestion``. Split out of ``task.py`` (which is at
 its module-health LOC cap) — the thin ``Task`` methods delegate here. The
-functions take a ``Task`` so they stay free of model-class state.
+budget verdicts take a ``Task`` so they stay free of model-class state.
 """
 
-from typing import TYPE_CHECKING, cast
-
-from django.apps import apps
-from django.db.models import Exists, OuterRef
+from typing import TYPE_CHECKING
 
 from teatree.core.forge_url import is_synthetic_ticket_url
-from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import (
-    LEASE_EXPIRED_PREFIX,
-    NON_REPAIR_KINDS,
-    classify_failure,
-    stall_fingerprints,
-)
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
+from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -30,68 +22,9 @@ from teatree.core.repair_loop import (
     reoffer_verdict,
     requeue_verdict,
 )
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
-    from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
-
-
-def _attempt_model() -> "type[TaskAttempt]":
-    return cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
-
-
-def _without_capacity_events(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
-    ordered = attempts.excluding_parks().order_by("pk")
-    return [attempt for attempt in ordered if recoverable_exhaustion_cause(attempt.error) is None]
-
-
-def repair_iterations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
-    """Executed work attempts in a queryset, oldest first."""
-    successor = _attempt_model().objects.filter(fallback_from_attempt_id=OuterRef("pk"))
-    work = (
-        attempts.exclude(failure_kind__in=NON_REPAIR_KINDS)
-        .exclude(error__startswith=LEASE_EXPIRED_PREFIX)
-        .filter(~Exists(successor))
-    )
-    return _without_capacity_events(work)
-
-
-def _ticket_phase_attempts(ticket_id: int, phase: str) -> "TaskAttemptQuerySet":
-    return _attempt_model().objects.filter(
-        task__ticket_id=ticket_id,
-        task__phase__in=phase_spellings(normalize_phase(phase)),
-    )
-
-
-def ticket_phase_iterations(ticket_id: int, phase: str) -> list["TaskAttempt"]:
-    """Work attempts for a ticket and normalized phase, across re-queued task rows."""
-    return repair_iterations(_ticket_phase_attempts(ticket_id, phase))
-
-
-def ticket_phase_observations(ticket_id: int, phase: str) -> list["TaskAttempt"]:
-    """Every non-capacity attempt for a ticket and normalized phase, audit rows included."""
-    return _without_capacity_events(_ticket_phase_attempts(ticket_id, phase))
-
-
-def phase_attempts(task: "Task") -> list["TaskAttempt"]:
-    """Work attempts for the task's ticket and phase."""
-    return ticket_phase_iterations(task.ticket_id, task.phase)
-
-
-def next_repair_iteration(attempt: "TaskAttempt") -> int:
-    """Stamp a pending attempt against the rows the repair budget will count."""
-    if (
-        attempt.error.startswith(PARK_ERROR_PREFIXES)
-        or classify_failure(attempt.error) in NON_REPAIR_KINDS
-        or attempt.error.startswith(LEASE_EXPIRED_PREFIX)
-        or recoverable_exhaustion_cause(attempt.error) is not None
-    ):
-        return 0
-    prior = phase_attempts(attempt.task)
-    source = attempt.fallback_from_attempt
-    source_id = source.pk if source else None
-    return 1 + sum(row.pk != source_id for row in prior)
 
 
 def check_requeue_allowed(task: "Task") -> None:
@@ -135,7 +68,8 @@ def check_requeue_allowed(task: "Task") -> None:
         _escalate_reoffers(task, phase=phase, reoffers=task.reclaim_count)
         raise
     attempts = phase_attempts(task)
-    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    adjacent = adjacent_work_attempts(attempts, ticket_phase_observations(task.ticket_id, phase))
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in adjacent)
     try:
         requeue_verdict(
             ticket_id=task.ticket_id,

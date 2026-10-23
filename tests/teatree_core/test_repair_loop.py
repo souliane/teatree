@@ -215,6 +215,27 @@ class TestCheckRequeueAllowed(TestCase):
 
         assert task.phase_iteration_count() == 1
 
+    def test_a_park_successor_does_not_supersede_work(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        source = _failed_attempt(task, error="route refusal")
+        park = TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            exit_code=1,
+            error=f"{LIMIT_PARKED_PREFIX}window active",
+            fallback_from_attempt=source,
+        )
+
+        assert park.iteration == 0
+        assert task.phase_iteration_count() == 1
+
+    def test_embedded_cancel_text_remains_a_work_failure(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        failure = _failed_attempt(task, error="result_error: connection dropped, request cancelled: client gone")
+
+        assert failure.iteration == 1
+        assert task.phase_iteration_count() == 1
+
     def test_consecutive_lease_reaps_do_not_stall_a_phase(self) -> None:
         task = self._phase_task(Ticket.objects.create())
         for _ in range(2):
@@ -284,6 +305,14 @@ class TestCheckRequeueAllowed(TestCase):
         _failed_attempt(task, error="the identical failure")
         with pytest.raises(IterationStalled):
             task.check_requeue_allowed()
+
+    def test_cancel_between_identical_failures_breaks_stall_adjacency(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        _failed_attempt(task, error="same defect")
+        _failed_attempt(task, error=f"{CANCELLED_PREFIX}operator paused retry")
+        _failed_attempt(task, error="same defect")
+
+        task.check_requeue_allowed()
 
     def test_stall_escalates_via_deferred_question(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")

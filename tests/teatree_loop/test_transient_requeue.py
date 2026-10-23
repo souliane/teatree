@@ -1423,15 +1423,15 @@ class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
         assert not task.ticket.tasks.filter(phase="planning").exists()
         assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
 
-    def test_plan_stale_audit_rows_leave_the_planning_pass_available(self) -> None:
+    def test_repeated_plan_stale_cycles_halt_the_planning_pass(self) -> None:
         task = self._stale_coding_failure()
         for index in range(max_phase_iterations()):
             _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
 
         requeue_transient_failed()
 
-        assert task.ticket.tasks.filter(phase="planning").count() == 1
-        assert not DeferredQuestion.objects.exists()
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
 
     def test_a_ticket_that_already_reached_coded_gets_no_planning_pass(self) -> None:
         task = self._stale_coding_failure(state=Ticket.State.CODED)

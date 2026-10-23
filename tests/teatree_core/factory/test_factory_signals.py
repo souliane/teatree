@@ -684,7 +684,7 @@ class S4MergeLatencyTests(FactorySignalsTestBase):
 
 
 class S5RepairBurnTests(FactorySignalsTestBase):
-    def test_route_hops_and_lease_reaps_use_the_budget_filter(self) -> None:
+    def test_failure_fraction_counts_route_hops_and_lease_reaps(self) -> None:
         for _ in range(5):
             self._attempt(days_ago=5, iteration=1)
         ticket = TicketFactory()
@@ -702,9 +702,26 @@ class S5RepairBurnTests(FactorySignalsTestBase):
         )
 
         row = _row(compute_factory_signals(now=self.now), "repair_burn")
-        assert row.evidence["attempts"] == 6
-        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.evidence["attempts"] == 8
+        assert row.evidence["failed_fraction"] == pytest.approx(0.25)
         assert row.evidence["success_groups"] == 6
+
+    def test_lease_reap_burst_trips_the_failure_fraction(self) -> None:
+        self._attempt(days_ago=5, iteration=1)
+        ticket = TicketFactory()
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
+        for index in range(6):
+            reap = TaskAttemptFactory(
+                task=task,
+                iteration=0,
+                exit_code=1,
+                error=f"{LEASE_EXPIRED_PREFIX}worker {index} died",
+            )
+            TaskAttempt.objects.filter(pk=reap.pk).update(started_at=self.now - timedelta(days=5))
+
+        row = _row(compute_factory_signals(now=self.now), "repair_burn")
+        assert row.evidence["failed_fraction"] == pytest.approx(6 / 7, rel=1e-3)
+        assert row.tripped is True
 
     def test_low_burn_is_ok(self) -> None:
         for _ in range(5):

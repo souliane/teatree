@@ -248,10 +248,9 @@ _HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKi
 
 #: Kinds that end a task WITHOUT the repair loop having failed on its own merits — an
 #: operator cancellation, a supersede by rework, or a base that moved under the plan. Public
-#: (not the environmental axis, which the first two are off) because two independent readers need the
-#: SAME answer to "was this a real repair failure?": the incident detector (which of
-#: these to page on) and the repair-burn factory signal (which to count toward its
-#: failure fraction). One shared set keeps them from silently disagreeing.
+#: (not the environmental axis, which the first two are off). The incident detector
+#: and repair-burn factory signal use these kinds when classifying failures; the
+#: repair-budget query checks their anchored prefixes to avoid substring collisions.
 NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED, FailureKind.PLAN_STALE})
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
@@ -269,7 +268,7 @@ _CAUSELESS: frozenset[str] = frozenset(
 #: identical ones are one interruption repeated rather than one defect recurring. Deliberately
 #: NARROWER than :data:`RECOVERY`'s environmental axis, the operator-DISPLAY axis:
 #: ``result_error`` (except resume refusals), ``provision_failed``,
-#: ``landing_unverified`` and the lease kinds carry defect-specific
+#: ``landing_unverified`` and ``lease_lost`` carry defect-specific
 #: text, so the fingerprint check still discriminates them. ``harness_crash`` is out for the
 #: same reason — a traceback names a code path, so a verbatim repeat of one is a defect
 #: recurring, and #4505 made it retryable, which is what put it in front of the stall at all.

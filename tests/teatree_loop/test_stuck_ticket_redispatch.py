@@ -226,6 +226,36 @@ class TestStuckTicketRedispatch(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_repeated_lease_reaps_halt_redispatch_without_spending_repair_iterations(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations()):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+
+    def test_lease_reaps_below_the_cap_remain_retryable(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations() - 1):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert redispatch_stuck_tickets() == 0
+        assert not DeferredQuestion.objects.exists()
+
     def test_repeated_exhaustion_failures_do_not_halt_redispatch(self) -> None:
         # A stuck ticket whose recent phase attempts all died on the session limit must
         # NOT be treated as a stalled/doomed phase: usage-limit failures are capacity
