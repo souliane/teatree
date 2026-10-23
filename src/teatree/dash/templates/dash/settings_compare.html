@@ -14,8 +14,8 @@
   agreement between the instances that did answer, which is the one wrong answer this page must
   never give.
   {% endcomment %}
-  <p class="muted">Older instances cannot read format version 2 snapshots from this instance;
-    upgrade them before loading a new capture.</p>
+  <p class="muted">Older instances that read only version 1 refuse a version 2 capture when loading a v2 file;
+    a live peer fetch checks the format only. Upgrade the receiving instance before loading that capture.</p>
   <form method="get" action="{% url 'dash:settings_compare' %}" class="toolbar compare-filters">
     <label>Family
       <select name="family">

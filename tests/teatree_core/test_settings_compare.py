@@ -722,7 +722,8 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         assert "Changes from this page apply to this instance only" in rendered
         assert re.search(r"this instance\s*<span class=\"muted\">v1.2.3</span>", rendered)
         assert re.search(r"peer\s*<span class=\"muted\">v2.3.4</span>", rendered)
-        assert "Older instances cannot read format version 2 snapshots" in rendered
+        assert "refuse a version 2 capture when loading a v2 file" in rendered
+        assert "a live peer fetch checks the format only" in rendered
 
     def test_compare_posts_only_to_local_relative_urls(self) -> None:
         local = PeerSnapshot(

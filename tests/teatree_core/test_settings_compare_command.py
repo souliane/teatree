@@ -148,6 +148,50 @@ class TestSettingsCompareManagementCommand(TestCase):
         assert "Differences (1)" in stderr.getvalue()
         assert "1 no difference" in stderr.getvalue()
 
+    def test_kind_filter_heading_counts_only_listed_differences(self) -> None:
+        def box(label: str, values: dict[str, object]) -> PeerSnapshot:
+            return PeerSnapshot(
+                label=label,
+                url="" if label == "this instance" else "http://127.0.0.1/peer",
+                note="",
+                payload={
+                    "format": SNAPSHOT_FORMAT,
+                    "format_version": 2,
+                    "fingerprint": {},
+                    "registry": {
+                        "settings": {
+                            "merge_wip": {"family": "setting", "group": "Agents"},
+                            "autoload": {"family": "setting", "group": "Agents"},
+                        }
+                    },
+                    "values": {
+                        "settings": {"": values},
+                        "defaults": {},
+                        "provenance": {},
+                        "seed": {},
+                        "seed_shipped": {},
+                    },
+                },
+            )
+
+        with (
+            patch.object(
+                settings_compare_module,
+                "local_snapshot",
+                return_value=box("this instance", {"merge_wip": 2, "autoload": False}),
+            ),
+            patch.object(
+                settings_compare_module,
+                "peer_snapshots",
+                return_value=(box("peer", {"merge_wip": 3}),),
+            ),
+        ):
+            result = CliRunner().invoke(app, ["settings", "compare", "--kind", "values"])
+
+        assert result.exit_code == 0, result.output
+        assert "Differences (1)  1 values differ" in result.stderr
+        assert "autoload" not in result.stderr
+
     def test_terminal_filters_select_the_same_rows_as_the_page(self) -> None:
         def box(label: str, value: int) -> PeerSnapshot:
             return PeerSnapshot(

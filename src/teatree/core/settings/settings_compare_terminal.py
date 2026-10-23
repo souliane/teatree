@@ -201,7 +201,7 @@ def _reading_width(labels: Sequence[str], *, width: int, label_width: int) -> in
 def _differences_block(view: CompareView, *, width: int, kinds: Sequence[RowKind], full: bool) -> str:
     if view.error:
         return f"Differences\n{_INDENT}{view.error}"
-    header = f"Differences ({view.differing_rows})  {_tally(view.rows)}"
+    header = f"Differences ({sum(row.differs for row in view.rows)})  {_tally(view.rows)}"
     lines = [header]
     if unreachable := view.unreachable:
         # Restated here rather than left to the band above: this is the caveat that applies to
