@@ -278,7 +278,7 @@ class TestTierEffortConstantIsSingleSource:
     def test_only_reasoning_tiers_carry_effort(self) -> None:
         # frontier + balanced carry an effort; cheap (Haiku) is deliberately absent
         # so it inherits the SDK default (Haiku rejects the effort lever).
-        assert tier_effort() == {"frontier": "xhigh", "balanced": "xhigh"}
+        assert tier_effort() == {"frontier": "xhigh", "balanced": "high"}
 
     def test_resolve_tier_effort_reads_the_constant(self) -> None:
         for tier, effort in tier_effort().items():
@@ -314,9 +314,12 @@ class TestResolveSpawnEffort:
     def test_frontier_phases_resolve_to_frontier_effort(self, phase: str) -> None:
         assert resolve_spawn_effort(phase) == tier_effort()["frontier"]
 
-    @pytest.mark.parametrize("phase", ["testing", "shipping"])
-    def test_balanced_phases_resolve_to_balanced_effort(self, phase: str) -> None:
-        assert resolve_spawn_effort(phase) == tier_effort()["balanced"]
+    @pytest.mark.parametrize("phase", ["testing", "shipping", "architectural_review"])
+    def test_balanced_and_unlisted_phases_resolve_to_high(self, phase: str) -> None:
+        assert resolve_spawn_effort(phase) == "high"
+
+    def test_coding_stays_xhigh(self) -> None:
+        assert resolve_spawn_effort("coding") == "xhigh"
 
     def test_cheap_phase_has_no_effort(self) -> None:
         # requesting_review is the cheap/Haiku tier — no effort pin.
