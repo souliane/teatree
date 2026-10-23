@@ -6,6 +6,7 @@ from teatree.core.backend_protocols import (
     CodeHostBackend,
     DraftState,
     ForgeMergeResult,
+    IssueResolutionSpec,
     MessagingBackend,
     PipelineRead,
     PrMergeState,
@@ -131,9 +132,25 @@ class _FakeCodeHost:
         _ = (repo, pr_iid)
         return []
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        _ = (repo, pr_iid)
+        return []
+
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
         _ = (repo, pr_iid)
         return []
+
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def create_issue_resolving_threads(self, spec: IssueResolutionSpec) -> dict[str, object]:
+        _ = spec
+        return {}
+
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> dict[str, object]:
+        _ = (repo, pr_iid, thread_id)
+        return {"resolved": True}
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         _ = (repo, filepath)
@@ -153,6 +170,10 @@ class _FakeCodeHost:
 
     def update_issue(self, *, issue_url: str, body: str) -> dict[str, object]:
         _ = (issue_url, body)
+        return {}
+
+    def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> dict[str, object]:
+        _ = (issue_url, labels)
         return {}
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, object]:
@@ -335,6 +356,10 @@ class _FakeMessaging:
         return {}
 
     def resolve_user_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
+    def resolve_unique_active_user_id(self, handle: str) -> str:
         _ = handle
         return ""
 

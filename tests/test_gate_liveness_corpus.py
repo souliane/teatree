@@ -24,7 +24,7 @@ orchestrator-boundary gates — are now genuinely live (the ``Agent`` tool reach
 PreToolUse and a registered ``Agent`` matcher delivers it). The
 orchestrator-boundary foreground-Agent guard is additionally default-ON (#1733),
 with its never-lockout off-ramps intact (sub-agent context,
-``run_in_background: true``, ``[fg-ok: <reason>]`` token, kill-switch,
+``run_in_background: true``, audited escape, kill-switch,
 deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). The ``Agent`` matcher is the
 ONLY interception point a sub-agent dispatch has (#4216); the task-LIST tools are
 a separate family that bypasses PreToolUse, and ``TaskCreated`` is THEIR event —
@@ -36,6 +36,7 @@ silently gaining phantom status without a deliberate update FAILS the build.
 
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
@@ -50,6 +51,7 @@ import hooks.scripts.hook_router as router
 import hooks.scripts.standing_grant_ask_gate as _standing_grant_ask_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
+from teatree.core import dispatch_admission
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.merge.substrate_standing import SubstrateStandingAuthorization
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -103,7 +105,10 @@ class GateContext:
         deterministic without a real ``t3`` on PATH: ``which`` resolves and
         ``subprocess.run`` returns a fixed :class:`CompletedProcess`.
         """
-        self.monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        real_which = shutil.which
+        self.monkeypatch.setattr(
+            router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else real_which(name)
+        )
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
         real_run = subprocess.run
 
@@ -295,6 +300,11 @@ def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
     ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
+
+
+def _skill_loading_allow(ctx: GateContext) -> dict:
+    ctx.write_state("skills", "code\n")
+    return {"session_id": ctx.session_id, "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
 
 
 # block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
@@ -528,7 +538,7 @@ def _worktree_checkout_input(ctx: GateContext, target: Path) -> dict:
 
 # headless-posture authoring gate (PreToolUse Edit): an interactive session editing
 # teatree's own source while the resolved runtime is headless denies; the same edit
-# carrying the audited single-use override token allows. The runtime is SEEDED into the
+# outside a managed repo allows. The runtime is SEEDED into the
 # real control DB and the lane read from the real env, so the gate's two live decisions
 # (posture, lane) are exercised rather than stubbed.
 
@@ -574,14 +584,11 @@ def _delegation_allow(ctx: GateContext) -> dict:
 
 
 def _headless_authoring_allow(ctx: GateContext) -> dict:
-    target = _arrange_headless_interactive(ctx)
+    _arrange_headless_interactive(ctx)
     return {
         "session_id": ctx.session_id,
         "tool_name": "Edit",
-        "tool_input": {
-            "file_path": str(target),
-            "new_string": "hand-written [headless-authoring-ok: factory down, restoring it]",
-        },
+        "tool_input": {"file_path": str(ctx.tmp_path / "scratch.txt"), "new_string": "session note"},
     }
 
 
@@ -823,7 +830,12 @@ def _dispatch_admission_deny(ctx: GateContext) -> dict:
 
 
 def _dispatch_admission_allow(ctx: GateContext) -> dict:
-    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
+    ctx.monkeypatch.setattr(
+        dispatch_admission,
+        "read_machine_signal",
+        lambda: MachineSignal(cores=8, load1=0.0, ram_available_gb=16.0),
+    )
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": "review"}}
 
 
 # brief-anchor lint on dispatch (#4341): a brief asserting a file:line and a
@@ -840,7 +852,9 @@ def _brief_anchor_allow(ctx: GateContext) -> dict:
     return {
         "session_id": ctx.session_id,
         "tool_name": "Agent",
-        "tool_input": {"prompt": f"{_BRIEF_ANCHOR_OK} {_UNANCHORED_BRIEF}"},
+        "tool_input": {
+            "prompt": f"{_UNANCHORED_BRIEF} If this brief contradicts the code, TRUST THE CODE and say I was wrong."
+        },
     }
 
 
@@ -1255,11 +1269,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         event="PreToolUse",
         matched="Bash",
         deny_input=lambda _c: _bash("uv run pytest -q"),
-        allow_input=lambda _c: {
-            "session_id": "sess-liveness",
-            "tool_name": "Bash",
-            "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
-        },
+        allow_input=_skill_loading_allow,
         arrange=_arrange_skill_loading,
     ),
     GateRow(

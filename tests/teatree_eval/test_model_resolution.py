@@ -1,6 +1,6 @@
 """Resolution precedence for an eval scenario's model: model > tier > phase > default.
 
-Asserts via TIERS and the :data:`TIER_MODELS` constant — never a concrete
+Asserts via TIERS and the :data:`tier_models()` constant — never a concrete
 model-id literal — so adopting a new model needs zero test edits here.
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, tier_models
 from teatree.eval.model_resolution import resolve_eval_model, resolve_spec_model
 from teatree.eval.models import EvalSpec
 
@@ -52,25 +52,25 @@ class TestResolveEvalModel:
         assert resolve_eval_model(spec) == "claude-pinned-id@xhigh"
 
     def test_tier_resolves_through_the_constant(self) -> None:
-        for tier, model in TIER_MODELS.items():
+        for tier, model in tier_models().items():
             assert resolve_eval_model(_spec(tier=tier)) == model
 
     def test_tier_wins_over_phase(self) -> None:
         # tier=cheap beats phase=planning (which would be frontier).
         spec = _spec(tier="cheap", phase="planning")
-        assert resolve_eval_model(spec) == TIER_MODELS["cheap"]
+        assert resolve_eval_model(spec) == tier_models()["cheap"]
 
     def test_phase_resolves_via_its_default_tier(self) -> None:
         # planning -> frontier; testing -> balanced; requesting_review -> cheap.
-        assert resolve_eval_model(_spec(phase="planning")) == TIER_MODELS["frontier"]
-        assert resolve_eval_model(_spec(phase="testing")) == TIER_MODELS["balanced"]
-        assert resolve_eval_model(_spec(phase="requesting_review")) == TIER_MODELS["cheap"]
+        assert resolve_eval_model(_spec(phase="planning")) == tier_models()["frontier"]
+        assert resolve_eval_model(_spec(phase="testing")) == tier_models()["balanced"]
+        assert resolve_eval_model(_spec(phase="requesting_review")) == tier_models()["cheap"]
 
     def test_unmapped_phase_falls_back_to_default_tier(self) -> None:
-        assert resolve_eval_model(_spec(phase="scoping")) == TIER_MODELS[DEFAULT_TIER]
+        assert resolve_eval_model(_spec(phase="scoping")) == tier_models()[DEFAULT_TIER]
 
     def test_nothing_declared_is_default_tier(self) -> None:
-        assert resolve_eval_model(_spec()) == TIER_MODELS[DEFAULT_TIER]
+        assert resolve_eval_model(_spec()) == tier_models()[DEFAULT_TIER]
 
     def test_tier_honours_db_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "config.sqlite3"
@@ -92,7 +92,7 @@ class TestResolveSpecModel:
         # The shared fresh-run opener returns a spec whose ``model`` is the concrete
         # resolved id, leaving every other field untouched.
         resolved = resolve_spec_model(_spec(tier="cheap"))
-        assert resolved.model == TIER_MODELS["cheap"]
+        assert resolved.model == tier_models()["cheap"]
         assert resolved.tier == "cheap"
 
     def test_is_a_noop_when_model_already_concrete(self) -> None:

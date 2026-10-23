@@ -20,7 +20,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents._runner_options import _build_options
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.agents.prompt import build_system_context
 from teatree.core.models import HonestyEscalation, Session, Task, TaskAttempt
 from teatree.core.models.task_handoff import schedule_resume
@@ -131,7 +131,7 @@ class TestTheHonestyEscalationFollowsTheLineage(_Lineage):
         sibling = self._task("reviewing", parent=self.testing)
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=_PLANNING_SESSION, task_id=sibling.pk)
 
-        assert self._options().model == TIER_MODELS["balanced"]
+        assert self._options().model == tier_models()["balanced"]
 
     def test_a_task_scoped_planning_escalation_raises_its_reviewing_descendant(self) -> None:
         HonestyEscalation.record(
@@ -146,7 +146,7 @@ class TestTheHonestyEscalationFollowsTheLineage(_Lineage):
             HonestyEscalation.Reason.USER_ASKED, session_id=_PLANNING_SESSION, task_id=sibling_planning.pk
         )
 
-        assert self._options().model == TIER_MODELS["balanced"]
+        assert self._options().model == tier_models()["balanced"]
 
 
 class TestAFreshPhaseSessionReceivesTheParentResult(_Lineage):

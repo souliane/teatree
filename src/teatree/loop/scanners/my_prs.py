@@ -11,6 +11,7 @@ from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_fie
 from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_findings import (
+    CriticFindingReader,
     FindingDisposition,
     ReviewVerdictReader,
     disposition_for_author,
@@ -141,6 +142,7 @@ class MyPrsScanner:
     competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     ci_enricher: CiEnricher | None = None
     verdict_reader: ReviewVerdictReader | None = None
+    critic_reader: CriticFindingReader | None = None
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -232,8 +234,11 @@ class MyPrsScanner:
         notes_count = _int_field(pr, "user_notes_count", "review_comments")
         url = str(base_payload.get("url") or "")
         sha = str(base_payload.get("head_sha") or "")
+        critic_unmet = self.critic_reader.unmet_for(url=url, head_sha=sha) if self.critic_reader is not None else False
         if not unaddressed_review_findings(
-            verdict_state=self._verdict_state(url=url, head_sha=sha), notes_count=notes_count
+            verdict_state=self._verdict_state(url=url, head_sha=sha),
+            notes_count=notes_count,
+            critic_unmet=critic_unmet,
         ):
             return None
         author = author_username(pr)

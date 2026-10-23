@@ -52,7 +52,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
@@ -144,6 +144,8 @@ class IssueDraft:
     labels: tuple[str, ...] = ()
     action: str = "issue_create"
     forge: str = ""
+    merge_request_to_resolve_discussions_of: int | None = None
+    discussion_to_resolve: str = ""
 
 
 @dataclass(frozen=True)
@@ -507,23 +509,30 @@ def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_
 
 
 def _create(*, host: CodeHostBackend, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
-    """File the new ticket with the caller's scrubbed body.
-
-    A label rides the leak scrub too — a forge auto-creates a missing one, so a
-    customer codename in a label reaches a public forge exactly like a body would.
-    """
+    """File the new ticket with the caller's scrubbed body and labels."""
     repo, action = draft.repo, draft.action
     clean_title = _scrub(draft.title, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_body = _scrub(draft.body, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_labels = [_scrub(label, target=repo, repo=repo, action=action, forge=draft.forge) for label in draft.labels]
-    raw = _raise_on_transport_error(
-        host.create_issue(
+    if draft.merge_request_to_resolve_discussions_of is not None or draft.discussion_to_resolve:
+        created = host.create_issue_resolving_threads(
+            IssueResolutionSpec(
+                repo=repo,
+                title=clean_title,
+                body=clean_body,
+                labels=tuple(clean_labels),
+                merge_request_iid=draft.merge_request_to_resolve_discussions_of,
+                thread_id=draft.discussion_to_resolve,
+            )
+        )
+    else:
+        created = host.create_issue(
             repo=repo,
             title=clean_title,
             body=clean_body,
             labels=clean_labels or None,
         )
-    )
+    raw = _raise_on_transport_error(created)
     issue_url = _issue_url_of(raw)
     _record_sweep_change(sweep_run_id, issue_url)
     return CreateOutcome(kind="created_new", issue_url=issue_url)

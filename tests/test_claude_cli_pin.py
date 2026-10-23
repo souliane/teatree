@@ -20,7 +20,7 @@ independently. That image feeds the paths that DO exec the global binary
 (``teatree.cli.loop.app``'s ``os.execv``, ``teatree.cli.agent``,
 ``teatree.agents.web_terminal``, ``teatree.core.management.commands.tasks``), so it
 may LEAD the bundle but never trail it: a generation behind a tier model's floor
-breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``.
+breaks ``teatree.agents.model_tiering``'s ``tier_models()``.
 
 Both tiers are additionally held at or above :data:`_CATALOG_CLI_FLOOR`. Every
 other assertion here compares the pins only to EACH OTHER, so they all hold at a version
@@ -56,7 +56,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.agents.model_tiering import MODEL_MINIMUM_CLI_VERSIONS, TIER_MODELS
+from teatree.agents.model_tiering import MODEL_MINIMUM_CLI_VERSIONS, tier_models
 from tests._git_repo import make_git_repo
 
 _GIT = shutil.which("git") or "git"
@@ -72,16 +72,16 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.165"
+_PINNED_SDK_VERSION = "0.2.167"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.294 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.294"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.300 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.300"
 
 #: The deployed runtime's pin: the lowest version the tier assertions allow, the SDK bundle's own.
-_RUNTIME_CLI_VERSION = "2.1.294"
+_RUNTIME_CLI_VERSION = "2.1.300"
 
-_FRONTIER_MODEL = TIER_MODELS["frontier"]
+_FRONTIER_MODEL = tier_models()["frontier"]
 _FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
 
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
@@ -249,7 +249,7 @@ def _as_tuple(version: str) -> tuple[int, ...]:
 #: pins to EACH OTHER, which is how both tiers once sat under the API's floor with this
 #: suite green (souliane/teatree#4704).
 _CATALOG_CLI_FLOOR = max(
-    (MODEL_MINIMUM_CLI_VERSIONS[model] for model in TIER_MODELS.values() if model in MODEL_MINIMUM_CLI_VERSIONS),
+    (MODEL_MINIMUM_CLI_VERSIONS[model] for model in tier_models().values() if model in MODEL_MINIMUM_CLI_VERSIONS),
     key=_as_tuple,
 )
 

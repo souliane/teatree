@@ -76,10 +76,10 @@ def _runtime_state_snapshot() -> dict[str, object]:
     factory merge-approval setting.
     """
     return {
-        "mode": cold_reader.str_setting("mode", default="interactive"),
-        "bash_gate_cold": cold_reader.bool_setting("orchestrator_bash_gate_enabled", default=True),
+        "mode": cold_reader.str_setting("mode"),
+        "bash_gate_cold": cold_reader.bool_setting("orchestrator_bash_gate_enabled"),
         "bash_gate_cli": teatree_gate.gate_is_enabled(),
-        "require_human_approval_to_merge": cold_reader.bool_setting("require_human_approval_to_merge", default=True),
+        "require_human_approval_to_merge": cold_reader.bool_setting("require_human_approval_to_merge"),
     }
 
 

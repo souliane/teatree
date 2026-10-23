@@ -102,7 +102,7 @@ def read_self_dm_destinations() -> SelfDmDestinations:
             if not _config_store_reachable(cold_reader):
                 return SelfDmDestinations(frozenset(), resolved=False)
             overlays = cold_reader.mapping_setting("overlays")
-            global_user_id = cold_reader.str_setting("slack_user_id", default="")
+            global_user_id = cold_reader.str_setting("slack_user_id")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return SelfDmDestinations(frozenset(), resolved=False)
     ids = overlay_slack_ids(overlays)
@@ -145,7 +145,7 @@ def _gate_enabled() -> bool:
     try:
         from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-        return _teatree_bool_setting("self_dm_gate_enabled", default=True)
+        return _teatree_bool_setting("self_dm_gate_enabled")
     except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
         return True
 
@@ -160,11 +160,12 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
 
     What counts as a write is the Slack write guard's default-deny classifier
     (:func:`~hooks.scripts.mcp_slack_write_guard.is_slack_mcp_write`), so the two agree.
-    Unlike that guard, nothing on the call lifts this deny — no ``[slack-mcp-ok: …]``
-    token (which an agent can add itself), no ``danger_gate_fail_open``, and not the
-    guard's own kill-switch, the setting under which a self-DM write would otherwise
-    pass. Only the operator's ``self_dm_gate_enabled = false`` does, for a misfiring
-    registry. Mirroring ``SlackBotBackend._is_self_dm``, a self-DM id is a configured
+    Unlike that guard, nothing on the call lifts this deny — no ``[gate-escape:<gate>: …]``
+    token (``self_dm`` is never escapable, and an agent can add the token itself),
+    no ``danger_gate_fail_open``, and not the guard's own kill-switch, the setting
+    under which a self-DM write would otherwise pass. Only the operator's
+    ``self_dm_gate_enabled = false`` does, for a misfiring registry. Mirroring
+    ``SlackBotBackend._is_self_dm``, a self-DM id is a configured
     ``[overlays.*].slack_dm_channel_id`` (``D…``) or ``slack_user_id`` / global
     ``slack_user_id`` (``U…``, which Slack opens as the self-IM).
 

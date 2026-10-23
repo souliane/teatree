@@ -15,7 +15,10 @@ from typing import Final
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
+from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.config import cold_reader
+from teatree.config.resolution import effective_default
 
 #: Shell command prefixes refused outright on Lane B regardless of phase — the
 #: irreversible/destructive set. This is a coarse denylist ON TOP OF the shared
@@ -34,16 +37,15 @@ _DEFAULT_SHELL_DENYLIST: tuple[str, ...] = (
 #: a single hung invocation.
 _DEFAULT_SHELL_TIMEOUT_SECONDS: float = 600.0
 
-#: How much of a command's combined output the tool hands back per call. One
-#: 175 KB return took a persisted thread from 12.6k to 79.2k tokens PER REQUEST and
-#: carried ~1.25M of that run's 1.77M input, because every later turn re-sends it.
-#: The cap shrinks what a turn CARRIES — it never fails the command, and the elided
-#: middle is re-obtainable by re-running the command narrowed.
-_DEFAULT_SHELL_MAX_OUTPUT_BYTES: Final[int] = 16 * 1024
-
-#: The DB ``ConfigSetting`` key overriding :data:`_DEFAULT_SHELL_MAX_OUTPUT_BYTES`.
-#: ``0`` disables the cap (uncapped output), matching the pre-cap behaviour.
+#: The ``ConfigSetting`` key for the per-call output ceiling; its shipped default lives in the
+#: registry. The cap shrinks what a turn CARRIES — it never fails the command, and ``0`` is uncapped.
 _SHELL_MAX_OUTPUT_BYTES_KEY: Final[str] = "agent_shell_max_output_bytes"
+
+
+def _declared_output_cap() -> int:
+    declared = effective_default(_SHELL_MAX_OUTPUT_BYTES_KEY)
+    return declared if isinstance(declared, int) else 0
+
 
 #: Phases whose own contract is "walk the tree / execute-and-verify via shell" —
 #: several corrective shell retries (a scoped re-probe after a too-broad ``find``,
@@ -90,7 +92,8 @@ class LaneBToolConfig:
     shell_denylist: tuple[str, ...] = _DEFAULT_SHELL_DENYLIST
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
     shell_env: dict[str, str] = field(default_factory=dict)
-    shell_max_output_bytes: int = _DEFAULT_SHELL_MAX_OUTPUT_BYTES
+    shell_max_output_bytes: int = field(default_factory=_declared_output_cap)
+    mailbox: MailboxClient | None = None
 
     @property
     def shell_tool_retries(self) -> int | None:
@@ -130,14 +133,19 @@ class LaneBToolConfig:
         cwd = options.cwd
         fs_root = Path(cwd) if cwd else None
         overrides = dict(options.env or {})
-        shell_env = {**os.environ, **overrides} if overrides else {}
+        resolved_env = {**os.environ, **overrides}
+        identity_names = {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV}
+        shell_env = (
+            {name: value for name, value in resolved_env.items() if name not in identity_names}
+            if overrides or identity_names.intersection(resolved_env)
+            else {}
+        )
         read_roots = tuple(Path(directory) for directory in options.add_dirs if directory != cwd)
         return cls(
             fs_root=fs_root,
             read_roots=read_roots,
             phase=phase,
+            mailbox=options.mailbox,
             shell_env=shell_env,
-            shell_max_output_bytes=cold_reader.int_setting(
-                _SHELL_MAX_OUTPUT_BYTES_KEY, default=_DEFAULT_SHELL_MAX_OUTPUT_BYTES, minimum=0
-            ),
+            shell_max_output_bytes=cold_reader.int_setting(_SHELL_MAX_OUTPUT_BYTES_KEY, minimum=0),
         )

@@ -23,6 +23,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.backends.slack.table_format import slack_table_fence
 from teatree.config import cold_defaults
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.defaults_snapshot import ShippedFile, SnapshotPlan, change_table, plan_snapshot
 from teatree.core.config_interchange.secret_guard import (
     ScanTermsUnavailableError,
@@ -57,7 +58,7 @@ class Command(TyperCommand):
         except ScanTermsUnavailableError as exc:
             self.stderr.write(f"  refusing to classify the live rows: {exc}")
             raise SystemExit(2) from exc
-        shipped = cold_defaults.shipped_defaults_table(cold_defaults.DEFAULTS_TOML)
+        shipped = declared_defaults()
         overlay_rows = ConfigSetting.objects.exclude(scope=_GLOBAL_SCOPE).values_list("scope", "key")
         return plan_snapshot(
             shipped=ShippedFile(table=shipped, text=_current_text(cold_defaults.DEFAULTS_TOML)),

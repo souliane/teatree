@@ -67,9 +67,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+run_full_sharded() {
+    local group
+    for group in {1..12}; do
+        uv run --group shard pytest --no-cov -n auto --reuse-db -p no:tach \
+            --splits 12 --group "$group" --durations-path dev/.test_durations "$@"
+    done
+}
+
 if [[ "$FULL" == "1" ]]; then
     echo "=== affected-tests: --full — running the whole suite ==="
-    exec uv run pytest --no-cov -n auto --reuse-db --teatree-selected-full ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    run_full_sharded --teatree-selected-full ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    exit 0
 fi
 
 # The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
@@ -88,4 +97,8 @@ if [[ -z "$SELECTED_OUTPUT" ]]; then
     exit 4
 fi
 read -r -a SELECTED <<< "$SELECTED_OUTPUT"
+if [[ " ${SELECTED[*]} " == *" --teatree-selected-full "* ]]; then
+    run_full_sharded ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
+    exit 0
+fi
 exec uv run pytest --no-cov -n auto --reuse-db ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}

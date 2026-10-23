@@ -1613,8 +1613,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
-│                           shard or not backed by metered spend.              │
+│ verify-benchmark-publish  Verify complete metered shards and optionally      │
+│                           write the passing scenario names.                  │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -1627,8 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
-│ list                      List discovered eval scenarios as a table (Name,   │
-│                           Scenario, Agent, File, Asserts).                   │
+│ list                      List discovered eval scenarios as a table or one   │
+│                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
 │                           name is given.                                     │
 │ ci-heal                   Operator control of the CI-eval self-healing loop  │
@@ -1641,6 +1641,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           a label, review the corpus.                        │
 │ quarantine                The known-red quarantine: scenarios the bounded PR │
 │                           lane does not select.                              │
+│ owed                      The owed-scenario ledger: evals a lane could not   │
+│                           run, re-run by the nightly until they pass.        │
 │ verdict-cache             Manage content-keyed eval pass verdicts.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1962,9 +1964,10 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --require-specs                 Fail loud (exit 2) when the filtered catalog │
 │                                 is empty, instead of skipping like 'nothing  │
 │                                 changed'.                                    │
-│ --diff-file            PATH     Unified diff (git diff --unified=0) for the  │
-│                                 same range, to narrow section-scoped         │
-│                                 scenarios.                                   │
+│ --diff-file            PATH     Unified diff for the same range, to narrow   │
+│                                 section-scoped scenarios.                    │
+│ --deferred-out         PATH     Write the scenario names the cap deferred,   │
+│                                 one per line (redacted).                     │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2059,8 +2062,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when the collected dashboard is short a shard or not backed by metered
- spend.
+ Verify complete metered shards and optionally write the passing scenario
+ names.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2072,6 +2075,8 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                                      collected artifacts refuses the         │
 │                                      publish.                                │
 │                                      [required]                              │
+│    --passed-file            PATH     Write scenario names that passed every  │
+│                                      collected matrix cell.                  │
 │    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2267,11 +2272,13 @@ Usage: t3 eval history [OPTIONS]
 ```
 Usage: t3 eval list [OPTIONS]
 
- List discovered eval scenarios as a table (Name, Scenario, Agent, File,
- Asserts).
+ List discovered eval scenarios as a table or one name per line.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --lane              TEXT                                                     │
+│ --shard             TEXT                                                     │
+│ --names-only                                                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2690,7 +2697,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     three tier models        │
 │                                                     (frontier, balanced,     │
 │                                                     cheap — resolved through │
-│                                                     the single TIER_MODELS   │
+│                                                     the single tier_models() │
 │                                                     constant) and render a   │
 │                                                     comparison matrix + a    │
 │                                                     self-contained HTML      │
@@ -3125,6 +3132,141 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval owed`
+
+```
+Usage: t3 eval owed [OPTIONS] COMMAND [ARGS]...
+
+ The owed-scenario ledger: evals a lane could not run, re-run by the nightly
+ until they pass.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record   Add the scenario names in --names-file to the --out ledger as owed. │
+│ outputs  Print the parked=/owed= lines a workflow step appends to            │
+│          $GITHUB_OUTPUT.                                                     │
+│ collect  Fold the previous nightly ledger with the owed artifacts of merged  │
+│          PRs and weekly and heal legs.                                       │
+│ next     Print the oldest owed scenarios the catalog still defines, one per  │
+│          line.                                                               │
+│ settle   Clear the owed scenarios that passed and the ones the catalog no    │
+│          longer defines.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed record`
+
+```
+Usage: t3 eval owed record [OPTIONS]
+
+ Add the scenario names in --names-file to the --out ledger as owed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out               PATH                     The owed-ledger JSON file,   │
+│                                                 updated in place.            │
+│                                                 [required]                   │
+│ *  --reason            [parked|deferred|limit]  Why the lane could not run   │
+│                                                 them.                        │
+│                                                 [required]                   │
+│ *  --source            TEXT                     Where the debt came from,    │
+│                                                 e.g. pr#123@<sha> or         │
+│                                                 nightly@<run>.               │
+│                                                 [required]                   │
+│ *  --names-file        PATH                     Scenario names, one per      │
+│                                                 line.                        │
+│                                                 [required]                   │
+│    --now               TEXT                     Override 'now' (ISO-8601);   │
+│                                                 for testing.                 │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed outputs`
+
+```
+Usage: t3 eval owed outputs [OPTIONS] LEDGER
+
+ Print the parked=/owed= lines a workflow step appends to $GITHUB_OUTPUT.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed collect`
+
+```
+Usage: t3 eval owed collect [OPTIONS]
+
+ Fold the previous nightly ledger with the owed artifacts of merged PRs and
+ weekly and heal legs.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --repo                       TEXT                  OWNER/NAME of the      │
+│                                                       repository whose       │
+│                                                       artifacts hold the     │
+│                                                       debt.                  │
+│                                                       [required]             │
+│ *  --out                        PATH                  Where to write the     │
+│                                                       harvested ledger.      │
+│                                                       [required]             │
+│    --now                        TEXT                  Override 'now'         │
+│                                                       (ISO-8601); for        │
+│                                                       testing.               │
+│    --first-lookback-days        INTEGER RANGE [x>=1]  [default: 1]           │
+│    --help                                             Show this message and  │
+│                                                       exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed next`
+
+```
+Usage: t3 eval owed next [OPTIONS] LEDGER
+
+ Print the oldest owed scenarios the catalog still defines, one per line.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ledger      PATH  The owed-ledger JSON file. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --cap                  INTEGER RANGE [x>=1]  The most owed scenarios to   │
+│                                                 run.                         │
+│                                                 [required]                   │
+│    --scenarios-dir        PATH                  Read the catalog from this   │
+│                                                 scenario directory (default: │
+│                                                 the discovered catalog).     │
+│    --help                                       Show this message and exit.  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval owed settle`
+
+```
+Usage: t3 eval owed settle [OPTIONS]
+
+ Clear the owed scenarios that passed and the ones the catalog no longer
+ defines.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --out                   PATH  The owed-ledger JSON file, updated in       │
+│                                  place.                                      │
+│                                  [required]                                  │
+│ *  --passed-file           PATH  Scenario names that passed, one per line.   │
+│                                  [required]                                  │
+│    --attempted-file        PATH  Scenario names attempted tonight.           │
+│    --scenarios-dir         PATH  Read the catalog from this scenario         │
+│                                  directory (default: the discovered          │
+│                                  catalog).                                   │
+│    --help                        Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval verdict-cache`
 
 ```
@@ -3304,6 +3446,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ privacy-scan         Scan text for privacy-sensitive patterns (emails, keys, │
 │                      IPs).                                                   │
+│ gate-escape                                                                  │
 │ validate-mr          Validate MR/PR title+description against the active     │
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
@@ -3349,6 +3492,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      whose leader is gone.                                   │
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
+│ review-evidence                                                              │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -3374,6 +3518,16 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   path      [PATH]  File or '-' for stdin [default: -]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool gate-escape`
+
+```
+Usage: t3 tool gate-escape [OPTIONS]
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3941,6 +4095,19 @@ Usage: t3 tool ratchet-prune [OPTIONS]
 │ --write          Delete the stale pins (the only auto-repairable direction). │
 │ --json           Emit machine-readable JSON.                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool review-evidence`
+
+```
+Usage: t3 tool review-evidence [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha        TEXT  Full committed head SHA to measure. [required]  │
+│    --base              TEXT  Target branch ref for the changed set.          │
+│                              [default: origin/main]                          │
+│    --help                    Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5796,8 +5963,8 @@ Usage: t3 loops tick [OPTIONS]
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │
 │                        all).                                                 │
 │ --json                 Emit the tick report as JSON.                         │
-│ --dry-run              Preview followup decisions without posting or         │
-│                        writing.                                              │
+│ --dry-run              Preview built-in followup decisions; report omitted   │
+│                        overlay hooks.                                        │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7319,16 +7486,9 @@ Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 Usage: t3 settings compare [OPTIONS]
 
  What differs between this box and its peers, and whether it can be read as
- drift.
-
- Exits non-zero only when there was nothing to compare — fewer than two
- instances answered. A
- comparison that RAN is a success whatever it found, "not comparable" included:
- that verdict is
- a true reading of boxes running different code, not a failure of this command.
-
- The table is laid out in the terminal's own width, so ``COLUMNS`` sets it for
- a redirected run.
+ drift. Exits non-zero only when fewer than two instances answered. A completed
+ comparison succeeds even when instances are not comparable. COLUMNS sets table
+ width for a redirected run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
@@ -7341,6 +7501,12 @@ Usage: t3 settings compare [OPTIONS]
 │                          registry entry. A forward under load answers late,  │
 │                          and a wait too short reports a live box as one that │
 │                          did not answer.                                     │
+│ --family          TEXT   Show one setting or seed family.                    │
+│ --group           TEXT   Match a setting group by name.                      │
+│ --text            TEXT   Search row names and descriptions.                  │
+│ --scope           TEXT   Global, all, or one overlay scope.                  │
+│                          [default: global]                                   │
+│ --all-rows               Include matching identical rows.                    │
 │ --full                   Do not truncate a value, and print each row's       │
 │                          import reason.                                      │
 │ --json                   Emit the whole view as JSON, nothing summarised     │
@@ -7373,13 +7539,14 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 window (SIG-PR-1).                                           │
 │ agent           Launch the configured agent with overlay context and         │
 │                 auto-detected skills.                                        │
-│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
-│                 brief must carry.                                            │
+│ skill-preamble  Emit the skill preamble a raw Agent-tool sub-agent brief     │
+│                 must carry.                                                  │
 │ config          Overlay configuration.                                       │
 │ loops           Run DB-configured autonomous loops for this overlay.         │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
+│ secrets         Inspect sealed credentials and plan a password-store import. │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
 │                 ticket).                                                     │
@@ -7393,8 +7560,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions running now on this host's workers: inspect them    │
-│                 passively, steer them actively.                              │
+│ live            Sessions on this host's workers: inspect passively, steer or │
+│                 follow up actively.                                          │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -7539,10 +7706,10 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 ```
 Usage: t3 teatree skill-preamble [OPTIONS]
 
- Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+ Emit the skill preamble a raw Agent-tool sub-agent brief must carry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│ --skills,--skill        TEXT  Skills to include, comma-separated and/or      │
 │                               repeated (e.g. --skills t3:rules,t3:e2e).      │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -9106,6 +9273,62 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
 │ --global               Write the workspace-wide  default instead of a        │
 │                        per-overlay value.                                    │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree secrets`
+
+```
+Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
+
+ Inspect sealed credentials and plan a password-store import.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status       Show sealed-store key health and key IDs.                       │
+│ ls           List sealed entry names.                                        │
+│ import-pass  Classify password-store entries without copying values.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets status`
+
+```
+Usage: t3 teatree secrets status [OPTIONS]
+
+ Report key health without disclosing stored values.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets ls`
+
+```
+Usage: t3 teatree secrets ls [OPTIONS] [PREFIX]
+
+ List sealed row names without decrypting values.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   prefix      [PREFIX]  Only names starting with this prefix.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets import-pass`
+
+```
+Usage: t3 teatree secrets import-pass [OPTIONS]
+
+ Classify password-store names without copying their values.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11593,18 +11816,20 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions running now on this host's workers: inspect them passively, steer
- them actively.
+ Sessions on this host's workers: inspect passively, steer or follow up
+ actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list     List every live session on this host's workers (passive).           │
-│ inspect  Show one live session's state, tool and progress without contacting │
-│          the agent.                                                          │
-│ steer    Send input into a running agent's current turn and print its        │
-│          receipt (active).                                                   │
+│ list       List every live session on this host's workers (passive).         │
+│ inspect    Show one live session's state, tool and progress without          │
+│            contacting the agent.                                             │
+│ steer      Send input into a running agent's current turn and print its      │
+│            receipt (active).                                                 │
+│ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11654,6 +11879,34 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            returns the first receipt.                        │
 │ --wait              FLOAT  Seconds to wait for the agent's next safe         │
 │                            boundary (at most 900).                           │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live follow-up`
+
+```
+Usage: t3 teatree live follow-up [OPTIONS] TASK
+
+ Start one new turn in a still-open idle session and print its receipt
+ (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input for one new turn in an idle session (at │
+│                            most 16 KiB).                                     │
+│ --command-id        TEXT   Idempotency key; the same text returns the first  │
+│                            receipt.                                          │
+│ --wait              FLOAT  Seconds to wait for the new turn to start (at     │
+│                            most 900).                                        │
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
@@ -13934,9 +14187,9 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
 
  Print the resolved value for *key* and name its source (DB vs env/default).
 
- When a ``ConfigSetting`` row exists in the requested scope it is reported as
- the ``db`` source; otherwise the value falls through to the code layer: a
- cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+ The shared resolver reads overlay aliases and global fallback rows.
+ A selected DB row reports ``db``. Without one, a cold-hook gate key
+ (``COLD_HOOK_SETTINGS``) reports its in-code
  ``ColdHookSetting`` default, every other key its ``UserSettings``
  env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
  an unknown key — a typo is loud, not a silent answer for a non-setting — but

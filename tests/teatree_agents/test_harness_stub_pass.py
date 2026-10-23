@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pydantic_ai.models
@@ -9,10 +10,11 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.lane_b import config as lane_b_config
+from teatree.config.known_settings import SETTING_ENTRIES
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 
+_OUTPUT_CAP_KEY = "agent_shell_max_output_bytes"
 _CALLS = 20
 _RETURN_CHARS = 50_000
 # The shell prefixes its output with this, so the command prints the rest of the 50,000.
@@ -64,7 +66,8 @@ class TestStubPassRunsBeforeEveryModelRequest:
     def test_a_phased_run_never_sends_more_than_the_verbatim_tail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(lane_b_config, "_DEFAULT_SHELL_MAX_OUTPUT_BYTES", 0)
+        entry = SETTING_ENTRIES[_OUTPUT_CAP_KEY]
+        monkeypatch.setitem(SETTING_ENTRIES, _OUTPUT_CAP_KEY, replace(entry, default=0))
         seen: list[int] = []
         _run(PydanticAiHarness(model=_big_bash_model(seen), phase="coding"), tmp_path)
 

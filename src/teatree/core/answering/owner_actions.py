@@ -10,15 +10,23 @@ from django.db.models import Max, Min
 from django.utils import timezone
 
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
+from teatree.core.modelkit.escape_scope import EscapeScope
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
 from teatree.core.models import Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
 from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import AttestRefusedError, CheckoutAttestation, read_attestation
+from teatree.core.worktree.checkout_attest import (
+    AttestRefusedError,
+    CheckoutAttestation,
+    declined_attest_tasks,
+    read_attestation,
+    retire_card,
+)
 
 logger = logging.getLogger(__name__)
 _RETRY_AFTER = timedelta(minutes=5)
@@ -67,7 +75,18 @@ def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -
     def write() -> str:
         attestation = read()
         attestation.record()
-        for parked in Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False):
+        with transaction.atomic():
+            other_cards = (
+                DeferredQuestion.owner_pending()
+                .select_for_update()
+                .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
+                .exclude(pk=row.pk)
+            )
+            for other in other_cards:
+                retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
+        declined = declined_attest_tasks(worktree, attestation.state.digest)
+        parked_tasks = Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False)
+        for parked in parked_tasks.exclude(pk__in=declined):
             latest = parked.attempts.order_by("-pk").values("result").first()
             result = latest["result"] if latest is not None else {}
             checkout_id = result.get("checkout_worktree_id") if isinstance(result, dict) else None
@@ -97,8 +116,25 @@ def _prepare_void(_row: DeferredQuestion, action: ActionRequest, actor: str) -> 
     return write
 
 
+def _prepare_escape(_row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
+    scope = EscapeScope(**action["scope"])
+    if action["target"] != scope.gate or action["binding"] != scope.binding():
+        message = "The requested gate escape scope changed."
+        raise OwnerActionRefusedError(message)
+
+    def write() -> str:
+        try:
+            grant = GateEscape.objects.grant_human(scope, issuer_id=actor, ttl=timedelta(hours=1))
+        except GateEscapeError as exc:
+            raise OwnerActionRefusedError(str(exc)) from exc
+        return f"Approved one gate escape {grant.pk}."
+
+    return write
+
+
 _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
     OwnerActionKind.ATTEST: _prepare_attest,
+    OwnerActionKind.ESCAPE: _prepare_escape,
     OwnerActionKind.VOID: _prepare_void,
 }
 

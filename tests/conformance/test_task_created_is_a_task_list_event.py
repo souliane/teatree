@@ -455,7 +455,7 @@ _DENY_DRIVERS: Final[dict[str, DenyDriver]] = {
 #: moves. Unlike the prose ledger it needs no literal anchor in the file that renders
 #: the text, which is why it reaches the shared renderer the ledger is blind to.
 _DENY_TEXT_PEGS: Final[dict[str, str]] = {
-    "handle_dispatch_prompt_quote_scanner_on_task_create": "73efb1cbf1e95d45",
+    "handle_dispatch_prompt_quote_scanner_on_task_create": "aa281f7bc01d70fc",
 }
 
 #: Phrases asserting the premise this event's correction retired. The peg above is the

@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
@@ -28,7 +29,16 @@ def _build_jobs(
             jobs.extend(jobs_for_domain(Domain.SHIP, backend, all_backends=all_backends))
         return jobs
     if host is not None:
-        return [_ScannerJob(scanner=MyPrsScanner(host=host), overlay="")]
+        return [
+            _ScannerJob(
+                scanner=MyPrsScanner(
+                    host=host,
+                    verdict_reader=RecordedVerdictReader(),
+                    critic_reader=RecordedCriticFindingReader(),
+                ),
+                overlay="",
+            )
+        ]
     return []
 
 

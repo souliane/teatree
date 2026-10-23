@@ -50,7 +50,7 @@ from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 from teatree.agents import permission_modes
 from teatree.agents.claude_cli_spawn import with_account_skills_off
 from teatree.agents.compaction_guard import with_compaction_off
-from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, tier_models
 from teatree.eval.agent_prompt import (
     SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
     resolve_agent_path,
@@ -61,6 +61,7 @@ from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
     TerminalResultError,
+    UsageLimitReachedError,
     budget_amount_from_message,
     budget_floor_from_message,
     classify_terminal_error,
@@ -86,7 +87,7 @@ from teatree.eval.toolset import (
     scenario_exposes_subagent_spawn,
 )
 from teatree.eval.under_load import build_user_prompt
-from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, CreditExhaustedError, LimitCause, classify_limit
 from teatree.llm.credentials import AnthropicApiKeyCredential
 
 #: The runner's default credential-conflict strip set — the metered lane's conflicts
@@ -120,7 +121,7 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 MAX_BUDGET_USD = "0.10"
 #: The capacity-exhaustion fallback for an eval spawn — the conservative mid
 #: tier, DERIVED from the tier catalog so a generation bump carries it.
-FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
+FALLBACK_MODEL = tier_models()[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
@@ -605,6 +606,8 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
         limit = classify_limit(str(exc))
         if limit is not None and limit.cause is LimitCause.API_CREDIT:
             raise CreditExhaustedError(limit.remediation) from exc
+        if limit is not None and limit.cause in SUBSCRIPTION_LIMIT_CAUSES:
+            raise UsageLimitReachedError(str(exc)) from exc
         reason = classify_terminal_error(str(exc))
         if reason is None:
             raise

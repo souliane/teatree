@@ -3,12 +3,18 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from shutil import copy2
 from unittest.mock import patch
 
 import pytest
 from django.db import connection
+from django.db.utils import ConnectionHandler
+from pytest_django.plugin import DjangoDbBlocker
 
+from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.django_db import backup
+from teatree.utils.mount_points import MountEntry
 
 
 def _make_db(path: Path, *, rows: list[str]) -> None:
@@ -20,6 +26,22 @@ def _make_db(path: Path, *, rows: list[str]) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _make_db_with_a_damaged_page(path: Path, *, object_name: str) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE note (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT)")
+        conn.execute("CREATE INDEX note_body ON note (body)")
+        conn.executemany("INSERT INTO note (body) VALUES (?)", [(f"{n:05d}" + "x" * 80,) for n in range(800)])
+        conn.commit()
+        (root,) = conn.execute("SELECT rootpage FROM sqlite_master WHERE name = ?", (object_name,)).fetchone()
+        (page_size,) = conn.execute("PRAGMA page_size").fetchone()
+    finally:
+        conn.close()
+    with path.open("r+b") as handle:
+        handle.seek((root - 1) * page_size)
+        handle.write(b"\xff" * page_size)
 
 
 def _read_rows(path: Path) -> list[str]:
@@ -49,6 +71,52 @@ class TestArtifactTimestamp:
 
 
 class TestCreateBackup:
+    def test_wal_backup_reopens_from_a_new_control_volume(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        source = tmp_path / "live.sqlite3"
+        writer = sqlite3.connect(source)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("CREATE TABLE note(body TEXT)")
+            writer.execute("INSERT INTO note VALUES ('wal-resident')")
+            writer.commit()
+            assert Path(f"{source}-wal").stat().st_size > 0
+
+            artifact = backup.create_backup(source=source, backup_dir=tmp_path / "backups", now=datetime.now(tz=UTC))
+            assert artifact.read_bytes()[18] == 1
+            assert not Path(f"{artifact}-wal").exists()
+            assert not Path(f"{artifact}-shm").exists()
+
+            volume = tmp_path / "new-control"
+            volume.mkdir()
+            restored = volume / "db.sqlite3"
+            copy2(artifact, restored)
+            monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+            monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+            monkeypatch.setenv("TEATREE_ROLE", "worker")
+            monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
+            handler = ConnectionHandler(
+                {
+                    "default": {
+                        "ENGINE": SQLITE_BOUNDARY_ENGINE,
+                        "NAME": str(restored),
+                        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+                    }
+                }
+            )
+            try:
+                with django_db_blocker.unblock(), handler["default"].cursor() as cursor:
+                    cursor.execute("PRAGMA journal_mode")
+                    assert cursor.fetchone() == ("wal",)
+                    cursor.execute("SELECT body FROM note")
+                    assert cursor.fetchall() == [("wal-resident",)]
+            finally:
+                handler.close_all()
+        finally:
+            writer.close()
+
     def test_snapshots_source_contents(self, tmp_path: Path) -> None:
         source = tmp_path / "db.sqlite3"
         _make_db(source, rows=["alpha", "beta"])
@@ -133,6 +201,21 @@ class TestRunBackup:
         assert result.pruned == [expired]
         assert not expired.exists()
         assert result.skipped_reason is None
+
+    @pytest.mark.parametrize("damaged_object", ["note", "note_body"])
+    def test_a_snapshot_failing_quick_check_is_not_published_and_prunes_nothing(
+        self, tmp_path: Path, damaged_object: str
+    ) -> None:
+        source = tmp_path / "db.sqlite3"
+        _make_db_with_a_damaged_page(source, object_name=damaged_object)
+        backups = tmp_path / "backups"
+        now = datetime(2026, 1, 20, 0, 0, 0, tzinfo=UTC)
+        older = _touch_artifact(backups, now - timedelta(days=30))
+
+        with pytest.raises(sqlite3.DatabaseError, match="quick_check"):
+            backup.run_backup(retention_days=7, backup_dir=backups, source=source, now=now)
+
+        assert sorted(path.name for path in backups.iterdir()) == [older.name]
 
     def test_skips_snapshot_when_no_source_but_still_prunes(self, tmp_path: Path) -> None:
         backups = tmp_path / "backups"

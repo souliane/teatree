@@ -145,8 +145,9 @@ def test_history_retry_global_failure_reaches_the_mcp_caller() -> None:
     assert fake.history_tokens == ["xoxb-bot", "xoxp-user"]
 
 
-def test_history_instructions_condition_token_routing() -> None:
-    history = services_slack.INSTRUCTIONS.split("- slack_channel_history", 1)[1].split("- slack_thread_replies", 1)[0]
+def test_history_description_conditions_token_routing() -> None:
+    tools = {tool.name: tool for tool in asyncio.run(_server().list_tools())}
+    history = tools["slack_channel_history"].description or ""
     assert "When both tokens are configured" in history
     assert "the user token" in history
     assert "bot-only" in history

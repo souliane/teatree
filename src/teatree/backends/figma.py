@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 import httpx
-from PIL import Image
 
 from teatree.backends.http_retry import SimpleRetryTransport
 from teatree.llm.credentials import Credential, CredentialSpec
@@ -266,6 +265,8 @@ def download_image(url: str, dest: Path) -> Path:
 
 def build_side_by_side_comparison(design_image: Path, actual_screenshot: Path, dest: Path) -> Path:
     """Combine a Figma mockup and a Playwright screenshot side by side for MR evidence."""
+    from PIL import Image  # noqa: PLC0415 — image decoding is needed only for comparison
+
     with Image.open(design_image) as design, Image.open(actual_screenshot) as actual:
         design_rgb = design.convert("RGB")
         actual_rgb = actual.convert("RGB")

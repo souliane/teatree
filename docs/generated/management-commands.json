@@ -448,7 +448,7 @@
       ]
     },
     {
-      "help": "Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.",
+      "help": "Live sessions: list and inspect are passive; steer and follow-up are active.",
       "name": "live",
       "subcommands": [
         {
@@ -462,6 +462,10 @@
         {
           "help": "List every live session on this host's workers (passive)",
           "name": "list"
+        },
+        {
+          "help": "Start one new turn in a still-open idle session and print its receipt (active)",
+          "name": "follow-up"
         }
       ]
     },
@@ -1049,6 +1053,24 @@
       "subcommands": []
     },
     {
+      "help": "",
+      "name": "secrets",
+      "subcommands": [
+        {
+          "help": "Report key health without disclosing stored values",
+          "name": "status"
+        },
+        {
+          "help": "List sealed row names without decrypting values",
+          "name": "ls"
+        },
+        {
+          "help": "Classify password-store names without copying their values",
+          "name": "import-pass"
+        }
+      ]
+    },
+    {
       "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
       "subcommands": []
@@ -1076,7 +1098,7 @@
       ]
     },
     {
-      "help": "Render the same settings comparison as the dashboard, including peers and saved snapshots.",
+      "help": "What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.",
       "name": "settings_compare",
       "subcommands": []
     },
@@ -1103,7 +1125,7 @@
       ]
     },
     {
-      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "help": "Print the factory signals over the trailing window vs its baseline.",
       "name": "signals",
       "subcommands": []
     },
@@ -1270,6 +1292,10 @@
         {
           "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
           "name": "reconcile-overlay"
+        },
+        {
+          "help": "Record a merge critic envelope for the ticket's dispatched head",
+          "name": "critic-record"
         },
         {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",

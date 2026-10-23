@@ -1,16 +1,16 @@
 """Attended owner questions and final replies use one plain tool call per decision.
 
-NEVER-LOCKOUT: the per-call ``[owner-question-ok: <reason>]`` token (question text or
-final reply), the ``[teatree] owner_question_gate_enabled = false`` kill-switch
+NEVER-LOCKOUT: audited per-action escapes for the question and final reply,
+the ``[teatree] owner_question_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate owner-question disable``), ``_fail_open_or_deny`` and the UX
 circuit breaker on the PreToolUse arm, and the ``stop_hook_active`` re-fire on Stop.
 """
 
 import json
 import os
-import re
 import sys
 
+from hooks.scripts.gate_escape import escape_allows
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.question_gates import (
     find_decision_prose,
@@ -33,8 +33,6 @@ _QUESTION_TOOLS = frozenset(
         "functions.request_user_input_async",
     }
 )
-_ESCAPE_RE = re.compile(r"\[owner-question-ok:\s*(\S[^\]]*?)\s*\]")
-_ESCAPE_SCAN_CHARS = 512
 _BATCHED_WARN = (
     "[teatree] The question call carried {n} questions. Ask ONE decision per call "
     "(skills/rules/references/asking-questions.md 'One decision per question'); split the rest "
@@ -69,15 +67,7 @@ def _owner_reads_this_turn(data: dict) -> bool:
 def _gate_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("owner_question_gate_enabled", default=True)
-
-
-def _escape_reason(texts: list[str]) -> str | None:
-    return next((match[1] for text in texts if (match := _ESCAPE_RE.search(text[:_ESCAPE_SCAN_CHARS]))), None)
-
-
-def _note_escape(reason: str) -> None:
-    sys.stderr.write(f"NOTE: owner-question gate skipped via [owner-question-ok: {reason}].\n")
+    return _teatree_bool_setting("owner_question_gate_enabled")
 
 
 def _sanctioned_prose(data: dict, text: str) -> bool:
@@ -102,16 +92,13 @@ def handle_block_decision_prose(data: dict) -> bool | None:
     decision = find_decision_prose(text)
     if decision is None:
         return None
-    if reason := _escape_reason([text[-_ESCAPE_SCAN_CHARS:]]):
-        _note_escape(reason)
-        return None
-    if _sanctioned_prose(data, text):
+    if _sanctioned_prose(data, text) or escape_allows(data, "owner-question-decision", turn_text=text):
         return None
     reason = (
         f"TEATREE OWNER DECISION GATE: {decision[:80]!r} puts an owner decision in the final reply. "
         "Raise each decision through the question tool, one decision per call, in plain words. "
         "Then end with a reply that carries no decision list. A false positive: end the reply with "
-        "[owner-question-ok: <reason>], or run `t3 <overlay> gate owner-question disable`."
+        "[gate-escape:owner-question-decision: <reason>], or run `t3 <overlay> gate owner-question disable`."
     )
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True
@@ -143,14 +130,7 @@ def handle_block_unfit_question(data: dict) -> bool:
         return False
     batch_count = len(questions)
     skip = _dispatched_agent() or not _gate_enabled() or not _owner_reads_this_turn(data)
-    escape_reason = (
-        None
-        if skip
-        else _escape_reason([str(_question_text(question)) for question in questions if isinstance(question, dict)])
-    )
-    if skip or escape_reason:
-        if escape_reason:
-            _note_escape(escape_reason)
+    if skip:
         if batch_count > 1:
             sys.stderr.write(_BATCHED_WARN.format(n=batch_count))
         return False
@@ -168,7 +148,7 @@ def handle_block_unfit_question(data: dict) -> bool:
 
     reason = (
         "TEATREE OWNER QUESTION GATE: " + "; ".join(problems) + ". Ask one decision per call in plain words. "
-        "A false positive: add [owner-question-ok: <reason>] to the question, "
+        "A false positive: add [gate-escape:owner-question-fit: <reason>] to the question, "
         "or run `t3 <overlay> gate owner-question disable`."
     )
     return _fail_open_or_deny(data, reason, gate_id="owner-question-fit")

@@ -7,6 +7,7 @@ from teatree.core.models.checkout_proof import (
     CheckoutCustody,
     DeferredCheckoutExit,
     DeferredExitAttestation,
+    ReleasedPrHeadAttestation,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +52,8 @@ class VisualQAPageDetail(TypedDict):
 
 
 class VisualQASummary(TypedDict, total=False):
+    repo_path: str
+    head_sha: str
     targets: list[str]
     skipped_reason: str
     not_run_reason: str
@@ -58,6 +61,9 @@ class VisualQASummary(TypedDict, total=False):
     pages_checked: int
     errors: int
     details: list[VisualQAPageDetail]
+    unchecked_reasons: dict[str, str]
+    report_markdown: str
+    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
@@ -134,6 +140,9 @@ class PlanningHandoff(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
+    nit_follow_up: bool
+    nit_lane_receipts: dict[str, JSONObject]
+    nit_publication: dict[str, JSONObject]
     forced_repro_disabled_scopes: list[str]
     # Self-improvement repair tickets need this marker to classify their own
     # task failures separately from the incidents they are investigating.
@@ -741,8 +750,10 @@ class WorktreeSiblingFields(TypedDict, total=False):
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     attested_state: str
+    direct_attested_state: str
+    direct_attested_at: str
     checkout_custody: CheckoutCustody
-    auto_attestation: AutoAttestation | DeferredExitAttestation
+    auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
     deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]

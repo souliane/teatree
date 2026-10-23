@@ -8,8 +8,9 @@ corrupt file, so a refactor that stops actually running the PRAGMA goes red.
 
 import json
 import sqlite3
+import subprocess
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +23,6 @@ from pytest_django.plugin import DjangoDbBlocker
 
 from teatree.cli.doctor import checks_db_integrity
 from teatree.cli.doctor.checks_db_integrity import (
-    _SQLITE_OK,
     _check_db_integrity,
     _check_db_is_off_the_host_filesystem,
     _check_host_projection_is_current,
@@ -32,6 +32,151 @@ from teatree.cli.doctor.checks_db_integrity import (
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE, ProjectionPublisher, ProjectionReader
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.sqlite_integrity import _SQLITE_OK
+from teatree.utils.mount_points import MountEntry
+
+
+def test_database_health_reports_wal_and_warns_when_sidecar_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    db = _sound_db(volume / "db.sqlite3")
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(volume))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+    monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: True)
+    monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: (MountEntry(Path("/"), "ext4"),))
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    for name in (
+        "_check_db_integrity",
+        "_check_db_is_off_the_host_filesystem",
+        "_check_no_host_process_holds_the_db_writable",
+        "_check_host_projection_is_current",
+    ):
+        monkeypatch.setattr(checks_db_integrity, name, lambda: True)
+
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO t(v) VALUES ('wal-resident')")
+        writer.commit()
+        assert Path(f"{db}-wal").stat().st_size > 0
+
+        monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1, raising=False)
+        assert checks_db_integrity._check_database_health() is True
+        output = capsys.readouterr().out
+        assert "Control DB journal: wal (operator override)" in output
+        assert "WARN" in output
+        assert "-wal" in output
+
+        monkeypatch.setattr(checks_db_integrity, "JOURNAL_SIZE_LIMIT", 1_000_000_000)
+        assert checks_db_integrity._check_database_health() is True
+        assert "WARN" not in capsys.readouterr().out
+    finally:
+        writer.close()
+
+
+def test_recovery_command_preserves_wal_resident_rows(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db = _sound_db(tmp_path / "source.sqlite3")
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO t(v) VALUES ('wal-resident')")
+        writer.commit()
+        assert Path(f"{db}-wal").stat().st_size > 0
+        with (
+            patch.object(checks_db_integrity, "_sqlite_path", return_value=db),
+            patch.object(checks_db_integrity, "_quick_check", return_value=["damaged"]),
+        ):
+            assert not _check_db_integrity()
+        output = capsys.readouterr().out
+        assert "Stop every service" in output
+        assert "keep its -wal" in output
+        command = output.split("Recover with: ", 1)[1].split(" — verify", 1)[0]
+        result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=False, timeout=30)
+        assert result.returncode == 0, result.stderr
+        with closing(sqlite3.connect(Path(f"{db}.recovered"))) as recovered:
+            assert recovered.execute("SELECT v FROM t WHERE v='wal-resident'").fetchone() == ("wal-resident",)
+            assert recovered.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    finally:
+        writer.close()
+
+
+def test_recovery_command_rejects_aborted_dump(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db = _corrupt_in_place(_sound_db(tmp_path / "source.sqlite3"))
+    with (
+        patch.object(checks_db_integrity, "_sqlite_path", return_value=db),
+        patch.object(checks_db_integrity, "_quick_check", return_value=["damaged"]),
+    ):
+        assert not _check_db_integrity()
+    command = capsys.readouterr().out.split("Recover with: ", 1)[1].split(" — verify", 1)[0]
+    result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=False, timeout=30)
+    assert result.returncode != 0
+    assert "corrupt" in result.stderr.lower() or "recover" in result.stderr.lower()
+
+
+def test_doctor_accepts_truncate_header_and_reports_invalid_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _sound_db(tmp_path / "db.sqlite3")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("PRAGMA journal_mode=TRUNCATE").fetchone() == ("truncate",)
+    assert checks_db_integrity._check_control_db_journal()
+    assert "OK    Control DB journal: truncate" in capsys.readouterr().out
+
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "invalid")
+    assert not checks_db_integrity._check_control_db_journal()
+    assert "FAIL  Control DB journal" in capsys.readouterr().out
+
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+    monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: True)
+    monkeypatch.setattr("teatree.db.write_domain.read_mount_entries", lambda: None)
+    assert not checks_db_integrity._check_control_db_journal()
+    assert "mount table" in capsys.readouterr().out
+
+
+def test_doctor_fails_when_header_disagrees_with_selected_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _sound_db(tmp_path / "db.sqlite3")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+
+    assert checks_db_integrity._check_control_db_journal() is False
+    assert "wal; expected truncate (operator override)" in capsys.readouterr().out
+
+
+def test_doctor_fails_on_invalid_journal_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "db.sqlite3"
+    db.write_bytes(b"not a SQLite database")
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "truncate")
+
+    assert checks_db_integrity._check_control_db_journal() is False
+    assert "FAIL  Control DB journal: invalid SQLite journal header" in capsys.readouterr().out
+
+
+def test_doctor_skips_absent_control_db_before_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "absent.sqlite3"
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+    monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "invalid")
+
+    assert checks_db_integrity._check_control_db_journal() is True
+    assert not db.exists()
+    assert capsys.readouterr().out == ""
 
 
 def _sound_db(path: Path) -> Path:

@@ -5,10 +5,10 @@ reads, and a corrupt SQLite b-tree reads fine on almost every table while writes
 AUTOINCREMENT table die with a raw ``DatabaseError`` — so a read-only doctor reports
 green on a database the factory can no longer record work in. That is the exact shape of
 the corruption this install already took: reads served 111 of 112 tables and nothing
-surfaced it until a random write threw. A database failing ``PRAGMA quick_check`` is not
-degraded, it is unusable for writes, so this is a HARD FAIL, not an advisory WARN. It is
-cheap: ``quick_check`` skips ``integrity_check``'s full index cross-reference, so it is
-O(pages) rather than O(index entries) and returns well under a second here.
+surfaced it until a random write threw. A database failing ``PRAGMA quick_check`` cannot
+be trusted for writes, so this is a HARD FAIL, not an advisory WARN. ``quick_check``
+skips ``integrity_check``'s full index cross-reference, so it is O(pages) rather than
+O(index entries).
 
 The ISOLATION and WRITER probes are the cause side, and they assert facts that are true
 NOW: the database is in its named volume where no host process can name it, and no
@@ -21,19 +21,22 @@ database, so they read a strictly-derived projection of it; only the owning side
 compare that projection's generation against the source, which makes this the one place
 a publisher that has stopped becomes visible instead of silently serving old values.
 
-All four run every time. Repairing pages a second writer will cross-link again is not a
+All five run every time. Repairing pages a second writer will cross-link again is not a
 fix, so no probe short-circuits the others.
 """
 
+import shlex
 import sqlite3
 from pathlib import Path
 
 import typer
 from django.conf import settings
-from django.db import DatabaseError, connections
+from django.core.exceptions import ImproperlyConfigured
+from django.db import connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
+from teatree.db.journal_mode import JOURNAL_SIZE_LIMIT, ControlDbJournal, sqlite_file_journal_mode
 from teatree.db.write_domain import (
     ControlDbWriteDomain,
     DescriptorTableUnavailableError,
@@ -41,9 +44,7 @@ from teatree.db.write_domain import (
     read_write_holders_across,
 )
 from teatree.paths import DATA_DIR, TRUE_CANONICAL_DB, find_control_db_artifacts
-
-# quick_check returns exactly this single row when the database is sound.
-_SQLITE_OK = "ok"
+from teatree.sqlite_integrity import quick_check_problems
 
 # quick_check reports one row per problem and a wide corruption can produce thousands.
 # The operator needs the shape of the failure, not a wall of page numbers.
@@ -75,13 +76,7 @@ def _quick_check() -> list[str]:
     A database too damaged to answer the PRAGMA raises instead of returning rows, and that
     IS the finding — so the error is reported, never propagated.
     """
-    try:
-        with connections["default"].cursor() as cursor:
-            cursor.execute("PRAGMA quick_check")
-            rows = [str(row[0]) for row in cursor.fetchall()]
-    except DatabaseError as corrupt:
-        return [str(corrupt)]
-    return [] if rows == [_SQLITE_OK] else rows
+    return quick_check_problems(connections["default"])
 
 
 def _check_db_integrity() -> bool:
@@ -97,14 +92,20 @@ def _check_db_integrity() -> bool:
     shown = "; ".join(problems[:_MAX_REPORTED_PROBLEMS])
     hidden = len(problems) - _MAX_REPORTED_PROBLEMS
     suffix = f" (+{hidden} more)" if hidden > 0 else ""
+    source = shlex.quote(str(path))
+    dump = shlex.quote(f"{path}.recovered.sql")
+    recovered = shlex.quote(f"{path}.recovered")
+    trailer = shlex.quote("ROLLBACK; -- due to errors")
     typer.secho(
         f"FAIL  SQLite integrity: {path} FAILS PRAGMA quick_check — {shown}{suffix}. "
-        "Reads still serve most tables, so this stays invisible until a write to an "
-        "AUTOINCREMENT table throws DatabaseError. Recover with: "
-        f"sqlite3 {path} '.recover' | sqlite3 {path}.recovered — verify quick_check on the "
-        "result, compare row counts, then swap it in with the stale -wal/-shm REMOVED "
-        "(replaying them reintroduces the bad pages). "
-        "Concurrent writers across a VM boundary in WAL mode are the usual cause.",
+        "Stop every service; keep its -wal beside the source while recovering. Recover with: "
+        f"sqlite3 -readonly {source} '.dump' > {dump} && "
+        f'if [ "$(tail -n 1 {dump})" = {trailer} ]; then '
+        "echo 'SQLite dump reports corruption; use .recover' >&2; false; "
+        f"else sqlite3 {recovered} < {dump}; fi — verify "
+        "quick_check and row counts on the result. If dump reports corruption, use a SQLite build "
+        "with a working .recover command. Only when swapping the recovered file into place, "
+        "remove the old -wal/-shm that belong to the replaced file.",
         fg=typer.colors.RED,
     )
     return False
@@ -252,9 +253,9 @@ def _check_host_projection_is_current() -> bool:
 
 
 def _check_database_health() -> bool:
-    """The database gate: corruption, a reachable database, a foreign writer, a stale projection.
+    """The database gate: corruption, isolation, writers, projection and journal mode.
 
-    All four always run. The filesystem and writer results are the CAUSE the integrity
+    All five always run. The filesystem and writer results are the CAUSE the integrity
     result is the symptom of, so reporting only the first failure found leaves the
     operator repairing pages that a second writer will cross-link again.
     """
@@ -262,4 +263,44 @@ def _check_database_health() -> bool:
     isolated = _check_db_is_off_the_host_filesystem()
     uncontended = _check_no_host_process_holds_the_db_writable()
     projected = _check_host_projection_is_current()
-    return sound and isolated and uncontended and projected
+    journal = _check_control_db_journal()
+    return sound and isolated and uncontended and projected and journal
+
+
+def _check_control_db_journal() -> bool:
+    path = TRUE_CANONICAL_DB
+    if not path.exists():
+        return True
+
+    try:
+        expected_mode, reason = ControlDbJournal(path).selection
+        mode = sqlite_file_journal_mode(path)
+    except (OSError, ImproperlyConfigured) as error:
+        typer.secho(f"FAIL  Control DB journal: cannot verify ({error})", fg=typer.colors.RED)
+        return False
+    if mode is None:
+        typer.secho("FAIL  Control DB journal: invalid SQLite journal header", fg=typer.colors.RED)
+        return False
+
+    if mode != expected_mode:
+        typer.secho(
+            f"FAIL  Control DB journal: {mode}; expected {expected_mode} ({reason}). "
+            "Stop all database users before switching journal modes.",
+            fg=typer.colors.RED,
+        )
+        return False
+
+    typer.secho(f"OK    Control DB journal: {mode} ({reason})", fg=typer.colors.GREEN)
+    wal_path = path.with_name(f"{path.name}-wal")
+    if mode == "wal" and wal_path.exists():
+        try:
+            size = wal_path.stat().st_size
+        except FileNotFoundError:
+            return True
+        if size > JOURNAL_SIZE_LIMIT:
+            typer.secho(
+                f"WARN  Control DB journal: {wal_path} is {size} bytes, above {JOURNAL_SIZE_LIMIT} bytes; "
+                "check for a long-running reader preventing checkpoints.",
+                fg=typer.colors.YELLOW,
+            )
+    return True

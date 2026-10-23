@@ -14,6 +14,7 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.token_validation import SlackTokenMissingError
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.types import RawAPIDict
 
 
 def test_noop_satisfies_messaging_protocol() -> None:
@@ -35,12 +36,39 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.post_routed(channel="C", text="hi") == {}
     assert backend.react_routed(channel="C", ts="123", emoji="eyes") == {}
     assert backend.resolve_user_id("alice") == ""
+    assert backend.resolve_unique_active_user_id("alice") == ""
     assert backend.resolve_usergroup_id("reviewers") == ""
     assert backend.post_audio_dm(channel="C", filepath="/tmp/x.m4a", text="hi", title="t") == {}
 
 
 def test_slack_satisfies_messaging_protocol() -> None:
     assert isinstance(SlackBotBackend(bot_token="xoxb-x"), MessagingBackend)
+
+
+def test_slack_backend_resolves_unique_active_user_from_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = SlackBotBackend(bot_token="xoxb-test")
+    calls: list[tuple[str, dict[str, str | int]]] = []
+
+    def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        calls.append((method, params))
+        return {
+            "ok": True,
+            "members": [
+                {
+                    "id": "UPEER00",
+                    "name": "peer",
+                    "deleted": False,
+                    "is_bot": False,
+                    "is_restricted": False,
+                    "is_ultra_restricted": False,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(backend, "get", get)
+
+    assert backend.resolve_unique_active_user_id("peer") == "UPEER00"
+    assert calls == [("users.list", {"limit": 200})]
 
 
 def test_slack_post_message_omits_thread_ts_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

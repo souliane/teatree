@@ -1,6 +1,6 @@
-"""The manage.py interpreter-prefix chokepoint (#1973, #1976).
+"""The dependency-manager Python-prefix chokepoint (#1973, #1976).
 
-The SOLE site that emits a ``manage.py`` interpreter prefix, so the
+The SOLE site that emits a uv or pipenv Python prefix, so the
 pipenv-vs-uv dependency-manager detection lives in one place; a hand-rolled
 second prefix silently diverges (pinned by ``test_runner_prefix_chokepoint``).
 """
@@ -35,6 +35,7 @@ def _is_pipenv_repo(repo: Path) -> bool:
 
 
 _SYNC_PROBE_TIMEOUT_SECONDS = 10
+_NO_SYNC_ARGS = ("--no-sync",)
 
 
 def _uv_run_sync_args(repo: Path) -> list[str]:
@@ -54,13 +55,13 @@ def _uv_run_sync_args(repo: Path) -> list[str]:
         )
     except SUBPROCESS_UNREACHABLE:
         return []
-    return ["--no-sync"] if probe.returncode == 0 else []
+    return list(_NO_SYNC_ARGS) if probe.returncode == 0 else []
 
 
-def runner_prefix(repo: Path) -> list[str]:
+def runner_prefix(repo: Path, *, already_synced: bool = False) -> list[str]:
     """Build the interpreter prefix that runs ``python`` from *repo*'s environment.
 
-    The SOLE site that emits a ``manage.py`` interpreter prefix (migrate +
+    The SOLE site that emits a uv or pipenv Python prefix (migrate +
     overlay ``managepy`` / ``db_worker`` route here) so the pipenv-vs-uv
     detection lives in one place; a hand-rolled second prefix silently diverges
     (souliane/teatree#1976, #1973; pinned by ``test_runner_prefix_chokepoint``).
@@ -69,12 +70,14 @@ def runner_prefix(repo: Path) -> list[str]:
     ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``, with
     ``--no-sync`` when :func:`_uv_run_sync_args` confirms the env already satisfies the lock,
     so agents sharing one ``.venv`` write nothing to it in the steady state.
+    An explicit preparation step may pass ``already_synced`` to skip the second sync.
     """
     if PathHelpers.within_baked_generation(repo):
         return [sys.executable]
     if _is_pipenv_repo(repo):
         return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
-    return ["uv", "--directory", str(repo), "run", *_uv_run_sync_args(repo), "python"]
+    sync_args = _NO_SYNC_ARGS if already_synced else _uv_run_sync_args(repo)
+    return ["uv", "--directory", str(repo), "run", *sync_args, "python"]
 
 
 def project_env_is_drivable(repo: Path) -> bool:

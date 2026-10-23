@@ -32,6 +32,7 @@ from hooks.scripts.hook_router import (
     _orchestrator_boundary_agent_gate_enabled,
     handle_enforce_orchestrator_boundary,
 )
+from tests._gate_escape_audit import audited_escape
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -370,7 +371,10 @@ class TestPytestUvxAndWrapperPrefixesAnchored:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
 
     def test_uvx_pytest_fg_ok_escape_still_works(self) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uvx pytest [fg-ok: targeted run]")) is False
+        data = _main_agent_bash("uvx pytest [gate-escape:orchestrator_bash: targeted run]")
+        with audited_escape(data) as requests:
+            assert handle_enforce_orchestrator_boundary(data) is False
+        assert requests[0]["gate"] == "orchestrator_bash"
 
     def test_uvx_pytest_run_in_background_still_allowed(self) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("uvx pytest", run_in_background=True)) is False
@@ -447,33 +451,29 @@ class TestMarginalSlowPatternsAdded:
 
 
 class TestForegroundOkEscapeHatch:
-    """A ``[fg-ok: <reason>]`` marker opts a heavy command out of the gate.
-
-    The per-call escape mirrors the ``[skill-load-ok: <reason>]`` token —
-    for the rare case the loop
-    owner truly needs heavy output inline. A non-empty reason is required;
-    an empty reason does not unblock.
-    """
-
     @pytest.mark.parametrize(
         "command",
-        [
-            "uv run pytest [fg-ok: short-targeted-run]",
-            "docker build -t img . [fg-ok: one-off image]",
-            "nx e2e my-app-e2e  [fg-ok: debugging a single spec]",
-            "sleep 600 [fg-ok: intentional wait]",
-        ],
+        ["uv run pytest", "docker build -t img .", "nx e2e my-app-e2e", "sleep 600"],
     )
-    def test_fg_ok_marker_allows_heavy_command(self, command: str) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+    def test_audited_marker_allows_heavy_command(self, command: str) -> None:
+        data = _main_agent_bash(f"{command} [gate-escape:orchestrator_bash: attended debug]")
+        with audited_escape(data) as requests:
+            assert handle_enforce_orchestrator_boundary(data) is False
+        assert requests[0]["gate"] == "orchestrator_bash"
 
-    def test_empty_fg_ok_reason_does_not_unblock(self) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest [fg-ok: ]")) is True
+    def test_legacy_marker_does_not_unblock(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest [fg-ok: old marker]")) is True
 
-    def test_block_message_mentions_fg_ok_escape(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_empty_reason_does_not_unblock(self) -> None:
+        assert (
+            handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest [gate-escape:orchestrator_bash: ]"))
+            is True
+        )
+
+    def test_block_message_mentions_audited_escape(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is True
         out = json.loads(capsys.readouterr().out)
-        assert "[fg-ok:" in out["permissionDecisionReason"]
+        assert "[gate-escape:orchestrator_bash:" in out["permissionDecisionReason"]
 
 
 class TestNonBashToolsArePassThrough:
@@ -568,9 +568,14 @@ class TestMainAgentForegroundAgentIsBlocked1442:
     def test_agent_foreground_fg_ok_token_allowed(self) -> None:
         data = {
             "tool_name": "Agent",
-            "tool_input": {"prompt": "[fg-ok: attended] implement X", "run_in_background": False},
+            "tool_input": {
+                "prompt": "[gate-escape:orchestrator_foreground_dispatch: attended] implement X",
+                "run_in_background": False,
+            },
         }
-        assert handle_enforce_orchestrator_boundary(data) is False
+        with audited_escape(data) as requests:
+            assert handle_enforce_orchestrator_boundary(data) is False
+        assert requests[0]["gate"] == "orchestrator_foreground_dispatch"
 
     def test_agent_foreground_empty_fg_ok_reason_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {"tool_name": "Agent", "tool_input": {"prompt": "[fg-ok: ] implement X", "run_in_background": False}}
@@ -624,8 +629,16 @@ class TestAgentGateDefaultOn1733:
         assert handle_enforce_orchestrator_boundary(data) is False
 
     def test_fg_ok_token_allowed_by_default(self) -> None:
-        data = {"tool_name": "Agent", "tool_input": {"prompt": "[fg-ok: attended] go", "run_in_background": False}}
-        assert handle_enforce_orchestrator_boundary(data) is False
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "[gate-escape:orchestrator_foreground_dispatch: attended] go",
+                "run_in_background": False,
+            },
+        }
+        with audited_escape(data) as requests:
+            assert handle_enforce_orchestrator_boundary(data) is False
+        assert requests[0]["gate"] == "orchestrator_foreground_dispatch"
 
     def test_subagent_dispatch_allowed_by_default(self) -> None:
         data = {

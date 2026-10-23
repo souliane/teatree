@@ -50,6 +50,7 @@ from teatree.core.models.eval_run import (
 )
 from teatree.core.models.external_outcome_snapshot import ExternalOutcomeSnapshot, ExternalOutcomeSnapshotManager
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
+from teatree.core.models.gate_escape import GateEscape as GateEscape
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import (
     NEEDS_TRIAGE_LABEL,
@@ -114,6 +115,8 @@ from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
+from teatree.core.models.sealed_secret import KeyHealth, SealedSecret
+from teatree.core.models.secret_cutover import SecretCutover
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.send_audit import SendAudit
@@ -230,6 +233,7 @@ __all__ = [
     "InteractiveDispatchManager",
     "InvalidTransitionError",
     "InvariantOutcome",
+    "KeyHealth",
     "KnownIssue",
     "KnownIssueManager",
     "LandscapeArtifact",
@@ -317,6 +321,8 @@ __all__ = [
     "ScannedFailedE2E",
     "ScenarioPassRate",
     "ScenarioRegression",
+    "SealedSecret",
+    "SecretCutover",
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "SendAudit",

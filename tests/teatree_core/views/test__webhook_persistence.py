@@ -9,7 +9,7 @@ from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, TrustedIdentity
 from teatree.core.models.provenance import Provenance
-from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
+from teatree.core.views._webhook_persistence import IngestionRecord, IngestOutcome, ingest, persist_incoming_event
 
 
 class TestProvenanceStamping(TestCase):
@@ -58,6 +58,36 @@ class TestDeadLetteringAtIngestion(TestCase):
 
 
 class TestSettledAtIngestion(TestCase):
+    def test_pending_row_keeps_payload(self) -> None:
+        ingest(
+            IngestionRecord(source="gitlab", idempotency_key="gitlab:pending", body="retry", payload_json={"retry": 1})
+        )
+
+        row = IncomingEvent.objects.get(idempotency_key="gitlab:pending")
+        assert (row.body, row.payload_json) == ("retry", {"retry": 1})
+
+    def test_dead_lettered_row_keeps_payload_even_when_settled(self) -> None:
+        ingest(
+            IngestionRecord(
+                source="gitlab",
+                idempotency_key="gitlab:pubsub:poison",
+                body="raw",
+                payload_json={"data": "raw"},
+                dead_letter_reason="message data is not JSON",
+                settled=True,
+            )
+        )
+
+        row = IncomingEvent.objects.get(idempotency_key="gitlab:pubsub:poison")
+        assert (row.body, row.payload_json) == ("raw", {"data": "raw"})
+
+    def test_ingest_duplicate_outcome(self) -> None:
+        record = IngestionRecord(source="github", idempotency_key="github:once", settled=True)
+
+        assert ingest(record) is IngestOutcome.NEW
+        assert ingest(record) is IngestOutcome.DUPLICATE
+        assert IncomingEvent.objects.count() == 1
+
     def test_a_settled_record_is_stored_processed_and_never_waits_for_a_drain(self) -> None:
         persist_incoming_event(IngestionRecord(source="gitlab", idempotency_key="gitlab:s1", settled=True))
 

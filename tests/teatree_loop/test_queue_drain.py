@@ -27,7 +27,7 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.admission_priority import ADMISSION_ORDER, ADMISSION_SCORE_ALIAS, admission_priority_annotations
-from teatree.core.models import Loop, LoopLease, Session, Task, Ticket
+from teatree.core.models import Loop, LoopLease, PullRequest, Session, Task, Ticket
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     admission_claim_order,
@@ -580,10 +580,26 @@ class TestAdmissionScore:
             new_ticket.pk,
         ]
 
+    def test_a_nit_follow_up_ranks_after_real_work_even_during_review(self) -> None:
+        nit_review = self._task(phase="reviewing", expedited=True)
+        nit_review.ticket.extra = {"nit_follow_up": True}
+        nit_review.ticket.save(update_fields=["extra"])
+        real_new_ticket = self._task(phase="planning")
+
+        assert self._admission_order([nit_review, real_new_ticket]) == [real_new_ticket.pk, nit_review.pk]
+
     def test_the_older_row_wins_a_tie(self) -> None:
         older, newer = self._task(phase="coding"), self._task(phase="coding")
 
         assert self._admission_order([newer, older]) == [older.pk, newer.pk]
+
+    def test_started_pull_request_has_its_own_stage_score(self) -> None:
+        started = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/804"
+        )
+
+        assert self._score(started) == 150
 
     def test_the_loop_claim_takes_a_newer_review_before_an_older_coding_row(self) -> None:
         self._task(phase="coding")
@@ -593,6 +609,38 @@ class TestAdmissionScore:
 
         assert claimed is not None
         assert claimed.pk == review.pk
+
+    def test_loop_claim_serves_the_oldest_started_pull_request(self) -> None:
+        newer = self._task(phase="coding")
+        older = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=newer.ticket, url="https://github.com/example-org/example-repo/pull/801"
+        )
+        PullRequest.objects.record_opened(
+            ticket=older.ticket, url="https://github.com/example-org/example-repo/pull/802"
+        )
+        first = Task.objects.create(
+            ticket=older.ticket, session=older.session, phase="planning", status=Task.Status.COMPLETED
+        )
+        second = Task.objects.create(
+            ticket=newer.ticket, session=newer.session, phase="planning", status=Task.Status.COMPLETED
+        )
+        Task.objects.filter(pk=first.pk).update(admitted_at=timezone.now() - dt.timedelta(days=3))
+        Task.objects.filter(pk=second.pk).update(admitted_at=timezone.now() - dt.timedelta(days=1))
+
+        claimed = Task.objects.claim_next_pending(claimed_by="test", ordering=admission_claim_order())
+
+        assert claimed is not None
+        assert claimed.pk == older.pk
+
+    def test_review_lane_stays_above_started_coding(self) -> None:
+        started = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/803"
+        )
+        review = self._task(phase="reviewing")
+
+        assert self._admission_order([started, review]) == [review.pk, started.pk]
 
     def test_new_ticket_scoping_ranks_last(self) -> None:
         assert self._score(self._task(phase="scoping")) < self._score(self._task(phase="coding"))

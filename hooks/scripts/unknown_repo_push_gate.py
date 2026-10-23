@@ -14,7 +14,7 @@ NEITHER of those decisions, only owned-vs-unknown.
 
 OPT-IN + never-lockout: it fires only when some overlay declared
 ``owned_repos`` (an install with none sees no new gate); a per-call
-``[scope-push-ok: <reason>]`` token and the ``unknown_repo_push_gate_enabled``
+``[gate-escape:unknown_repo_push: <reason>]`` token and the ``unknown_repo_push_gate_enabled``
 kill-switch both ALLOW; an unresolvable cwd/slug fails OPEN; and the deny
 routes through ``_fail_open_or_deny`` so the self-rescue allowlist + master
 fail-open switch + circuit breaker all apply.
@@ -52,7 +52,6 @@ _PUSH_PREFIX = r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:(?:-C|-c|--git-dir|--work-tr
 _SCOPE_GIT_PUSH_RE = re.compile(_PUSH_PREFIX + r"push\b")
 _SCOPE_SEGMENT_END_RE = re.compile(r"[\n|;&]")
 _SCOPE_DRY_RUN_ARG_RE = re.compile(r"(?:^|\s)(?:--dry-run|-n)(?=\s|=|$)")
-_SCOPE_PUSH_OK_RE = re.compile(r"\[scope-push-ok:\s*(\S[^\]]*?)\s*\]")
 
 
 def _writes_a_push(skeleton: str) -> bool:
@@ -84,20 +83,7 @@ def _unknown_repo_push_gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("unknown_repo_push_gate_enabled", default=True)
-
-
-def _scope_push_ok_token(command: str) -> str | None:
-    """Return the reason from a ``[scope-push-ok: <reason>]`` token, else None.
-
-    Scanned within the first 512 chars of the Bash command (mirroring the
-    other per-call escapes); an empty reason returns None.
-    """
-    match = _SCOPE_PUSH_OK_RE.search(command[:512])
-    if not match:
-        return None
-    reason = match.group(1).strip()
-    return reason or None
+    return _teatree_bool_setting("unknown_repo_push_gate_enabled")
 
 
 def _classify_push_for_cwd(cwd: Path) -> str:
@@ -168,7 +154,7 @@ _UNKNOWN_REPO_PUSH_REASON = (
     "review (the author/merge gate). The agent does not push to a repo no overlay "
     "claims without the operator's go-ahead: confirm with the user, or add this "
     "repo's host/namespace to the overlay's `owned_repos`. If this is a vetted "
-    "one-off, append `[scope-push-ok: <reason>]` to the command."
+    "one-off, append `[gate-escape:unknown_repo_push: <reason>]` to the command."
 )
 
 
@@ -177,7 +163,7 @@ def _unknown_repo_push_is_in_scope(data: dict) -> bool:
 
     True only for a ``Bash`` ``git push`` that writes — a push whose OWN
     arguments carry ``--dry-run`` / ``-n`` is exempt, and only that push — with
-    the gate enabled and no per-call ``[scope-push-ok: <reason>]`` token
+    the gate enabled and no per-call ``[gate-escape:unknown_repo_push: <reason>]`` token
     present. A present token is honoured here (with a stderr NOTE) so the
     handler stays a single decision.
 
@@ -192,12 +178,7 @@ def _unknown_repo_push_is_in_scope(data: dict) -> bool:
         return False
     if not _writes_a_push(strip_quoted_and_heredoc(command)):
         return False
-    if not _unknown_repo_push_gate_enabled():
-        return False
-    if reason_token := _scope_push_ok_token(command):
-        sys.stderr.write(f"NOTE: unknown-repo push gate skipped via [scope-push-ok: {reason_token}].\n")
-        return False
-    return True
+    return _unknown_repo_push_gate_enabled()
 
 
 def handle_block_unknown_repo_push(data: dict) -> bool:
@@ -209,7 +190,7 @@ def handle_block_unknown_repo_push(data: dict) -> bool:
     1. the tool is ``Bash`` running a real ``git push`` (``--dry-run`` /
         ``-n`` are exempt — they write nothing);
     2. the gate is enabled (``[teatree] unknown_repo_push_gate_enabled``,
-        default True) and no per-call ``[scope-push-ok: <reason>]`` token is
+        default True) and no per-call ``[gate-escape:unknown_repo_push: <reason>]`` token is
         present;
     3. the push's LANDING dir resolves (:func:`_push_target_dir` — ``git -C``,
         a leading ``cd``, ``--git-dir``, else the ambient cwd), and

@@ -3,9 +3,8 @@
 Parallel scenarios share ONE OAuth token, so a rate-limit burst turns per-token
 limits into false reds unless a run rides them out. :class:`ThrottleRetryDriver`
 wraps one attempt-producing ``drive`` callable in a bounded retry loop: a TRANSIENT
-throttle backs off exponentially (1, 2, 4, 8, 16s capped at 30s + jitter), a
-SUSTAINED one waits the classified window clamped to a bounded cap, and the
-empty-trajectory watchdog ``TimeoutError`` is ridden out too. A genuine cap, a
+throttle backs off exponentially (1, 2, 4, 8, 16s capped at 30s + jitter), and
+the empty-trajectory watchdog ``TimeoutError`` is ridden out too. A genuine cap, a
 credit exhaustion, or a mislabeled success is graded by the caller's
 :class:`ThrottleRetryHandlers` — NEVER retried, so a real behavioral fail is never
 laundered into a passing retry. The runner-specific grading stays in the caller;
@@ -25,7 +24,6 @@ from teatree.eval.api_errors import (
     THROTTLE_TERMINAL_PREFIX,
     SuccessMislabelResultError,
     TerminalResultError,
-    ThrottleKind,
     ThrottleSignal,
     classify_transient_throttle,
 )
@@ -45,18 +43,10 @@ _THROTTLE_RETRIES_ENV_VAR = "T3_EVAL_THROTTLE_RETRIES"
 THROTTLE_BACKOFF_BASE_SECONDS = 1.0
 THROTTLE_BACKOFF_CAP_SECONDS = 30.0
 THROTTLE_BACKOFF_JITTER_SECONDS = 1.0
-#: A SUSTAINED (rolling subscription-window) wait is bounded so a genuine ~5h
-#: session cap SURFACES loud after a finite wait instead of hanging forever; the
-#: classified window horizon (hours) is clamped down to this cap.
-THROTTLE_WINDOW_WAIT_MAX_SECONDS = 600.0
 #: A system RNG for the backoff jitter so concurrent workers on the shared token
 #: draw independent jitter (de-correlating retries, avoiding a thundering herd); a
 #: test injects a deterministic ``rand`` in its place.
 _JITTER_RNG = random.SystemRandom()
-#: A watchdog ``TimeoutError`` leaves an EMPTY trajectory (``asyncio.wait_for``
-#: discards the partial run on cancel) — the infra-hang signature, ridden out as a
-#: TRANSIENT throttle.
-_TIMEOUT_THROTTLE = ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=None, wait_seconds=None)
 
 
 def resolve_throttle_retries() -> int:
@@ -84,7 +74,7 @@ def throttle_reason(signal: ThrottleSignal, attempts: int) -> str:
     Names the throttle so an exhausted rate limit surfaces loud as a distinct,
     honest red — never mislabeled as a behavioral fail.
     """
-    label = signal.cause.value if signal.cause is not None else signal.kind.value
+    label = signal.cause.value if signal.cause is not None else "transient"
     return f"{THROTTLE_TERMINAL_PREFIX} {label} (exhausted {attempts} retries)"
 
 
@@ -149,7 +139,7 @@ class ThrottleRetryDriver:
                 # so it must NOT share the large rate-limit budget.
                 if timeout_attempt >= self.timeout_max_attempts:
                     return handlers.surface_throttled(_TIMEOUT_TERMINAL_REASON, attempt + timeout_attempt)
-                self.sleep(self._delay(_TIMEOUT_THROTTLE, timeout_attempt))
+                self.sleep(self._delay(timeout_attempt))
                 timeout_attempt += 1
                 continue
             except Exception as exc:
@@ -157,24 +147,21 @@ class ThrottleRetryDriver:
                 if signal is None:
                     raise  # a non-throttle is a genuine crash — preserve its red
                 reason = throttle_reason(signal, attempt)
-                next_attempt = self._next_attempt(signal, attempt)
+                next_attempt = self._next_attempt(attempt)
                 if next_attempt is None:
                     return handlers.surface_throttled(reason, attempt)
                 attempt = next_attempt
                 continue
             return handlers.grade_success(messages, attempt + timeout_attempt)
 
-    def _next_attempt(self, signal: ThrottleSignal, attempt: int) -> int | None:
+    def _next_attempt(self, attempt: int) -> int | None:
         """Sleep the backoff and return the next attempt index, or ``None`` when the budget is spent."""
         if attempt >= self.max_attempts:
             return None
-        self.sleep(self._delay(signal, attempt))
+        self.sleep(self._delay(attempt))
         return attempt + 1
 
-    def _delay(self, signal: ThrottleSignal, attempt: int) -> float:
-        """A bounded window wait for SUSTAINED, else jittered exponential backoff."""
-        if signal.kind is ThrottleKind.SUSTAINED:
-            window = signal.wait_seconds if signal.wait_seconds is not None else THROTTLE_WINDOW_WAIT_MAX_SECONDS
-            return min(window, THROTTLE_WINDOW_WAIT_MAX_SECONDS)
+    def _delay(self, attempt: int) -> float:
+        """Jittered exponential backoff."""
         backoff = min(THROTTLE_BACKOFF_BASE_SECONDS * (2**attempt), THROTTLE_BACKOFF_CAP_SECONDS)
         return backoff + self.rand() * THROTTLE_BACKOFF_JITTER_SECONDS

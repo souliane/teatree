@@ -15,7 +15,7 @@ import tomllib
 import pytest
 
 import teatree.config.overlay_code_defaults as seam
-from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.overlay_code_defaults import (
     PROMOTED_OVERLAY_CODE_DEFAULT_KEYS,
     _unregistered_provider,
@@ -23,7 +23,6 @@ from teatree.config.overlay_code_defaults import (
     overlay_code_defaults,
     register_overlay_code_default_provider,
 )
-from teatree.config.schema import _DEFAULTS_TOML
 from teatree.config.settings import UserSettings
 from teatree.core.overlay import OverlayConfig
 
@@ -61,7 +60,7 @@ def test_every_promoted_code_default_equals_the_shipped_file_value() -> None:
     # moving the file's value for one of them ships a value the box does not read, with
     # no test going red. This is the bound — the two sources agree by construction or this
     # fails.
-    shipped = flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"])
+    shipped = flatten_settings_table(tomllib.loads(DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"])
     config = OverlayConfig()
     drift = {
         key: (getattr(config, key), shipped[key])

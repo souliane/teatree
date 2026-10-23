@@ -18,7 +18,7 @@ invariant). :func:`open_prs_for_repo` (over :func:`read_open_prs`), :func:`git_s
 readers — extracted here from ``hook_router`` so the dispatcher shrinks; the
 router re-exports them unchanged.
 
-Cold-import safe: the module top imports only stdlib, so the live hook (a bare
+Cold-import safe: the module top imports only stdlib and the stdlib-only ``git_pin_args``, so the live hook (a bare
 ``python3`` subprocess with no guarantee ``teatree`` is importable) loads it
 without a Django bootstrap; Django and ``teatree.core`` are reached only lazily.
 """
@@ -29,6 +29,8 @@ import subprocess  # noqa: S404 — fixed-argv gh reader, no shell
 import sys
 import time
 from pathlib import Path
+
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -98,7 +100,7 @@ def git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
     def _git(*args: str) -> str:
         try:
             return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                [git_executable(), *GIT_PINS, "-C", str(repo_path), "--no-optional-locks", *args],
                 text=True,
                 timeout=3,
                 stderr=subprocess.DEVNULL,

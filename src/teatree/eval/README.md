@@ -32,7 +32,7 @@ The short version of the split:
   authenticates nothing.
 
 `model_resolution.resolve_eval_model` resolves each scenario's `model` >
-`tier` > `phase` > default-tier from the single `agents/model_tiering.TIER_MODELS`
+`tier` > `phase` > default-tier from the single `agents/model_tiering.tier_models()`
 constant — see [`evals/README.md`](../../../evals/README.md) § "Fields" for the
 precedence. `presets.py` is a SEPARATE composition layer applied on top, at the
 `run_dispatch.py` per-scenario seam, never inside `resolve_eval_model` itself:

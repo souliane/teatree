@@ -31,7 +31,7 @@ heredoc bodies stripped (reusing ``mr_cli_fields.strip_quoted_and_heredoc``),
 so the phrase merely embedded in a ``git commit -m '… --reviewer …'`` message
 or a doc string no longer false-fires.
 
-OPT-OUT + never-lockout: a per-call ``[reviewer-ok: <reason>]`` token and the
+OPT-OUT + never-lockout: a per-call ``[gate-escape:no_self_reviewer_assign: <reason>]`` token and the
 ``no_self_reviewer_assign_gate_enabled`` kill-switch both ALLOW; the deny
 routes through ``_fail_open_or_deny`` so the self-rescue allowlist + master
 fail-open switch + circuit breaker all apply.
@@ -101,9 +101,6 @@ _CURL_BODY_FLAG_RE = re.compile(
     r"--data(?:-raw|-binary|-urlencode|-ascii)?\b|--json\b|--form(?:-string)?\b|--upload-file\b"
     r"|(?<![\w-])-[a-zA-Z]*[dFT]\b"
 )
-# Per-call escape, mirroring the other gates' ``[…-ok: <reason>]`` tokens.
-_REVIEWER_OK_RE = re.compile(r"\[reviewer-ok:\s*(\S[^\]]*?)\s*\]")
-
 # The MCP MR-create/update tools — a reviewer arg on either assigns directly.
 _MCP_UPDATE_TOOLS = ("mcp__glab__glab_mr_update", "mcp__glab__glab_mr_create")
 _MCP_REVIEWER_KEYS = ("reviewer", "reviewers", "reviewer_ids", "reviewer_username", "requested_reviewers")
@@ -121,7 +118,7 @@ _REASON = (
     "via a write API call (`gh`/`glab api` OR a raw `curl`), and do not pass a "
     "reviewer arg to the MR-create/update MCP tool. If this is a vetted one-off "
     "on a COLLEAGUE's MR, put "
-    "`[reviewer-ok: <reason>]` in the Bash `command` string, or in any string "
+    "`[gate-escape:no_self_reviewer_assign: <reason>]` in the Bash `command` string, or in any string "
     "argument of the MCP call (the Bash `description` field is NOT scanned)."
 )
 
@@ -135,20 +132,7 @@ def _gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("no_self_reviewer_assign_gate_enabled", default=True)
-
-
-def _reviewer_ok_token(command: str) -> str | None:
-    """Return the reason from a ``[reviewer-ok: <reason>]`` token, else None.
-
-    Scanned within the first 512 chars (mirroring the other per-call escapes);
-    an empty reason returns None so a bare ``[reviewer-ok: ]`` never allows.
-    """
-    match = _REVIEWER_OK_RE.search(command[:512])
-    if not match:
-        return None
-    reason = match.group(1).strip()
-    return reason or None
+    return _teatree_bool_setting("no_self_reviewer_assign_gate_enabled")
 
 
 def _body_flag_pattern(skeleton: str) -> "re.Pattern[str] | None":
@@ -256,27 +240,11 @@ def _mcp_assigns_reviewer(data: dict) -> bool:
     return any(tool_input.get(key) for key in _MCP_REVIEWER_KEYS)
 
 
-def _mcp_reviewer_ok_token(tool_input: dict) -> str | None:
-    """The ``[reviewer-ok: <reason>]`` reason from any string arg of an MCP call.
-
-    An MCP tool call carries no ``command``, so the Bash-only scanner left this
-    branch advertising an escape that could not be placed anywhere the gate reads
-    — a never-lockout contract the gate did not actually honour. Every string
-    argument is scanned because the MCP schema fixes no field for free text.
-    """
-    for value in tool_input.values():
-        if not isinstance(value, str):
-            continue
-        if reason := _reviewer_ok_token(value):
-            return reason
-    return None
-
-
 def handle_block_self_reviewer_assign(data: dict) -> bool:
     """Block any direct reviewer-assignment surface — review is requested, never assigned.
 
     Fires when the gate is enabled (kill-switch off), no per-call
-    ``[reviewer-ok: <reason>]`` token is present, and the call is a
+    ``[gate-escape:no_self_reviewer_assign: <reason>]`` token is present, and the call is a
     reviewer-assignment surface (CLI ``glab mr create``/``update --reviewer``,
     ``gh pr create``/``edit`` with a reviewer flag, an out-of-band
     ``glab api``/``gh api`` reviewer-field WRITE, or the MCP MR-create/update
@@ -294,15 +262,7 @@ def handle_block_self_reviewer_assign(data: dict) -> bool:
         command = data.get("tool_input", {}).get("command", "")
         if not command or not _bash_assigns_reviewer(command):
             return False
-        reason = _reviewer_ok_token(command)
-    elif _mcp_assigns_reviewer(data):
-        reason = _mcp_reviewer_ok_token(data.get("tool_input", {}))
-    else:
+    elif not _mcp_assigns_reviewer(data):
         return False
 
-    # Both surfaces waive on the same token and deny the same way; resolving the surface
-    # first keeps that decision in one place instead of once per branch.
-    if reason:
-        sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
-        return False
     return _fail_open_or_deny(data, _REASON, gate_id="no_self_reviewer_assign")

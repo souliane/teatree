@@ -4,11 +4,14 @@ import contextlib
 import json
 import tempfile
 from collections.abc import AsyncGenerator, Generator
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
@@ -16,8 +19,10 @@ from teatree.agents import codex_app_server_options, codex_read_only_server, har
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
+from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
 from teatree.core.models import (
+    AgentRouteAvailability,
     AutoReviewDispatch,
     CriticDispatch,
     CriticVerdict,
@@ -51,8 +56,8 @@ _PLAN = {
 
 
 class _Harness:
-    def __init__(self) -> None:
-        self.capabilities = HarnessCapabilities()
+    def __init__(self, *, metered: bool = True) -> None:
+        self.capabilities = HarnessCapabilities(metered_lane=metered)
 
     @contextlib.asynccontextmanager
     async def open(self, options: object) -> AsyncGenerator[FakeHarnessSession]:
@@ -60,6 +65,7 @@ class _Harness:
         yield FakeHarnessSession(success_stream({"summary": "claude planned instead", "plan_text": ""}))
 
 
+@pytest.mark.usefixtures("pass_store")
 class TestPlanningOnTheReadOnlyExecutor(TestCase):
     def setUp(self) -> None:
         clear_route_availability_cache()
@@ -79,7 +85,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         LandscapeArtifact.record(ticket=ticket, survey=_SURVEY, recorded_by="t3:intake")
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
 
-    def _run(self, *harnesses: str, issue: dict[str, object] | None = None) -> TaskAttempt:
+    def _run(self, *harnesses: str, issue: dict[str, object] | None = None, task: Task | None = None) -> TaskAttempt:
         config = AgentConfig(
             skill_models={
                 "architecture-design": tuple(AgentRouteCandidate(name, f"{name}-model") for name in harnesses)
@@ -90,7 +96,7 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
             list_issue_comments=lambda *, issue_url: [],
         )
         with self._world(config, host):
-            return run_agent(self._task(), phase="planning", overlay_skill_metadata=SkillMetadata())
+            return run_agent(task or self._task(), phase="planning", overlay_skill_metadata=SkillMetadata())
 
     @contextlib.contextmanager
     def _world(self, config: AgentConfig, host: SimpleNamespace, *, skills: list[str] | None = None) -> Generator[None]:
@@ -121,7 +127,14 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
             self.built.append("claude_like")
             return _Harness()
 
-        register_harness(HarnessSpec(name="claude_like", factory=build, allows_provider=False))
+        register_harness(
+            HarnessSpec(
+                name="claude_like",
+                factory=build,
+                capabilities=HarnessCapabilities(metered_lane=True),
+                allows_provider=False,
+            )
+        )
 
     def test_planning_runs_in_the_executor_and_records_its_plan(self) -> None:
         attempt = self._run("codex_app_server")
@@ -137,15 +150,94 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert thread_start["sandbox"] == "danger-full-access"
         assert self.fake.keeper_alive
 
-    def test_a_refused_read_only_brief_falls_back_to_the_next_route_candidate(self) -> None:
+    def test_a_refused_read_only_brief_records_failure_and_parks_without_spending(self) -> None:
         self._register_claude()
-
+        before = timezone.now()
         attempt = self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"})
 
-        assert attempt.selected_harness == "claude_like"
-        assert "the issue body could not be read" in attempt.fallback_reason
-        assert self.built == ["claude_like"]
+        attempt.task.refresh_from_db()
+        assert attempt.task.status == Task.Status.PENDING
+        assert attempt.task.not_before > before
+        assert "the issue body could not be read" in attempt.error
+        assert "agent_route_paid_fallback" in attempt.error
+        assert not AgentRouteAvailability.objects.filter(harness="codex_app_server").exists()
+        assert not attempt.task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert self.built == []
         assert not [call for call in self.fake.calls if "setsid" in call]
+
+    def test_a_refused_brief_on_an_unrouted_dispatch_fails_with_the_refusal(self) -> None:
+        settings = replace(get_effective_settings(None), agent_harness="codex_app_server")
+
+        with patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings):
+            attempt = self._run(issue={"error": "Not a GitHub issue URL"})
+
+        attempt.task.refresh_from_db()
+        assert attempt.task.status == Task.Status.FAILED
+        assert "the issue body could not be read" in attempt.error
+
+    def test_a_refused_brief_tries_a_later_free_candidate(self) -> None:
+        register_harness(
+            HarnessSpec(
+                name="other_free",
+                factory=lambda _context: _Harness(metered=False),
+                capabilities=HarnessCapabilities(),
+                allows_provider=False,
+            )
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, "other_free", None)
+
+        with patch.object(runner_mod, "notify_user") as notify:
+            attempt = self._run("codex_app_server", "other_free", issue={"error": "Not a GitHub issue URL"})
+
+        assert attempt.selected_harness == "other_free"
+        assert attempt.lane != TaskAttempt.Lane.METERED
+        notify.assert_not_called()
+
+    def test_third_read_only_refusal_fails_with_a_readable_reason(self) -> None:
+        task = self._task()
+
+        first = self._run("codex_app_server", issue={"error": "Not a GitHub issue URL"}, task=task)
+        second = self._run("codex_app_server", issue={"error": "Not a GitHub issue URL"}, task=task)
+        third = self._run("codex_app_server", issue={"error": "Not a GitHub issue URL"}, task=task)
+
+        task.refresh_from_db()
+        assert first.error.startswith("limit_parked:")
+        assert second.error.startswith("limit_parked:")
+        assert task.status == Task.Status.FAILED
+        assert "issue body could not be read" in third.error
+        assert "agent_route_paid_fallback" not in third.error
+
+    def test_third_park_after_a_refusing_codex_and_a_gated_metered_candidate_fails_the_task(self) -> None:
+        self._register_claude()
+        task = self._task()
+
+        attempts = [
+            self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"}, task=task)
+            for _ in range(3)
+        ]
+
+        task.refresh_from_db()
+        assert [attempt.error.startswith("limit_parked:") for attempt in attempts] == [True, True, False]
+        assert task.status == Task.Status.FAILED
+        assert "issue body could not be read" in attempts[-1].error
+        assert "agent_route_paid_fallback" in attempts[-1].error
+        assert task.attempts.filter(error__startswith="read-only executor brief refused:").count() == 3
+        assert not task.attempts.filter(lane=TaskAttempt.Lane.METERED).exists()
+        assert self.built == []
+
+    def test_enabled_paid_fallback_runs_after_read_only_refusal(self) -> None:
+        self._register_claude()
+        settings = replace(get_effective_settings(None), agent_route_paid_fallback=True)
+
+        with (
+            patch.object(harness_dispatch_mod, "get_effective_settings", return_value=settings),
+            patch.object(runner_mod, "notify_user"),
+        ):
+            attempt = self._run("codex_app_server", "claude_like", issue={"error": "Not a GitHub issue URL"})
+
+        assert self.built == ["claude_like"]
+        assert attempt.lane == TaskAttempt.Lane.METERED
+        assert attempt.route_candidate_index == 1
 
     def test_remote_review_runs_on_codex_and_records_a_verdict_at_the_dispatched_head(self) -> None:
         head = "a" * 40
@@ -182,8 +274,8 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         self.fake.install()
         config = AgentConfig(skill_models={"review": (AgentRouteCandidate("codex_app_server", "codex-model"),)})
         host = SimpleNamespace(
-            get_issue=lambda url: {"body": "Review this pull request."},
-            list_issue_comments=lambda *, issue_url: [],
+            fetch_pr_message=lambda *, slug, pr_id: SimpleNamespace(body="Review this pull request."),
+            list_pr_comments=lambda *, repo, pr_iid: [],
             get_pr_file_diffs=lambda *, repo, pr_iid: {"src/example.py": "@@ -1 +1 @@\n-old\n+new"},
         )
         with (

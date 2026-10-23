@@ -32,8 +32,6 @@ GATED_TOOLS = frozenset(
     {"Agent", "AskUserQuestion", "Bash", "Edit", "NotebookEdit", "TaskCreate", "TaskUpdate", "Write"}
 )
 _MIN_TARGETS = 2
-_TOKEN_SCAN_LIMIT = 512
-VISIBLE_PLAN_OK_RE = re.compile(r"\[visible-plan-ok:\s*(\S[^\]]*?)\s*\]")
 
 _TICKET_ID_RE = re.compile(r"\b([A-Z]{2,10})-\d+\b")
 # A standard, protocol, encoding, hash or model name is never a work item, and two
@@ -103,27 +101,7 @@ _HARNESS_WRAPPER_MARKERS = ("<command-name>", "<skill-format>", "Base directory 
 
 def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True; `t3 <overlay> gate visible-plan disable`)."""
-    return teatree_bool_setting("visible_plan_gate_enabled", default=True)
-
-
-def visible_plan_ok_token(data: dict) -> str | None:
-    """The reason from a ``[visible-plan-ok: <reason>]`` token in the call, else None.
-
-    Every string argument is scanned rather than a per-tool field list, because the
-    gate governs tools whose only free text differs (Bash ``command``, Agent
-    ``prompt``, Write ``content``). An empty reason does not unblock, and only the
-    first 512 characters of each field count so a buried token cannot slip through.
-    """
-    tool_input = data.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return None
-    for value in tool_input.values():
-        if not isinstance(value, str) or not value:
-            continue
-        match = VISIBLE_PLAN_OK_RE.search(value[:_TOKEN_SCAN_LIMIT])
-        if match and (reason := match.group(1).strip()):
-            return reason
-    return None
+    return teatree_bool_setting("visible_plan_gate_enabled")
 
 
 def _owner_turn(transcript_path: str) -> tuple[str, str]:
@@ -237,7 +215,7 @@ def _deny_reason(targets: tuple[str, ...]) -> str:
         "whose subject and description cover every target may record the plan. Only once both plans "
         "are visible or recorded may you ask a question, edit, or dispatch. "
         "Do not use placeholder Bash or printed tool syntax. "
-        "A false positive escapes with `[visible-plan-ok: <reason>]` in the call, "
+        "A false positive escapes with `[gate-escape:visible_plan_gate: <reason>]` in the call, "
         "or `t3 <overlay> gate visible-plan disable`."
     )
 
@@ -279,7 +257,7 @@ def handle_enforce_visible_plan_before_tools(data: dict) -> bool:
     **Never-lockout escapes**, mandated by ``hooks/CLAUDE.md`` because the gate
     governs tools an agent needs to rescue itself with:
 
-    1. Per-call token ``[visible-plan-ok: <non-empty-reason>]`` in any string
+    1. Per-call token ``[gate-escape:visible_plan_gate: <non-empty-reason>]`` in any string
         argument (first 512 chars).
     2. Config kill-switch ``visible_plan_gate_enabled = false``
         (``t3 <overlay> gate visible-plan disable``, itself on the self-rescue
@@ -300,9 +278,6 @@ def handle_enforce_visible_plan_before_tools(data: dict) -> bool:
             task_plan = "\n".join(str(tool_input.get(field, "")) for field in ("subject", "description"))
             if visible_plan_covers_targets(task_plan, targets):
                 return False
-    if reason_token := visible_plan_ok_token(data):
-        sys.stderr.write(f"NOTE: visible-plan gate skipped via [visible-plan-ok: {reason_token}].\n")
-        return False
 
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 -- deferred cycle
 
@@ -313,5 +288,4 @@ __all__ = [
     "GATED_TOOLS",
     "handle_enforce_visible_plan_before_tools",
     "visible_plan_covers_targets",
-    "visible_plan_ok_token",
 ]

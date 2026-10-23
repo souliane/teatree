@@ -14,6 +14,7 @@ import pytest
 from teatree.db import write_domain
 from teatree.db.write_domain import ControlDbWriteDomain, DescriptorTableUnavailableError, read_write_holders_across
 from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.utils.mount_points import MountEntry
 from teatree.utils.run import CommandFailedError
 
 
@@ -35,6 +36,24 @@ class TestDatabaseIsOffTheHostFilesystem:
         domain = ControlDbWriteDomain(tmp_path / "db.sqlite3", env={CONTROL_DB_DIR_ENV: "/var/lib/teatree/control-db"})
 
         assert domain.expected_dir == Path("/var/lib/teatree/control-db")
+
+    @pytest.mark.parametrize(
+        ("fstype", "expected"),
+        [
+            ("ext4", "eligible"),
+            ("overlay", "eligible"),
+            ("tmpfs", "eligible"),
+            ("virtiofs", "ineligible"),
+            ("nfs", "ineligible"),
+            ("cifs", "ineligible"),
+        ],
+    )
+    def test_wal_requires_a_proven_local_mount(self, tmp_path: Path, fstype: str, expected: str) -> None:
+        db = tmp_path / "db.sqlite3"
+        domain = ControlDbWriteDomain(db, env={CONTROL_DB_DIR_ENV: str(tmp_path)}, containerized=True)
+        with patch.object(write_domain, "read_mount_entries", return_value=(MountEntry(Path("/"), fstype),)):
+            assert domain.wal_eligible[0] is (expected == "eligible")
+            assert domain.on_host_filesystem is (fstype == "virtiofs")
 
 
 class TestReadWriteHolderDetection:

@@ -83,7 +83,7 @@ docker run --rm --pull never --network none \
   --mount "type=volume,src=${project}_teatree_control_db,dst=/db" \
   --mount "type=bind,src=$snapshot,dst=/snapshot,readonly" \
   --entrypoint sh "${TEATREE_IMAGE_REPOSITORY:-teatree-factory}:$previous_sha" \
-  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm'
+  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm /db/db.sqlite3-journal'
 deploy/roll.sh "$previous_sha"
 )
 ```
@@ -235,8 +235,8 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
-the worker read the **same** `db.sqlite3` (rollback journal, `BEGIN IMMEDIATE` —
-writers serialize and readers wait behind them; see `SQLITE_WRITE_SERIALIZATION_OPTIONS`):
+the worker read the **same** `db.sqlite3` (WAL on the control-DB volume,
+`BEGIN IMMEDIATE` for serialized writers; see `ControlDbJournal`):
 
 Every **container target** below is fixed — it is what `teatree.paths` resolves
 inside the container (`HOME=/home/teatree`, no `XDG_DATA_HOME`). Each **host
@@ -261,6 +261,45 @@ source == target (path identity).
 | interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
 | `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
 
+`ControlDbJournal` selects WAL with `synchronous=NORMAL` and a 64 MiB journal
+size limit only when the container sees the control DB in its named directory
+on a proven local filesystem. An unreadable mount table, a host process, a
+symlinked path, or a shared or network filesystem selects TRUNCATE for a new
+database or a deployed install. All other database paths also select TRUNCATE.
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in the box's `deploy/teatree.env` forces
+rollback mode for the control DB;
+`wal` asserts that WAL is eligible and fails at connection setup if it is not.
+Values are case-insensitive and may have surrounding whitespace; other values
+fail at connection setup. The file's mode can change only when a connection
+opens, and a TRUNCATE opener fails with `database is locked` while another
+process holds a WAL connection open.
+
+An unshipped checkout has a `.git` entry and a root different from
+`TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
+preserves an existing rollback or WAL header; if storage eligibility cannot be
+established for an existing WAL file, opening it fails instead of selecting
+TRUNCATE. At the literal default control-DB directory, an override cannot
+change an existing header. An explicit `wal` override in another control-DB
+directory can change an existing rollback file to WAL when the storage is
+eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
+uses normal selection.
+
+On the first deploy, drain the worker and stop every database-using service
+before the new code opens the control DB. A mode change while an old process
+holds a connection can make new connections fail with `database is locked`.
+Start the new services only after the old processes have exited, then confirm
+the journal mode with `t3 doctor`.
+
+To return to TRUNCATE or roll back to an image from before this change, set
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
+in the Compose project including the watchdog, and confirm `docker ps` lists
+none before starting any service. Stopping only the worker or recreating the
+services together leaves an old WAL connection open and can make the staged
+init fail. Keep the `-wal` beside `db.sqlite3`: the first process to open it
+alone replays its committed rows while converting the file to TRUNCATE. Delete
+old sidecars only when replacing `db.sqlite3` with a verified snapshot, as in
+the database restore procedure above.
+
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
 `$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the
 same dirs by construction. Both also **create** every host source first: dockerd
@@ -277,6 +316,13 @@ rewrite the operator's Claude memories. Create that directory on the host before
 starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
 For direct `docker compose` or `deploy/t3` calls, export the value or put it in
 `deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
+
+The staged sealed store keeps its master key in the `teatree_control_db`
+named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
+and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
+a different key file during bootstrap. The current deployment still reads
+`pass` through the default store slot; `t3 teatree secrets import-pass` only
+inventories candidate entries and does not migrate or delete credentials.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -1346,7 +1392,8 @@ Tools, `/usr/bin/python3` is only an installer stub, so install them (or another
 The containerized agent's `~/.claude/settings.json` is **generated by the `init`
 role** from the image-baked, committed template `deploy/claude-settings.template.json`
 (plus env overrides) *before* `t3 setup` runs — so the loop's agent has a
-deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, and a
+deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, a
+one-character skill description listing cap (`skillListingMaxDescChars: 1`), and a
 box-sized `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` instead of stock CLI defaults.
 The complete `~/.claude` tree is a factory-owned named volume. Host settings,
 credentials, plugins, skills, sessions, and memories are never mounted into the
@@ -1524,11 +1571,10 @@ mount instead, and the worker never takes the executor's word for it:
   `docker inspect` against its own mounts; any writable mount, unexpected mount, readable
   secret file, owned tree, environment key, tool, capability or malformed answer refuses
   the phase, which then runs on Claude.
-- **Git data must be readable by others.** It reads git as `nobody`, so a clone whose git
-  files were written owner-only (`packed-refs` 0600, packs 0400, as a umask of 077 leaves
-  them) refuses the phase and names the file. Opening them up is the owner's call:
-  `chmod -R a+rX <clone>/.git` on the deploy checkout and each clone in the clone volume,
-  then `git config core.sharedRepository 0644` there so later writes stay readable.
+- **Git data remains readable after maintenance.** Before each attestation, the writable
+  worker repairs Git files and directories under the matched read-only executor mounts for
+  `nobody`, including `packed-refs`, packs, commit graphs, refs and logs. The probe then
+  reports all remaining unreadable paths together with the `chmod -R a+rX <gitdir>` repair.
 
 It sits behind its own compose profile, `ro-executor`, so no whole-project `compose build`
 or `up` reaches it: neither the watchdog's `up -d` nor a generation stack's ever builds or

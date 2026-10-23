@@ -52,6 +52,12 @@ class TestThePostureDecidesAColleagueVisiblePost(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_draft_note", egress_forbidden=True) is OnBehalfVerdict.AUTO_DRAFT
         assert resolve_on_behalf_verdict("post_draft_note", egress_forbidden=False) is OnBehalfVerdict.AUTO_DRAFT
 
+    def test_inline_nits_on_a_proved_own_pr_are_author_side_only(self) -> None:
+        own = OnBehalfContext(own_mr=True)
+        foreign = OnBehalfContext(own_mr=False)
+        assert resolve_on_behalf_verdict("post_review_nit", own, egress_forbidden=True) is OnBehalfVerdict.PROCEED
+        assert resolve_on_behalf_verdict("post_review_nit", foreign, egress_forbidden=True) is OnBehalfVerdict.BLOCK
+
     def test_review_request_actions_require_proved_owner_authorship(self) -> None:
         for action in ("review_nag_post", "review_request_resume_post", "review_request_post"):
             for own_mr in (False, None):

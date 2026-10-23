@@ -41,7 +41,7 @@ ledger row by path membership in ``source_files`` OR by its name appearing in a
 
 The SECOND tier — the BUDGET tier (#2723) — exists because the curated corpus has
 ~294 must-preserve (user / BINDING) entries, whose rendered index can exceed the
-hot-index session-load budgets (~24 KB of bytes, 200 lines), and the ledger home-rail is
+hot-index prefix budgets (2 KiB of bytes, 20 lines), and the ledger home-rail is
 structurally empty for hand-authored memories (it can never archive them). When the hot
 ``MEMORY.md`` is over EITHER budget the tier scores every file by :func:`_signal_score`
 (user / BINDING / inbound links / recency / type) and archives the LOWEST-signal first —

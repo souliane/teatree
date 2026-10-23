@@ -2,11 +2,11 @@
 
 Every key must be a real discovered scenario (a scenario renamed or removed
 must be pruned by the next ``t3 eval set-baseline`` run, not left stale), every
-value a known ``TIER_MODELS`` key, and no ``frontier`` value unless the
+value a known ``tier_models()`` key, and no ``frontier`` value unless the
 scenario is listed under ``frontier_ok``.
 """
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.eval.discovery import discover_specs
 from teatree.eval.presets import BASELINE_HEADER, BASELINE_PRESET_PATH, load_baseline_file
 
@@ -26,7 +26,7 @@ class TestBaselineYamlHygiene:
 
     def test_every_value_is_a_known_tier(self) -> None:
         parsed = load_baseline_file(BASELINE_PRESET_PATH)
-        bad = {name: tier for name, tier in parsed.scenario_tiers.items() if tier not in TIER_MODELS}
+        bad = {name: tier for name, tier in parsed.scenario_tiers.items() if tier not in tier_models()}
         assert not bad, f"baseline.yaml declares unknown tiers: {bad}"
 
     def test_no_frontier_value_unless_listed_in_frontier_ok(self) -> None:

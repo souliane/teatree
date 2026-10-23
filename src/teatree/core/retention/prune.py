@@ -32,6 +32,7 @@ from teatree.config.settings import UserSettings
 from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
 from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.usage_window_state import PARK_ATTEMPT_RETENTION_DAYS
 from teatree.core.retention.slack_rows import (
     DM_RETENTION_DAYS,
     LONG_PAYLOAD_RETENTION_DAYS,
@@ -56,14 +57,13 @@ SCHEDULED_MAX_BATCHES = 10
 
 #: Post-mortem material only: settled inbound events and sent notification payloads.
 POST_MORTEM_RETENTION_DAYS = LONG_PAYLOAD_RETENTION_DAYS
-#: Whether the fleet is parked NOW is what a park tells; a week covers after-the-fact forensics.
-PARK_ATTEMPT_RETENTION_DAYS = 7
-
 PARK_TABLE = "TaskAttempt (park)"
 FAILED_TASK_TABLE = "Task (failed)"
 COMPLETED_TASK_TABLE = "Task (completed)"
 PING_PAYLOAD_TABLE = "BotPing (payload)"
 INCOMING_EVENT_TABLE = "IncomingEvent"
+FORGE_EVENT_TABLE = "IncomingEvent (forge)"
+FORGE_EVENT_RETENTION_DAYS = 8
 TRANSITION_TABLE = "TicketTransition"
 TASK_RESULT_TABLE = "DBTaskResult"
 PENDING_DM_TABLE = "PendingChatInjection"
@@ -174,7 +174,18 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
             cascade=_task_attempts,
         ),
         Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=BotPing.compact),
-        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, IncomingEvent.objects.prunable, cascade=_event_children),
+        Lane(
+            FORGE_EVENT_TABLE,
+            FORGE_EVENT_RETENTION_DAYS,
+            IncomingEvent.objects.forge_identity_rows,
+            cascade=_event_children,
+        ),
+        Lane(
+            INCOMING_EVENT_TABLE,
+            POST_MORTEM_RETENTION_DAYS,
+            IncomingEvent.objects.non_identity_prunable_rows,
+            cascade=_event_children,
+        ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
         *_slack_lanes(),
     )

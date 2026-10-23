@@ -196,7 +196,7 @@ class TestFiler(TestCase):
         file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
         assert [url for url, _ in host.updated] == ["https://github.com/o/r/issues/9"]
 
-    def test_an_unmarked_ticket_is_not_reused_and_is_recorded_as_rejected(self) -> None:
+    def test_an_unmarked_ticket_is_not_reused_or_exposed_in_the_new_body(self) -> None:
         host = _FakeHost(existing=[_open_issue("https://github.com/o/r/issues/9", "unrelated")])
         filed = file_class_c_issue(host, finding=_finding(), enforcement="Add a gate.", context=_CONTEXT)
         assert not filed.already_filed

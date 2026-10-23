@@ -16,7 +16,7 @@ from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_ticket
-from teatree.core.review.mr_metadata import ensure_standard_body
+from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.ship import (
     PrTitleInputs,
     overlay_pr_labels,
@@ -82,6 +82,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
         required_sections=overlay.metadata.get_required_description_sections(),
         section_defaults=overlay.metadata.get_description_section_defaults(),
     )
+    description = append_recorded_visual_qa(description, (ticket.extra or {}).get("visual_qa"), repo_path=repo_path)
     return repo_path, sanitized_title, description
 
 

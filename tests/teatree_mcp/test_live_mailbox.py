@@ -12,13 +12,15 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import closing
+from concurrent.futures import Future
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 from unittest.mock import patch
 
+import httpx2
 import pytest
 import typer
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -27,22 +29,33 @@ from django.test import TransactionTestCase
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import override_allow_model_requests
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from typer.testing import CliRunner
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
+from teatree.agents.claude_sdk_session import LiveInputQueue
+from teatree.agents.harness import HarnessSession, PydanticAiHarness
+from teatree.agents.harness_dispatch import DispatchHarness
+from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
-from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
-    bound_task_mailbox,
+    PushOnlyTask,
     reset_shared_brokers,
     shared_broker,
 )
-from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
+from teatree.agents.pydantic_ai_steering import PeerInputAdmission
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.agents.runner_stream import StreamCapture
 from teatree.cli.mcp import serve
 from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.core.models import Session, Task, TaskAttempt
@@ -51,8 +64,10 @@ from teatree.mcp.server import build_server
 from teatree.skill_support import index as skill_index
 from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 from teatree.utils.thread_db import close_thread_db_connections
-from tests.factories import planned_ticket
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, planned_ticket
 from tests.teatree_agents._live_owner import BoundarySession, OwnerLoop
+from tests.teatree_agents._router_fake import text_reply, tool_call_reply
+from tests.teatree_agents._sdk_fake import result_message
 from tests.teatree_agents.test_live_control_integration import _FakeCliRun, _in_background
 from tests.teatree_agents.test_live_control_integration import _until as wait_until
 from tests.teatree_mcp._call_tool_result import structured
@@ -126,8 +141,8 @@ def test_a_read_only_phase_sends_and_receives_through_the_real_server(broker: Li
     kwargs = cli_build.call_args.kwargs
     assert kwargs["read_only"] is True
 
-    sender = broker.register(room="ticket", harness="claude_sdk", label=phase, phase=phase)
-    recipient = broker.register(room="ticket", harness="claude_sdk", label=phase, phase=phase)
+    sender = broker.register(room="ticket", harness="claude_sdk", label=phase)
+    recipient = broker.register(room="ticket", harness="claude_sdk", label=phase)
     with patch("teatree.mcp.server.get_all_overlays", return_value={}):
         with patch.dict("os.environ", sender.mcp_env()):
             sender_server = build_server(**kwargs)
@@ -277,6 +292,226 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             assert self.runs["recipient"].user_turns() == 1
             assert recipient_attempt.exit_code == sender_attempt.exit_code == 0
             assert recipient_attempt.result["summary"] == "Done"
+
+    async def _pydantic_network(self, request: httpx2.Request) -> httpx2.Response:
+        self._pydantic_http_requests.append(json.loads(request.content))
+        if len(self._pydantic_http_requests) == 1:
+            self._pydantic_owner_loops.append(asyncio.get_running_loop())
+            self._pydantic_first_request.set()
+            await self._pydantic_release.wait()
+            return tool_call_reply("agent_mailbox_peers", cost_usd=0.00001)
+        self._pydantic_second_request.set()
+        await self._pydantic_second_release.wait()
+        result = {
+            "summary": "Done",
+            "plan_text": "The peer message was received",
+            "base_sha": _FORTY_HEX,
+            "adequacy": dict(TEST_ADEQUACY),
+        }
+        return text_reply(json.dumps(result), cost_usd=0.00001)
+
+    async def _send_from_mcp_child(self, script: Path, recipient_task: Task) -> tuple[dict[str, Any], str]:
+        sender_client = self.clients["sender"]
+        child = StdioServerParameters(
+            command=sys.executable,
+            args=[str(script)],
+            env={
+                "T3_AGENT_MAILBOX_SOCKET": str(sender_client.socket_path),
+                "T3_AGENT_MAILBOX_TOKEN": sender_client.token,
+            },
+        )
+        async with stdio_client(child) as (reader, writer), ClientSession(reader, writer) as session:
+            await session.initialize()
+            own = cast("dict[str, Any]", structured(await session.call_tool("agent_mailbox_self", {})))
+            peers = cast("list[dict[str, Any]]", structured(await session.call_tool("agent_mailbox_peers", {})))
+            [recipient] = [peer for peer in peers if peer["ticket"] == str(recipient_task.ticket_id)]
+            sent = await session.call_tool(
+                "agent_mailbox_send", {"to": recipient["address"], "text": "peer nonce", "key": "runner-n1"}
+            )
+            return cast("dict[str, Any]", structured(sent)), own["address"]
+
+    def _dispatch_pydantic_recipient(self) -> TaskAttempt:
+        try:
+            return run_agent(self.tasks["recipient"], phase="planning", overlay_skill_metadata={})
+        finally:
+            close_thread_db_connections()
+
+    def _wait_for_pydantic_receipt(
+        self, sending: Future[tuple[dict[str, Any], str]], recipient: Future[TaskAttempt]
+    ) -> tuple[dict[str, Any], str, TaskAttempt]:
+        owner_loop = self._pydantic_owner_loops[0]
+        owner_loop.call_soon_threadsafe(self._pydantic_release.set)
+        wait_until(
+            lambda: self._pydantic_second_request.is_set() or recipient.done(),
+            "the recipient's second request",
+        )
+        if recipient.done():
+            recipient.result(timeout=0)
+        receipt, sender_address = sending.result(timeout=30)
+        owner_loop.call_soon_threadsafe(self._pydantic_second_release.set)
+        return receipt, sender_address, recipient.result(timeout=30)
+
+    def _release_pydantic_requests(self) -> None:
+        if self._pydantic_owner_loops and not self._pydantic_owner_loops[0].is_closed():
+            owner_loop = self._pydantic_owner_loops[0]
+            owner_loop.call_soon_threadsafe(self._pydantic_release.set)
+            owner_loop.call_soon_threadsafe(self._pydantic_second_release.set)
+
+    def test_a_claude_sender_reaches_a_running_pydantic_task_at_its_next_request(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="t3-pydantic-peer-") as directory:
+            root = Path(directory)
+            self._prepare_runs(root)
+            recipient_task = self.tasks["recipient"]
+            recipient_task.phase = "planning"
+            recipient_task.save(update_fields=["phase"])
+            self._pydantic_http_requests: list[dict[str, object]] = []
+            self._pydantic_first_request = threading.Event()
+            self._pydantic_release = asyncio.Event()
+            self._pydantic_second_request = threading.Event()
+            self._pydantic_second_release = asyncio.Event()
+            self._pydantic_owner_loops: list[asyncio.AbstractEventLoop] = []
+
+            http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(self._pydantic_network))
+            model = OpenAIChatModel(
+                "fake-router-model",
+                provider=OpenAIProvider(
+                    base_url="https://router.invalid/v1", api_key="sentinel", http_client=http_client
+                ),
+            )
+            pydantic_harness = PydanticAiHarness(model=model, phase="planning")
+            original_route = runner_mod.resolve_dispatch_harness
+            self._pydantic_inputs: list[LiveInputQueue] = []
+
+            def capture_admission(inputs: LiveInputQueue) -> PeerInputAdmission:
+                self._pydantic_inputs.append(inputs)
+                return PeerInputAdmission(inputs)
+
+            def route(task: Task, *, phase: str | None = None, skills: list[str] | None = None) -> DispatchHarness:
+                if task.pk == recipient_task.pk:
+                    return DispatchHarness(harness=pydantic_harness, name="pydantic_ai", provider=None)
+                return original_route(task, phase=phase, skills=skills)
+
+            script = root / "mailbox_mcp_child.py"
+            script.write_text(
+                "from mcp.server.mcpserver import MCPServer\n"
+                "from teatree.mcp.agent_mailbox import register\n"
+                "server = MCPServer('teatree-mailbox-test')\n"
+                "assert register(server)\n"
+                "server.run('stdio')\n"
+            )
+
+            with (
+                patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
+                patch.object(runner_mod, "resolve_dispatch_harness", side_effect=route),
+                patch.object(harness_mod, "PeerInputAdmission", side_effect=capture_admission),
+                patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+                patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
+                override_allow_model_requests(allow_model_requests=True),
+            ):
+                sender = _in_background(lambda: self._dispatch("sender"))
+                try:
+                    wait_until(lambda: self.runs["sender"].saw("holding_tool") or sender.done(), "the sender")
+                    if sender.done():
+                        sender.result(timeout=0)
+                    recipient = _in_background(self._dispatch_pydantic_recipient)
+                    wait_until(
+                        lambda: self._pydantic_first_request.is_set() or recipient.done(),
+                        "the recipient's first request",
+                    )
+                    if recipient.done():
+                        recipient.result(timeout=0)
+                    sending = _in_background(lambda: asyncio.run(self._send_from_mcp_child(script, recipient_task)))
+                    wait_until(
+                        lambda: self._pydantic_inputs and len(self._pydantic_inputs[0]._pending) == 1,
+                        "queued peer input",
+                    )
+                    assert not sending.done()
+                    inspected = LiveClient().inspect(recipient_task.pk)
+                    assert (inspected["harness"], inspected["steerable"]) == ("pydantic_ai", True)
+                    receipt, sender_address, recipient_attempt = self._wait_for_pydantic_receipt(sending, recipient)
+                finally:
+                    self.runs["sender"].release_tool.touch()
+                    self._release_pydantic_requests()
+                sender_attempt = sender.result(timeout=30)
+
+            assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", True)
+            assert "peer nonce" not in json.dumps(self._pydantic_http_requests[0])
+            assert json.dumps(self._pydantic_http_requests[1]).count("peer nonce") == 1
+            assert sender_address in json.dumps(self._pydantic_http_requests[1])
+            assert recipient_attempt.exit_code == sender_attempt.exit_code == 0
+
+    def test_a_peer_send_to_an_idle_claude_session_wakes_it_once(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="t3-peer-idle-") as directory:
+            root = Path(directory)
+            self._prepare_runs(root)
+            script = root / "mailbox_mcp_child.py"
+            script.write_text(
+                "from mcp.server.mcpserver import MCPServer\n"
+                "from teatree.mcp.agent_mailbox import register\n"
+                "server = MCPServer('teatree-mailbox-test')\n"
+                "assert register(server)\n"
+                "server.run('stdio')\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
+                patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 2.0),
+                patch.object(
+                    runner_mod.TaskUsage,
+                    "for_task",
+                    classmethod(lambda cls, task: TaskUsage(turns=0, cost_usd=0.0)),
+                ),
+            ):
+                sender = _in_background(lambda: self._dispatch("sender"))
+
+                async def wake() -> tuple[SendReceipt, SendReceipt]:
+                    sender_client = self.clients["sender"]
+                    child = StdioServerParameters(
+                        command=sys.executable,
+                        args=[str(script)],
+                        env={
+                            "T3_AGENT_MAILBOX_SOCKET": str(sender_client.socket_path),
+                            "T3_AGENT_MAILBOX_TOKEN": sender_client.token,
+                        },
+                    )
+                    async with stdio_client(child) as (reader, writer), ClientSession(reader, writer) as client:
+                        await client.initialize()
+                        await asyncio.to_thread(
+                            wait_until, lambda: self.runs["recipient"].saw("holding_tool"), "recipient's first turn"
+                        )
+                        self.runs["recipient"].release_tool.touch()
+                        task_pk = self.tasks["recipient"].pk
+                        await asyncio.to_thread(
+                            wait_until,
+                            lambda: (
+                                (facts := shared_registry().facts(task_pk)) is not None and facts["state"] == "idle"
+                            ),
+                            "recipient's idle window",
+                        )
+                        peers = structured(await client.call_tool("agent_mailbox_peers", {}))
+                        [target] = [peer for peer in peers if peer["ticket"] == str(self.tasks["recipient"].ticket_id)]
+                        request = {"to": target["address"], "text": "new schema", "key": "wake-1"}
+                        first = structured(await client.call_tool("agent_mailbox_send", request))
+                        duplicate = structured(await client.call_tool("agent_mailbox_send", request))
+                        return cast("SendReceipt", first), cast("SendReceipt", duplicate)
+
+                try:
+                    wait_until(lambda: self.runs["sender"].saw("holding_tool"), "sender's first turn")
+                    sending = _in_background(lambda: asyncio.run(wake()))
+                    recipient_attempt = self._dispatch("recipient")
+                    receipt, duplicate = sending.result(timeout=30)
+                finally:
+                    self.runs["sender"].release_tool.touch()
+                    self.runs["recipient"].release_tool.touch()
+                sender.result(timeout=30)
+
+            assert (receipt["outcome"], receipt["code"]) == ("accepted_new_turn", None)
+            assert duplicate == receipt
+            assert self.runs["recipient"].user_turns() == 2
+            assert "new schema" in json.dumps(self.runs["recipient"].events())
+            assert recipient_attempt.exit_code == 0
 
 
 def _rejected(message_id: int, to: str, code: str, *, queued: bool) -> SendReceipt:
@@ -462,7 +697,7 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
     sender = routed_broker.register(room="ticket", harness="codex_app_server", label="reviewing task 4")
-    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coding task 7", task=_TASK.pk)
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coding task 7", task=_TASK)
     session = BoundarySession()
     client = MailboxClient(sender.socket_path, sender.token)
 
@@ -492,6 +727,29 @@ def test_a_send_to_a_busy_steerable_peer_is_pushed_into_its_current_turn(
     ] == ["the schema moved"]
 
 
+def test_a_peer_delivery_with_an_old_recipient_fence_cannot_reach_the_new_attempt(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="codex", label="sender")
+    old = replace(_TASK, fence=LiveFence("old", "worker-a"))
+    current = replace(_TASK, fence=LiveFence("new", "worker-b"))
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=old)
+    session = BoundarySession()
+
+    with OwnerLoop(registry, current, session):
+        receipt = invoke(
+            MailboxClient(sender.socket_path, sender.token), "send", to=recipient.address, text="old", key="same"
+        )
+        replay = invoke(
+            MailboxClient(sender.socket_path, sender.token), "send", to=recipient.address, text="old", key="same"
+        )
+
+    assert receipt == replay
+    assert (receipt["outcome"], receipt["code"]) == ("rejected", "stale_command")
+    assert session.pending == 0
+    assert session.delivered == []
+
+
 def test_a_push_finishing_just_after_the_wait_returns_its_real_outcome(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
@@ -503,7 +761,7 @@ def test_a_push_finishing_just_after_the_wait_returns_its_real_outcome(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     client = MailboxClient(sender.socket_path, sender.token)
 
     with OwnerLoop(registry, _TASK, LateSession()):
@@ -527,7 +785,7 @@ def test_push_refusals_return_their_codes_without_waiting_for_the_inbox(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     client = MailboxClient(sender.socket_path, sender.token)
     for session, code in ((FinishingSession(), "turn_ended"), (NonSteerableSession(), "not_steerable")):
         with OwnerLoop(registry, _TASK, session):
@@ -558,7 +816,7 @@ def test_unknown_push_retry_waits_for_the_original_delivery(
             return None
 
     sender = routed_broker.register(room="first", harness="claude_sdk", label="sender")
-    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK.pk)
+    recipient = routed_broker.register(room="second", harness="claude_sdk", label="recipient", task=_TASK)
     session = UnknownSession()
     client = MailboxClient(sender.socket_path, sender.token)
     reader = MailboxClient(recipient.socket_path, recipient.token)
@@ -582,7 +840,7 @@ def test_an_inbox_read_accepts_first_and_withdraws_the_pending_push(
     routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
 ) -> None:
     sender = routed_broker.register(room="ticket", harness="claude_sdk", label="planner")
-    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coder", task=_TASK.pk)
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="coder", task=_TASK)
     session = BoundarySession()
     client = MailboxClient(sender.socket_path, sender.token)
     reader = MailboxClient(recipient.socket_path, recipient.token)
@@ -831,7 +1089,7 @@ def test_peer_push_crosses_worker_sockets_to_the_recipient_owner_loop(
         LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as receiver_broker,
     ):
         sender = sender_broker.register(room="ticket-1", harness="codex_app_server", label="reviewer")
-        recipient = receiver_broker.register(room="ticket-2", harness="claude_sdk", label="coder", task=_TASK.pk)
+        recipient = receiver_broker.register(room="ticket-2", harness="claude_sdk", label="coder", task=_TASK)
         session = BoundarySession()
         with OwnerLoop(registry, _TASK, session) as owner:
 
@@ -941,11 +1199,11 @@ def test_a_planted_socket_cannot_advertise_a_peer_or_receive_its_text(
     assert not any(request.get("text") == "private text" for request in captured)
 
 
-def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exists(
+def test_a_participant_registered_without_a_binding_is_refused(
     broker: LiveMailboxBroker,
 ) -> None:
     sender = broker.register(room="ticket-1", harness="claude_sdk", label="planner")
-    recipient = broker.register(room="ticket-2", harness="pydantic_ai", label="coder", task=7)
+    recipient = broker.register(room="ticket-2", harness="pydantic_ai", label="coder", task=_TASK, can_receive=False)
     client = MailboxClient(sender.socket_path, sender.token)
 
     receipt = invoke(client, "send", to=recipient.address, text="review", key="pydantic", timeout_seconds=0.05)
@@ -956,6 +1214,154 @@ def test_pydantic_peer_is_reported_as_unable_to_receive_before_its_adapter_exist
         False,
     )
     assert invoke(MailboxClient(recipient.socket_path, recipient.token), "inbox")["messages"] == []
+
+
+def test_a_pydantic_participant_with_a_binding_is_receivable(broker: LiveMailboxBroker) -> None:
+    sender = broker.register(room="ticket", harness="claude_sdk", label="sender")
+    recipient = broker.register(room="ticket", harness="pydantic_ai", label="receiver")
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+    recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+
+    assert next(peer for peer in invoke(sender_client, "peers") if peer["address"] == recipient.address)["can_receive"]
+    receipt = invoke(sender_client, "send", to=recipient.address, text="hello", key="one", timeout_seconds=0.01)
+    assert receipt["code"] != "recipient_cannot_receive"
+    assert invoke(recipient_client, "inbox")["messages"][0]["text"] == "hello"
+
+
+@pytest.mark.parametrize("phase", ["short_describe", ""])
+def test_a_pydantic_task_without_mailbox_tools_refuses_peer_delivery(broker: LiveMailboxBroker, phase: str) -> None:
+    options = ClaudeAgentOptions()
+    task = LiveTask(pk=8, ticket=3, phase=phase, harness="pydantic_ai", model="m")
+    sender = broker.register(room="3", harness="claude_sdk", label="sender")
+    with bound_task_mailbox(options, task, broker=broker) as recipient:
+        assert recipient is not None
+        client = MailboxClient(sender.socket_path, sender.token)
+        peer = next(peer for peer in invoke(client, "peers") if peer["address"] == recipient.address)
+        assert peer["can_receive"] is False
+        receipt = invoke(client, "send", to=recipient.address, text="hello", key="one", timeout_seconds=0.01)
+        assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == (
+            "rejected",
+            "recipient_cannot_receive",
+            False,
+        )
+
+
+class _PydanticHttpScenario:
+    def __init__(self, tmp_path: Path, mode: str) -> None:
+        self.tmp_path = tmp_path
+        self.admit = mode == "enabled"
+        self.registry = LiveSessionRegistry()
+        self.entered = threading.Event()
+        self.ready = threading.Event()
+        self.second_entered = threading.Event()
+        self.requests: list[dict[str, object]] = []
+        self.owner_loops: list[asyncio.AbstractEventLoop] = []
+        self.releases: list[asyncio.Event] = []
+        self.second_releases: list[asyncio.Event] = []
+        self.task = LiveTask(pk=77, ticket=3, phase="coding", harness="pydantic_ai", model="function")
+        self.options = ClaudeAgentOptions(mcp_servers={"teatree": {"command": "t3", "args": ["mcp", "serve"]}})
+
+    async def network(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(json.loads(request.content))
+        if len(self.requests) == 1:
+            self.entered.set()
+            await self.releases[0].wait()
+            return tool_call_reply("agent_mailbox_peers", cost_usd=0.00001)
+        if not self.admit:
+            self.second_entered.set()
+            await self.second_releases[0].wait()
+        return text_reply(json.dumps({"summary": "Done"}), cost_usd=0.00001)
+
+    async def recipient_run(self) -> None:
+        self.owner_loops.append(asyncio.get_running_loop())
+        self.releases.append(asyncio.Event())
+        self.second_releases.append(asyncio.Event())
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(self.network)) as http_client:
+            model = OpenAIChatModel(
+                "fake-router-model",
+                provider=OpenAIProvider(
+                    base_url="https://router.invalid/v1", api_key="sentinel", http_client=http_client
+                ),
+            )
+            harness = PydanticAiHarness(model=model, phase="coding")
+            async with harness.open(self.options) as session, self.registry.attach(self.task, self) as controller:
+                controller.bind(session)
+                self.ready.set()
+                await session.query("go")
+                await asyncio.wait_for(self.consume(session), timeout=10)
+
+    async def consume(self, session: HarnessSession) -> None:
+        async for _message in session.receive_response():
+            pass
+
+    tool_calls = 0
+    context_tokens = None
+    last_event_at = None
+    open_tool = None
+    result_message = None
+
+    def run(self) -> SendReceipt:
+        with (
+            LiveMailboxBroker(runtime_dir=self.tmp_path, registry=lambda: self.registry) as broker,
+            bound_task_mailbox(self.options, self.task, broker=broker) as recipient,
+        ):
+            assert recipient is not None
+            sender = broker.register(room="3", harness="claude_sdk", label="sender")
+            client = MailboxClient(sender.socket_path, sender.token)
+            admission_patch = (
+                nullcontext()
+                if self.admit
+                else patch.object(PeerInputAdmission, "__call__", _bypass_pydantic_admission)
+            )
+            with (
+                patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
+                override_allow_model_requests(allow_model_requests=True),
+                admission_patch,
+            ):
+                running = _in_background(lambda: asyncio.run(self.recipient_run()))
+                assert self.ready.wait(timeout=10)
+                wait_until(lambda: self.entered.is_set() or running.done(), "the first provider request")
+                if running.done():
+                    running.result(timeout=0)
+                peers = invoke(client, "peers")
+                assert next(peer for peer in peers if peer["address"] == recipient.address)["can_receive"]
+                sending = _in_background(
+                    lambda: invoke(
+                        client,
+                        "send",
+                        to=recipient.address,
+                        text="peer nonce",
+                        key="n1",
+                        timeout_seconds=2 if self.admit else 0.2,
+                    )
+                )
+                wait_until(lambda: (self.registry.facts(77) or {}).get("pending_inputs") == 1, "pending peer input")
+                assert not sending.done()
+                self.owner_loops[0].call_soon_threadsafe(self.releases[0].set)
+                if not self.admit:
+                    assert self.second_entered.wait(timeout=10)
+                receipt = sending.result(timeout=10)
+                if not self.admit:
+                    self.owner_loops[0].call_soon_threadsafe(self.second_releases[0].set)
+                running.result(timeout=10)
+        return receipt
+
+
+async def _bypass_pydantic_admission(
+    _processor: PeerInputAdmission, messages: list[ModelMessage]
+) -> list[ModelMessage]:
+    await asyncio.sleep(0)
+    return messages
+
+
+@pytest.mark.parametrize("mode", ["enabled", "disabled"])
+def test_pydantic_session_accepts_a_peer_before_its_next_request(tmp_path: Path, mode: str) -> None:
+    scenario = _PydanticHttpScenario(tmp_path, mode)
+    receipt = scenario.run()
+    expected = ("accepted_current_turn", None, True) if scenario.admit else ("rejected", "not_accepted_in_time", True)
+    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == expected
+    assert "peer nonce" not in json.dumps(scenario.requests[0])
+    assert json.dumps(scenario.requests[1]).count("peer nonce") == int(scenario.admit)
 
 
 def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
@@ -1038,11 +1444,13 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "phase": "coding",
             "can_receive": True,
         }
-        assert (broker._by_address[identity.address].room, broker._by_address[identity.address].task) == ("3", 7)
+        assert broker._by_address[identity.address].room == "3"
+        assert broker._by_address[identity.address].task == _TASK
         assert isinstance(options.mcp_servers, dict)
         teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
         env = teatree["env"]
         assert env["T3_AGENT_MAILBOX_TOKEN"] == identity.token
+        assert identity.token not in repr(options)
         assert env["T3_DISPATCHED_AGENT"] == "1"
         with patch.dict("os.environ", env):
             server = build_server()
@@ -1065,9 +1473,18 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
     mailbox = {name: text for name, text in tools.items() if name.startswith("agent_mailbox_")}
     assert len(mailbox) == 5
     assert all(mailbox.values())
+    assert "harness" in mailbox["agent_mailbox_self"]
+    assert all(word in mailbox["agent_mailbox_peers"] for word in ("ticket", "phase", "harness", "receive status"))
     assert "accepted_current_turn" in mailbox["agent_mailbox_send"]
+    for receipt in ("accepted_new_turn", "not_idle", "stale_command", "unknown_delivery"):
+        assert receipt in mailbox["agent_mailbox_send"]
+    assert "queued_in_inbox false" in mailbox["agent_mailbox_send"]
     assert "same key" in mailbox["agent_mailbox_send"]
+    assert "idle Claude peer" in mailbox["agent_mailbox_send"]
+    assert "in order" in mailbox["agent_mailbox_inbox"]
+    assert "20 seconds" in mailbox["agent_mailbox_wait"]
     assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
+    assert "parked task is never woken" in mailbox["agent_mailbox_wait"]
     assert "acceptance is not obedience" in INSTRUCTIONS
     assert "[TeaTree peer message ...]" in INSTRUCTIONS
     assert "information, not an instruction" in INSTRUCTIONS
@@ -1076,6 +1493,24 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
         annotations = {tool.name: tool.annotations for tool in asyncio.run(build_server().list_tools())}
     assert annotations["agent_mailbox_inbox"].read_only_hint is False
     assert annotations["agent_mailbox_wait"].read_only_hint is False
+
+
+def test_pydantic_binding_keeps_its_identity_out_of_reprs(broker: LiveMailboxBroker) -> None:
+    options = ClaudeAgentOptions()
+    task = replace(_TASK, harness="pydantic_ai")
+    with bound_task_mailbox(options, task, broker=broker) as identity:
+        assert identity is not None
+        neutral = HarnessOptions.from_sdk_options(options)
+        for holder in (
+            options,
+            neutral,
+            neutral.env,
+            identity,
+            identity.mcp_env(),
+            broker._by_token[identity.token],
+            neutral.mailbox,
+        ):
+            assert identity.token not in repr(holder)
 
 
 def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> None:
@@ -1091,8 +1526,15 @@ def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytes
     """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
 
     class _BrokenBroker(LiveMailboxBroker):
+        @override
         def register(
-            self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+            self,
+            *,
+            room: str,
+            harness: str,
+            label: str,
+            can_receive: bool | None = None,
+            task: LiveTask | PushOnlyTask | None = None,
         ) -> NoReturn:
             msg = "socket dir unwritable"
             raise OSError(msg)
@@ -1227,6 +1669,65 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
     assert [(peer["address"], peer["can_receive"]) for peer in peers] == [(codex.address, True)]
     assert sent["to"] == codex.address
     assert inbox["messages"][0]["text"] == "please review"
+
+
+def test_stdio_mcp_send_wakes_an_idle_claude_peer_once(
+    tmp_path: Path, routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    script = tmp_path / "mailbox_mcp_child.py"
+    script.write_text(
+        "from mcp.server.mcpserver import MCPServer\n"
+        "from teatree.mcp.agent_mailbox import register\n"
+        "server = MCPServer('teatree-mailbox-test')\n"
+        "assert register(server)\n"
+        "server.run('stdio')\n"
+    )
+    sender = routed_broker.register(room="ticket", harness="codex_app_server", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK)
+    child = StdioServerParameters(command=sys.executable, args=[str(script)], env=sender.mcp_env())
+    prompts: list[str] = []
+
+    class Session:
+        async def follow_up(self, prompt: str) -> None:
+            prompts.append(prompt)
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            raise SteerRejectedError(RejectCode.TURN_ENDED)
+
+        async def interrupt(self) -> None:
+            return None
+
+    async def exchange() -> SendReceipt:
+        async with stdio_client(child) as (reader, writer), ClientSession(reader, writer) as client:
+            await client.initialize()
+            capture = StreamCapture()
+            capture.observe(result_message())
+            async with registry.attach(_TASK, capture) as controller:
+                session = Session()
+                controller.bind(session)
+                window = controller.begin_idle()
+
+                async def accept() -> None:
+                    follow_up = await controller.wait_idle(window, 20)
+                    assert follow_up is not None
+                    await session.follow_up(follow_up.prompt)
+                    follow_up.started.set_result(None)
+
+                accepting = asyncio.create_task(accept())
+                result = structured(
+                    await client.call_tool(
+                        "agent_mailbox_send", {"to": recipient.address, "text": "new schema", "key": "wake-stdio"}
+                    )
+                )
+                await accepting
+                return cast("SendReceipt", result)
+
+    receipt = asyncio.run(exchange())
+    assert (receipt["outcome"], receipt["code"]) == ("accepted_new_turn", None)
+    assert len(prompts) == 1
+    assert "[TeaTree peer message" in prompts[0]
+    assert "new schema" in prompts[0]
+    assert "complete result envelope" in prompts[0]
 
 
 def test_the_published_socket_is_private_and_close_removes_only_it() -> None:

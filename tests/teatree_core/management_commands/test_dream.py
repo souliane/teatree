@@ -48,6 +48,7 @@ from teatree.loops.dream.loop import (
 )
 from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
+from teatree.token_report import EvalReserveDecision
 from tests._send_gate import allow_forge_repos
 
 _COMMAND = "teatree.core.management.commands.dream.Command"
@@ -89,6 +90,12 @@ class _DreamTickEnabledMixin:
     def setUp(self) -> None:
         super().setUp()
         _enable_dream_loop(last_run_at=None)
+        reserve = patch(
+            "teatree.core.management.commands.dream.local_eval_reserve_decision",
+            return_value=EvalReserveDecision(met=True),
+        )
+        reserve.start()
+        self.addCleanup(reserve.stop)
 
 
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
@@ -237,6 +244,22 @@ class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase
             call_command("dream", "tick", stdout=StringIO())
         # A successful pass that requested proposals drives the guarded promotion.
         promote_fn.assert_called_once()
+
+    def test_stale_health_parks_promotion_with_a_visible_reason(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch(
+                "teatree.core.management.commands.dream.local_eval_reserve_decision",
+                return_value=EvalReserveDecision(
+                    met=False, reason="stale OAuth headroom could not be refreshed", stale=True
+                ),
+            ),
+            patch("teatree.loops.dream.promote.build_live_validator", return_value=object()),
+            patch("teatree.loops.dream.promote.promote_proposals_file"),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+        assert "stale OAuth headroom could not be refreshed" in stdout.getvalue()
 
     def test_promotion_failure_is_warned_not_crashed(self) -> None:
         # A promotion error must NOT crash the pass that already stamped success.

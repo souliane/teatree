@@ -7,11 +7,11 @@ covering that existed and were not followed, so this is the deterministic
 refusal.
 
 FAIL CLOSED, which inverts every sibling gate in this directory: an un-asked
-question resolves to REFUSE, naming the probe that could not answer. There is
-no per-call ``[…-ok: <reason>]`` token. A non-force false positive may be
-released through the shared breaker's ``[fp-confirmed: <reason>]`` grant;
-force and delete refusals cannot. The owner can also use the deliberate
-config flip ``t3 <overlay> gate foreign-push disable``. The pre-push hook
+question resolves to REFUSE, naming the probe that could not answer. A non-force
+false positive carries ``[gate-escape:foreign_branch_push: <reason>]``, which the
+control DB records before the push is allowed; a force or delete refusal
+(``foreign_branch_push_force_delete``) accepts no escape. The owner can also use
+the deliberate config flip ``t3 <overlay> gate foreign-push disable``. The pre-push hook
 :mod:`teatree.hooks.foreign_mr_cli` asks a similar question and is fail-OPEN by
 construction; this gate reuses its forge seam and supplies its own tri-state.
 
@@ -152,7 +152,7 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
     parsed = push_specs(command, str(data.get("cwd", "") or ""))
     if not parsed.specs and not parsed.unread:
         return False
-    if not _teatree_bool_setting(GATE_SETTING, default=True):
+    if not _teatree_bool_setting(GATE_SETTING):
         return False
     verdict = _refusal_verdict(parsed, _ForgeRun())
     if verdict is None:

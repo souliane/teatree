@@ -734,6 +734,19 @@ table.dash th.num {
   overflow-wrap: anywhere;
   vertical-align: top;
 }
+.compare-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: end;
+}
+.compare-apply {
+  margin-top: var(--sp-2);
+}
+.compare-use-here,
+.compare-revert:not([hidden]) {
+  display: inline-flex;
+}
 /* Only the COMPARISON tables are fixed-layout, so no cell can ever set a column again. The
 instances table's four columns want very different widths and hold nothing that can run away, so
 it keeps the auto algorithm. */

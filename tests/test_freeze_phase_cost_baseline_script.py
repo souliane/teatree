@@ -81,6 +81,24 @@ def _park_row(phase: str, started_at: str) -> dict[str, object]:
 
 
 class TestRenderBaseline:
+    def test_reads_attempt_committed_only_to_wal(self, tmp_path: Path) -> None:
+        db = _control_db(tmp_path / "control.sqlite3", [_real("coding", "2026-07-20 10:00:00")])
+        writer = sqlite3.connect(db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute(
+                "INSERT INTO teatree_taskattempt (task_id, model, input_tokens, output_tokens, "
+                "cache_read_tokens, cache_write_tokens, num_turns, cost_usd, started_at) "
+                "VALUES (1, 'claude-opus-4-8', 10, 100, 1, 1, 4, 1.0, '2026-07-20 10:01:00')"
+            )
+            writer.commit()
+            assert Path(f"{db}-wal").stat().st_size > 0
+            document = yaml.safe_load(render_baseline(db, cutover_at=_CUTOVER))
+            assert document["per_phase"]["coding"]["attempts"] == 2
+        finally:
+            writer.close()
+
     def test_park_audit_rows_never_reach_the_aggregate(self, tmp_path: Path) -> None:
         db = _control_db(
             tmp_path / "control.sqlite3",

@@ -7,6 +7,7 @@ their export. Without ``--write`` it reports drift with a unified diff, exiting 
 
 import argparse
 import difflib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,7 +16,52 @@ import generated_doc_staging
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from teatree.config.cold_defaults import DEFAULTS_TOML
-from teatree.config.declared_defaults import render_defaults_file
+from teatree.config.declaration import render_keys_manifest, validate_manifest_history
+from teatree.config.declared_defaults import declared_defaults, render_defaults_file
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+
+STATUSLINE_SH = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "statusline.sh"
+DECLARED_KEYS = DEFAULTS_TOML.with_name("declared_keys.txt")
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def committed_manifest() -> str:
+    relative = DECLARED_KEYS.relative_to(_ROOT).as_posix()
+    listing = subprocess.run(
+        ["git", "-C", str(_ROOT), "ls-tree", "--name-only", "HEAD", "--", relative],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not listing.stdout.strip():
+        return ""
+    return subprocess.run(
+        ["git", "-C", str(_ROOT), "cat-file", "blob", f"HEAD:{relative}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+_AUTOLOAD_BEGIN = "# BEGIN GENERATED: autoload default"
+_AUTOLOAD_END = "# END GENERATED: autoload default"
+
+
+def render_statusline_default(text: str) -> str:
+    default = declared_defaults()["autoload"]
+    if type(default) is not bool:
+        message = "autoload declaration must be boolean"
+        raise TypeError(message)
+    if text.count(_AUTOLOAD_BEGIN) != 1 or text.count(_AUTOLOAD_END) != 1:
+        message = "statusline autoload default markers must each occur once"
+        raise ValueError(message)
+    start = text.index(_AUTOLOAD_BEGIN)
+    end = text.index(_AUTOLOAD_END) + len(_AUTOLOAD_END)
+    if start >= end:
+        message = "statusline autoload default markers are out of order"
+        raise ValueError(message)
+    block = f"{_AUTOLOAD_BEGIN}\n_AUTOLOAD_DEFAULT={'on' if default else 'off'}\n{_AUTOLOAD_END}"
+    return text[:start] + block + text[end:]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,26 +69,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--write", action="store_true", help="rewrite and stage the file instead of reporting drift")
     args = parser.parse_args(argv)
 
-    committed = DEFAULTS_TOML.read_text(encoding="utf-8")
-    rendered = render_defaults_file(committed)
-    if rendered == committed:
+    defaults_text = DEFAULTS_TOML.read_text(encoding="utf-8")
+    statusline_text = STATUSLINE_SH.read_text(encoding="utf-8")
+    keys_text = DECLARED_KEYS.read_text(encoding="utf-8") if DECLARED_KEYS.exists() else ""
+    validate_manifest_history(committed_manifest(), keys_text)
+    changes = [
+        (DEFAULTS_TOML, defaults_text, render_defaults_file(defaults_text)),
+        (STATUSLINE_SH, statusline_text, render_statusline_default(statusline_text)),
+        (DECLARED_KEYS, keys_text, render_keys_manifest(keys_text, ALL_KNOWN_CONFIG_SETTINGS)),
+    ]
+    drifted = [(path, before, after) for path, before, after in changes if before != after]
+    if not drifted:
         return 0
     if args.write:
-        DEFAULTS_TOML.write_text(rendered, encoding="utf-8")
-        generated_doc_staging.stage(DEFAULTS_TOML)
-        print(f"rewrote {DEFAULTS_TOML}")
+        for path, _before, after in drifted:
+            path.write_text(after, encoding="utf-8")
+            generated_doc_staging.stage(path)
+            print(f"rewrote {path}")
         return 0
-    print("defaults.toml has drifted from the declarations that state its values.")
+    print("generated defaults have drifted from the declarations that state their values.")
     print("Regenerate and stage it:")
     print("  uv run python scripts/hooks/generate_defaults_toml.py --write")
-    sys.stdout.writelines(
-        difflib.unified_diff(
-            committed.splitlines(keepends=True),
-            rendered.splitlines(keepends=True),
-            "committed",
-            "declared",
+    for path, before, after in drifted:
+        sys.stdout.writelines(
+            difflib.unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                str(path),
+                f"declared {path}",
+            )
         )
-    )
     return 1
 
 

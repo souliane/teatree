@@ -43,6 +43,8 @@ from teatree.core.models.review_target import ReviewTarget, verdict_at
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.core.review.live_head import LiveHeadRead
+from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
+from teatree.core.review.nit_publish import has_nit_receipts
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -160,6 +162,96 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_a_nit_only_hold_records_merge_safe(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _HEAD),
+            ) as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.MERGE_SAFE
+        assert recorded.structured_findings[0].kind == "nit"
+        track.assert_called_once()
+        ticket.refresh_from_db()
+        assert has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("a.py", 2, "rename helper"),))
+
+    def test_review_nit_publish_failure_keeps_a_recovery_marker(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+        with patch(
+            "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+        assert "forge unavailable" in attempt.error
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+
+    def test_nit_only_hold_without_merge_safe_evidence_records_nothing(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        result.pop("anti_vacuity")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [{"severity": "nit", "kind": "nit", "summary": "rename helper"}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "anti-vacuity recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unpostable_nit_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "this is missing a blank line", "file": "a.py", "line": 2}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "comment check" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_a_nit_ticket_treats_a_nit_finding_as_blocking(self) -> None:
+        ticket = _author_ticket()
+        ticket.extra = {"nit_follow_up": True}
+        ticket.save(update_fields=["extra"])
+        result = _envelope(grades=_full_pass(), verdict="merge_safe")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        assert recorded.structured_findings[0].kind == "blocking"
+
     def test_multi_repo_review_envelope_records_combined_integration_review(self) -> None:
         ticket = _author_ticket()
         ticket.repos = ["souliane/teatree", "example-org/adapter"]

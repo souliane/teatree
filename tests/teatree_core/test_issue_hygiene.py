@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import IssueResolutionSpec
 from teatree.core.issue_hygiene import (
     MAX_APPEND_ATTEMPTS,
     CreateDecision,
@@ -83,12 +84,32 @@ class _FakeHost:
             self.issues.setdefault(issue_url, {})["description"] = body
         return {"web_url": issue_url}
 
-    def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
-        self.creates.append({"repo": repo, "title": title, "body": body, "labels": labels})
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.creates.append(
+            {
+                "repo": repo,
+                "title": title,
+                "body": body,
+                "labels": labels,
+            }
+        )
         url = f"https://gitlab.com/{repo}/-/issues/{self.next_iid}"
         self.next_iid += 1
         self.issues[url] = _issue(url, body=body, title=title)
         return {"web_url": url, "iid": self.next_iid - 1}
+
+    def create_issue_resolving_threads(self, spec: IssueResolutionSpec) -> dict[str, Any]:
+        created = self.create_issue(repo=spec.repo, title=spec.title, body=spec.body, labels=list(spec.labels))
+        self.creates[-1]["merge_request_to_resolve_discussions_of"] = spec.merge_request_iid
+        self.creates[-1]["discussion_to_resolve"] = spec.thread_id
+        return created
 
     def repo_for_issue_url(self, issue_url: str) -> str:
         return _REPO
@@ -354,7 +375,7 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert f"{fits} fits" in audit.payload_summary
         assert "unrelated lane" in audit.payload_summary
 
-    def test_all_candidates_rejected_creates_once_and_records_every_rejection(self) -> None:
+    def test_all_candidates_rejected_creates_once_without_publishing_rejections(self) -> None:
         host = self._landscape()
         outcome = create_or_extend(
             host=host,
@@ -374,7 +395,7 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert "issues/2" in audit.payload_summary
         assert "unrelated lane" in audit.payload_summary
 
-    def test_an_empty_backlog_records_that_no_candidates_existed(self) -> None:
+    def test_an_empty_backlog_does_not_publish_an_audit(self) -> None:
         host = _FakeHost({})
         outcome = create_or_extend(
             host=host, draft=IssueDraft(repo=_REPO, title="first ticket", body="body"), decisions=[]
@@ -547,7 +568,7 @@ class TestMarkerJudgedCreate(TestCase):
         assert outcome.issue_url == marked
         assert host.creates == []
 
-    def test_an_unmarked_backlog_files_once_and_records_every_rejection(self) -> None:
+    def test_an_unmarked_backlog_files_once_and_logs_every_rejection(self) -> None:
         other = "https://gitlab.com/acme/widgets/-/issues/9"
         host = _FakeHost({other: _issue(other, body="unrelated")})
         with _no_scrub():
@@ -559,7 +580,7 @@ class TestMarkerJudgedCreate(TestCase):
         assert host.creates[0]["body"] == "b"
         assert other in SendAudit.objects.get(action="issue_create_judgment").payload_summary
 
-    def test_an_empty_backlog_says_so_rather_than_reading_as_unchecked(self) -> None:
+    def test_an_empty_backlog_logs_the_check_without_publishing_it(self) -> None:
         host = _FakeHost()
         with _no_scrub():
             create_or_extend_by_marker(

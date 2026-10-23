@@ -10,10 +10,12 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.config import cold_reader
+from teatree.config import cold_db, cold_reader
+from teatree.config.cold_db import read_readonly
 from teatree.config.host_projection import ProjectionPublisher
 
 Row = tuple[str, str, object]
@@ -33,6 +35,58 @@ _PROJECTION_SOURCE_TABLES = (
         "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
     ),
 )
+
+
+def test_cold_read_refuses_immutable_fallback_with_uncheckpointed_wal(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    db = source_dir / "db.sqlite3"
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE note(body TEXT)")
+        writer.execute("INSERT INTO note VALUES ('in-wal')")
+        writer.commit()
+        wal = Path(f"{db}-wal")
+        assert wal.stat().st_size > 0
+        open_readonly = cold_db._open_readonly
+
+        def refuse_readonly(path: Path, parameters: str, busy_timeout_ms: int) -> sqlite3.Connection:
+            if parameters == "mode=ro":
+                error = sqlite3.OperationalError("unable to open database file")
+                error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+                raise error
+            return open_readonly(path, parameters, busy_timeout_ms)
+
+        with (
+            patch.object(cold_db, "_open_readonly", side_effect=refuse_readonly),
+            pytest.raises(sqlite3.OperationalError, match="-wal"),
+        ):
+            read_readonly(db, lambda connection: connection.execute("SELECT body FROM note").fetchall())
+    finally:
+        writer.close()
+
+
+def test_cold_reader_returns_none_when_wal_cannot_be_inspected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "db.sqlite3"
+    wal = Path(f"{db}-wal")
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == wal:
+            message = "permission denied"
+            raise PermissionError(message)
+        return original_stat(path, *args, **kwargs)
+
+    def refuse_readonly(path: Path, parameters: str, busy_timeout_ms: int) -> sqlite3.Connection:
+        error = sqlite3.OperationalError("unable to open database file")
+        error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+        raise error
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    monkeypatch.setattr(cold_db, "_open_readonly", refuse_readonly)
+    assert cold_db.fetch_one(db, "SELECT 1", ()) is None
 
 
 def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
@@ -262,6 +316,16 @@ class TestTypedWrappers:
                 ("", "label_int", 7),
                 ("", "items", ["a", "b"]),
                 ("", "nested", {"x": [1, 2], "y": {"z": 3}}),
+                ("", "danger_gate_fail_open", True),
+                ("", "git_add_all_gate_enabled", False),
+                ("", "autoload", "false"),
+                ("", "hook_validator_timeout_seconds", 5),
+                ("", "orchestrator_turn_budget", True),
+                ("", "orchestrator_turn_wall_clock_seconds", "hello"),
+                ("", "slack_user_id", "hello"),
+                ("", "slack_user_channel", 7),
+                ("", "private_repos", ["a", "b"]),
+                ("", "excluded_skills", {"unexpected": True}),
             ],
         )
         return path
@@ -275,35 +339,35 @@ class TestTypedWrappers:
         assert cold_reader.read_setting("nested", db_path=db) == {"x": [1, 2], "y": {"z": 3}}
 
     def test_bool_setting_strict(self, db: Path) -> None:
-        assert cold_reader.bool_setting("flag_on", default=False, db_path=db) is True
-        assert cold_reader.bool_setting("flag_off", default=True, db_path=db) is False
+        assert cold_reader.bool_setting("danger_gate_fail_open", db_path=db) is True
+        assert cold_reader.bool_setting("git_add_all_gate_enabled", db_path=db) is False
         # A quoted "false" is a str, not a bool → default stands (mirrors
-        # teatree_settings). default=False makes this anti-vacuous: a naive
+        # teatree_settings). The false declaration makes this anti-vacuous: a naive
         # bool("false") would be truthy and return True, not the default.
-        assert cold_reader.bool_setting("flag_quoted", default=False, db_path=db) is False
-        assert cold_reader.bool_setting("absent", default=True, db_path=db) is True
+        assert cold_reader.bool_setting("autoload", db_path=db) is False
+        assert cold_reader.bool_setting("orchestrator_bash_gate_enabled", db_path=db) is True
 
     def test_int_setting_strict(self, db: Path) -> None:
-        assert cold_reader.int_setting("budget", default=1, db_path=db) == 5
-        # A bool is a subclass of int but must be rejected → default. default=99
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", db_path=db) == 5
+        # A bool is a subclass of int but must be rejected → declared default 25
         # makes this anti-vacuous: a naive int(True) would be 1, not the default.
-        assert cold_reader.int_setting("budget_bool", default=99, db_path=db) == 99
+        assert cold_reader.int_setting("orchestrator_turn_budget", db_path=db) == 25
         # below minimum → default.
-        assert cold_reader.int_setting("budget", default=99, minimum=10, db_path=db) == 99
-        assert cold_reader.int_setting("budget", default=99, minimum=5, db_path=db) == 5
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", minimum=10, db_path=db) == 60
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", minimum=5, db_path=db) == 5
         # non-int stored value → default.
-        assert cold_reader.int_setting("label", default=42, db_path=db) == 42
-        assert cold_reader.int_setting("absent", default=3, db_path=db) == 3
+        assert cold_reader.int_setting("bulk_close_threshold", db_path=db) == 5
+        assert cold_reader.int_setting("orchestrator_turn_wall_clock_seconds", db_path=db) == 180
 
     def test_str_setting_strict(self, db: Path) -> None:
-        assert cold_reader.str_setting("label", default="x", db_path=db) == "hello"
-        assert cold_reader.str_setting("label_int", default="x", db_path=db) == "x"
-        assert cold_reader.str_setting("absent", default="x", db_path=db) == "x"
+        assert cold_reader.str_setting("slack_user_id", db_path=db) == "hello"
+        assert cold_reader.str_setting("slack_user_channel", db_path=db) == ""
+        assert cold_reader.str_setting("substrate_auto_merge_authorized_by", db_path=db) == ""
 
     def test_list_setting_strict(self, db: Path) -> None:
-        assert cold_reader.list_setting("items", default=[], db_path=db) == ["a", "b"]
-        assert cold_reader.list_setting("nested", default=["d"], db_path=db) == ["d"]
-        assert cold_reader.list_setting("absent", default=["d"], db_path=db) == ["d"]
+        assert cold_reader.list_setting("private_repos", db_path=db) == ["a", "b"]
+        assert cold_reader.list_setting("excluded_skills", db_path=db) == []
+        assert cold_reader.list_setting("trusted_issue_authors", db_path=db) == []
 
     def test_mapping_setting_strict(self, db: Path) -> None:
         assert cold_reader.mapping_setting("nested", db_path=db) == {"x": [1, 2], "y": {"z": 3}}
@@ -313,10 +377,10 @@ class TestTypedWrappers:
 
     def test_wrappers_fail_open_on_missing_db(self, tmp_path: Path) -> None:
         missing = tmp_path / "nope.sqlite3"
-        assert cold_reader.bool_setting("x", default=True, db_path=missing) is True
-        assert cold_reader.int_setting("x", default=7, db_path=missing) == 7
-        assert cold_reader.str_setting("x", default="d", db_path=missing) == "d"
-        assert cold_reader.list_setting("x", default=["d"], db_path=missing) == ["d"]
+        assert cold_reader.bool_setting("git_add_all_gate_enabled", db_path=missing) is True
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", db_path=missing) == 60
+        assert cold_reader.str_setting("slack_user_id", db_path=missing) == ""
+        assert cold_reader.list_setting("private_repos", db_path=missing) == []
 
 
 class TestWalNonBlocking:
@@ -360,13 +424,13 @@ class TestWalSidecarsAbsent:
 
     def test_typed_wrappers_do_not_revert_to_default_when_quiescent(self, tmp_path: Path) -> None:
         db = tmp_path / "wal.sqlite3"
-        _make_db(db, [("", "budget", 5), ("", "flag", True)], wal=True)
+        _make_db(db, [("", "hook_validator_timeout_seconds", 5), ("", "danger_gate_fail_open", True)], wal=True)
         _remove_wal_sidecars(db)
         # A safety-gate caller's stored kill-switch must NOT revert to its
         # in-code default just because the DB is quiescent. Anti-vacuous: each
         # default differs from the stored value.
-        assert cold_reader.int_setting("budget", default=99, db_path=db) == 5
-        assert cold_reader.bool_setting("flag", default=False, db_path=db) is True
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", db_path=db) == 5
+        assert cold_reader.bool_setting("danger_gate_fail_open", db_path=db) is True
 
 
 class TestUriRobustness:

@@ -185,6 +185,19 @@ class CriticDispatch(models.Model):
             .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
         )
 
+    @classmethod
+    def rearm_unverified(cls, task: "Task") -> "CriticDispatch | None":
+        row = cls.objects.filter(task=task, state=cls.State.DISPATCHED).first()
+        if row is None:
+            return None
+        cls.objects.filter(pk=row.pk, task=task, state=cls.State.DISPATCHED).update(deadline=timezone.now())
+        return cls.enqueue(
+            ticket=row.ticket,
+            transition=row.transition,
+            head_sha=row.head_sha,
+            contract=task.execution_reason,
+        )
+
     @staticmethod
     def _create_critic_task(*, ticket: "Ticket", contract: str) -> "Task":
         session = Session.objects.create(ticket=ticket, agent_id="critic-dispatch")

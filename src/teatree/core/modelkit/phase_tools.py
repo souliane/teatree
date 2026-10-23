@@ -112,8 +112,9 @@ ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 #: phase that mounts it; its write tools need :data:`MCP_WRITE`, which only the
 #: authoring phases and ``shipping`` hold — ``requesting_review`` reaches the one
 #: tool that posts its request instead. Planning, reviewing and critic_reviewing
-#: retain only the three peer-mailbox tools; other read-only phases retain self
-#: and peers. An unknown phase falls back to read-only
+#: retain only the three peer-mailbox tools; other read-only Claude MCP phases retain
+#: self and peers. A pydantic_ai task has native peers, send, inbox and wait tools,
+#: and no self tool. An unknown phase falls back to read-only
 #: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently inherits shell/write until it is
 #: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
 #: explicit entry here (the ``test_registry_parity`` totality lane), so the
@@ -190,6 +191,10 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # ticket-work brief.
     "short_describe": _NONE,
 }
+
+
+def phase_writes_checkout(phase: str) -> bool:
+    return bool(tools_for_phase(phase) & (_WRITE | {MCP_WRITE}))
 
 
 def tools_for_phase(phase: str) -> frozenset[str]:

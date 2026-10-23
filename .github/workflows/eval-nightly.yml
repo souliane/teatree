@@ -4,9 +4,8 @@
 #
 # The three-tier eval cadence (owner-refined 2026-07-23):
 #   * PER-PR   (eval-pr.yml)  — the scenarios a PR's diff changed, upfront-catch.
-#   * NIGHTLY  (THIS file)    — a small SMOKE slice, run ONLY on a day something
-#                               merged to main, so an idle repo spends zero budget.
-#   * WEEKLY   (eval.yml)     — the full 233-scenario catalog, sharded, unchanged.
+#   * NIGHTLY  (THIS file)    — a small SMOKE slice after a merge or while work is owed.
+#   * WEEKLY   (eval.yml)     — a full sweep when the window is near reset.
 #
 # WHY A CONDITIONAL NIGHTLY (not an unconditional one)
 #   The per-PR lane only runs the scenarios a PR TOUCHED — a regression in an
@@ -14,7 +13,7 @@
 #   would not surface until the weekly run, up to a week later. The nightly smoke
 #   closes that gap with a small representative slice — but ONLY when there is new
 #   work to test. The `prepare` job gates on "did >=1 PR merge to main in the last
-#   day": no merge that day → SKIP CLEANLY (exit 0, clear log line), zero token
+#   day or anything owed": neither → SKIP CLEANLY (exit 0, clear log line), zero token
 #   spend. This is a PRE-CHECK deciding whether to invoke the eval at all — it is
 #   NOT a skip-as-pass inside the eval (once invoked, `--require-executed` still
 #   fails loud on zero coverage). It mirrors eval.yml's weekly no-PR guard, at a
@@ -37,12 +36,23 @@
 #   weekly's job. The slice grows slowly with the catalog; it is a smoke test
 #   (catch a gross regression / a broken harness end-to-end), not full coverage.
 #
-# AUTH — DEFAULT subscription OAuth (no per-token bill)
+# OWED SCENARIOS FIRST
+#   A PR lane that parked (no account kept the eval reserve free), hit the usage
+#   limit, or deferred scenarios past its 14-scenario cap uploads them as the
+#   `eval-owed` artifact. `prepare` is the single writer of the cumulative ledger:
+#   it merges the previous `eval-owed-ledger` artifact with the `eval-owed` artifact
+#   of every PR merged since (only the run on the PR's final head), uploads the result
+#   on every scheduled run so it never expires, and makes the nightly run while
+#   anything is owed. The eval job runs up to 14 owed scenarios before the shard and
+#   clears an entry only when it passes; a confirmed red stays owed.
+#
+# AUTH — DEFAULT subscription OAuth (no per-token bill), never the metered fallback
 #   Like eval-pr.yml, the nightly rides the subscription `CLAUDE_CODE_OAUTH_TOKEN`
-#   by default (`T3_AGENT_HARNESS_PROVIDER=subscription_oauth`) — a small nightly
-#   slice barely touches the usage window. The metered `api_key` stays selectable
-#   via the `credential` input. Until the selected credential's secret is set the
-#   eval job correctly fails RED.
+#   by default (`T3_AGENT_HARNESS_PROVIDER=subscription_oauth`). The selector picks
+#   only an account that keeps the eval reserve free; with none it PARKS (exit 75,
+#   the run concludes green with a PARKED summary) — this scheduled lane never flips
+#   to the metered key. A usage limit mid-run parks the rest the same way. The
+#   metered `api_key` stays selectable via the `credential` input.
 #
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
@@ -55,7 +65,7 @@ name: Scheduled · Nightly smoke eval
 
 on:
   schedule:
-    # Daily nightly smoke, 05:00 UTC — offset below the weekly Monday 06:00 run.
+    # Daily nightly smoke, 05:00 UTC — offset below the daily 06:00 sweep check.
     - cron: "0 5 * * *"
   workflow_dispatch:
     inputs:
@@ -75,14 +85,15 @@ concurrency:
 jobs:
   # PREPARE: decide whether the nightly runs at all. A manual workflow_dispatch
   # run ALWAYS runs (force). A scheduled run is guarded: it SKIPS CLEANLY (exit 0,
-  # clear log line) when NO PR merged to main in the last day — nothing new to
-  # smoke-test, no API spend. This mirrors eval.yml's weekly no-PR guard at a
+  # clear log line) when NO PR merged to main in the last day and nothing is owed.
+  # This mirrors eval.yml's weekly no-PR guard at a
   # 1-day window (`merged_prs_since.py --days 1`).
   prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       run_eval: ${{ steps.gate.outputs.run_eval }}
     steps:
@@ -102,8 +113,40 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
+      # The runner is not the container that mounts the control-DB volume: `t3` below
+      # needs its own sandboxed, migrated DB (the same seam the eval job uses).
+      - name: Sandbox the control DB (the runner is not the container)
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
+      - name: Migrate the self-DB
+        run: uv run python -m teatree migrate --no-input
+      # Harvest the owed-scenario ledger: the previous ledger plus the `eval-owed`
+      # artifact of each PR merged since it. A GitHub API error fails the job loud
+      # rather than reading as "nothing owed".
+      - name: Harvest the owed-scenario ledger
+        id: owed
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LEDGER="$RUNNER_TEMP/eval-owed-ledger.json"
+          uv run t3 eval owed collect --repo "$GITHUB_REPOSITORY" --out "$LEDGER"
+          uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
+      - name: Redact the owed-scenario ledger in place
+        id: redact
+        if: always()
+        run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
+      - name: Upload the owed-scenario ledger
+        if: always() && github.ref == 'refs/heads/main' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}/eval-owed-ledger.json
+          if-no-files-found: warn
+          retention-days: 90
       # Decide whether to invoke the smoke eval. A manual run ALWAYS runs (force).
-      # A scheduled run runs ONLY if >=1 PR merged to main in the last day. The
+      # A scheduled run runs while anything is owed, else ONLY if >=1 PR merged to
+      # main in the last day. The
       # `gh api` query stays in the YAML; the pure decision lives in
       # `scripts/eval/merged_prs_since.py` (`t3 eval merged-prs-since`). A bad API
       # read degrades to `[]` → no-merge → skip (never a false run on a read error).
@@ -112,10 +155,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          OWED: ${{ steps.owed.outputs.owed }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "run_eval=true" >> "$GITHUB_OUTPUT"
             echo "Manual workflow_dispatch run → running the nightly smoke (force, no-merge guard bypassed)."
+          elif [ -n "$OWED" ]; then
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            echo "Owed scenarios pending → running the nightly: $OWED"
           else
             gh api "repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
               --jq '[.[] | {number: .number, merged_at: .merged_at}]' > prs.json || echo "[]" > prs.json
@@ -128,7 +175,7 @@ jobs:
 
 
   # EVAL: the smoke slice (clean_room, today's rotating shard of 16, single trial), in the CI
-  # container. Skipped entirely when prepare gated it out (no merge that day).
+  # container. Skipped entirely when prepare gated it out (no merge and no debt).
   eval:
     needs: prepare
     if: needs.prepare.outputs.run_eval == 'true'
@@ -164,7 +211,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.294
+          npm install -g @anthropic-ai/claude-code@2.1.300
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -176,22 +223,94 @@ jobs:
         run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
+      - name: Download the owed-scenario ledger
+        if: github.ref == 'refs/heads/main'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}
       # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
       # smoke slice runs. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed
       # per token for remaining usage-window headroom (scripts/eval/select_oauth.py) and
       # the freshest is exported — masked — into $GITHUB_ENV, which the eval step below
-      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
-      # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
-      # credential decision, so it also exports T3_AGENT_HARNESS_PROVIDER (an
-      # all-exhausted set flips to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo
-      # variable is set, else it fails loud).
+      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it probes the existing
+      # single CLAUDE_CODE_OAUTH_TOKEN secret. This step OWNS the credential decision, so
+      # it also exports T3_AGENT_HARNESS_PROVIDER. No account keeping the eval reserve
+      # free → exit 75 and parked=true: the eval steps are skipped and the run stays green.
+      # No EVAL_API_KEY_FALLBACK here: a scheduled lane never spends the metered key.
       - name: Select the freshest eval OAuth account
+        id: select
         env:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
-        run: uv run python scripts/eval/select_oauth.py
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE }}
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
+      - name: Report a parked nightly
+        if: steps.select.outputs.parked == 'true'
+        run: echo "Nightly eval PARKED — no OAuth account keeps the eval reserve free; owed scenarios stay owed." >> "$GITHUB_STEP_SUMMARY"
+      # Owed scenarios first, one per `t3 eval run`, at the PR lane's baseline tier. A
+      # pass clears the entry; a confirmed red stays owed and reds the job; exit 75 (the
+      # usage limit) stops the batch, leaves the rest owed and a marker so neither a retry
+      # attempt nor the shard below invokes anything. A retry after a red replays the red.
+      - name: Owed scenarios (in Docker)
+        if: github.ref == 'refs/heads/main' && steps.select.outputs.parked != 'true'
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            set -euo pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-owed-confirmed-red"
+            PASSED="$RUNNER_TEMP/eval-owed-passed.txt"
+            ATTEMPTED="$RUNNER_TEMP/eval-owed-attempted.txt"
+            touch "$PASSED"
+            touch "$ATTEMPTED"
+            if [ -f "$RED_MARKER" ]; then
+              read -r rc < "$RED_MARKER"
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit "$rc"
+            fi
+            if [ -f "$LIMIT_MARKER" ]; then
+              read -r rc < "$LIMIT_MARKER"
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              exit "$rc"
+            fi
+            uv run t3 eval owed next "$RUNNER_TEMP/eval-owed-ledger.json" --cap 14 > "$RUNNER_TEMP/eval-owed-batch.txt"
+            mapfile -t OWED < "$RUNNER_TEMP/eval-owed-batch.txt"
+            rc=0
+            for index in "${!OWED[@]}"; do
+              name="${OWED[$index]}"
+              if grep -Fxq -- "$name" "$PASSED"; then
+                continue
+              fi
+              echo "$name" >> "$ATTEMPTED"
+              scenario_rc=0
+              uv run t3 eval run "$name" --backend api --preset baseline \
+                --escalate-on-fail --escalate-trials 3 \
+                --require-executed --docker \
+                --transcript-html "$RUNNER_TEMP/eval-transcripts-owed-$name.html" \
+                --summary-md "$RUNNER_TEMP/eval-summary-owed-$name.md" 2>&1 \
+                | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
+              [ -f "$RUNNER_TEMP/eval-summary-owed-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-owed-$name.md" >> "$RUNNER_TEMP/eval-summary-owed.md"
+              if [ "$scenario_rc" -eq 75 ]; then
+                echo "$rc" > "$LIMIT_MARKER"
+                echo "::warning title=eval PARKED::usage limit reached at $name; it and the rest of the batch stay owed"
+                break
+              fi
+              if [ "$scenario_rc" -eq 0 ]; then
+                echo "$name" >> "$PASSED"
+              else
+                rc="$scenario_rc"
+                echo "$scenario_rc" > "$RED_MARKER"
+              fi
+            done
+            exit "$rc"
       - name: Restore passing eval verdicts
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -210,6 +329,7 @@ jobs:
       # credential value (`pipefail` keeps the eval's exit code and turns a filter
       # crash red).
       - name: Nightly smoke behavioral eval (in Docker)
+        if: ${{ !cancelled() && steps.select.outcome == 'success' && steps.select.outputs.parked != 'true' }}
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
@@ -224,6 +344,18 @@ jobs:
           retry_wait_seconds: 60
           command: |
             set -euo pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-smoke-confirmed-red"
+            if [ -f "$RED_MARKER" ]; then
+              read -r rc < "$RED_MARKER"
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit "$rc"
+            fi
+            if [ -f "$LIMIT_MARKER" ]; then
+              echo "The usage limit was hit tonight — the smoke shard is parked."
+              exit 0
+            fi
+            rc=0
             uv run t3 eval run --backend api \
               --lane clean_room --shard rotate/16 \
               --escalate-on-fail --escalate-trials 3 \
@@ -231,7 +363,26 @@ jobs:
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary.md" \
               --summary-json "$RUNNER_TEMP/eval-verdict-rows-nightly.json" \
-              --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee
+              --verdict-cache "$RUNNER_TEMP/eval-verdicts.json" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee || rc=$?
+            if [ "$rc" -eq 75 ]; then
+              echo "::warning title=eval PARKED::usage limit reached in the smoke shard"
+              exit 0
+            fi
+            [ "$rc" -ne 0 ] && echo "$rc" > "$RED_MARKER"
+            exit "$rc"
+      # Clear every owed scenario that passed tonight; a red or unrun one stays owed.
+      - name: Settle the owed-scenario ledger
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          LEDGER="$RUNNER_TEMP/eval-owed-ledger.json"
+          if [ ! -f "$LEDGER" ]; then
+            echo "No owed-scenario ledger was downloaded — nothing to settle."
+            exit 0
+          fi
+          touch "$RUNNER_TEMP/eval-owed-passed.txt"
+          touch "$RUNNER_TEMP/eval-owed-attempted.txt"
+          uv run t3 eval owed settle --out "$LEDGER" --passed-file "$RUNNER_TEMP/eval-owed-passed.txt" --attempted-file "$RUNNER_TEMP/eval-owed-attempted.txt"
       - name: Record and save eval verdicts
         continue-on-error: true
         if: success() && github.ref == 'refs/heads/main'
@@ -253,9 +404,11 @@ jobs:
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
         run: |
           set -o pipefail
-          if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
-            cat "$RUNNER_TEMP/eval-summary.md" | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for summary in "$RUNNER_TEMP/eval-summary-owed.md" "$RUNNER_TEMP/eval-summary.md"; do
+            if [ -f "$summary" ]; then
+              cat "$summary" | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
       # Defense in depth: one last in-place redaction pass over exactly the files
       # the upload below publishes, holding every credential this job holds, so
       # a file that reached them without the redacting writer still leaves redacted.
@@ -270,7 +423,8 @@ jobs:
           EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
-          "$RUNNER_TEMP/eval-transcripts.html"
+          "$RUNNER_TEMP/eval-transcripts*.html"
+          "$RUNNER_TEMP/eval-owed-ledger.json"
       # Upload the PRIVATE per-trial transcript as an artifact a maintainer reads
       # to diagnose a red nightly smoke. `if: always()` so a red run still
       # publishes it. A red nightly is surfaced by GitHub's native failed-run
@@ -280,6 +434,15 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-nightly-transcripts
-          path: ${{ runner.temp }}/eval-transcripts.html
+          path: ${{ runner.temp }}/eval-transcripts*.html
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload the settled owed-scenario ledger
+        if: always() && github.ref == 'refs/heads/main' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}/eval-owed-ledger.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 90

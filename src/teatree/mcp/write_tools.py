@@ -10,8 +10,8 @@ identically on both surfaces. Command-shaped writes go through
 review posts go through the :mod:`teatree.mcp.review_seam` registration seam.
 
 The single :data:`_TOOLS` descriptor table is the one source that
-:data:`TOOL_SEAMS`, :data:`INSTRUCTIONS`, and :func:`register` all derive from —
-adding a tool is one table edit, not four parallel-list edits. The
+:data:`TOOL_SEAMS` and :func:`register` both derive from — a tool's own docstring
+is its description, so adding a tool is one table edit. The
 transport-boundary fitness test (``tests/teatree_mcp/test_transport_boundary.py``)
 pins both the seam-map coverage and the no-transport-import rule.
 
@@ -220,6 +220,8 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     one merge request read as an unregistered alarm and was recorded rather than
     delivered. An alarm still earns its DM by registering in
     :data:`~teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`.
+
+    Treat any ``reason`` other than ``already_sent`` as the owner NOT having been told.
     """
     try:
         kind_value = NotifyKind(kind)
@@ -260,7 +262,12 @@ async def _task_complete(task_id: int, *, result_artifact_path: str = "") -> dic
 
 
 async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
-    """Fail a loop task as a third party, without advancing the ticket FSM — see ``task_claim.fail``."""
+    """Fail a loop task as a third party, without advancing the ticket FSM — see ``task_claim.fail``.
+
+    Its checkout claim is released only once the holder is confirmed dead, otherwise the holder's
+    own unwind releases it. Always pass a ``reason`` naming WHY it failed: the task listing and the
+    ticket card show it, and an omitted one is recorded as agent_abandoned rather than left blank.
+    """
 
     def _fail() -> dict[str, Any]:
         task = Task.objects.get(pk=task_id)
@@ -336,7 +343,8 @@ async def _review_request_post(
     first, then the live-channel dedup claim, then the #960 on-behalf approval
     (no recorded, unconsumed, exactly-scoped approval ⇒ ``refused`` with the
     ``t3 review approve-on-behalf`` remediation and the orphan claim rolled back),
-    then the post. Returns the command's machine-legible verdict.
+    then the post. Returns ``action`` = post | draft | suppress | refused; ``refused`` names the missing
+    recorded approval / attestation.
     """
     return await sync_to_async(
         lambda: run_emitting_command(
@@ -358,19 +366,17 @@ async def _review_request_post(
 
 @dataclass(frozen=True)
 class _WriteTool:
-    """One teatree-own MCP write tool: name, async handler, hint, gated seam, prose.
+    """One teatree-own MCP write tool: name, async handler, hint, gated seam.
 
-    The single source that :data:`TOOL_SEAMS` (own portion), :data:`INSTRUCTIONS`,
-    and :func:`register` all derive from — one edit adds a tool everywhere. ``seam``
-    is the gated seam the handler wraps (blank for the read-only ``review_request_check``
-    peek, which takes no write path).
+    The single source that :data:`TOOL_SEAMS` (own portion) and :func:`register` both
+    derive from — one edit adds a tool everywhere. ``seam`` is the gated seam the handler
+    wraps (blank for the read-only ``review_request_check`` peek, which takes no write path).
     """
 
     name: str
     handler: Callable[..., Awaitable[Any]]
     annotations: ToolAnnotations
     seam: str
-    instruction: str
 
 
 _TOOLS: tuple[_WriteTool, ...] = (
@@ -379,144 +385,90 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _pr_create,
         _WRITE,
         "call_command('pr', 'create', …, sync=True) — full ship-gate chain",
-        "- pr_create(ticket, title): create the ticket's PR through the full "
-        "ship-gate chain (shipping-phase FSM, visual QA, title validator, budget/debt "
-        "gates). Errors report the exact failing gate.",
     ),
     _WriteTool(
         "pr_merge",
         _pr_merge,
         _DESTRUCTIVE,
         "call_command('ticket', 'merge', <clear_id>) — sanctioned keystone merge",
-        "- pr_merge(clear_id): execute a sanctioned keystone merge for an ISSUED "
-        "MergeClear — sha-bound, CI-rollup-checked, maker≠checker enforced. There is "
-        "no raw-merge tool; issuing the CLEAR stays on the CLI.",
     ),
     _WriteTool(
         "ticket_visit_phase",
         _ticket_visit_phase,
         _WRITE,
         "call_command('lifecycle', 'visit-phase', …) — phase gates",
-        "- ticket_visit_phase(ticket, phase, agent_id): record a lifecycle phase "
-        "visit (same phase gates as `t3 <overlay> lifecycle visit-phase`).",
     ),
     _WriteTool(
         "record_e2e_run",
         _record_e2e_run,
         _WRITE,
         "call_command('lifecycle', 'record-e2e-run', …) — e2e attestation",
-        "- record_e2e_run(ticket, spec, result, head_sha, posted_url): record the "
-        "mandatory-E2E attestation (posted evidence URL required to clear the gate).",
     ),
     _WriteTool(
         "config_setting_set",
         _config_setting_set,
         _WRITE,
         "call_command('config_setting', 'set', …) + gate-key refuse list",
-        "- config_setting_set(key, value, overlay): set a plain config setting; "
-        "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
-        "cold-hook wires, registry rows, the cold-read leak-scrub lists / "
-        "fail-open switch / agent-routing tables, AND the safety-posture "
-        "delegation/authorization/allowlist keys whose write IS the authorization) "
-        "— those stay human/CLI-only.",
     ),
     _WriteTool(
         "task_create",
         _task_create,
         _WRITE,
         "call_command('tasks', 'create', …) — dispatch-quote gate wiring",
-        "- task_create(ticket, phase, reason, kind): enqueue the "
-        "next-phase task for a ticket through the `tasks create` seam (same "
-        "dispatch-quote gate wiring). A bad ticket / missing phase reports the "
-        "command's own message as a structured error.",
     ),
     _WriteTool(
         "task_complete",
         _task_complete,
         _WRITE,
         "teatree.core.models.Task.complete",
-        "- task_complete(task_id, result_artifact_path): complete a loop task — "
-        "records the phase visit and advances the ticket FSM.",
     ),
     _WriteTool(
         "task_fail",
         _task_fail,
         _DESTRUCTIVE,
         "teatree.core.models.Task.fail",
-        "- task_fail(task_id, reason): fail a loop task without advancing the ticket FSM; its "
-        "checkout claim is released only once the holder is confirmed dead, otherwise the "
-        "holder's own unwind releases it. Always pass a `reason` naming WHY it failed; it is "
-        "what the task listing and the ticket card show, and an omitted reason is recorded as "
-        "agent_abandoned rather than left blank.",
     ),
     _WriteTool(
         "notify_user",
         _notify_user,
         _WRITE,
         "teatree.core.notify.notify_user_outcome — send-proxy + BotPing audit + own-DM carve-out",
-        "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
-        "audited notify egress (send-proxy + BotPing idempotency + own-DM "
-        "never-lockout carve-out). kind is answer | info; kind='question' is refused: "
-        "an owner question goes through `questions record`. Pass a stable idempotency_key to "
-        "dedupe retries. A non-delivery returns sent=false PLUS a `reason` slug and "
-        "a human `detail` — never a bare false; treat any reason other than "
-        "already_sent as the owner NOT having been told.",
     ),
     _WriteTool(
         "question_answer",
         _question_answer,
         _WRITE,
         "call_command('questions', 'answer', …)",
-        "- question_answer(question_id, text, resolver): answer a pending DeferredQuestion (single-use, audited).",
     ),
     _WriteTool(
         "worktree_teardown",
         _worktree_teardown,
         _DESTRUCTIVE,
         "call_command('workspace', 'teardown', …) — liveness/dirty guards",
-        "- worktree_teardown(path, force): tear down the ticket workspace *path* "
-        "resolves to (every worktree in it; refuses live or dirty trees unless forced).",
     ),
     _WriteTool(
         "review_post_comment",
         _review_post_comment,
         _WRITE,
         "teatree.mcp.review_seam (ReviewService.post_comment; live gated #1207)",
-        "- review_post_comment(repo, mr, finding, live): DRAFT by default; one finding per "
-        "anchor. finding takes the same shape as one review_post_comments entry — {note, "
-        "anchor='path/to/file.py:LINE', evidence, force_general, allow_bloat}, where evidence is "
-        "a JSON object or its JSON string. live=true requires the recorded LivePostApproval + "
-        "on-behalf verdict, same as the CLI; without evidence a 'X is wrong/broken/missing' "
-        "body is refused.",
     ),
     _WriteTool(
         "review_post_comments",
         _review_post_comments,
         _WRITE,
         "teatree.mcp.review_seam (ReviewService.post_comments; one envelope, live gated #1207)",
-        "- review_post_comments(repo, mr, comments, live): a whole review in ONE batch — "
-        "comments=[{note, anchor='path/to/file.py:LINE', evidence}, …] where evidence is a JSON "
-        "object or its JSON string, every body gated exactly as review_post_comment, one "
-        "authorization consume for the review. evidence / force_general / allow_bloat are "
-        "per-COMMENT, because every gate they feed is. Prefer this over N single posts.",
     ),
     _WriteTool(
         "review_request_check",
         _review_request_check,
         _READ_ONLY,
         "",
-        "- review_request_check(mr_url): race-safe pre-post dedup PEEK (takes no "
-        "claim). Returns action=post|suppress; ABORT the post on suppress.",
     ),
     _WriteTool(
         "review_request_post",
         _review_request_post,
         _WRITE,
         "call_command('review_request_post') — #1094 dedup + #960 on-behalf + review-state",
-        "- review_request_post(mr_url, approver, title, ticket_id, head_sha): post a "
-        "review request through the #1094 dedup + #960 on-behalf + review-state gate "
-        "chain. Returns action=post|draft|suppress|refused; refused names the missing "
-        "recorded approval / attestation.",
     ),
 )
 
@@ -540,8 +492,6 @@ _CROSS_MODULE_SEAMS: dict[str, str] = {
 }
 
 TOOL_SEAMS: dict[str, str] = {tool.name: tool.seam for tool in _TOOLS if tool.seam} | _CROSS_MODULE_SEAMS
-
-INSTRUCTIONS = "\n".join(tool.instruction for tool in _TOOLS)
 
 
 def register(server: MCPServer) -> None:

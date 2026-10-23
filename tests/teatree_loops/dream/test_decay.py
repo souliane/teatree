@@ -34,7 +34,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import acceptance, decay, decay_corpus, decay_signal, gates, reindex
+from teatree.loops.dream import acceptance, decay, decay_corpus, decay_signal, gates, recall, reindex
 from teatree.loops.dream.decay import BudgetTier, DecayPolicy, decay_memories, ledger_durable_home_resolver
 from teatree.loops.dream.decay_corpus import MemoryFile
 from teatree.loops.dream.decay_signal import is_settled_ticket_record, under_drain_target
@@ -42,7 +42,7 @@ from teatree.loops.dream.decay_signal import is_settled_ticket_record, under_dra
 _NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
 
 #: A long descriptive slug tail (kept within the real ~86-char filename max) so the
-#: COMPACT bare-pointer index reaches the ~24 KB byte budget at a few-hundred-file
+#: COMPACT bare-pointer index reaches the 2 KiB byte budget at a few-dozen-file
 #: corpus: filenames, not per-line summaries, are what fill the re-indexed hot index
 #: (#2755), so the budget-tier fixtures reach budget through realistic filename length.
 _BUDGET_SLUG = "with_a_realistic_fairly_long_low_signal_descriptive_tag"
@@ -430,7 +430,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         The bodies carry per-file keyword tokens so no two are near-duplicates — the
         OLD captured-elsewhere rail would retain every one (RED), the NEW signal-scored
         tier archives the lowest until under budget (GREEN). Filenames are long and
-        realistic so a few-hundred-file corpus reaches the ~24 KB budget in the compact
+        realistic so a few-dozen-file corpus reaches the 2 KiB budget in the compact
         bare-pointer index (#2755).
         """
         for i in range(count):
@@ -460,7 +460,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # the projected survivor index is back under the BYTE budget. (RED before the
         # fix — captured-elsewhere retained every unique file.)
         self._seed_low_signal(360)
-        self._seed_index()  # ~360-line index -> over the ~24 KB byte budget
+        self._seed_index()  # ~360-line index -> over the byte budget
         result = self._decay(budget_tier=True)
         assert result.archived_count > 0
         assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET
@@ -530,20 +530,16 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         result = self._decay(budget_tier=True)
         assert result.archived_count == 0
 
-    def test_short_lines_use_byte_headroom_archiving_fewer_than_a_line_cap_would(self) -> None:
-        # #2755's win, preserved under the two-dimensional budget: a corpus that fits BOTH
-        # real loader limits is archived NOT AT ALL, where the retired 150-line proxy cap
-        # would have archived (count - 150) files for nothing. The headroom between the
-        # retired cap and the real limits is USED. Anti-vacuous: reintroduce a 150-line cap
-        # and archived_count goes > 0.
-        count = 190  # > the retired 150-line cap, yet under BOTH real budgets
-        self._seed_low_signal(count)
+    def test_a_corpus_between_the_drain_target_and_the_ceiling_is_left_alone(self) -> None:
+        # #2755's win, preserved under the two-dimensional budget: the tier FIRES on the ceiling,
+        # not on the lower drain target, so a corpus that fits BOTH budgets is archived not at
+        # all. Anti-vacuous: fire on the target instead and archived_count goes > 0.
+        self._seed_low_signal(gates.INDEX_LINE_BUDGET - self._projected_header_lines())
         self._seed_index()
-        assert self._rendered_line_count() > 150  # a 150-line cap would breach
-        assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET  # ... yet it fits the byte budget
-        assert len(reindex.render_index(self.dir).splitlines()) <= gates.INDEX_LINE_BUDGET  # ... and the line budget
-        result = self._decay(budget_tier=True)
-        assert result.archived_count == 0  # nothing archived; a 150-line cap would archive 40
+        rendered = reindex.render_index(self.dir)
+        assert gates.INDEX_LINE_DRAIN_TARGET < len(rendered.splitlines()) <= gates.INDEX_LINE_BUDGET
+        assert len(rendered.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+        assert self._decay(budget_tier=True).archived_count == 0
 
     def test_budget_tier_off_by_default_archives_nothing(self) -> None:
         # Without budget_tier the new tier never fires (no behaviour change to the
@@ -615,7 +611,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
 
     def test_multibyte_index_archives_until_under_byte_budget(self) -> None:
         # #2755: a dense multibyte index over the BYTE budget is archived down until its
-        # ENCODED size is back under 24 KB — proving the tier counts bytes, not chars.
+        # ENCODED size is back under the byte budget — proving the tier counts bytes, not chars.
         self._seed_dense_multibyte(180)
         self._seed_index()
         before_bytes = len(reindex.render_index(self.dir).encode("utf-8"))
@@ -643,10 +639,9 @@ class BudgetDecayTierTestCase(SimpleTestCase):
             self._write(f"feedback_s{i:04d}", f"a niche low-signal note {i:04d}", age_days=age_days)
 
     def test_line_pressure_archives_until_under_the_line_budget(self) -> None:
-        # #4057: the measured shape — 306 short pointer lines at 69% of the byte budget.
-        # Pre-fix the tier never fired (bytes comfortable) so the index kept growing while
-        # every entry past line 200 was dropped at load.
-        self._seed_short_named(306)
+        # #4057: line pressure with byte headroom. Pre-fix the tier never fired (bytes
+        # comfortable) so the index kept growing past the line budget.
+        self._seed_short_named(30)
         self._seed_index()
         before = reindex.render_index(self.dir)
         assert len(before.encode("utf-8")) < gates.INDEX_BYTE_BUDGET, "the byte budget must NOT be what bites"
@@ -682,7 +677,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         180 feedback fillers with DENSE multibyte FILENAMES form a reference RING (each
         links the next, the last links the first) so EVERY filler is referenced; the first
         30 also link a hub, so the hub is the MOST-LINKED entry. The multibyte filenames
-        make each pointer line ~3x the ASCII size, so ~180 entries blow the ~24 KB byte
+        make each pointer line ~3x the ASCII size, so ~180 entries blow the byte
         budget while the ages still map to STRICTLY-DECREASING recency (no floor, no ties)
         — making the OLDEST ring filler the uniquely lowest signal. A user memory and a
         BINDING memory are the highest-signal entries (unreferenced — to make the pre-fix
@@ -716,7 +711,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         #
         # RED before the fix: referenced entries skipped -> the survivor index stays over
         # budget AND the user + BINDING entries are wrongly archived. GREEN after: the index
-        # converges <= 24 KB bytes and the high-signal entries survive.
+        # converges <= the byte budget and the high-signal entries survive.
         user, binding, hub, oldest = self._seed_cross_linked_corpus()
         result = self._decay(budget_tier=True)
 
@@ -739,13 +734,14 @@ class BudgetDecayTierTestCase(SimpleTestCase):
 
     def test_budget_drain_leaves_headroom_below_the_line_ceiling(self) -> None:
         # #4385: the tier drained to the CEILING and stopped there, so the index came back
-        # sitting exactly on 200 lines with zero headroom and the very next memory written
-        # truncated the tail — and stayed truncated until the next nightly pass. The drain
-        # must land on a target strictly BELOW the gate-(d) budget so a day of writes fits.
+        # sitting exactly on the line budget with zero headroom and the very next memory written
+        # pushed it back over until the next nightly pass. The drain must land on a target
+        # strictly BELOW the gate-(d) budget so a day of writes fits.
         #
         # RED before the fix: the walk breaks at `not over_budget(...)`, satisfied the
-        # instant the projection hits exactly INDEX_LINE_BUDGET -> 200 <= 140 is False.
-        self._seed_short_named(306)  # the #4057 shape: line pressure, byte headroom
+        # instant the projection hits exactly INDEX_LINE_BUDGET.
+        total = 30
+        self._seed_short_named(total)  # the #4057 shape: line pressure, byte headroom
         self._seed_index()
         assert gates.INDEX_LINE_DRAIN_TARGET < gates.INDEX_LINE_BUDGET  # AV-5: a target, not the ceiling
 
@@ -758,7 +754,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # a "fix" that raises the target to a no-op breaches the bound above, one that empties
         # the corpus breaches this equality. Both directions pinned.
         expected_survivors = gates.INDEX_LINE_DRAIN_TARGET - self._projected_header_lines()
-        assert result.archived_count == 306 - expected_survivors
+        assert result.archived_count == total - expected_survivors
         assert len([line for line in after.splitlines() if line.startswith("- ")]) == expected_survivors
 
     def _seed_settled_and_standing(self, *, settled: int, standing: int) -> tuple[list[str], list[str]]:
@@ -775,7 +771,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         """
         settled_names = [f"ticket-{4000 + i}-reviewed-merge-safe" for i in range(settled)]
         for i, name in enumerate(settled_names):
-            related = " ".join(f"[[{settled_names[(i + k) % settled]}]]" for k in range(1, 31))
+            related = " ".join(f"[[{settled_names[(i + k) % settled]}]]" for k in range(1, min(30, settled - 1) + 1))
             self._write(
                 name, f"the resolved verdict for this ticket\n\nRelated: {related}", age_days=5, mtype="project"
             )
@@ -794,7 +790,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # must be archived FIRST, ordered among themselves by signal.
         #
         # RED before the fix: the archive set is the standing rules, not the ticket records.
-        settled_names, standing_names = self._seed_settled_and_standing(settled=200, standing=30)
+        settled_names, standing_names = self._seed_settled_and_standing(settled=20, standing=5)
         result = self._decay(budget_tier=True)
 
         archived = self._archived_sources(result)
@@ -843,7 +839,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # because a session only ever reads the LIVE index.
         #
         # RED before the fix: the archive set is exactly the owner rules.
-        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        rule_names = self._seed_clique_and_uncited_rules(clique=20, rules=5)
         archived = self._archived_sources(self._decay(budget_tier=True))
 
         assert archived, "the tier must fire"
@@ -856,7 +852,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # AV: the positive control. Revert the weight alone and the live inversion
         # re-reproduces — so the assertion above is satisfiable only BY that weight,
         # not by freshness, by the settled-record ordering, or by the drain target.
-        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        rule_names = self._seed_clique_and_uncited_rules(clique=20, rules=5)
         with patch.object(decay_signal, "_SIGNAL_FEEDBACK", 0):
             archived = self._archived_sources(self._decay(budget_tier=True))
 
@@ -911,7 +907,7 @@ class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
     def setUp(self) -> None:
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
-    def _write_preamble(self, byte_size: int) -> None:
+    def _write_preamble(self, byte_size: int = 600) -> None:
         """A human-owned priority block big enough that ignoring it hides the overrun."""
         filler = "\n".join(f"> priority note {i:04d} — a hand-curated line that must stay hot" for i in range(400))
         (self.dir / "MEMORY_PRIORITY.md").write_text(
@@ -937,20 +933,22 @@ class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
         )
 
     def test_a_preamble_pushing_the_index_over_budget_is_archived_back_under(self) -> None:
-        """RED before the fix: the small-header projection fits immediately, so 0 files move."""
-        self._write_preamble(20 * 1024)
-        self._seed(120)
+        """RED before the fix: the small-header projection under-counts the lines, so too few files move."""
+        self._write_preamble()
+        self._seed(14)
         (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
-        assert len(reindex.render_index(self.dir).encode("utf-8")) > gates.INDEX_BYTE_BUDGET
+        assert len(reindex.render_index(self.dir).splitlines()) > gates.INDEX_LINE_BUDGET
 
         result = self._decay()
 
-        assert result.archived_count > 0, "the preamble's bytes were projected away, so nothing was archived"
-        assert len(reindex.render_index(self.dir).encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+        assert result.archived_count > 0, "the preamble's lines were projected away, so nothing was archived"
+        rendered = reindex.render_index(self.dir)
+        assert len(rendered.splitlines()) <= gates.INDEX_LINE_BUDGET
+        assert len(rendered.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
 
     def test_the_preamble_itself_is_never_archived(self) -> None:
-        self._write_preamble(20 * 1024)
-        self._seed(120)
+        self._write_preamble()
+        self._seed(14)
         (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
 
         self._decay()
@@ -1368,6 +1366,42 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         # The high-signal entries survive; the user/BINDING signatures stay answerable.
         assert (self.dir / "feedback_binding_rule.md").exists()
         assert (self.dir / "user_durable_pref.md").exists()
+
+    def test_a_sixty_memory_corpus_decays_to_a_recall_pointer_and_a_short_hot_set(self) -> None:
+        self._write("feedback_binding_rule", "the load-bearing binding doctrine", age_days=60, binding=True)
+        self._write("user_durable_pref", "the user's own durable preference", age_days=200, mtype="user")
+        for i in range(20):
+            self._write(f"ticket-{4000 + i}-reviewed-merge-safe", f"settled record settled{i:03d}alpha", age_days=40)
+        for i in range(38):
+            self._write(
+                f"project_note_{i:03d}",
+                f"lesson note{i:03d}alpha note{i:03d}beta a niche note",
+                age_days=40 + i,
+                mtype="project",
+            )
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+        assert len(reindex.render_index(self.dir).splitlines()) > 60  # the whole corpus is hot before the pass
+
+        result = self._decay()
+        reindex.reindex_memory(self.dir)
+
+        index = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
+        assert len(index.splitlines()) <= 20
+        assert len(index.encode("utf-8")) <= 2_048
+        assert "memory recall" in index
+        assert "feedback_binding_rule.md" in index
+        assert "user_durable_pref.md" in index
+        assert "ticket-" not in index  # settled history leaves the hot index first
+        assert gates.Gate.index_budget(gates.snapshot_memory_dir(self.dir)).passed
+
+        archived_note = next(a.name for a in result.archived if a.name.startswith("project_note_"))
+        number = archived_note.removeprefix("project_note_")
+        hits = recall.recall_cold_memory(self.dir, f"note{number}alpha note{number}beta")
+        assert [hit.name for hit in hits] == [f"{archived_note}.md"]
+
+        self._decay()
+        reindex.reindex_memory(self.dir)
+        assert (self.dir / "MEMORY.md").read_text(encoding="utf-8") == index  # a second pass is byte-identical
 
 
 class ReArchivedNamesReadOnlyEvictionBannersTestCase(SimpleTestCase):

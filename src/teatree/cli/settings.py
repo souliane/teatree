@@ -7,7 +7,7 @@ there is one comparison in the codebase and two ways to read it, never two imple
 that agree until one of them is changed.
 
 The comparison touches ORM-backed snapshot state, so this module only bootstraps Django and
-delegates to ``settings_compare``. The management command owns comparison and rendering.
+delegates to ``settings_compare``. The management command owns the CLI options, comparison and rendering.
 """
 
 import typer
@@ -20,40 +20,11 @@ settings_app = typer.Typer(
     help="This box's settings beside its peers' — the Compare Instances page, in a terminal.",
 )
 
-_SNAPSHOT_OPTION = typer.Option(
-    None,
-    "--snapshot",
-    help=(
-        "A saved snapshot JSON file to compare against, repeatable. A record reaches what a tunnel "
-        "cannot: a box whose forward is down, a box that is gone, and this box as it stood earlier."
-    ),
-)
-_KIND_OPTION = typer.Option(
-    None,
-    "--kind",
-    help="Show only these difference kinds, repeatable: values, override, code. Default shows all three.",
-)
-_TIMEOUT_OPTION = typer.Option(
-    None,
-    "--timeout",
-    help=(
-        "Seconds to wait for each peer, overriding its registry entry. A forward under load "
-        "answers late, and a wait too short reports a live box as one that did not answer."
-    ),
-)
-_FULL_OPTION = typer.Option(False, "--full", help="Do not truncate a value, and print each row's import reason.")
-_JSON_OPTION = typer.Option(False, "--json", help="Emit the whole view as JSON, nothing summarised away.")
 
-
-@settings_app.command()
-def compare(
-    snapshot: list[str] = _SNAPSHOT_OPTION,
-    kind: list[str] = _KIND_OPTION,
-    timeout: float | None = _TIMEOUT_OPTION,
-    *,
-    full: bool = _FULL_OPTION,
-    json_output: bool = _JSON_OPTION,
-) -> None:
+@settings_app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True, "help_option_names": []}
+)
+def compare(ctx: typer.Context) -> None:
     """What differs between this box and its peers, and whether it can be read as drift.
 
     Exits non-zero only when there was nothing to compare — fewer than two instances answered. A
@@ -64,16 +35,25 @@ def compare(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415 — deferred until Django is ready
-
-    call_command(
-        "settings_compare",
-        snapshots=snapshot or [],
-        kinds=kind or [],
-        timeout=timeout,
-        full=full,
-        json_output=json_output,
+    from django.core.management import (  # noqa: PLC0415 — deferred until Django is ready
+        call_command,
+        get_commands,
+        load_command_class,
     )
+    from django.core.management.base import CommandError  # noqa: PLC0415 — deferred until Django is ready
+
+    command = load_command_class(get_commands()["settings_compare"], "settings_compare")
+    parser = command.create_parser("t3 settings", "compare")
+    if "--help" in ctx.args:
+        parser.print_help()
+        return
+    try:
+        parser.parse_args(ctx.args)
+    except CommandError as exc:
+        parser.print_help()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    call_command("settings_compare", *ctx.args)
 
 
 __all__ = ["settings_app"]
