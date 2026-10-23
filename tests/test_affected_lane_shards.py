@@ -32,4 +32,5 @@ def test_full_affected_lane_runs_all_real_shards(tmp_path: Path, arguments: list
     assert result.returncode == 0, result.stderr
     lines = calls.read_text().splitlines()
     assert len(lines) == 12
+    assert all("--teatree-selected-full" in line for line in lines)
     assert all(f"--splits 12 --group {group}" in line for group, line in enumerate(lines, start=1))
