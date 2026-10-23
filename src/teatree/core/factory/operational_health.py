@@ -42,6 +42,7 @@ from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
+from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.factory.stack_skill_coverage import stack_skill_coverage_signals
 from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_THRESHOLD,
@@ -465,6 +466,7 @@ _COLLECTORS = (
     _admission_pressure_signals,
     _reclaim_stall_signals,
     stack_skill_coverage_signals,
+    secret_key_signals,
 )
 
 

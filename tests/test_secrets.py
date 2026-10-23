@@ -1,6 +1,9 @@
 """Tests for ``teatree.utils.secrets`` — the ``pass`` password-store readers and writers."""
 
+import os
 import subprocess
+from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -10,17 +13,26 @@ from teatree.utils.run import CommandFailedError
 from teatree.utils.secrets import (
     KEYRING_READ_TIMEOUT_ENV_VAR,
     KEYRING_READ_TIMEOUT_SECONDS,
+    PassStore,
     SecretNotFoundError,
     SecretStoreError,
     keyring_read_timeout_seconds,
     read_pass,
     read_pass_required,
     remove_pass,
+    use_store,
     write_pass,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+@pytest.fixture(autouse=True)
+def _pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
+
 
 _PASS_ABSENT_RC = 1
 _GPG_FAILED_RC = 2
@@ -52,6 +64,16 @@ class TestReadPass:
         """Successful invocation returns the first line, stripped."""
         with patch("teatree.utils.secrets.run_bounded_group", side_effect=_bounded(stdout="s3cret-value\nmetadata\n")):
             assert read_pass("my/secret") == "s3cret-value"
+
+    def test_pass_facade_preserves_spaces_on_the_first_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pass_binary = tmp_path / "pass"
+        pass_binary.write_text("#!/bin/sh\nprintf 'abc  \\nsecond-line\\n'\n", encoding="utf-8")
+        pass_binary.chmod(0o700)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+        assert (read_pass("my/secret"), read_pass_required("my/secret")) == ("abc  ", "abc  ")
 
     def test_returns_empty_string_when_the_entry_is_absent(self) -> None:
         """``pass show`` exits 1 for "is not in the password store" — a genuine empty."""

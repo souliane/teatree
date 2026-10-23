@@ -22,7 +22,7 @@ from django.test import SimpleTestCase
 
 from teatree.loops.dream import cross_link, gates
 from teatree.loops.dream.decay import DecayPolicy, decay_memories
-from teatree.loops.dream.reindex import PRIORITY_NAME, reindex_memory, render_index
+from teatree.loops.dream.reindex import PRIORITY_NAME, reindex_memory, render_index, render_index_lines
 
 _PREAMBLE = "# Auto Memory — Index\n\n## ⚠ Read first — highest-cost failures\n\n- **mem_a.md** — never do the thing\n"
 
@@ -47,6 +47,34 @@ class PriorityPreambleTestCase(SimpleTestCase):
 
         assert index.startswith(_PREAMBLE)
         assert "- mem_a.md\n" in index
+
+    def test_priority_without_recall_pointer_still_points_to_archived_memories(self) -> None:
+        self._write("mem_a.md", "---\nname: mem_a\n---\nbody")
+        archive = self.dir / "archive"
+        archive.mkdir()
+        (archive / "archived.md").write_text("archived lesson\n", encoding="utf-8")
+        self._priority()
+
+        reindex_memory(self.dir)
+
+        index = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
+        assert index.startswith(_PREAMBLE)
+        assert "t3 <overlay> memory recall <query>" in index
+        assert "- archived.md" not in index
+        assert (self.dir / PRIORITY_NAME).read_text(encoding="utf-8") == _PREAMBLE
+
+    def test_priority_with_recall_pointer_does_not_repeat_it(self) -> None:
+        command = "t3 <overlay> memory recall <query>"
+        self._priority(f"{_PREAMBLE}> The rest: `{command}`.\n")
+
+        index = render_index(self.dir)
+
+        assert index.count(command) == 1
+
+    def test_priority_without_terminal_newline_separates_recall_pointer(self) -> None:
+        index = render_index_lines([], "# Read first")
+
+        assert "# Read first\n> Hot memories only." in index
 
     def test_the_preamble_file_is_not_itself_a_pointer(self) -> None:
         self._write("mem_a.md", "---\nname: mem_a\n---\nbody")

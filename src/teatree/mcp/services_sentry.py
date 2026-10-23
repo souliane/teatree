@@ -22,14 +22,6 @@ if TYPE_CHECKING:
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 
-INSTRUCTIONS = (
-    "- sentry_top_issues(project, limit): the most frequent unresolved Sentry "
-    "issues for a project.\n"
-    "- sentry_issue_get(issue_id): one Sentry issue's summary.\n"
-    "- sentry_issue_events(issue_id, limit): recent events for one issue.\n"
-    "- sentry_projects(): the org's Sentry projects."
-)
-
 
 def _client() -> "SentryReadClient":
     return SENTRY.resolve()
