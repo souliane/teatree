@@ -130,6 +130,11 @@ class TestHardDenyWithinAssembledToolsets:
             for p in getattr(m, "parts", [])
             if isinstance(p, ToolReturnPart) and p.outcome == "retried"
         ]
+        assert any(
+            isinstance(p, ToolReturnPart) and p.outcome == "success"
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+        )
 
     def test_safe_shell_command_runs(self, tmp_path: Path) -> None:
         (tmp_path / "marker").write_text("")
