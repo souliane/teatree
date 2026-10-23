@@ -69,6 +69,8 @@
 # module scope moves that side effect outside the guard, so an overlay/Django failure
 # would break every importer of this module instead of degrading to UNKNOWN.
 "src/teatree/core/forge_pr_probe.py" = 1
+# #5330: seven call-time review imports keep the MCP server within its startup-module budget.
+"src/teatree/core/gates/critic_gate.py" = 7
 "src/teatree/core/gates/dod_gate.py" = 2
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
