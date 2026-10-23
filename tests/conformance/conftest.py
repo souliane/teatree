@@ -10,5 +10,5 @@ import pytest
 from tests.conformance._lane_ceiling import apply_lane_ceiling
 
 
-def pytest_collection_finish(session: pytest.Session) -> None:
-    apply_lane_ceiling(session.items)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    apply_lane_ceiling(items)
