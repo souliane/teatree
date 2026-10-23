@@ -5,13 +5,16 @@ from threading import Event, Thread
 
 import typer
 
-from teatree.quality.review_evidence import measure_review_evidence, write_review_evidence
-
 
 def review_evidence_command(
     expect_sha: str = typer.Option(..., "--expect-sha", help="Full committed head SHA to measure."),
     base: str = typer.Option("origin/main", "--base", help="Target branch ref for the changed set."),
 ) -> None:
+    from teatree.quality.review_evidence import (  # noqa: PLC0415 — measure only on invocation
+        measure_review_evidence,
+        write_review_evidence,
+    )
+
     repo = Path.cwd()
     finished = Event()
 

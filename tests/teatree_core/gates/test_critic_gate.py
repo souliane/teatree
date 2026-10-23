@@ -498,7 +498,7 @@ class TestMergeNitPublication(TestCase):
         )
         with (
             patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
-            patch("teatree.core.gates.critic_gate.read_review_evidence", return_value=evidence),
+            patch("teatree.quality.review_evidence.read_review_evidence", return_value=evidence),
         ):
             error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
         assert "redundant_with row" in error
@@ -516,7 +516,7 @@ class TestMergeNitPublication(TestCase):
         )
         with (
             patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
-            patch("teatree.core.gates.critic_gate.read_review_evidence", return_value=evidence),
+            patch("teatree.quality.review_evidence.read_review_evidence", return_value=evidence),
         ):
             error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
         assert "duplicate definition src/example.py:9 needs a blocking cleanliness point" in error
@@ -532,7 +532,7 @@ class TestMergeNitPublication(TestCase):
         with (
             patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
             patch(
-                "teatree.core.gates.critic_gate.read_review_evidence", side_effect=ReviewEvidenceError("bad receipt")
+                "teatree.quality.review_evidence.read_review_evidence", side_effect=ReviewEvidenceError("bad receipt")
             ),
         ):
             error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())

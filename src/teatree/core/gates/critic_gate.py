@@ -50,9 +50,6 @@ from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_rubric import deterministic_items, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
-from teatree.core.review.nit_publish import critic_nits, pr_url_for_nits, publish_nits
-from teatree.quality.review_evidence import ReviewEvidenceError, read_review_evidence
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -206,6 +203,9 @@ def enqueue_llm_critic(ticket: "Ticket") -> None:
 
 
 def _publish_critic_nits(ticket: "Ticket", verdict: CriticVerdict, transition: str, head_sha: str) -> None:
+    from teatree.core.review.nit_lane import NitLaneError  # noqa: PLC0415 — NIT publishing is call-time work
+    from teatree.core.review.nit_publish import critic_nits, pr_url_for_nits, publish_nits  # noqa: PLC0415 — call-time
+
     points = critic_nits(verdict.item_verdicts()) if transition == "merge" else ()
     if not points:
         return
@@ -217,6 +217,9 @@ def _publish_critic_nits(ticket: "Ticket", verdict: CriticVerdict, transition: s
 
 
 def _publish_recorded_critic_nits(dispatch: CriticDispatch, verdict: CriticVerdict) -> None:
+    from teatree.core.review.nit_lane import NitLaneError  # noqa: PLC0415 — NIT publishing is call-time work
+    from teatree.core.review.nit_publish import critic_nits  # noqa: PLC0415 — NIT publishing is call-time work
+
     points = critic_nits(verdict.item_verdicts()) if dispatch.transition == "merge" else ()
     if points:
         dispatch.ticket.merge_extra(merge_into_dicts={"nit_publication": {dispatch.head_sha: {"status": "pending"}}})
@@ -233,6 +236,8 @@ def _publish_recorded_critic_nits(dispatch: CriticDispatch, verdict: CriticVerdi
 
 
 def _evidence_row_refusal(ticket: "Ticket", head_sha: str, items: list[CriticItemVerdict]) -> str:
+    from teatree.quality.review_evidence import read_review_evidence  # noqa: PLC0415 — read only for a returned verdict
+
     worktree = dispatch_worktree_path(ticket)
     if not worktree:
         return ""
@@ -257,6 +262,9 @@ def _evidence_row_refusal(ticket: "Ticket", head_sha: str, items: list[CriticIte
 
 
 def _record_new_critic_verdict(dispatch: CriticDispatch, envelope: dict) -> CriticVerdict:
+    from teatree.core.review.nit_lane import validate_nit_comments  # noqa: PLC0415 — validation runs when recording
+    from teatree.core.review.nit_publish import critic_nits  # noqa: PLC0415 — validation runs when recording
+
     raw_items = envelope.get("items")
     if dispatch.transition == "merge" and isinstance(raw_items, list):
         nit_follow_up = isinstance(dispatch.ticket.extra, dict) and dispatch.ticket.extra.get("nit_follow_up") is True
@@ -287,6 +295,9 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
     is a no-op (``""``). Returns an error string when the verdict is maker-graded so the
     caller fails the task and the block surfaces.
     """
+    from teatree.core.review.nit_lane import NitLaneError  # noqa: PLC0415 — recording can publish NITs
+    from teatree.quality.review_evidence import ReviewEvidenceError  # noqa: PLC0415 — receipt read is call-time
+
     dispatch = getattr(task, "critic_dispatches", None)
     dispatch_row = dispatch.first() if dispatch is not None else None
     raw_envelope = result.get("critic_verdict")

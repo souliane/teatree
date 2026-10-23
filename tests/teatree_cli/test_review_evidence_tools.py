@@ -13,8 +13,8 @@ def test_review_evidence_command_writes_measured_head() -> None:
     head = "a" * 40
     evidence = ReviewEvidence(head, (), KillMatrix(head, ()))
     with (
-        patch("teatree.cli.review_evidence_tools.measure_review_evidence", return_value=evidence) as measure,
-        patch("teatree.cli.review_evidence_tools.write_review_evidence") as write,
+        patch("teatree.quality.review_evidence.measure_review_evidence", return_value=evidence) as measure,
+        patch("teatree.quality.review_evidence.write_review_evidence") as write,
     ):
         result = CliRunner().invoke(app, ["tool", "review-evidence", "--expect-sha", head])
     assert result.exit_code == 0
