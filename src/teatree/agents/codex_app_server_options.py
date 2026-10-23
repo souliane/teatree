@@ -13,6 +13,7 @@ from teatree.agents.codex_auth_cache import resolve_codex_home
 from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.live_delivery import MAILBOX_PHASE_ENV
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.utils.ports import running_in_container
 
@@ -94,6 +95,7 @@ class CodexAppServerOptions:
     sandbox_policy: dict[str, Any]
     config: dict[str, Any]
     executor: ExecutorAttestation | None = None
+    mailbox_phase: str | None = None
 
     @classmethod
     def from_sdk_options(
@@ -118,6 +120,7 @@ class CodexAppServerOptions:
             sandbox_policy=sandbox_policy,
             config=config,
             executor=attested,
+            mailbox_phase=(options.env or {}).get(MAILBOX_PHASE_ENV),
         )
 
 

@@ -9,6 +9,7 @@ from typing import Any
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_post_tool import report_completed_item
 from teatree.agents.live_mailbox_client import MailboxError
+from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,16 @@ _MAILBOX_TOOLS = {
 }
 
 
-def dynamic_mailbox_tools() -> list[dict[str, Any]]:
+def _allowed_mailbox_tools(phase: str | None) -> frozenset[str]:
+    allowed = frozenset({"agent_mailbox_self", "agent_mailbox_peers"})
+    if phase is None:
+        return allowed
+    if MCP_WRITE in tools_for_phase(phase):
+        return frozenset(_MAILBOX_TOOLS)
+    return allowed | mcp_write_tools_for_phase(phase)
+
+
+def dynamic_mailbox_tools(phase: str | None) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -51,6 +61,7 @@ def dynamic_mailbox_tools() -> list[dict[str, Any]]:
             },
         }
         for name, (_, description, properties, required) in _MAILBOX_TOOLS.items()
+        if name in _allowed_mailbox_tools(phase)
     ]
 
 
@@ -65,7 +76,13 @@ async def mailbox_tool_result(
     mailbox = options.core.mailbox if options is not None else None
     specification = _MAILBOX_TOOLS.get(tool) if isinstance(tool, str) else None
     arguments = params.get("arguments")
-    if mailbox is None or specification is None or not isinstance(arguments, dict):
+    if (
+        options is None
+        or mailbox is None
+        or specification is None
+        or not isinstance(arguments, dict)
+        or tool not in _allowed_mailbox_tools(options.mailbox_phase)
+    ):
         return None
     try:
         value = await getattr(mailbox, specification[0])(**arguments)

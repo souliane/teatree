@@ -68,6 +68,12 @@ for line in sys.stdin:
         }}) + "\\n")
         sys.stdout.flush()
         continue
+    if mode == "denied-phase" and method is None and ident == 900:
+        sys.stdout.write(json.dumps({"method": "turn/completed", "params": {
+            "threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}
+        }}) + "\\n")
+        sys.stdout.flush()
+        continue
     if method == "account/read":
         result = {"account": {"type": "chatgpt"}}
     elif method == "thread/start":
@@ -100,6 +106,11 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"id": 900, "method": "item/tool/call", "params": {
             "threadId": "another-thread", "turnId": "turn-1", "callId": "call-1", "namespace": None,
             "tool": "agent_mailbox_peers", "arguments": {}
+        }}) + "\\n")
+    if method == "turn/start" and mode == "denied-phase":
+        sys.stdout.write(json.dumps({"id": 900, "method": "item/tool/call", "params": {
+            "threadId": "thread-1", "turnId": "turn-1", "callId": "call-1", "namespace": None,
+            "tool": "agent_mailbox_send", "arguments": {}
         }}) + "\\n")
     sys.stdout.flush()
 """
@@ -153,9 +164,10 @@ def _requests(log: Path, method: str) -> list[dict[str, Any]]:
     ]
 
 
-def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path) -> None:
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path, phase: str) -> None:
     script, log = _fake_server(tmp_path)
-    task = LiveTask(pk=7, ticket=3, phase="planning", harness="codex_app_server", model="codex")
+    task = LiveTask(pk=7, ticket=3, phase=phase, harness="codex_app_server", model="codex")
     options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
 
     async def run() -> tuple[list[object], list[InboxMessage]]:
@@ -207,6 +219,37 @@ def test_codex_dynamic_tool_rejects_another_thread(tmp_path: Path) -> None:
                 await session.close()
 
     asyncio.run(run())
+    replies = (json.loads(line) for line in log.read_text().splitlines())
+    [request] = [row for row in replies if row.get("id") == 900 and "method" not in row]
+    assert request["error"]["code"] == -32601
+
+
+def test_codex_phase_without_mailbox_write_grant_cannot_send(tmp_path: Path) -> None:
+    script, log = _fake_server(tmp_path)
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+    task = LiveTask(pk=7, ticket=3, phase="scoping", harness="codex_app_server", model="codex")
+
+    async def run() -> None:
+        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume=None,
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "denied-phase"),
+            )
+            await session.start()
+            try:
+                await session.query("send a peer message")
+                _ = [message async for message in session.receive_response()]
+            finally:
+                await session.close()
+
+    asyncio.run(run())
+    [start] = _requests(log, "thread/start")
+    assert {tool["name"] for tool in start["params"]["dynamicTools"]} == {
+        "agent_mailbox_self",
+        "agent_mailbox_peers",
+    }
     replies = (json.loads(line) for line in log.read_text().splitlines())
     [request] = [row for row in replies if row.get("id") == 900 and "method" not in row]
     assert request["error"]["code"] == -32601

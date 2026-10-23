@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.live_control import LiveTask
-from teatree.agents.live_delivery import MailboxIdentity
+from teatree.agents.live_delivery import MAILBOX_PHASE_ENV, MailboxIdentity
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask, shared_broker
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
@@ -75,6 +75,8 @@ def bound_task_mailbox(
             )
         elif identity is not None and task.harness in {"pydantic_ai", "codex_app_server"}:
             options.env = {**(original_env or {}), **identity.mcp_env()}
+            if task.harness == "codex_app_server":
+                options.env[MAILBOX_PHASE_ENV] = task.phase
         yield identity
     finally:
         options.mcp_servers = original

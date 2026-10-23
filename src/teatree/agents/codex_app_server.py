@@ -553,5 +553,5 @@ def _thread_params(options: CodexAppServerOptions, *, resuming: bool = False) ->
     if options.config:
         params["config"] = options.config
     if options.core.mailbox is not None and not resuming:
-        params["dynamicTools"] = codex_app_server_events.dynamic_mailbox_tools()
+        params["dynamicTools"] = codex_app_server_events.dynamic_mailbox_tools(options.mailbox_phase)
     return params
