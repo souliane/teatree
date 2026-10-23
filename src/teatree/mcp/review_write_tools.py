@@ -105,7 +105,7 @@ async def _review_post_comment(repo: str, mr: int, finding: dict[str, Any], *, l
     """Post one review comment — DRAFT by default, one finding per anchor.
 
     ``finding`` is {note, anchor='path/to/file.py:LINE', evidence, force_general, allow_bloat}, the shape
-    :func:`_review_post_comments` accepts per entry; ``evidence`` is a JSON object or its JSON string.
+    the public ``review_post_comments`` tool accepts per entry; ``evidence`` is a JSON object or its JSON string.
     Routes through the registered review seam — the exact ``t3 review post-comment``
     service — so ``live=true`` requires the recorded authorization (#1207) plus the
     on-behalf verdict, identically to the CLI. Without ``evidence`` a
