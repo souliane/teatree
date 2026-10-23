@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from teatree.core.modelkit.diff_scope import BLOCKING_SEVERITIES
+
 
 class FindingKind(StrEnum):
     BLOCKING = "blocking"
@@ -18,7 +20,7 @@ FINDING_STANDARD = (
 
 def normalize_finding_kind(kind: str, severity: str) -> str:
     normalized = kind.strip().lower()
-    if severity.strip().lower() in {"blocker", "major", "high", "critical"}:
+    if severity.strip().lower() in BLOCKING_SEVERITIES:
         return FindingKind.BLOCKING
     if normalized == FindingKind.NIT:
         return FindingKind.NIT

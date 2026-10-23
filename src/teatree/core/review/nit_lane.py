@@ -48,6 +48,19 @@ class NitLaneError(RuntimeError):
     pass
 
 
+def validate_nit_comments(points: tuple[NitPoint, ...]) -> None:
+    for point in points:
+        review = PrReview(
+            commit_sha="",
+            body="",
+            comments=(PrReviewComment(path=point.file, line=point.line, body=f"Nit: {point.summary}"),),
+            marker="",
+        )
+        if refusal := review_refusal(review, file_diffs=dict):
+            message = f"comment check — {refusal}; revise the NIT and retry this head"
+            raise NitLaneError(message)
+
+
 def nit_pr_marker(pr_url: str) -> str:
     digest = hashlib.sha256(pr_url.encode()).hexdigest()[:16]
     return f"<!-- t3-nit-pr:{digest} -->"

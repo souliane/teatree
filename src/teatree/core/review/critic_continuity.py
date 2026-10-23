@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.review_evidence import ReviewEvidenceError, read_review_evidence
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -54,10 +55,11 @@ def merge_critic_continuity(ticket: "Ticket", head_sha: str) -> str:
         delta = "UNAVAILABLE: the ticket worktree is missing; return unverified, not pass or fail."
     else:
         try:
+            base_ref = resolve_target_branch(ticket, worktree)
             old_pr_diff = git.run_strict(
-                repo=worktree, args=["diff", "--unified=0", f"origin/main...{previous.head_sha}", "--"]
+                repo=worktree, args=["diff", "--unified=0", f"{base_ref}...{previous.head_sha}", "--"]
             )
-            new_pr_diff = git.run_strict(repo=worktree, args=["diff", "--unified=0", f"origin/main...{head_sha}", "--"])
+            new_pr_diff = git.run_strict(repo=worktree, args=["diff", "--unified=0", f"{base_ref}...{head_sha}", "--"])
             delta = "\n".join(
                 unified_diff(
                     old_pr_diff.splitlines(),

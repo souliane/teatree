@@ -45,7 +45,9 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, review_nits
+from teatree.core.review.nit_lane import NitLaneError
+from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
+from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.brief_constraints import extract_constraints
 from teatree.quality.changed_set import ChangedSetError
 from teatree.quality.push_gate import run_brief_constraints
@@ -299,7 +301,9 @@ def _check_brief_constraints(ticket: "Ticket") -> None:
         message = "brief constraints cannot be verified: ticket worktree is missing"
         raise MergeQualityVerdictError(message)
     try:
-        violations = run_brief_constraints(Path(worktree), base_ref="origin/main", brief=brief)
+        violations = run_brief_constraints(
+            Path(worktree), base_ref=resolve_target_branch(ticket, worktree), brief=brief
+        )
     except (ChangedSetError, CommandFailedError, OSError) as exc:
         message = f"brief constraints could not be verified: {exc}"
         raise MergeQualityVerdictError(message) from exc
@@ -318,6 +322,16 @@ def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdic
     if not points:
         return
     pr_url = pr_url_for_nits(ticket, head_sha)
+    publication = ticket.extra.get("nit_publication", {}) if isinstance(ticket.extra, dict) else {}
+    marker = publication.get(head_sha, {}) if isinstance(publication, dict) else {}
+    if pr_url and marker.get("status") in {"pending", "failed"}:
+        try:
+            publish_nits(ticket, pr_url, head_sha, points)
+        except NitLaneError as exc:
+            message = f"NIT publication retry refused: {exc}"
+            raise MergeQualityVerdictError(message) from exc
+        ticket.refresh_from_db()
+        ticket.merge_extra(merge_into_dicts={"nit_publication": {head_sha: {"status": "published"}}})
     if not pr_url or not has_nit_receipts(ticket, pr_url, head_sha, points):
         message = (
             f"NIT publication receipt is missing for {ticket.pk} at head {head_sha}; "

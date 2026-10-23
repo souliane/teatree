@@ -30,6 +30,7 @@ Rollback safety
 """
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
@@ -40,15 +41,18 @@ from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import (
     CRITIC_EVIDENCE_UNAVAILABLE_PREFIX,
     CriticEvidenceUnavailableError,
+    CriticItemVerdict,
     CriticVerdict,
     CriticVerdictError,
 )
 from teatree.core.models.errors import CriticGateError
 from teatree.core.models.merge_clear import MergeAudit
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_rubric import deterministic_items, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_lane import NitLaneError
+from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
 from teatree.core.review.nit_publish import critic_nits, pr_url_for_nits, publish_nits
+from teatree.quality.review_evidence import ReviewEvidenceError, read_review_evidence
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -228,6 +232,45 @@ def _publish_recorded_critic_nits(dispatch: CriticDispatch, verdict: CriticVerdi
         dispatch.ticket.merge_extra(merge_into_dicts={"nit_publication": {dispatch.head_sha: {"status": "published"}}})
 
 
+def _evidence_row_refusal(ticket: "Ticket", head_sha: str, items: list[CriticItemVerdict]) -> str:
+    worktree = dispatch_worktree_path(ticket)
+    if not worktree:
+        return ""
+    evidence = read_review_evidence(Path(worktree), head_sha)
+    if evidence is None:
+        return ""
+    points = {item.slug: item.points for item in items}
+    for row in evidence.matrix.rows:
+        if row.redundant_with and not any(
+            point.kind == "blocking" and row.node in f"{point.citation} {point.summary}"
+            for point in points.get("test_value", ())
+        ):
+            return f"critic evidence unavailable: redundant_with row {row.node} needs a blocking test_value point"
+    for duplicate in evidence.duplicates:
+        location = f"{duplicate.path}:{duplicate.second_line}"
+        if not any(
+            point.kind == "blocking" and location in f"{point.citation} {point.file}:{point.line} {point.summary}"
+            for point in points.get("cleanliness", ())
+        ):
+            return f"critic evidence unavailable: duplicate definition {location} needs a blocking cleanliness point"
+    return ""
+
+
+def _record_new_critic_verdict(dispatch: CriticDispatch, envelope: dict) -> CriticVerdict:
+    raw_items = envelope.get("items")
+    if dispatch.transition == "merge" and isinstance(raw_items, list):
+        items = [CriticItemVerdict.coerce(item) for item in raw_items if isinstance(item, dict)]
+        validate_nit_comments(critic_nits(items))
+        if refusal := _evidence_row_refusal(dispatch.ticket, dispatch.head_sha, items):
+            raise CriticEvidenceUnavailableError(refusal)
+    return CriticVerdict.record_from_envelope(
+        ticket=dispatch.ticket,
+        transition=dispatch.transition,
+        head_sha=dispatch.head_sha,
+        envelope=envelope,
+    )
+
+
 def record_returned_critic_verdict(task: object, result: dict) -> str:
     """Record a headless critic task's returned ``critic_verdict`` envelope (corr-11).
 
@@ -276,14 +319,9 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
             ticket=ticket, transition=dispatch_row.transition, head_sha=dispatch_row.head_sha
         )
         if verdict is None:
-            verdict = CriticVerdict.record_from_envelope(
-                ticket=ticket,
-                transition=dispatch_row.transition,
-                head_sha=dispatch_row.head_sha,
-                envelope=raw_envelope,
-            )
+            verdict = _record_new_critic_verdict(dispatch_row, raw_envelope)
         _publish_recorded_critic_nits(dispatch_row, verdict)
-    except CriticEvidenceUnavailableError as exc:
+    except (CriticEvidenceUnavailableError, ReviewEvidenceError) as exc:
         return f"{CRITIC_EVIDENCE_UNAVAILABLE_PREFIX} {exc}"
     except (CriticVerdictError, NitLaneError) as exc:
         return f"critic verdict recording refused: {exc}"

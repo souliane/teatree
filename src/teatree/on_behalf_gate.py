@@ -19,7 +19,7 @@ agent proceed without an approval under a forbidding posture:
     not a colleague-facing voice, so the user does not have to approve
     their own evidence posts. Clearing the list re-gates those actions.
 *   An *author-side* action (:data:`_AUTHOR_SIDE_ACTIONS`, i.e.
-    ``reply_to_discussion``) on an MR the OWNER AUTHORED resolves to
+    ``reply_to_discussion`` or a NIT action) on an MR the OWNER AUTHORED resolves to
     PROCEED. Answering a reviewer on one's own MR is the owner's own
     voice on the owner's own work, not a colleague-facing review post,
     and the owner recorded that it posts autonomously. The carve-out is

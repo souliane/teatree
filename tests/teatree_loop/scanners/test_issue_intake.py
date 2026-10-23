@@ -802,10 +802,13 @@ class IssueIntakeAgeOrderingTests(_PublicRepoTestCase):
         )
         assert [signal.payload["url"] for signal in self._scanner(host, max_concurrent=1).scan()] == [self.OLD]
         assert ImplementedIssueMarker.objects.filter(issue_url=self.OLD, overlay=self.OVERLAY).exists()
+        Ticket.objects.create(issue_url=self.OLD, overlay=self.OVERLAY, state=Ticket.State.WORK_STARTED)
         host.authored[OWNER].append(_issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"))
 
         signals = self._scanner(host, max_concurrent=1).scan()
 
+        marker = ImplementedIssueMarker.objects.get(issue_url=self.OLD, overlay=self.OVERLAY)
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
         assert [signal.payload["url"] for signal in signals] == [self.NEW]
 
     def test_resume_rotation_still_places_nits_after_real_issues(self) -> None:

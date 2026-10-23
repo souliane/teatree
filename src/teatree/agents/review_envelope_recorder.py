@@ -51,7 +51,7 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
-from teatree.core.review.nit_lane import NitLaneError
+from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
 from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
@@ -142,10 +142,10 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
+    envelope = normalize_review_envelope(envelope, ticket)
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
         return evidence_error
-    envelope = normalize_review_envelope(envelope, ticket)
     returned = envelope.get("rubric_grades")
     try:
         # Scoped to a rubric that EXISTS, like both refusals below — with none, nothing is stamped.
@@ -155,6 +155,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     return (
         _rubric_coverage_error(rubric, grades, returned=returned)
         or _merge_safe_over_fail_error(rubric, envelope, grades)
+        or _nit_comment_error(envelope)
         or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
         or _settle_recorded_verdict(task, target, rubric=rubric)
     )
@@ -390,6 +391,16 @@ def _record_verdict_and_grades(
     except ReviewEvidenceError as exc:
         return f"integration review recording refused: {exc}"
     return _publish_review_nits_with_recovery(ticket or task.ticket, target, findings)
+
+
+def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
+    raw = envelope.get("findings")
+    findings = [Finding.from_dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+    try:
+        validate_nit_comments(review_nits(findings))
+    except NitLaneError as exc:
+        return f"review verdict recording refused: {exc}"
+    return ""
 
 
 def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:

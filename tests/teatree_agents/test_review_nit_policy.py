@@ -2,7 +2,7 @@ from teatree.agents.review_nit_policy import normalize_review_envelope
 
 
 def test_nit_only_hold_becomes_merge_safe() -> None:
-    envelope = {"verdict": "hold", "findings": [{"severity": "nit", "summary": "name"}]}
+    envelope = {"verdict": "hold", "findings": [{"severity": "minor", "kind": "nit", "summary": "name"}]}
 
     normalized = normalize_review_envelope(envelope, None)
 
@@ -17,7 +17,11 @@ def test_blocking_finding_overrides_merge_safe() -> None:
 
 
 def test_a_red_check_keeps_a_nit_only_hold() -> None:
-    envelope = {"verdict": "hold", "gh_verify_result": "failed", "findings": [{"severity": "nit", "summary": "name"}]}
+    envelope = {
+        "verdict": "hold",
+        "gh_verify_result": "failed",
+        "findings": [{"severity": "minor", "kind": "nit", "summary": "name"}],
+    }
 
     assert normalize_review_envelope(envelope, None)["verdict"] == "hold"
 

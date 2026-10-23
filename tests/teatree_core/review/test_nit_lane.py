@@ -271,3 +271,20 @@ def test_gitlab_nit_comment_uses_gitlab_scrub_policy() -> None:
             own_pr=True,
         )
     assert scrub.call_args.kwargs["forge"] == "gitlab"
+
+
+def test_post_missing_keeps_review_refusal_for_todo_anchored_comment() -> None:
+    host = _Host()
+    with (
+        patch.object(host, "get_pr_file_diffs", return_value={"x.py": "@@ -1 +1 @@\n+# TODO later"}),
+        patch("teatree.core.review.nit_lane.route_forge_write", side_effect=lambda **kw: kw["text"]),
+        pytest.raises(NitLaneError, match="TODO-anchored blocker"),
+    ):
+        _post_missing(
+            host,
+            pr_url="https://github.com/o/r/pull/9",
+            head_sha="a" * 40,
+            points=(NitPoint("x.py", 1, "must be fixed"),),
+            own_pr=True,
+        )
+    assert host.review_posts == []

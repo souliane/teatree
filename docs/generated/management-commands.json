@@ -1276,7 +1276,7 @@
           "name": "reconcile-overlay"
         },
         {
-          "help": "",
+          "help": "Record a merge critic envelope for the ticket's dispatched head",
           "name": "critic-record"
         },
         {

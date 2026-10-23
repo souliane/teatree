@@ -78,7 +78,9 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         '                     "blast_class": "substrate"|"logic"|"docs",',
         '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
         '                                   "summary": "...", "file": "...", "line": 0}]}',
-        "Classify BLOCKING/NIT using skills/review/references/nit-lane.md before returning a finding.",
+        "BLOCKING: wrong behaviour, false claim, untested shipped behaviour, vacuous test, redundant",
+        "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
+        "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
         (
@@ -94,10 +96,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             )
         ),
         "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-        "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
-        "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
-        "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
-        "dispatched one, so a verdict that names no head records nothing at all.",
+        "Another or missing `reviewed_sha` is REFUSED; review the dispatched head or return needs_user_input.",
         "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
         "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
         *(

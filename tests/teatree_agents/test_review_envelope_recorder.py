@@ -165,7 +165,6 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
     def test_a_nit_only_hold_records_merge_safe(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")
-        result.pop("anti_vacuity")
         verdict = result["review_verdict"]
         assert isinstance(verdict, dict)
         verdict["findings"] = [
@@ -207,6 +206,33 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+
+    def test_nit_only_hold_without_merge_safe_evidence_records_nothing(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        result.pop("anti_vacuity")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [{"severity": "nit", "kind": "nit", "summary": "rename helper"}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "anti-vacuity recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unpostable_nit_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "this is missing a blank line", "file": "a.py", "line": 2}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "comment check" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
 
     def test_a_nit_ticket_treats_a_nit_finding_as_blocking(self) -> None:
         ticket = _author_ticket()

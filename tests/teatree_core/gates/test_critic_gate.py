@@ -45,6 +45,8 @@ from teatree.core.review.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, R
 from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
 from teatree.core.review.nit_publish import has_nit_receipts
 from teatree.core.runners.base import RunnerResult
+from teatree.quality.kill_matrix import KillMatrix, KillRow
+from teatree.quality.review_evidence import ReviewEvidence
 
 _FORTY_HEX = "a" * 40
 _LLM_SLUGS = ("coherence", "duplication", "deferred", "ignored_input", "unenforced_guarantee")
@@ -475,6 +477,32 @@ class TestMergeVerdictBeforeTheMerge(TestCase):
 
 
 class TestMergeNitPublication(TestCase):
+    def test_redundant_test_row_cannot_be_ignored_by_critic(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        evidence = ReviewEvidence(
+            _FORTY_HEX, (), KillMatrix(_FORTY_HEX, (KillRow("tests/test_x.py::test_a", ("m1",), (), (), ("test_b",)),))
+        )
+        with (
+            patch("teatree.core.gates.critic_gate.dispatch_worktree_path", return_value="/tmp/review"),
+            patch("teatree.core.gates.critic_gate.read_review_evidence", return_value=evidence),
+        ):
+            error = record_returned_critic_verdict(dispatch.task, _merge_critic_envelope())
+        assert "redundant_with row" in error
+        assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
+    def test_unpostable_critic_nit_refuses_before_recording(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        result = _merge_critic_envelope()
+        result["critic_verdict"]["items"][1]["points"] = [
+            {"kind": "nit", "summary": "this is missing a blank line", "file": "x.py", "line": 1}
+        ]
+        assert "comment check" in record_returned_critic_verdict(dispatch.task, result)
+        assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
     def test_critic_verdict_stamps_inline_nit_receipt(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr_url = "https://github.com/souliane/teatree/pull/4040"

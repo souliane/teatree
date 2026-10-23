@@ -12,6 +12,7 @@ def test_point_round_trip_preserves_location_and_kind() -> None:
         "citation": "x.py:2",
         "file": "x.py",
         "line": 2,
+        "id": "",
     }
 
 
