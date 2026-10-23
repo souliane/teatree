@@ -11,6 +11,7 @@ from teatree.core.review.nit_lane import (
     NitPoint,
     _create_follow_up_issue,
     _post_missing,
+    nit_pr_marker,
     render_follow_up_body,
     track_nits,
 )
@@ -23,6 +24,7 @@ class _Host:
         self.review_posts: list[PrReview] = []
         self.issues: dict[str, str] = {}
         self.issue_labels: list[str] = []
+        self.label_shape = "names"
         self.drop_threads_after_issue = False
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
@@ -59,7 +61,10 @@ class _Host:
         return {"html_url": url, "number": 10}
 
     def get_issue(self, issue_url: str) -> dict[str, object]:
-        return {"html_url": issue_url, "body": self.issues[issue_url], "labels": self.issue_labels}
+        labels: list[str] | list[dict[str, str]] = self.issue_labels
+        if self.label_shape == "dicts":
+            labels = [{"name": label} for label in self.issue_labels]
+        return {"html_url": issue_url, "body": self.issues[issue_url], "labels": labels}
 
     def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> dict[str, object]:
         self.issue_labels = sorted(set(self.issue_labels) | set(labels))
@@ -145,6 +150,33 @@ def test_track_nits_posts_each_inline_then_one_issue_and_resolves_threads() -> N
     assert receipt.issue_url == "https://github.com/o/r/issues/10"
     assert repeated == receipt
     assert any(call.kwargs.get("action") == "resolve_review_nit" for call in gate.call_args_list)
+
+
+def test_follow_up_labels_read_back_from_forge_label_dicts() -> None:
+    host = _Host()
+    host.label_shape = "dicts"
+    host.issue_labels = ["nit"]
+    pr_url = "https://github.com/o/r/pull/9"
+    issue_url = "https://github.com/o/r/issues/10"
+    point = NitPoint(file="", line=0, summary="Rename helper")
+    host.issues[issue_url] = render_follow_up_body(
+        pr_url=pr_url,
+        marker=nit_pr_marker(pr_url),
+        points=(NitPoint(file="PR", line=0, summary=point.summary, permalink=pr_url),),
+    )
+
+    with (
+        patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+        patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+        patch("teatree.core.review.nit_lane.require_self_authored_issue"),
+        patch("teatree.core.review.nit_lane.require_on_behalf_approval", side_effect=lambda **kw: kw["publish"]()),
+        patch.object(host, "add_issue_labels", wraps=host.add_issue_labels) as add_labels,
+    ):
+        receipt = track_nits(host=host, pr_url=pr_url, head_sha="a" * 40, points=(point,))
+
+    add_labels.assert_called_once_with(issue_url=issue_url, labels=("t3-auto",))
+    assert host.get_issue(issue_url)["labels"] == [{"name": "nit"}, {"name": "t3-auto"}]
+    assert receipt.issue_url == issue_url
 
 
 def test_later_nit_keeps_one_numbered_issue_body() -> None:
