@@ -9,6 +9,7 @@ the cores instead of each taking them all.
 
 import errno
 import fcntl
+import math
 import os
 import sys
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from teatree.quality.durations_file import DURATIONS_PATH, read_durations
+from teatree.quality.durations_file import DURATIONS_PATH, DurationsUnreadableError, read_durations
 from teatree.utils.hook_registry import loop_registry_dir
 
 TOTAL_TEST_WORKERS_PER_CORE = 1
@@ -66,11 +67,13 @@ def oversized_selection_refusal(
     if not directories:
         return ""
     recorded = read_durations(root / DURATIONS_PATH)
-    seconds = sum(
-        duration
-        for node_id, duration in recorded.items()
-        if any((root / node_id.split("::", 1)[0]).resolve().is_relative_to(directory) for directory in directories)
-    )
+    seconds = 0.0
+    for node_id, duration in recorded.items():
+        if any((root / node_id.split("::", 1)[0]).resolve().is_relative_to(directory) for directory in directories):
+            if not math.isfinite(duration) or duration < 0:
+                message = f"{root / DURATIONS_PATH} has invalid recorded duration"
+                raise DurationsUnreadableError(message)
+            seconds += duration
     budget = 300 * _LOCAL_MAX_WORKERS
     if seconds > budget:
         return (

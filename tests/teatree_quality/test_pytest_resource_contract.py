@@ -145,6 +145,20 @@ def test_corrupt_durations_refuses_instead_of_allowing_a_large_run(
         oversized_selection_refusal(["tests/large"], root=tmp_path, sharded=False)
 
 
+@pytest.mark.parametrize("seconds", [-1.0, float("nan")])
+def test_invalid_recorded_seconds_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    (tmp_path / "tests" / "large").mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / ".test_durations").write_text(
+        json.dumps({"tests/large/test_one.py::test_case": seconds}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DurationsUnreadableError, match="invalid recorded duration"):
+        oversized_selection_refusal(["tests/large"], root=tmp_path, sharded=False)
+
+
 def test_explicit_affected_full_run_is_allowed(tmp_path: Path) -> None:
     assert oversized_selection_refusal([], root=tmp_path, sharded=False, full_selected=True) == ""
     assert oversized_selection_refusal([], root=tmp_path, sharded=False)
