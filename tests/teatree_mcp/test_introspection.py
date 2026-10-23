@@ -28,6 +28,15 @@ class TestQuestionList(TestCase):
 
 
 class TestConfigSettingGet(TestCase):
+    def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        ConfigSetting.objects.set_value("agent_max_turns", 7)
+        assert introspection.config_setting_get(key="agent_max_turns")["value"] == 7
+
+    def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        assert isinstance(introspection.config_setting_get(key="agent_max_turns")["value"], int)
+
     def test_alias_scope_reads_the_stored_value(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", 7, scope="teatree")
 

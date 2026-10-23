@@ -355,6 +355,11 @@ def test_the_shell_uses_the_declared_autoload_default_when_the_store_is_empty(
     assert "declared default chip" in _strip_ansi(result.stdout)
 
 
+def test_committed_statusline_default_matches_the_generated_block() -> None:
+    committed = _SCRIPT.read_text(encoding="utf-8")
+    assert defaults_generator.render_statusline_default(committed) == committed
+
+
 class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:
     """The Django PUBLISHER's projection is read by the Django-free shell CONSUMER.
 

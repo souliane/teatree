@@ -40,7 +40,7 @@ ABSENT: Final = "\u0000absent"
 ENV_SOURCE: Final = "env"
 
 
-#: The largest number of rows the page renders; a diff longer than this is a skew, not a diff.
+#: Limit identical rows in the all-rows view; differing rows remain fully visible.
 RENDER_CAP: Final = 500
 
 WITHHELD_REASON: Final = "the value was withheld at capture"

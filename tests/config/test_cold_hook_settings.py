@@ -16,7 +16,10 @@ cutover recurring.
 
 import dataclasses
 import re
+import subprocess
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -118,6 +121,36 @@ def test_cold_bool_flag_defaults_match_the_registry(monkeypatch: pytest.MonkeyPa
     for key, entry in {**COLD_SETTINGS, **COLD_HOOK_SETTINGS}.items():
         if isinstance(entry.default, bool) and key in _enumerate_cold_bool_flags():
             assert teatree_settings.teatree_bool_setting(key) is entry.default, key
+
+
+def test_every_gate_stays_armed_when_the_registry_cannot_import() -> None:
+    real_import = teatree_settings.import_module
+
+    def unreadable_registry(name: str) -> object:
+        if name == "teatree.config.registries":
+            raise ModuleNotFoundError(name)
+        return real_import(name)
+
+    names = sorted(key for key in COLD_HOOK_SETTINGS if key.endswith("_gate_enabled"))
+    assert len(names) >= 30
+    with (
+        patch.object(teatree_settings, "_cold_db_bool", return_value=None),
+        patch.object(teatree_settings, "import_module", side_effect=unreadable_registry),
+    ):
+        assert all(teatree_settings.teatree_bool_setting(name) for name in names)
+
+
+def test_integer_fallback_loads_in_a_bare_hook_interpreter() -> None:
+    scripts = Path(teatree_settings.__file__).resolve().parent
+    probe = (
+        "import sys; "
+        f"sys.path.insert(0, {str(scripts)!r}); "
+        "import teatree_settings as settings; "
+        "settings._declared_default = lambda name: None; "
+        "assert settings.section_int_setting('teatree', 'orchestrator_turn_wall_clock_seconds') == 30"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 def test_int_budget_cold_reads_equal_the_registered_int_keys() -> None:

@@ -47,7 +47,7 @@
     <div class="banner-red">{{ comparison.error }}</div>
   {% else %}
     <section class="band">
-      <h2>Differences <span class="muted">({{ comparison.total_rows }})</span></h2>
+      <h2>Differences <span class="muted">({{ comparison.differing_rows }})</span></h2>
       {% comment %}
       The rows that are actually a CONFLICT lead and open; the rest wait behind their own count.
       Ordered flat, ninety rows of "one box has an override here" bury the handful of rows where
@@ -56,7 +56,7 @@
       <p class="muted">Changes from this page apply to this instance only. A box that holds no row has no
         opinion, and every way of having none compares equal — only a stored value differs from
         silence.{% if comparison.identical %} <span class="mono">{{ comparison.identical }}</span>
-        settings and seed fields read the same on every instance and are not listed.{% endif %}</p>
+        settings and seed fields read the same on every instance{% if filters.differs_only %} and are not listed{% elif comparison.truncated %}; some identical rows are not listed{% endif %}.{% endif %}</p>
       {% if comparison.compat and not comparison.compat.comparable %}
         <p class="banner-amber">The instances declare different settings, so these rows are
           INFORMATIONAL: a row can be a difference in the code as easily as in the configuration.

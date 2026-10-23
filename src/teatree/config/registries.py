@@ -25,8 +25,7 @@ under:
 
 All three share ONE entry shape, :class:`ColdHookSetting`, so every key with no
 ``UserSettings`` field declares its parser AND its shipped default in the same place:
-the ``defaults.toml`` renderer reads one declaration rather than three, and
-``schema.derive_cold_entries`` can pin both halves of an entry against the model.
+the ``defaults.toml`` renderer reads one declaration rather than three.
 
 ``config_setting set`` / ``get`` resolve key-ness through ``known_settings``, which
 unions these three with ``OVERLAY_OVERRIDABLE_SETTINGS``, so an admin cannot stash a
@@ -84,8 +83,7 @@ class ColdHookSetting:
 
     ``parse`` coerces a stored value exactly as the read-side parser does, and
     ``default`` is what the settings tier serves when no row is stored — the SHIPPED
-    default, which ``defaults.toml`` renders for a ``Category.DEFAULT`` key and which
-    ``schema.derive_cold_entries`` pins against the model. A consumer may narrow that
+    default, which ``defaults.toml`` renders for a ``Category.DEFAULT`` key. A consumer may narrow that
     further in its own vocabulary — ``xhigh`` for an empty ``agent_session_effort``,
     ``token-outage`` for an empty ``token_outage_preset_name`` — but that reading belongs
     to the call site, never to this tier. ``scope`` is the GLOBAL store scope every one of these resolves from:

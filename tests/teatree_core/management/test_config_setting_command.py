@@ -24,6 +24,7 @@ from teatree.config import get_effective_settings
 from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.enums import Mode
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
+from teatree.config.resolution import get_effective_setting
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.config.setting_taxonomy import taxonomy
@@ -785,6 +786,19 @@ class TestGetNamesWhoDecided(TestCase):
     def test_a_value_that_is_not_stored_names_nobody(self) -> None:
         # A code default was decided by the release, not by a person on this box.
         assert "decided by" not in self._get("merge_wip")
+
+    def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        ConfigSetting.objects.set_value("agent_max_turns", 7)
+        assert "agent_max_turns = 7" in self._get("agent_max_turns")
+
+    def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        assert "agent_max_turns = " in self._get("agent_max_turns")
+
+    def test_single_key_fallback_keeps_the_autonomy_dependent_mode(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "full")
+        assert get_effective_setting("mode") is Mode.AUTO
 
 
 class TestConfigSettingSeed(TestCase):

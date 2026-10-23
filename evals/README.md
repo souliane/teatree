@@ -1427,7 +1427,7 @@ Fields:
   concrete model id through the single `teatree.agents.model_tiering.tier_models()`
   map. Optional; wins over `phase`, loses to an explicit `model`.
 - `phase` — a teatree FSM phase name (`planning` / `coding` / `reviewing` / …),
-  resolved to its tier via `DEFAULT_PHASE_MODELS` (an unmapped phase falls back to
+  resolved to its tier via `phase_models()` (an unmapped phase falls back to
   the default tier) then to a model. Optional; loses to `model` and `tier`.
 - `model` — a concrete model-id ESCAPE HATCH (`model@effort` allowed). Optional —
   default unset; when unset the model resolves from `tier` / `phase` / the default
@@ -1674,7 +1674,7 @@ silent mass-conversion shows up as a diff.
 ### The shipped catalog never opts into the `frontier` tier
 
 `phase:`/`tier:` are resolved abstractly (see "Fields" above), and
-`DEFAULT_PHASE_MODELS` maps several phases (`planning` / `coding` / `reviewing`
+`phase_models()` maps several phases (`planning` / `coding` / `reviewing`
 / `debugging` / `retrospecting`) to the `frontier` tier — Opus. The metered CI
 lane's single shared credential (subscription OAuth by default) is right-sized
 for a `balanced`-tier (Sonnet) run, not for a suite that silently mixes in
@@ -1690,7 +1690,7 @@ precedence, so the shipped catalog can never reach `frontier` by any path.
 catalog-wide: it resolves every shipped scenario through
 `resolve_eval_model` and fails if any lands on the `frontier` tier's model id.
 `scripts/eval/corpus_gen/model.py::infer_tier_or_phase` enforces the same rule
-for the generated scenarios (reading `DEFAULT_PHASE_MODELS` rather than
+for the generated scenarios (reading `phase_models()` rather than
 duplicating its frontier set, so a future frontier phase is caught
 automatically). A scenario that genuinely needs to exercise `frontier`-tier
 behavior (a benchmark cell, a deliberate model-regression check) still reaches

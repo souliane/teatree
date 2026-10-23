@@ -186,12 +186,26 @@ def section_int_setting(section: str, name: str, *, minimum: int | None = None) 
     """
     declared = _declared_default(name)
     if not isinstance(declared, int) or isinstance(declared, bool):
-        declared = int(import_module("hooks.scripts.hook_budget").HOOK_CEILING_S)
+        with _hook_scripts_on_path():
+            declared = int(import_module("hook_budget").HOOK_CEILING_S)
     if section == "teatree":
         db_value = _cold_db_int(name)
         if db_value is not None and (minimum is None or db_value >= minimum):
             return db_value
     return declared
+
+
+@contextlib.contextmanager
+def _hook_scripts_on_path() -> Generator[None]:
+    scripts_dir = str(Path(__file__).resolve().parent)
+    added = scripts_dir not in sys.path
+    if added:
+        sys.path.insert(0, scripts_dir)
+    try:
+        yield
+    finally:
+        if added:
+            sys.path.remove(scripts_dir)
 
 
 def teatree_int_setting(name: str, *, minimum: int | None = None) -> int:

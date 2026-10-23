@@ -108,6 +108,11 @@ class TestARefusedDocumentIsNamedNotIgnored(SimpleTestCase):
         assert f"'format_version' is {FORMAT_VERSION + 1}" in reason
         assert f"reads format_version {FORMAT_VERSION}" in reason
 
+    def test_noninteger_or_unsupported_format_versions_are_refused(self) -> None:
+        for version in (0, 1.5, "2"):
+            with self.subTest(version=version):
+                assert _refusal("invalid.json", _raw(_document(format_version=version))).reason
+
     def test_a_document_that_is_not_utf8_is_refused_before_the_parser(self) -> None:
         assert "not UTF-8" in _refusal("binary.json", b"\xff\xfe\x00\x01").reason
 

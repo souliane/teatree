@@ -36,17 +36,11 @@ import typer
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django_typer.management import DTCommand, TyperCommand, command
 
-from teatree.config import (
-    ALL_KNOWN_CONFIG_SETTINGS,
-    COLD_HOOK_SETTINGS,
-    FEATURE_FLAGS,
-    effective_default,
-    get_effective_settings,
-)
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, FEATURE_FLAGS, effective_default
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.feature_flags import render_flags_audit
 from teatree.config.known_settings import config_key_hint
-from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.config.resolution import get_effective_setting
 from teatree.config.setting_groups import group_outline
 from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
@@ -357,11 +351,10 @@ class Command(TyperCommand):
             return
         if key not in _ALLOWED_SETTINGS:
             self._refuse_unknown_key(key)
-        resolved = resolve_settings((key,), scope=overlay)[key]
-        if resolved.source in {ValueSource.DB_OVERLAY, ValueSource.DB_GLOBAL}:
-            stored_scope = resolved.scope or ""
+        stored, stored_scope = ConfigSetting.objects.get_effective_with_scope(key, scope=overlay)
+        if stored is not None:
             self.stdout.write(
-                f"  {key} = {resolved.value!r}  [source: db, {scope_label(stored_scope)}]"
+                f"  {key} = {stored!r}  [source: db, {scope_label(stored_scope)}]"
                 f"{_governance_suffix(key)}{_decider_suffix(key, stored_scope)}"
             )
             return
@@ -369,7 +362,7 @@ class Command(TyperCommand):
         if cold_hook is not None:
             self.stdout.write(f"  {key} = {cold_hook.default!r}  [source: code default]{_governance_suffix(key)}")
             return
-        fallback = getattr(get_effective_settings(overlay or None), key, None)
+        fallback = get_effective_setting(key, overlay or None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_governance_suffix(key)}")
 
     @command(cls=_ExportCommand)

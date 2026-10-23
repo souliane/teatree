@@ -11,7 +11,7 @@ from pydantic import BeforeValidator, create_model
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from teatree.config.declaration import Category, Registry, SettingMeta, declared_fields
-from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS, ColdHookSetting
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.settings import UserSettings
 
 __all__ = [
@@ -19,10 +19,6 @@ __all__ = [
     "Registry",
     "SettingMeta",
     "TeatreeSettingsSchema",
-    "derive_box_global_settings",
-    "derive_cold_entries",
-    "derive_global_only_settings",
-    "derive_overlay_overridable_settings",
     "setting_choices",
     "setting_meta",
     "shipped_defaults",
@@ -109,30 +105,3 @@ def setting_choices(key: str) -> tuple[object, ...]:
 @lru_cache(maxsize=1)
 def shipped_defaults() -> BaseSettings:
     return TeatreeSettingsSchema()
-
-
-def _before_validator(key: str) -> Callable[[Any], Any]:
-    return next(m.func for m in TeatreeSettingsSchema.model_fields[key].metadata if isinstance(m, BeforeValidator))
-
-
-def _keys_in(registry: Registry) -> list[str]:
-    return [key for key in TeatreeSettingsSchema.model_fields if setting_meta(key).registry is registry]
-
-
-def derive_overlay_overridable_settings() -> dict[str, Callable[[Any], Any]]:
-    return {key: row.parse for key, row in declared_fields(UserSettings).items()}
-
-
-def derive_box_global_settings() -> frozenset[str]:
-    return frozenset(key for key in TeatreeSettingsSchema.model_fields if setting_meta(key).box_global)
-
-
-def derive_global_only_settings() -> frozenset[str]:
-    return frozenset(
-        key for key in TeatreeSettingsSchema.model_fields if setting_meta(key).registry is not Registry.OVERLAY
-    )
-
-
-def derive_cold_entries(registry: Registry) -> dict[str, ColdHookSetting]:
-    defaults = shipped_defaults()
-    return {key: ColdHookSetting(_before_validator(key), default=getattr(defaults, key)) for key in _keys_in(registry)}

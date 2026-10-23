@@ -11,8 +11,8 @@ Same contract as ``search``: synchronous, JSON-safe, never mutates.
 from typing import Any
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
-from teatree.config.provenance import ValueSource, resolve_settings
-from teatree.core.models import DeferredQuestion
+from teatree.config.resolution import get_effective_setting
+from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.mcp import command_catalogue
@@ -112,12 +112,12 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
         }
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
-    resolved = resolve_settings((key,), scope=scope)[key]
-    if resolved.source in {ValueSource.DB_OVERLAY, ValueSource.DB_GLOBAL}:
+    stored, _stored_scope = ConfigSetting.objects.get_effective_with_scope(key, scope=scope)
+    if stored is not None:
         return {
             "key": key,
             "known": True,
-            "value": _jsonable(resolved.value),
+            "value": _jsonable(stored),
             "source": "db",
             "scope": label,
             "overlay": scope,
@@ -132,7 +132,7 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
             "scope": label,
             "overlay": scope,
         }
-    fallback = getattr(get_effective_settings(overlay or None), key, None)
+    fallback = get_effective_setting(key, overlay or None)
     return {
         "key": key,
         "known": True,

@@ -81,3 +81,4 @@ class TestGeneratorRenderIsByteStableAcrossEnvironments:
         section = markdown.split("#### `t3 settings compare`", 1)[1].split("### `t3 teatree`", 1)[0]
         for flag in ("--snapshot", "--kind", "--family", "--group", "--text", "--scope", "--all-rows"):
             assert flag in section
+        assert "╭─ Django " not in section

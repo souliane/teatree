@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from django.template.loader import get_template
 from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 
@@ -624,6 +625,133 @@ class TestKindFilteringPrecedesTheRenderCap(_RowBuilderCase):
 
 
 class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
+    def _filtered_rows(self, filters: CompareFilters) -> list[str]:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 2, "overlays": {}}})
+        peer = _box("peer", {"": {"merge_wip": 2, "overlays": {}}})
+        for box in (local, peer):
+            _mutable_payload(box)["registry"]["settings"]["merge_wip"].update(family="setting", group="Agents")
+            _mutable_payload(box)["registry"]["settings"]["overlays"].update(family="registry", group="Registries")
+        return [row.title for row in self._view(local, peer, filters=filters).rows]
+
+    def test_family_filter_alone_selects_its_family(self) -> None:
+        assert self._filtered_rows(CompareFilters(family="setting", differs_only=False)) == ["merge_wip"]
+
+    def test_group_filter_alone_selects_its_group(self) -> None:
+        assert self._filtered_rows(CompareFilters(group="Agents", differs_only=False)) == ["merge_wip"]
+
+    def test_text_filter_alone_selects_matching_rows(self) -> None:
+        assert self._filtered_rows(CompareFilters(text="merge", differs_only=False)) == ["merge_wip"]
+
+    def test_named_scope_filter_excludes_global_and_other_scopes(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 1}, "example": {"merge_wip": 2}, "other": {"merge_wip": 3}})
+        peer = _box("peer", {"": {"merge_wip": 4}, "example": {"merge_wip": 5}, "other": {"merge_wip": 6}})
+        view = self._view(local, peer, filters=CompareFilters(scope="example"))
+        assert [(row.scope, row.title) for row in view.rows] == [("example", "merge_wip")]
+
+    def test_alias_scope_filter_selects_prefixed_and_short_names(self) -> None:
+        local = _box(LOCAL_LABEL, {"t3-example": {"merge_wip": 2}})
+        peer = _box("peer", {"example": {"merge_wip": 4}})
+        view = self._view(local, peer, filters=CompareFilters(scope="t3-example"))
+        assert [(row.scope, [cell.value for cell in row.cells]) for row in view.rows] == [("example", [2, 4])]
+
+    def test_alias_rows_fold_before_a_cell_is_read(self) -> None:
+        local = _box(LOCAL_LABEL, {"example": {"merge_wip": 2}})
+        peer = _box("peer", {"t3-example": {"merge_wip": 4}})
+        view = self._view(local, peer, filters=CompareFilters(scope="example"))
+        assert [cell.value for cell in view.rows[0].cells] == [2, 4]
+
+    def test_all_rows_keeps_every_difference_and_caps_identical_rows(self) -> None:
+        same = tuple(f"same_{index:03d}" for index in range(501))
+        keys = (*same, "different")
+        local = _box(LOCAL_LABEL, {"": {**dict.fromkeys(same, "same"), "different": "left"}}, declares=keys)
+        peer = _box("peer", {"": {**dict.fromkeys(same, "same"), "different": "right"}}, declares=keys)
+        view = self._view(local, peer, filters=CompareFilters(differs_only=False))
+        assert len(view.rows) == 501
+        assert sum(row.differs for row in view.rows) == 1
+        assert view.total_rows == 502
+        assert view.truncated
+        rendered = get_template("dash/settings_compare.html").render(
+            {"comparison": view, "filters": CompareFilters(differs_only=False), "refusals": ()}
+        )
+        assert "Showing 501 of 502 rows" in rendered
+
+    def test_all_rows_never_caps_differences(self) -> None:
+        keys = tuple(f"difference_{index:03d}" for index in range(501))
+        local = _box(LOCAL_LABEL, {"": dict.fromkeys(keys, "left")}, declares=keys)
+        peer = _box("peer", {"": dict.fromkeys(keys, "right")}, declares=keys)
+        view = self._view(local, peer, filters=CompareFilters(differs_only=False))
+        assert len(view.rows) == 501
+        assert view.differing_rows == 501
+        assert not view.truncated
+
+    def _all_rows_rendered(self) -> str:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 2, "overlays": {}}})
+        peer = _box("peer", {"": {"merge_wip": 3, "overlays": {}}})
+        filters = CompareFilters(differs_only=False)
+        view = self._view(local, peer, filters=filters)
+        return get_template("dash/settings_compare.html").render(
+            {"comparison": view, "filters": filters, "refusals": ()}
+        )
+
+    def test_all_rows_heading_counts_only_differences(self) -> None:
+        rendered = self._all_rows_rendered()
+        assert re.search(r"Differences\s*<span class=\"muted\">\(1\)</span>", rendered)
+
+    def test_all_rows_does_not_claim_shown_identical_rows_are_hidden(self) -> None:
+        rendered = self._all_rows_rendered()
+        assert "read the same on every instance and are not listed" not in rendered
+        assert "overlays" in rendered
+
+    def test_compare_page_names_local_write_scope_and_each_instance_version(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 2}})
+        peer = _box("peer", {"": {"merge_wip": 3}})
+        _mutable_payload(local)["instance"] = {"teatree_version": "1.2.3"}
+        _mutable_payload(peer)["instance"] = {"teatree_version": "2.3.4"}
+        view = self._view(local, peer)
+        rendered = get_template("dash/settings_compare.html").render(
+            {"comparison": view, "filters": CompareFilters(), "refusals": ()}
+        )
+        assert "Changes from this page apply to this instance only" in rendered
+        assert re.search(r"this instance\s*<span class=\"muted\">v1.2.3</span>", rendered)
+        assert re.search(r"peer\s*<span class=\"muted\">v2.3.4</span>", rendered)
+
+    def test_compare_posts_only_to_local_relative_urls(self) -> None:
+        local = PeerSnapshot(
+            label=LOCAL_LABEL,
+            url="",
+            note="",
+            payload=_payload({"": {"agent_max_turns": 2}}, declares=("agent_max_turns",)),
+        )
+        peer = _box("peer", {"": {"agent_max_turns": 3}}, declares=("agent_max_turns",))
+        view = self._view(local, peer)
+        assert view.rows[0].readings[1].apply_url
+        rendered = get_template("dash/settings_compare.html").render(
+            {"comparison": view, "filters": CompareFilters(), "refusals": ()}
+        )
+        urls = re.findall(r'hx-post="([^"]+)"', rendered)
+        assert urls
+        assert all(url.startswith("/") and not url.startswith("//") for url in urls)
+        assert 'class="compare-use-here" hx-post="/' in rendered
+
+    def test_credential_pass_key_row_is_visible_but_never_writable_or_revealed(self) -> None:
+        key = "notion_token_pass_key"
+        local = _box(
+            LOCAL_LABEL, {"": {key: {"__redacted__": "credential-coordinate", "sha256": "a" * 64}}}, declares=()
+        )
+        peer = _box("peer", {"": {key: {"__redacted__": "credential-coordinate", "sha256": "b" * 64}}}, declares=())
+        view = self._view(local, peer)
+        row = next(row for row in view.rows if row.title == key)
+        rendered = get_template("dash/settings_compare.html").render(
+            {"comparison": view, "filters": CompareFilters(), "refusals": ()}
+        )
+        assert row.family == "credential"
+        assert not row.writable
+        assert key in rendered
+        assert "Use here" not in rendered
+        assert 'class="compare-use-here"' not in rendered
+        assert "a" * 64 not in rendered
+        assert "b" * 64 not in rendered
+
     def test_every_differing_row_survives_the_render_cap(self) -> None:
         keys = tuple(f"difference_{index:03d}" for index in range(501))
         local = _box(LOCAL_LABEL, {"": dict.fromkeys(keys, "left")}, declares=keys)
@@ -666,6 +794,17 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         _mutable_payload(peer)["values"]["defaults"] = {"agent_tier_models": {}}
         row = next(row for row in self._view(local, peer).rows if row.title == "agent_tier_models")
         assert row.readings[1].default_text == "not recorded"
+
+    def test_v1_unrecorded_table_default_does_not_create_a_difference(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {}}, declares=("agent_tier_models",))
+        peer = _box("peer", {"": {}}, declares=("agent_tier_models",))
+        _mutable_payload(local)["values"]["defaults"] = {"agent_tier_models": {"cheap": "new"}}
+        _mutable_payload(peer)["values"]["defaults"] = {"agent_tier_models": {}}
+        _mutable_payload(peer)["format_version"] = 1
+        view = self._view(local, peer, filters=CompareFilters(differs_only=False))
+        row = next(row for row in view.rows if row.title == "agent_tier_models")
+        assert not row.differs
+        assert view.differing_rows == 0
 
     def test_a_scope_uses_each_boxes_registered_exact_spelling(self) -> None:
         local = _box(LOCAL_LABEL, {"t3-example": {"merge_wip": 2}, "example": {"merge_wip": 1}})
