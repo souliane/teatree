@@ -1480,7 +1480,7 @@
           "name": "stamp-identity"
         },
         {
-          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none",
+          "help": "List orphan branches across the workspace or only ``--branch``; ``[]`` if none",
           "name": "list-orphans"
         },
         {

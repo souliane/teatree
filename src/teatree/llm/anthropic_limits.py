@@ -68,8 +68,10 @@ import dataclasses
 import re
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from typing import TYPE_CHECKING
 
-from claude_agent_sdk.types import RateLimitType
+if TYPE_CHECKING:
+    from claude_agent_sdk.types import RateLimitType
 
 
 class LimitCause(Enum):
@@ -148,7 +150,7 @@ _SIGNATURES: tuple[tuple[str, LimitCause], ...] = (
 #: Opus/Sonnet caps) is the WEEKLY limit, and an ``overage`` window is the
 #: usage-based-billing credit cause (its remediation is to add credits, never to
 #: wait out a plan reset).
-_RATE_LIMIT_TYPE_CAUSES: dict[RateLimitType, LimitCause] = {
+_RATE_LIMIT_TYPE_CAUSES: dict["RateLimitType", LimitCause] = {
     "five_hour": LimitCause.SUBSCRIPTION_SESSION,
     "seven_day": LimitCause.SUBSCRIPTION_WEEKLY,
     "seven_day_opus": LimitCause.SUBSCRIPTION_WEEKLY,
@@ -356,7 +358,7 @@ def provider_budget_match(phrase: str, text: str) -> LimitMatch:
     return LimitMatch(phrase=phrase, cause=LimitCause.PROVIDER_BUDGET, stated_reset=parse_stated_reset(text))
 
 
-def classify_rate_limit_type(rate_limit_type: RateLimitType | None) -> LimitMatch | None:
+def classify_rate_limit_type(rate_limit_type: "RateLimitType | None") -> LimitMatch | None:
     """Classify the SDK's TYPED :attr:`RateLimitInfo.rate_limit_type` window into its cause.
 
     This is the unambiguous, structured-data path — preferred over

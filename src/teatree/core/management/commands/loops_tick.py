@@ -46,6 +46,7 @@ from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
+from teatree.loops.tick_cost import record_tick_cost
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -188,7 +189,7 @@ def _drain_pending_reinstall_guarded() -> None:
 class Command(TyperCommand):
     help = "Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires."
 
-    def _emit_skip(self, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
+    def _emit_skip(self, loop: str, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
         from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: keeps command import light
 
         now = dt.datetime.now(tz=dt.UTC)
@@ -200,6 +201,7 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=f"SKIP  {reason}",
         )
+        record_tick_cost(loop, found_work=False)
 
     def _build_request(self, overlay: str) -> "TickRequest":
         """The tick's scan request — ALWAYS overlay backends, never a bare host (#3843).
@@ -388,6 +390,7 @@ class Command(TyperCommand):
         )
         if not won:
             self._emit_skip(
+                loop,
                 f"loop slot {owner_slot!r} not owned by this session — owner is session {owner_session} "
                 f"(run `t3 loop claim --slot {owner_slot} --take-over` from the owning session to take over).",
                 json_output=json_output,
@@ -403,6 +406,7 @@ class Command(TyperCommand):
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire(tick_mutex, owner=owner):
             self._emit_skip(
+                loop,
                 "another tick is already running for this loop",
                 json_output=json_output,
                 statusline_file=statusline_file,
@@ -434,6 +438,7 @@ class Command(TyperCommand):
             LoopLease.objects.release(tick_mutex, owner=owner)
 
         self._emit_report(report, loop, blocked_reason=builder.blocked_reason, json_output=json_output)
+        record_tick_cost(loop, found_work=bool(report.signal_count or report.action_count))
         self._hard_exit_if_subprocess()
 
     @staticmethod

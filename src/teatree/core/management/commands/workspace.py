@@ -8,7 +8,6 @@ from django.db import transaction
 from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
-from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.cleanup.owner_stamps import backfill_owner_stamps
 from teatree.core.cleanup.prek_patch_recovery import render_report, resolve_patch_dir, restore_patch
 from teatree.core.cleanup.unshipped_restore import restore_bundle
@@ -18,14 +17,20 @@ from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_iss
 from teatree.core.intake.landscape_gather import LandscapeReport, run_landscape
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace import orphan_listing as _ol
 from teatree.core.management.commands._workspace.anchor import resolve_workspace_ticket
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
 from teatree.core.management.commands._workspace.cleanup import _die
 from teatree.core.management.commands._workspace.dead_rows import build_dead_row_report, write_dead_row_lines
-from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.docker import (
+    reap_stale_local_stacks,
+    reap_stale_report,
+    render_reclaim_report,
+)
 from teatree.core.management.commands._workspace.drift_report import run_drift_report
 from teatree.core.management.commands._workspace.finalize import run_finalize
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
+from teatree.core.management.commands._workspace.helpers import worktree_root as _worktree_root
 from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,
@@ -56,13 +61,6 @@ from teatree.core.worktree.ticket_workspace_repair import repair_split_workspace
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils.run import CommandFailedError
-
-
-def _worktree_root() -> Path:
-    # The per-overlay WORKTREE root (env → DB ConfigSetting → default) where NEW
-    # ticket worktrees land — NOT the CLONE root (``config.clone_root()``,
-    # ``~/workspace``) where source clones are discovered.
-    return _config_worktree_root()
 
 
 class Command(TyperCommand):
@@ -348,11 +346,14 @@ class Command(TyperCommand):
         return run_stamp_identity(repo)
 
     @command(name="list-orphans")
-    def list_orphans(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
-        """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none."""
-        entries = _wh.list_orphan_entries()
-        out, err = cast("IO[str]", self.stdout), cast("IO[str]", self.stderr)
-        emit(entries, json_output=json_output, out=out, err=err, human=_wh.render_orphans(entries))
+    def list_orphans(
+        self,
+        *,
+        branch: Annotated[str | None, typer.Option("--branch", help="Scan only this branch.")] = None,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """List orphan branches across the workspace or only ``--branch``; ``[]`` if none."""
+        _ol.run_orphan_listing(self.stdout, self.stderr, branch=branch, json_output=json_output)
 
     @command()
     def landscape(self) -> LandscapeReport:
@@ -402,13 +403,7 @@ class Command(TyperCommand):
         dry_run: bool = typer.Option(default=False, help="Plan the reclaim set without removing anything."),  # noqa: FBT001 — CLI flag
     ) -> str:
         """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
-        report = reclaim_disk(dry_run=dry_run)
-        self.stdout.write(report.render())
-        # A venue that could not act reclaimed nothing and must not exit 0 (#4585).
-        if report.failures or report.venue_blocked:
-            self.stderr.write(report.failure_summary())
-            raise SystemExit(1)
-        return ""
+        return render_reclaim_report(reclaim_disk(dry_run=dry_run), self.stdout.write, self.stderr.write)
 
     @command(name="stamp-owners")
     def stamp_owners(
@@ -493,7 +488,7 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup)."""
         io = RelocateIO(write_out=self.stdout.write, write_err=self.stderr.write)
-        return run_relocate(active_overlay_name(), _config_worktree_root(), io, dry_run=dry_run).render()
+        return run_relocate(active_overlay_name(), _worktree_root(), io, dry_run=dry_run).render()
 
     @command(name="emit")
     def emit(self) -> str:

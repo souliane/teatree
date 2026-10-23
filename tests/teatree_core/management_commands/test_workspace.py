@@ -260,7 +260,10 @@ class TestWorktreeRootHelper(TestCase):
         # The worktree-creation path resolves through config.worktree_root()
         # (the per-overlay env → DB → default WORKTREE root), NOT the CLONE root
         # config.clone_root() used for clone discovery.
-        with patch.object(workspace_mod, "_config_worktree_root", return_value=Path("/tmp/ws-test")):
+        with patch(
+            "teatree.core.management.commands._workspace.helpers._config_worktree_root",
+            return_value=Path("/tmp/ws-test"),
+        ):
             result = _worktree_root()
             assert result == Path("/tmp/ws-test")
 

@@ -25,6 +25,13 @@ class TestLoopsListCommand:
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loops_list", json_output=True)
 
+    def test_passes_the_by_cost_flag(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loops_app, ["list", "--by-cost"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loops_list", by_cost=True)
+
 
 class TestLoopsGroupRegistered:
     def test_loops_group_wired_onto_root_app(self) -> None:

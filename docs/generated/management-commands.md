@@ -710,7 +710,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
-| `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none |
+| `list-orphans` | List orphan branches across the workspace or only ``--branch``; ``[]`` if none |
 | `branch-verdict` | Is this branch's work already on the default branch? The canonical answer (#4070) |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |

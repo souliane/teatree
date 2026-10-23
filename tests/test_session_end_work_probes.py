@@ -112,6 +112,26 @@ class TestDirtyWorktreeStates:
 
         assert work_check.current_branch(repo) == "(detached)"
 
+    def test_the_orphan_probe_uses_the_checkout_branch(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
+
+        with patch.object(work_check, "fetch_orphans", return_value=[]) as fetch:
+            work_check.scan_work(str(repo))
+
+        fetch.assert_called_once_with("work-branch")
+
+    def test_an_unreadable_branch_falls_back_to_the_fleet_probe(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
+
+        with (
+            patch.object(work_check, "current_branch", side_effect=work_check.ProbeFailedError("unreadable")),
+            patch.object(work_check, "fetch_orphans", return_value=[]) as fetch,
+        ):
+            scan = work_check.scan_work(str(repo))
+
+        fetch.assert_called_once_with(None)
+        assert scan.complete is False
+
     def test_clean_synced_repo_reports_nothing(self, tmp_path: Path) -> None:
         repo = _repo_with_commit(tmp_path)
         with patch.object(work_check, "unpushed_commit_count", return_value=0):
@@ -241,3 +261,19 @@ class TestFetchOrphans:
     def test_an_empty_list_is_an_answer(self) -> None:
         with _fake_t3(returncode=0, stdout="[]"):
             assert _REAL_FETCH_ORPHANS() == []
+
+    def test_a_branch_is_passed_to_the_workspace_probe(self) -> None:
+        completed = subprocess.CompletedProcess(args=["t3"], returncode=0, stdout="[]", stderr="")
+        with (
+            patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]) as route,
+            patch.object(work_check, "run_t3", return_value=completed),
+        ):
+            assert _REAL_FETCH_ORPHANS("work-branch") == []
+
+        route.assert_called_once_with("teatree", "workspace", "list-orphans", "--branch", "work-branch", "--json")
+
+    def test_a_detached_head_does_not_spawn_the_probe(self) -> None:
+        with patch.object(work_check, "t3_argv") as route:
+            assert _REAL_FETCH_ORPHANS("(detached)") == []
+
+        route.assert_not_called()

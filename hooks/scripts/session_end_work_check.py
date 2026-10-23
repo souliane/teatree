@@ -149,9 +149,12 @@ def current_branch(repo: Path) -> str:
     return _git(repo, "symbolic-ref", "--short", "-q", "HEAD", absent_is_empty=True).strip() or "(detached)"
 
 
-def fetch_orphans() -> list[dict] | None:
+def fetch_orphans(branch: str | None = None) -> list[dict] | None:
     """``t3 teatree workspace list-orphans --json``, or ``None`` when it could not answer."""
-    argv = t3_argv("teatree", "workspace", "list-orphans", "--json")
+    if branch == "(detached)":
+        return []
+    scope = ("--branch", branch) if branch is not None else ()
+    argv = t3_argv("teatree", "workspace", "list-orphans", *scope, "--json")
     if argv is None:
         return None
     try:
@@ -247,12 +250,18 @@ def scan_work(cwd: str) -> WorkScan:
     """Every work-bearing state this session leaves behind in its checkout, best-effort."""
     items: list[WorkItem] = []
     unanswered: set[str] = set()
-    orphans = fetch_orphans()
+    repo = checkout_root(cwd)
+    branch = None
+    if (repo / ".git").exists():
+        try:
+            branch = current_branch(repo)
+        except ProbeFailedError:
+            branch = None
+    orphans = fetch_orphans(branch)
     if orphans is None:
         unanswered |= _ORPHAN_STATES
     else:
         items += _orphan_items(orphans)
-    repo = checkout_root(cwd)
     if (repo / ".git").exists():
         try:
             items += _worktree_items(repo)
