@@ -57,3 +57,32 @@ class TestNitPublish(TestCase):
             with pytest.raises(RuntimeError, match="readback failed"):
                 publish_nits(ticket, _PR_URL, _HEAD, (_POINT,))
         assert not has_nit_receipts(ticket, _PR_URL, _HEAD, (_POINT,))
+
+    def test_unavailable_host_refuses_without_receipt(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch("teatree.core.review.nit_publish.track_nits") as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = None
+            with pytest.raises(NitLaneError, match="NIT pull request host is unavailable"):
+                publish_nits(ticket, _PR_URL, _HEAD, (_POINT,))
+        track.assert_not_called()
+        assert not has_nit_receipts(ticket, _PR_URL, _HEAD, (_POINT,))
+
+    def test_mismatched_receipt_refuses_stamp(self) -> None:
+        for receipt in (
+            NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), "b" * 40),
+            NitReceipt("https://github.com/souliane/teatree/issues/10", (), _HEAD),
+        ):
+            ticket = Ticket.objects.create(overlay="t3-teatree")
+            with (
+                patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+                patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+                patch("teatree.core.review.nit_publish.track_nits", return_value=receipt),
+            ):
+                provider.return_value.get_code_host_for_url.return_value = object()
+                with pytest.raises(NitLaneError, match="receipt for a different head or point count"):
+                    publish_nits(ticket, _PR_URL, _HEAD, (_POINT,))
+            assert not has_nit_receipts(ticket, _PR_URL, _HEAD, (_POINT,))
