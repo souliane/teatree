@@ -79,6 +79,11 @@ class TestTicketByNumberUsesIndexedColumn(TestCase):
         ticket = Ticket.objects.create(issue_url="https://example.com/no-number")
         assert _ticket_by_number(str(ticket.pk)) == ticket
 
+    def test_issue_less_ticket_resolves_by_its_pk(self) -> None:
+        ticket = Ticket.objects.create(issue_url="", overlay="t3-teatree")
+
+        assert _ticket_by_number(str(ticket.pk), overlay="t3-teatree") == ticket
+
     def test_returns_none_when_no_match(self) -> None:
         Ticket.objects.create(issue_url="https://a.example.com/x/issues/42")
         assert _ticket_by_number("5") is None

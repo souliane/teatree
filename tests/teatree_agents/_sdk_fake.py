@@ -68,6 +68,26 @@ def result_message(**overrides: Any) -> ResultMessage:
     return ResultMessage(**{**defaults, **overrides})
 
 
+class ScriptedResponseClient:
+    def __init__(self, messages: list[object]) -> None:
+        self.messages = iter(messages)
+        self.prompts: list[str] = []
+        self.receive_calls = 0
+
+    async def query(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        self.receive_calls += 1
+        for message in self.messages:
+            yield message
+            if isinstance(message, ResultMessage):
+                return
+
+    async def interrupt(self) -> None:
+        return
+
+
 def pre_compact_input(trigger: str) -> PreCompactHookInput:
     return PreCompactHookInput(
         hook_event_name="PreCompact",

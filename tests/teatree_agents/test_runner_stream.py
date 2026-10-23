@@ -1,14 +1,39 @@
 """A run's stream capture, and which endings count as a run cut short."""
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
+from teatree.agents.claude_sdk_session import ClaudeSdkSession, LiveInputQueue
 from teatree.agents.codex_app_server_messages import tool_blocks
-from teatree.agents.runner_stream import HarnessOutcome, StreamCapture
-from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, rate_limit_event, result_message
+from teatree.agents.runner_outcomes import failure_reason
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
+from tests.teatree_agents._sdk_fake import (
+    ScriptedResponseClient,
+    assistant_text,
+    assistant_tool_use,
+    rate_limit_event,
+    result_message,
+)
+
+
+def test_collect_ignores_an_early_ack_and_keeps_the_real_result() -> None:
+    client = ScriptedResponseClient(
+        [result_message(num_turns=0), assistant_text("real answer"), result_message(num_turns=2)]
+    )
+    session = ClaudeSdkSession(client, LiveInputQueue())
+
+    outcome = replace(asyncio.run(_collect(session, "continue")), resumed=True)
+
+    assert outcome.agent_text == "real answer"
+    assert outcome.result_message is not None
+    assert outcome.result_message.num_turns == 2
+    assert failure_reason(outcome) is None
+    assert client.prompts == ["continue"]
 
 
 class TestStreamCapture:
