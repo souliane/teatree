@@ -38,6 +38,7 @@ from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.config.discovery import overlay_entry_points_scanned_once
 from teatree.config.resolution import get_effective_settings
 from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
@@ -429,8 +430,9 @@ class Command(TyperCommand):
         set_overridden_loops_reader(overridden_loop_names)
         builder = _ScopedJobsBuilder(loop=loop)
         try:
-            request = self._build_request(overlay)
-            report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
+            with overlay_entry_points_scanned_once():
+                request = self._build_request(overlay)
+                report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
         finally:
             set_mini_loop_schedules_reader(None)
             set_preset_line_reader(None)

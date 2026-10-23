@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.config import OverlayEntry, _resolve_ep_project_path, discover_active_overlay, discover_overlays
+from teatree.config.discovery import overlay_entry_points_scanned_once
 
 from ._shared import _seed_config_db, _write_manage_py
 
@@ -452,3 +453,49 @@ def test_short_registry_entry_is_ignored_when_only_canonical_entry_point_exists(
 
     assert [entry.name for entry in result] == ["t3-beta"]
     assert result[0].overrides == {}
+
+
+class TestOverlayEntryPointsScannedOnce:
+    """The tick reads the overlay entry-point group dozens of times; one scan serves the block (#4999)."""
+
+    @staticmethod
+    def _read_discovery_repeatedly() -> list[list[OverlayEntry]]:
+        discovered = [discover_overlays(), discover_overlays()]
+        discover_active_overlay()
+        return discovered
+
+    def test_every_read_scans_the_installed_distributions_by_default(self, config_db: Path) -> None:
+        del config_db
+        with patch("importlib.metadata.entry_points", return_value=[]) as scan:
+            self._read_discovery_repeatedly()
+
+        assert scan.call_count > 1
+
+    def test_a_scoped_block_scans_them_once_and_discovers_the_same_overlays(self, config_db: Path) -> None:
+        del config_db
+        entry_point = _overlay_entry_point("ep-overlay", "ep_overlay.settings")
+        with (
+            patch("importlib.metadata.entry_points", return_value=[entry_point]) as scan,
+            patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
+        ):
+            unscoped = self._read_discovery_repeatedly()
+            scan.reset_mock()
+            with overlay_entry_points_scanned_once():
+                scoped = self._read_discovery_repeatedly()
+
+        assert scan.call_count == 1
+        assert scoped == unscoped
+
+    def test_the_scan_is_forgotten_when_the_block_ends(self, config_db: Path) -> None:
+        del config_db
+        with (
+            patch("importlib.metadata.entry_points", return_value=[]) as scan,
+            overlay_entry_points_scanned_once(),
+        ):
+            discover_overlays()
+        scan.reset_mock()
+
+        with patch("importlib.metadata.entry_points", return_value=[]) as after:
+            discover_overlays()
+
+        assert after.call_count == 1

@@ -7,6 +7,10 @@ module-health LOC cap; re-exported from ``teatree.config``.
 
 import importlib.util
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +18,38 @@ import teatree.config as _facade
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.config.settings import OverlayEntry
 from teatree.request_cache import cached_per_request
+
+_OVERLAY_ENTRY_POINT_GROUP = "teatree.overlays"
+_SCANNED_ONCE: ContextVar[list[tuple[EntryPoint, ...]] | None] = ContextVar(
+    "teatree_overlay_entry_points", default=None
+)
+
+
+def overlay_entry_points() -> tuple[EntryPoint, ...]:
+    """The installed ``teatree.overlays`` entry points; one scan per :func:`overlay_entry_points_scanned_once` block."""
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    kept = _SCANNED_ONCE.get()
+    if kept:
+        return kept[0]
+    scanned = tuple(entry_points(group=_OVERLAY_ENTRY_POINT_GROUP))
+    if kept is not None:
+        kept.append(scanned)
+    return scanned
+
+
+@contextmanager
+def overlay_entry_points_scanned_once() -> Generator[None]:
+    """Reuse one entry-point scan for the block: each scan opens every installed distribution's metadata.
+
+    For a caller whose installed distributions cannot change while it runs — the loop tick enters it after
+    the self-update reinstall drain. Nothing else is memoized, so a settings or preset write stays visible.
+    """
+    token = _SCANNED_ONCE.set([])
+    try:
+        yield
+    finally:
+        _SCANNED_ONCE.reset(token)
 
 
 @cached_per_request
@@ -28,11 +64,9 @@ def discover_overlays() -> list[OverlayEntry]:
     A registry ``path`` is read through :func:`_registry_project_path`, so a path
     stored on one side of a container boundary never names a directory on the other.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
-
     seen: dict[str, OverlayEntry] = {}
 
-    ep_values = {ep.name: ep.value for ep in entry_points(group="teatree.overlays")}
+    ep_values = {ep.name: ep.value for ep in overlay_entry_points()}
 
     # 1. DB overlays registry
     config = _facade.load_config()
@@ -154,10 +188,8 @@ def _canonical_active_overlay_name(
     Stays inside the ``platform`` layer (``config``): reads the entry-point
     names directly rather than calling into the ``core`` overlay loader.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
-
     try:
-        entries = list(entry_points(group="teatree.overlays"))
+        entries = list(overlay_entry_points())
     except Exception:  # noqa: BLE001 — discovery must not crash before django.setup()
         return None
     ep_names = {ep.name for ep in entries}
