@@ -36,7 +36,7 @@ sys.modules.setdefault("hooks.scripts.unbacked_claim_gate", sys.modules[__name__
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
-    return teatree_bool_setting("unbacked_claim_gate_enabled", default=True)
+    return teatree_bool_setting("unbacked_claim_gate_enabled")
 
 
 def handle_unbacked_claim_gate(data: dict) -> bool | None:

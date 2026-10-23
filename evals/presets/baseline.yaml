@@ -17,7 +17,7 @@
 # never resolve below the author's asserted minimum. A scenario absent from
 # `scenarios` falls through to its own YAML tier — it is NEVER silently
 # cheapened. `frontier_ok` lists the scenarios permitted to pin the frontier
-# tier (`--allow-frontier`); every other value is a known `TIER_MODELS` key.
+# tier (`--allow-frontier`); every other value is a known `tier_models()` key.
 
 scenarios:
   answerer_draft_and_dm_before_posting: cheap

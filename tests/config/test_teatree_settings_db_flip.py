@@ -69,11 +69,11 @@ class TestFailOpenParity:
         db = tmp_path / "db.sqlite3"
         _make_config_db(db, [("", "some_other_key", True)])
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert settings_module.teatree_bool_setting("orchestrator_bash_gate_enabled", default=True) is True
+        assert settings_module.teatree_bool_setting("orchestrator_bash_gate_enabled") is True
 
 
 class TestNonTeatreeSection:
     """Only the ``teatree`` section maps to a DB scope; any other section has none."""
 
     def test_other_section_missing_returns_default(self, settings_module) -> None:
-        assert settings_module.section_bool_setting("mysection", "flag", default=True) is True
+        assert settings_module.section_bool_setting("mysection", "orchestrator_bash_gate_enabled") is True

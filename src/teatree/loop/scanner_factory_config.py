@@ -44,7 +44,7 @@ def _user_slack_id_for_overlay(overlay_name: str) -> str:
         user_id = overlays[overlay_name].get("slack_user_id", "")
         if user_id:
             return str(user_id)
-    return cold_reader.str_setting("slack_user_id", default="")
+    return cold_reader.str_setting("slack_user_id")
 
 
 def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:

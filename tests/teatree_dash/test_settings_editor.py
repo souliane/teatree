@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.provenance import ValueSource
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
@@ -237,7 +237,7 @@ class TestShippedDefaultComparison(TestCase):
     def test_a_key_with_a_toml_default_carries_it_on_the_row(self) -> None:
         row = _row("mode")
         assert row.has_shipped_default is True
-        assert row.shipped_default == render_value(shipped_defaults_table()["mode"])
+        assert row.shipped_default == render_value(declared_defaults()["mode"])
 
     def test_an_unset_key_reads_as_matching_its_shipped_default(self) -> None:
         assert _cell("mode").source == ValueSource.CODE_DEFAULT.value
@@ -245,7 +245,7 @@ class TestShippedDefaultComparison(TestCase):
         assert _row("mode").drifts is False
 
     def test_an_override_equal_to_the_shipped_default_still_reads_as_matching(self) -> None:
-        ConfigSetting.objects.set_value("mode", shipped_defaults_table()["mode"])
+        ConfigSetting.objects.set_value("mode", declared_defaults()["mode"])
         assert _cell("mode").source == ValueSource.DB_GLOBAL.value
         assert _cell("mode").verdict is DriftVerdict.AT_DEFAULT
         assert _row("mode").drifts is False
@@ -279,7 +279,7 @@ class TestShippedDefaultComparison(TestCase):
         # an empty value" are different facts, and both used to reach the page as the same
         # muted word. A reader setting defaults has to be able to tell them apart.
         absent = _row("workspace_dir")  # no entry in defaults.toml at all
-        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={"mode": []}):
+        with patch("teatree.dash.settings_editor.declared_defaults", return_value={"mode": []}):
             empty = _row("mode")  # an entry that IS present and IS empty
         assert absent.has_shipped_default is False
         assert empty.has_shipped_default is True
@@ -290,7 +290,7 @@ class TestShippedDefaultComparison(TestCase):
         # The owner's report names `null` first: the control holds the JSON literal it would
         # POST, so a `None` value was rendered to a human as the four letters `null`. Nobody
         # setting a default should have to know the wire encoding to read the current state.
-        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={}):
+        with patch("teatree.dash.settings_editor.declared_defaults", return_value={}):
             row = _row("agent_harness_provider")  # the one schema key whose default is None
         assert all(cell.editable != "null" for cell in row.cells), [cell.editable for cell in row.cells]
         assert all(cell.editable == "" for cell in row.cells), [cell.editable for cell in row.cells]
@@ -306,7 +306,7 @@ class TestShippedDefaultComparison(TestCase):
     def test_a_secret_default_is_masked_before_it_reaches_the_row(self) -> None:
         # Belt and braces: a secret key that ever gained a shipped default still masks.
         with patch(
-            "teatree.dash.settings_editor.shipped_defaults_table",
+            "teatree.dash.settings_editor.declared_defaults",
             return_value={"banned_term_registry": {"leak": ["leaky"]}},
         ):
             row = _row("banned_term_registry")

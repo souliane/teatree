@@ -50,7 +50,7 @@ from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 from teatree.agents import permission_modes
 from teatree.agents.claude_cli_spawn import with_account_skills_off
 from teatree.agents.compaction_guard import with_compaction_off
-from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, tier_models
 from teatree.eval.agent_prompt import (
     SKILL_CATALOG_FIXTURE_RELATIVE_PATH,
     resolve_agent_path,
@@ -121,7 +121,7 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 MAX_BUDGET_USD = "0.10"
 #: The capacity-exhaustion fallback for an eval spawn — the conservative mid
 #: tier, DERIVED from the tier catalog so a generation bump carries it.
-FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
+FALLBACK_MODEL = tier_models()[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare

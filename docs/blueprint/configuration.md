@@ -525,7 +525,7 @@ the default (no flag).
 
 **`[agent.tier_effort]` (per-abstract-tier spawn effort).** The effort parallel
 of `[agent.tier_models]`: overrides the reasoning effort an abstract tier spawns
-with, merged OVER the shipped `model_tiering.TIER_EFFORT`
+with, merged OVER the shipped `registries.tier_effort()`
 (`{"frontier": "xhigh", "balanced": "xhigh"}`; `cheap`/Haiku is absent → no
 effort). `resolve_spawn_effort(phase)` resolves phase → tier → effort through the
 same `[agent.phase_models]` override mechanism as the model, so a phase
@@ -627,7 +627,7 @@ fallback never feeds a Codex thread id to Claude or vice versa.
 Teatree deliberately carries no standalone "most expensive model" kill-switch
 ([#2237](https://github.com/souliane/teatree/issues/2237) removed the prior
 single-toggle downgrade): the per-tier/per-phase routing above is already
-explicit-opt-in — `TIER_MODELS` never NAMES a costlier-than-frontier model id by
+explicit-opt-in — `tier_models()` never NAMES a costlier-than-frontier model id by
 default, so nothing routes to one without an operator writing the id into
 `session_model` / `phase_models.<phase>` / `skill_models.<skill>` /
 `honesty_model` themselves.
@@ -764,9 +764,9 @@ planted-key control, because zero is also what a walk that reads nothing reports
 
 ### 10.7 Shipped defaults + the unified settings schema
 
-The shipped default VALUES live in one committed file —
-`src/teatree/config/defaults.toml`. Its `[teatree]` table is GENERATED from the
-declarations that state those values (`config/declared_defaults.py` renders it; the
+The shipped default values live in the field and registry declarations.
+`src/teatree/config/defaults.toml` is their generated export. Its `[teatree]` table is
+rendered by `config/declared_defaults.py` from those declarations; the
 `generate-defaults-toml` prek hook writes it and `tests/teatree_config/test_declared_defaults.py`
 refuses a drifted commit), so a shipped default is changed at its declaration and a hand
 edit here is rendered away. The table is EXACTLY the
@@ -842,41 +842,24 @@ snapshot run byte-for-byte — a fresh document holding only `[teatree]` would s
 them. Safety-posture keys, dark feature-flags and the owner-workflow / engagement keys
 are declined by the planner, so a live override of one is reported and never written.
 
-`src/teatree/config/schema.py` is the single source of truth for the key set, the value
-taxonomy, and validation. `TeatreeSettingsSchema` is a `pydantic-settings` model over all
-~235 config keys: each field wraps the SAME per-key coercer the four config registries
-already use (as a `BeforeValidator`), so the model HOSTS teatree's #258 strictness rather
-than reinventing pydantic's own rules, and each field carries a `SettingMeta` marker with
-its `Category` (`default` / `personal` / `secret`) and `Registry` (which of the four
-registries it belongs to). `shipped_defaults()` is the `@lru_cache` singleton constructed
-from `defaults.toml`, so a malformed file fails once, loudly.
+`config/declaration.py` carries the cold-safe field metadata: value, parser, help,
+category and storage form. Each `UserSettings` field has one `SettingSpec`; cold and hook
+settings keep the same metadata in their registry entry. `schema.py` builds the
+`pydantic-settings` view from those declarations, with the same per-key coercer wrapped in
+`BeforeValidator`. The model covers every known key, while `setting_registries.py` derives
+the overlay parser map and box-global set from the fields. `setting_help.py` reads the
+same descriptions. `declared_keys.txt` records the complete declared namespace; removing a
+key requires an explicit `RETIRED` or `RENAMED` entry in that manifest.
 
-* **The registries are DERIVED from the model.** `OVERLAY_OVERRIDABLE_SETTINGS`,
-  `COLD_SETTINGS`, `COLD_HOOK_SETTINGS`, and `REGISTRY_SETTINGS` are the `{key: coercer}`
-  maps the resolver / CLI / MCP / import all share; `schema.derive_*` rebuilds each by
-  walking `model_fields` filtered on the field's `Registry` marker. A parity matrix
-  (`tests/config/test_registry_derivation.py`) proves each derived registry equals its
-  hand-maintained counterpart key-for-key and coercer-for-coercer, so the model's taxonomy
-  is the authoritative partition. The runtime dicts stay hand-maintained only because they
-  sit on the cold path (below) — the model binds them by test, not at runtime.
-* **One default authority, and a stdlib reader for the file.** `effective_default` is the
-  ONE answer to "what does this key resolve to with no override" — the dataclass field, or
-  the registry entry for a key that has none — and the resolver, the seed-skip, the
-  import-skip and the dashboard's provenance walk all read it. Nothing in that chain
-  touches `defaults.toml`: the file is the rendered EXPORT of those declarations. What
-  still reads the file — the dashboard's *shipped default* column, the export's redaction
-  fallback — goes through `config/cold_defaults.py`, stdlib `tomllib` only with an
-  mtime-keyed process cache, ~2ms rather than the pydantic model's ~110ms. That split is
-  not an optimisation of one call: `teatree.config`'s package init imports `resolution`,
-  and the pre-Django cold path (hook leaves, statusline) loads that package init, so a
-  pydantic read there would put the ~110ms on EVERY hook invocation. Every reader resolves
-  the file from one `cold_defaults.DEFAULTS_TOML` path constant, read at CALL time rather
-  than bound as a default argument (a bound default would make a re-pointed constant
-  invisible to every no-argument caller while a caller that passes it explicitly honoured
-  it, so the shipped key SET and the shipped VALUES could come from two different files at
-  once), and a subprocess control pins that importing the stdlib reader pulls in neither
-  pydantic nor Django
-  (`tests/config/test_cold_defaults.py::test_import_does_not_load_pydantic_or_django`).
+`effective_default` is the resolver's one no-override answer. The generated TOML is
+never read back as a resolution tier. `cold_defaults.py` retains only the cold-safe
+flattening primitive used by TOML interchange. The generated file is about 34 KB;
+its deployed live-system parse cost remains to be measured. A second runtime default source
+would add drift risk without a demonstrated cold-path saving, so Stage 2 runtime parsing
+is deferred until a measured reader needs it.
+The subprocess control in `tests/config/test_cold_defaults.py` still pins that this
+interchange helper imports neither pydantic nor Django.
+
   The cold hook leaves themselves do NOT read this file — each gate flag resolves from the
   `ConfigSetting` store via `cold_reader`, falling back to its compiled-in
   `COLD_HOOK_SETTINGS` default, so the never-lockout fallback depends on no packaged data
@@ -1099,8 +1082,8 @@ moved off the ship values. Colour is never the only signal: each verdict carries
 AND its own words, so it survives greyscale, colour blindness and a screen reader, and its
 two palette tokens are computed against every surface in both themes rather than assumed
 (`tests/teatree_dash/test_static_assets.py`). The default is read through
-`cold_defaults.shipped_defaults_table()` (which keys carry one) and `schema.shipped_defaults()`
-(the value), never by re-reading the file. A Secret/Personal key is absent from the shipped
+`declared_defaults()` for the keys that carry a public default and `effective_default()`
+for the value, without reading the generated file. A Secret/Personal key is absent from the shipped
 file by construction, so it has no default to compare against and offers no verdict — and its
 default is masked before the row is built either way, exactly as its value is.
 
@@ -1143,6 +1126,11 @@ read, is not UTF-8 JSON, is not a JSON object, or exceeds `MAX_SNAPSHOT_BYTES` i
 NAME with what was wrong (`LoadRefusal`). One bad document never costs the good ones: the POST
 answers 400 only when NOTHING loaded, so a mis-picked file cannot hide the comparison the rest
 produced.
+
+Snapshots produced by this release use format version 2. Older instances that read only
+version 1 refuse a version 2 capture when loading a v2 file; a live peer fetch checks the
+format only. Upgrade the receiving instance before loading that capture. This applies
+during a mixed-version rollout, even though this release still reads saved version 1 files.
 
 **Only the local column can write.** An eligible settings cell uses
 `ConfigSetting.set_value`, exactly like the Settings page; env-pinned, code-pinned, withheld,

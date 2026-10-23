@@ -102,7 +102,7 @@ def read_self_dm_destinations() -> SelfDmDestinations:
             if not _config_store_reachable(cold_reader):
                 return SelfDmDestinations(frozenset(), resolved=False)
             overlays = cold_reader.mapping_setting("overlays")
-            global_user_id = cold_reader.str_setting("slack_user_id", default="")
+            global_user_id = cold_reader.str_setting("slack_user_id")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return SelfDmDestinations(frozenset(), resolved=False)
     ids = overlay_slack_ids(overlays)
@@ -145,7 +145,7 @@ def _gate_enabled() -> bool:
     try:
         from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-        return _teatree_bool_setting("self_dm_gate_enabled", default=True)
+        return _teatree_bool_setting("self_dm_gate_enabled")
     except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
         return True
 

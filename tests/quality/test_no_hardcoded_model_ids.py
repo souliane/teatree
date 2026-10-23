@@ -4,8 +4,8 @@ The model-evolution goal requires that adopting/swapping a model is a config cha
 not a code edit. A concrete dated model-id string (``claude-haiku-4-5``,
 ``claude-opus-4-8[1m]``) is only legitimate in a small, enumerated set of files:
 
-*   ``src/teatree/agents/model_tiering.py`` — THE dispatch-resolution single source
-    of truth (:data:`TIER_MODELS`);
+*   ``src/teatree/config/registries.py`` — the declared tier-model default;
+*   ``src/teatree/agents/model_tiering.py`` — CLI compatibility floors and examples;
 *   two NON-dispatch model-capability pins (``llm/rate_limits.py``'s probe model,
     which cannot import the tier catalog without an upward layer edge;
     ``core/autocompact_advisory.py``'s harness native-1M set, a decoded harness fact
@@ -14,7 +14,7 @@ not a code edit. A concrete dated model-id string (``claude-haiku-4-5``,
     yesterday's recorded ids).
 
 Everywhere else — production dispatch, the eval lane, CLI help, docs, workflows —
-must reference an abstract TIER / family alias, or DERIVE from ``TIER_MODELS``.
+must reference an abstract TIER / family alias, or DERIVE from ``tier_models()``.
 
 The check scans BOTH directions: a model id in a non-allowlisted file is red (a new
 pin), and an allowlist entry that no longer carries one is red (a stale exemption).
@@ -68,6 +68,7 @@ _DOC_GLOBS: tuple[str, ...] = (
 _ALLOWLIST: frozenset[str] = frozenset(
     {
         "src/teatree/agents/model_tiering.py",
+        "src/teatree/config/registries.py",
         "src/teatree/llm/rate_limits.py",
         "src/teatree/core/autocompact_advisory.py",
         "src/teatree/core/cost.py",
@@ -109,7 +110,7 @@ def test_no_hardcoded_model_id_outside_the_allowlist() -> None:
     offenders = {rel: ids for rel, ids in _files_with_model_ids().items() if rel not in _ALLOWLIST}
     assert offenders == {}, (
         "Concrete Claude model-id(s) pinned outside the allowlist — reference an abstract tier, a "
-        "family alias (opus/sonnet/haiku), or derive from agents.model_tiering.TIER_MODELS "
+        "family alias (opus/sonnet/haiku), or derive from agents.model_tiering.tier_models() "
         f"instead: {offenders}"
     )
 

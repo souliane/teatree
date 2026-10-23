@@ -67,7 +67,7 @@ def _gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("glab_stale_base_remote_gate_enabled", default=True)
+    return _teatree_bool_setting("glab_stale_base_remote_gate_enabled")
 
 
 def command_working_dir(command: str, harness_cwd: str) -> Path | None:

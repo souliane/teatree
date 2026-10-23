@@ -42,7 +42,7 @@ from teatree.config.write_validation import ConfigWriteError, validate_config_wr
 from teatree.core.config_display import is_secret
 from teatree.core.models import ConfigSetting
 from teatree.core.settings.seed_editing import write_seed_cell
-from teatree.core.settings.settings_compare import CompareView, build_compare_view
+from teatree.core.settings.settings_compare import CompareFilters, CompareView, build_compare_view
 from teatree.core.settings.settings_files import LoadedSnapshots, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.core.settings_snapshot import SnapshotError, build_snapshot
 from teatree.dash import audit
@@ -80,6 +80,7 @@ class SettingsGroupContext(TypedDict):
 
 class SettingsCompareContext(NavContext):
     comparison: CompareView
+    filters: CompareFilters
     refusals: tuple[LoadRefusal, ...]
 
 
@@ -216,9 +217,18 @@ def settings_compare(request: "HttpRequest") -> "HttpResponse":
     """
     loaded = load_snapshots(_posted_documents(request)) if request.method == "POST" else LoadedSnapshots()
     nav = nav_context("dash:settings")
+    params = request.POST if request.method == "POST" else request.GET
+    filters = CompareFilters(
+        scope=params.get("scope", "global"),
+        family=params.get("family", ""),
+        group=params.get("group", ""),
+        text=params.get("text", ""),
+        differs_only=params.get("differs_only", "on") != "off",
+    )
     context: SettingsCompareContext = {
         **nav,
-        "comparison": build_compare_view(loaded.snapshots),
+        "comparison": build_compare_view(loaded.snapshots, filters=filters),
+        "filters": filters,
         "refusals": loaded.refusals,
     }
     status = 400 if loaded.refusals and not loaded.snapshots else 200

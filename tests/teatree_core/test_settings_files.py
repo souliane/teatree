@@ -30,7 +30,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting
-from teatree.core.settings.settings_compare import RowKind, build_compare_view
+from teatree.core.settings.settings_compare import CompareFilters, RowKind, build_compare_view
 from teatree.core.settings.settings_compat import Severity, build_compat_report
 from teatree.core.settings.settings_files import MAX_SNAPSHOT_BYTES, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
@@ -97,10 +97,21 @@ class TestARefusedDocumentIsNamedNotIgnored(SimpleTestCase):
     def test_a_document_with_no_format_field_names_the_absence(self) -> None:
         assert "'format' is None" in _refusal("bare.json", b"{}").reason
 
+    def test_v1_record_is_still_readable_after_v2_ships(self) -> None:
+        assert FORMAT_VERSION == 2
+        loaded = load_snapshots([("old.json", _raw(_document(format_version=1)))])
+        assert len(loaded.snapshots) == 1
+        assert loaded.refusals == ()
+
     def test_a_snapshot_of_the_wrong_format_version_names_both_versions(self) -> None:
         reason = _refusal("future.json", _raw(_document(format_version=FORMAT_VERSION + 1))).reason
         assert f"'format_version' is {FORMAT_VERSION + 1}" in reason
         assert f"reads format_version {FORMAT_VERSION}" in reason
+
+    def test_noninteger_or_unsupported_format_versions_are_refused(self) -> None:
+        for version in (0, 1.0, True, 1.5, "2"):
+            with self.subTest(version=version):
+                assert _refusal("invalid.json", _raw(_document(format_version=version))).reason
 
     def test_a_document_that_is_not_utf8_is_refused_before_the_parser(self) -> None:
         assert "not UTF-8" in _refusal("binary.json", b"\xff\xfe\x00\x01").reason
@@ -288,7 +299,7 @@ class TestAnOlderRecordOfThisBoxIsStillComparable(TestCase):
             patch("teatree.core.settings.settings_compare.local_snapshot", return_value=self.local),
             patch("teatree.core.settings.settings_compare.peer_snapshots", return_value=()),
         ):
-            return build_compare_view(loaded.snapshots)
+            return build_compare_view(loaded.snapshots, filters=CompareFilters(scope="all"))
 
     def test_a_record_of_this_box_as_it_is_differs_from_it_in_nothing(self) -> None:
         assert self._against(self.payload).total_rows == 0

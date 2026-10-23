@@ -38,7 +38,7 @@ def resolve_user_id() -> str:
         user_id = overlays[overlay_name].get("slack_user_id", "")
         if user_id:
             return str(user_id)
-    global_id = cold_reader.str_setting("slack_user_id", default="")
+    global_id = cold_reader.str_setting("slack_user_id")
     if global_id:
         return global_id
     return _sole_overlay_field(overlays, "slack_user_id")
@@ -67,7 +67,7 @@ def resolve_user_channel() -> str:
         channel = overlays[overlay_name].get("slack_user_channel", "")
         if channel:
             return str(channel)
-    global_channel = cold_reader.str_setting("slack_user_channel", default="")
+    global_channel = cold_reader.str_setting("slack_user_channel")
     if global_channel:
         return global_channel
     return _sole_overlay_field(overlays, "slack_user_channel")

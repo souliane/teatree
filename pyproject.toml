@@ -370,6 +370,7 @@ lint.per-file-ignores."tests/**/*.py" = [
 ]
 lint.fixable = [ "ALL" ]
 lint.unfixable = [ "F401", "F811" ] # Never auto-delete imports — ruff misjudges usage in some patterns
+lint.flake8-bugbear.extend-immutable-calls = [ "teatree.config.declaration.setting" ]
 lint.flake8-implicit-str-concat.allow-multiline = false
 lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
 lint.isort.split-on-trailing-comma = false
