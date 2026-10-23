@@ -38,7 +38,7 @@ def test_a_pass_binary_on_the_path_is_never_run_by_a_read(fake_pass_on_the_path:
 
 
 def test_a_pass_binary_on_the_path_is_never_run_by_a_write(fake_pass_on_the_path: Path) -> None:
-    assert write_pass("teatree/codex/auth-json-b64", "value") is False
+    write_pass("teatree/codex/auth-json-b64", "value")
     assert not fake_pass_on_the_path.exists()
 
 

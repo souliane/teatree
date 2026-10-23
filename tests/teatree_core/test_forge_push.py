@@ -356,6 +356,11 @@ class TestPushBranch:
         )
         recorder = _RecordingRun()
         with (
+            patch.dict(
+                os.environ,
+                {"GITLAB_TOKEN": "hostile-gitlab"},
+                clear=True,
+            ),
             patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(gitlab_token=routed)),
             patch("teatree.core.forge_push.run_bounded_group", recorder),
         ):

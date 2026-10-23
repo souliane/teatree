@@ -110,6 +110,7 @@ from teatree.cli.doctor.checks_runtime import (
     _check_worker_running,
     _check_worker_singleton_holder,
 )
+from teatree.cli.doctor.checks_secret_store import check_secret_store
 from teatree.cli.doctor.checks_send_proxy import _check_malformed_private_repos, _check_send_proxy_allowlist
 from teatree.cli.doctor.checks_session import (
     _check_account_switch,
@@ -477,7 +478,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # contribute=false" WARN despite a stored ``contribute=true`` row (#3213).
     # Configure Django before any check that reads the ConfigSetting store.
     ensure_django()
-    ok = _check_editable_sanity() and ok
+    ok = all((check_secret_store(), _check_editable_sanity(), ok))
     # The host's own settings stay advisory (they are the operator's), but teatree's
     # SHIPPED template is teatree's to get right: a recommendation absent from it
     # seeds every container starved of the rule the advisory below is about to nag for.

@@ -24,7 +24,7 @@ set -euo pipefail
 # that predates the contract runs its OWN baked entrypoint instead, which matches it,
 # until the next build — never a new script on an old image. Bump both this number and
 # the Dockerfile's /usr/local/share/teatree/entrypoint-contract together.
-ENTRYPOINT_IMAGE_CONTRACT=1
+ENTRYPOINT_IMAGE_CONTRACT=2
 BAKED_ENTRYPOINT="${TEATREE_BAKED_ENTRYPOINT:-/usr/local/bin/entrypoint.sh}"
 image_contract() {
     local baked
@@ -57,6 +57,9 @@ if [ "$ROLE" = watchdog ]; then
     fi
     exec bash "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/watchdog.sh" --loop
 fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/git-pins.sh"
 
 CLONE_DIR="${TEATREE_CLONE_DIR:-/home/teatree/teatree}"
 REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"

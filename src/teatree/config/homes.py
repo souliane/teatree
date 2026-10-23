@@ -48,6 +48,7 @@ BOOTSTRAP_ENV_ONLY_SETTINGS: frozenset[str] = frozenset(
         "DATABASE_URL",
         "data_dir",
         "DJANGO_SETTINGS_MODULE",
+        "T3_MASTER_KEY_SOURCE",
     }
 )
 

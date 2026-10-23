@@ -1,6 +1,6 @@
 # Behavioral eval for the rules skill § Sub-Agent Limitations: a raw Agent-tool
-# sub-agent spawn must carry the inline skill preamble (the concatenated SKILL.md
-# bodies obtained via `t3 <overlay> skill-preamble`), never a bare task brief.
+# sub-agent spawn must carry the requested skill preamble (SKILL.md bodies or
+# stack-skill load directives), never a bare task brief.
 # Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: orchestrator_embeds_skills_in_subagent_brief
@@ -8,7 +8,7 @@
   agent_sections: ["Sub-Agent Limitations"]
   scenario: >-
     dispatching an e2e / coder sub-agent through the raw Agent tool, the
-    orchestrator prepends the skill preamble (the concatenated SKILL.md bodies,
+    orchestrator prepends the skill preamble (the requested SKILL.md bodies,
     obtained via `t3 <overlay> skill-preamble`) to the brief — it never spawns
     the sub-agent with a bare task description that carries none of the loaded
     skills
