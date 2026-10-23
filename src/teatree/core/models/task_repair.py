@@ -41,26 +41,37 @@ def _attempt_model() -> "type[TaskAttempt]":
     return cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
 
+def _without_capacity_events(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
+    ordered = attempts.excluding_parks().order_by("pk")
+    return [attempt for attempt in ordered if recoverable_exhaustion_cause(attempt.error) is None]
+
+
 def repair_iterations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
     """Executed work attempts in a queryset, oldest first."""
     successor = _attempt_model().objects.filter(fallback_from_attempt_id=OuterRef("pk"))
     work = (
-        attempts.excluding_parks()
-        .exclude(failure_kind__in=NON_REPAIR_KINDS)
+        attempts.exclude(failure_kind__in=NON_REPAIR_KINDS)
         .exclude(error__startswith=LEASE_EXPIRED_PREFIX)
         .filter(~Exists(successor))
-        .order_by("pk")
     )
-    return [attempt for attempt in work if recoverable_exhaustion_cause(attempt.error) is None]
+    return _without_capacity_events(work)
+
+
+def _ticket_phase_attempts(ticket_id: int, phase: str) -> "TaskAttemptQuerySet":
+    return _attempt_model().objects.filter(
+        task__ticket_id=ticket_id,
+        task__phase__in=phase_spellings(normalize_phase(phase)),
+    )
 
 
 def ticket_phase_iterations(ticket_id: int, phase: str) -> list["TaskAttempt"]:
     """Work attempts for a ticket and normalized phase, across re-queued task rows."""
-    attempts = _attempt_model().objects.filter(
-        task__ticket_id=ticket_id,
-        task__phase__in=phase_spellings(normalize_phase(phase)),
-    )
-    return repair_iterations(attempts)
+    return repair_iterations(_ticket_phase_attempts(ticket_id, phase))
+
+
+def ticket_phase_observations(ticket_id: int, phase: str) -> list["TaskAttempt"]:
+    """Every non-capacity attempt for a ticket and normalized phase, audit rows included."""
+    return _without_capacity_events(_ticket_phase_attempts(ticket_id, phase))
 
 
 def phase_attempts(task: "Task") -> list["TaskAttempt"]:

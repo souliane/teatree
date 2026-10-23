@@ -58,7 +58,7 @@ from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanErro
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.self_review import SelfReview
-from teatree.core.models.task_repair import ticket_phase_iterations
+from teatree.core.models.task_repair import ticket_phase_iterations, ticket_phase_observations
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
@@ -66,7 +66,6 @@ from teatree.core.models.ticket_external_review import (
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -257,15 +256,7 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     one for a genuinely deterministic failure would hide a real, reproducible defect from
     this same sweep.
     """
-    observations = (
-        TaskAttempt.objects.filter(
-            task__ticket_id=ticket.pk,
-            task__phase__in=phase_spellings(normalize_phase(phase)),
-        )
-        .excluding_parks()
-        .order_by("pk")
-    )
-    attempts = [attempt for attempt in observations if recoverable_exhaustion_cause(attempt.error) is None]
+    attempts = ticket_phase_observations(ticket.pk, phase)
     if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
         return False
     latest = attempts[-1]

@@ -108,6 +108,22 @@ class TestIterationCounter(TestCase):
         assert park1.iteration == 0
         assert park2.iteration == 0
 
+    def test_non_work_rows_are_stamped_zero_and_do_not_advance_real_iteration(self) -> None:
+        task = self._phase_task(Ticket.objects.create(), phase="coding")
+        non_work_errors = (
+            f"{CANCELLED_PREFIX}operator",
+            f"{PLAN_STALE_PREFIX}base moved",
+            f"{SUPERSEDED_PREFIX}rework",
+            f"{LEASE_EXPIRED_PREFIX}lease held by worker expired",
+            "subscription_session: window used",
+        )
+
+        stamps = [_failed_attempt(task, error=error).iteration for error in non_work_errors]
+
+        assert stamps == [0] * len(non_work_errors)
+        assert _failed_attempt(task, error="boom").iteration == 1
+        assert task.phase_iteration_count() == 1
+
 
 class TestTerminalReasonFingerprint(TestCase):
     def test_identical_reasons_hash_identically(self) -> None:
