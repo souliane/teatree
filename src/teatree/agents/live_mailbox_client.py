@@ -1,23 +1,101 @@
-"""Socket client for a task-owned live mailbox identity."""
+"""Socket client for task and attended live mailbox identities."""
 
 import asyncio
 import json
 import os
+import socket
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
 
 from teatree.agents.live_control import PeerIdentity
-from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV, InboxPage, SendReceipt
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV, InboxPage, MailboxIdentity, SendReceipt
+from teatree.agents.live_federation import FederationUnavailableError, _require_trusted_worker, live_dir
 
 _MAX_RESPONSE_BYTES = 2_000_000
+_MAX_JOIN_RESPONSE_BYTES = 4096
 _INVALID_RESPONSE = "Live mailbox returned an invalid response"
 _UNAVAILABLE = "Live mailbox is unavailable; this TeaTree session may have ended"
+_INVALID_JOIN = "Interactive mailbox join returned invalid data"
+_NO_JOIN = "No live worker accepted the interactive mailbox join"
 
 
 class MailboxError(Exception):
     """A broker refusal or transport failure."""
+
+
+class NoLiveWorkerError(MailboxError):
+    pass
+
+
+def _joined_identity(response: bytes) -> tuple[str, str]:
+    try:
+        payload = json.loads(response)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise MailboxError(_INVALID_JOIN) from exc
+    if not isinstance(payload, dict):
+        raise MailboxError(_INVALID_JOIN)
+    if "error" in payload:
+        message = f"{payload.get('code', 'rejected')}: {payload['error']}"
+        raise MailboxError(message)
+    result = payload.get("result")
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("address"), str)
+        or not isinstance(result.get("token"), str)
+    ):
+        raise MailboxError(_INVALID_JOIN)
+    return result["address"], result["token"]
+
+
+@dataclass(slots=True)
+class InteractiveMailboxLease:
+    socket_path: Path
+    address: str
+    token: str = field(repr=False)
+    _socket: socket.socket = field(repr=False)
+
+    @classmethod
+    def connect(cls, directory: Path | None = None) -> Self:
+        root = directory or live_dir()
+        for path in sorted(root.glob("w-*.sock")):
+            connected = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                connected.settimeout(5)
+                connected.connect(str(path))
+                _require_trusted_worker(path, connected)
+                connected.sendall(b'{"method":"peer.join"}\n')
+                response = b""
+                while not response.endswith(b"\n") and len(response) < _MAX_JOIN_RESPONSE_BYTES:
+                    chunk = connected.recv(_MAX_JOIN_RESPONSE_BYTES - len(response))
+                    if not chunk:
+                        break
+                    response += chunk
+            except (OSError, FederationUnavailableError):
+                connected.close()
+                continue
+            except Exception:
+                connected.close()
+                raise
+            try:
+                address, token = _joined_identity(response)
+                connected.settimeout(None)
+            except Exception:
+                connected.close()
+                raise
+            return cls(path, address, token, connected)
+        raise NoLiveWorkerError(_NO_JOIN)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self._socket.close()
+
+    def mcp_env(self) -> dict[str, str]:
+        return MailboxIdentity(self.socket_path, self.address, self.token).mcp_env()
 
 
 class MailboxClient:

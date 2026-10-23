@@ -59,7 +59,11 @@ def bound_task_mailbox(
                 room=str(task.ticket),
                 harness=task.harness,
                 label=label,
-                task=task if teatree_stdio is not None or task.harness == "pydantic_ai" else PushOnlyTask(task),
+                task=(
+                    task
+                    if teatree_stdio is not None or task.harness in {"pydantic_ai", "codex_app_server"}
+                    else PushOnlyTask(task)
+                ),
                 can_receive=task.harness != "pydantic_ai" or bool(task.phase and tools_for_phase(task.phase)),
             )
         except Exception:
@@ -69,7 +73,7 @@ def bound_task_mailbox(
                 "dict[str, McpServerConfig]",
                 {**servers, "teatree": {**teatree_stdio, "env": {**child_env, **identity.mcp_env()}}},
             )
-        elif identity is not None and task.harness == "pydantic_ai":
+        elif identity is not None and task.harness in {"pydantic_ai", "codex_app_server"}:
             options.env = {**(original_env or {}), **identity.mcp_env()}
         yield identity
     finally:

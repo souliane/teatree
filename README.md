@@ -454,14 +454,14 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Live agent mailbox
 
-Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. A Codex task without MCP is an addressable, push-only recipient. Workers
+Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. New Codex threads use App Server `dynamicTools` handled by their worker, including the isolated read-only phases; older Codex threads retain their creation-time tool catalog when resumed. Workers
 
 find one another through the shared control-DB live directory. TeaTree assigns
-each task its address and private Unix-socket identity; agents cannot register
-themselves or declare their own harness. `agent_mailbox_self` shows the task's address,
+each task its address and private Unix-socket identity; headless agents cannot register
+themselves or declare their own harness. The plugin's `t3 mcp serve --interactive` child joins as an attended peer only when the worker authenticates its operator process. With no live worker, the plugin still serves its other MCP tools and omits the five mailbox tools. Its identity has no ticket; disconnect revokes the address. Claude Code and Codex attended sessions use the same five MCP tools. `agent_mailbox_self` shows the session's address,
 `agent_mailbox_peers` discovers live peers with ticket, phase, harness and
 receive status, and `agent_mailbox_send` sends to one
-peer and waits up to 20 seconds for its session to accept the message. A busy steerable peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) takes it into its running turn, framed as a peer's information rather than an operator instruction. The pydantic_ai session admits waiting text before its next model request; an expired wait is withdrawn and remains in the inbox. An MCP-backed or pydantic_ai peer may also accept by reading its inbox; a push-only peer has no inbox copy. The send returns a receipt:
+peer and waits up to 20 seconds for its session to accept the message. A busy steerable peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) takes it into its running turn, framed as a peer's information rather than an operator instruction. The pydantic_ai session admits waiting text before its next model request; an expired wait is withdrawn and remains in the inbox. Any bound peer may also accept by reading its inbox. The send returns a receipt:
 
 `accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
@@ -469,7 +469,7 @@ peer and waits up to 20 seconds for its session to accept the message. A busy st
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
 remains in the recipient's inbox, including after a current-turn push. Retrying
 the same key waits on the original message instead of sending a second copy, and
-at most four sends per task wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
+at most four sends per peer wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
 with the message. An idle `claude_sdk` peer can take one new turn during its
 60-second idle window; a parked task cannot be woken. Delivery is live-only:
@@ -477,8 +477,7 @@ there is no database queue or parked-task delivery across hosts. A socket left b
 exited is removed before the 32-worker limit is applied. Peer listing skips an
 unresponsive socket and logs a warning; a send whose destination cannot be found
 fails if discovery was incomplete. Discovery verifies the socket's owner, private
-mode and live worker process before trusting its peer list. The mailbox tools are absent
-outside TeaTree-managed tasks. Peer messaging is not a repository write: planning,
+mode and live worker process before trusting its peer list. Peer messaging is not a repository write: planning,
 reviewing and critic_reviewing on the Claude SDK read-only server can send, read and
 wait through the three named non-read-only mailbox tools. Other read-only phases
 receive only `agent_mailbox_self` and `agent_mailbox_peers`.

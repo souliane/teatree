@@ -45,6 +45,7 @@ from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_ingress import PeerRole
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
@@ -52,6 +53,7 @@ from teatree.agents.live_mailbox import (
     reset_shared_brokers,
     shared_broker,
 )
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease, MailboxError
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 from teatree.agents.pydantic_ai_steering import PeerInputAdmission
 from teatree.agents.runner import TaskUsage, run_agent
@@ -125,6 +127,62 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
         }
     ]
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
+
+
+def test_attended_mcp_peer_exchanges_messages_and_disconnect_revokes_identity(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    agent = broker.register(room="ticket-1", harness="claude_sdk", label="agent")
+    agent_client = MailboxClient(agent.socket_path, agent.token)
+    with InteractiveMailboxLease.connect(tmp_path) as attended:
+        with (
+            patch.dict("os.environ", attended.mcp_env()),
+            patch("teatree.mcp.server.get_all_overlays", return_value={}),
+        ):
+            server = build_server()
+        names = {tool.name for tool in asyncio.run(server.list_tools())}
+        assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
+
+        async def exchange() -> tuple[SendReceipt, InboxPage, SendReceipt, InboxPage]:
+            outbound = asyncio.create_task(
+                server.call_tool("agent_mailbox_send", {"to": agent.address, "text": "from attended", "key": "a1"})
+            )
+            agent_inbox = await agent_client.wait(timeout_seconds=2)
+            outbound_receipt = structured(await outbound)
+            inbound = asyncio.create_task(agent_client.send(attended.address, "from agent", "a2"))
+            attended_inbox = structured(
+                await server.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 2})
+            )
+            return outbound_receipt, agent_inbox, await inbound, attended_inbox
+
+        outbound, agent_inbox, inbound, attended_inbox = asyncio.run(exchange())
+        assert outbound["outcome"] == inbound["outcome"] == "accepted_inbox_read"
+        assert agent_inbox["messages"][0]["text"] == "from attended"
+        assert attended_inbox["messages"][0]["text"] == "from agent"
+        assert "ticket" not in invoke(MailboxClient(attended.socket_path, attended.token), "self_identity")
+    wait_until(lambda: broker.identity_of(attended.address) is None, "attended peer to disconnect")
+
+
+def test_worker_descendant_cannot_join_as_an_attended_peer(broker: LiveMailboxBroker, tmp_path: Path) -> None:
+    with (
+        patch("teatree.agents.live_mailbox.classify_peer", return_value=PeerRole.AGENT),
+        pytest.raises(MailboxError, match="permission_denied"),
+    ):
+        InteractiveMailboxLease.connect(tmp_path)
+    assert broker.identities() == []
+
+
+def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    untrusted = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    untrusted.bind(str(tmp_path / "w-0000.sock"))
+    untrusted.listen()
+    try:
+        with InteractiveMailboxLease.connect(tmp_path) as joined:
+            assert broker.identity_of(joined.address) is not None
+    finally:
+        untrusted.close()
 
 
 @pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])

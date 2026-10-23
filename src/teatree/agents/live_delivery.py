@@ -4,9 +4,9 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn, TypedDict
+from typing import NoReturn, Protocol, TypedDict
 
-from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, RejectCode
+from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, PeerIdentity, RejectCode
 
 MAX_WAIT_SECONDS = 20
 MAX_KEY_BYTES = 128
@@ -50,6 +50,29 @@ class MailboxIdentity:
 
     def mcp_env(self) -> dict[str, str]:
         return {MAILBOX_SOCKET_ENV: str(self.socket_path), MAILBOX_AUTH_ENV: MailboxToken(self.token)}
+
+
+class PeerDescriptor(Protocol):
+    address: str
+    harness: str
+    label: str
+    can_receive: bool
+    room: str
+    phase: str
+
+
+def peer_identity(peer: PeerDescriptor) -> PeerIdentity:
+    identity: PeerIdentity = {
+        "address": peer.address,
+        "harness": peer.harness,
+        "label": peer.label,
+        "can_receive": peer.can_receive,
+    }
+    if peer.room:
+        identity["ticket"] = peer.room
+    if peer.phase:
+        identity["phase"] = peer.phase
+    return identity
 
 
 def send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:

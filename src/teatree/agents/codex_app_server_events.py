@@ -1,16 +1,80 @@
 """Keep approval policy and completed-tool reports aligned with Codex thread events."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_post_tool import report_completed_item
+from teatree.agents.live_mailbox_client import MailboxError
 
 logger = logging.getLogger(__name__)
 
 POST_SETTLE_SECONDS = 30.0
+_MAILBOX_TOOLS = {
+    "agent_mailbox_self": ("self_identity", "Show this task's live mailbox identity.", {}, []),
+    "agent_mailbox_peers": ("peers", "List live TeaTree peers.", {}, []),
+    "agent_mailbox_send": (
+        "send",
+        "Send to one live peer; the receipt proves acceptance, not obedience.",
+        {"to": {"type": "string"}, "text": {"type": "string"}, "key": {"type": "string"}},
+        ["to", "text", "key"],
+    ),
+    "agent_mailbox_inbox": (
+        "inbox",
+        "Read and acknowledge messages addressed to this task.",
+        {"after_id": {"type": "integer"}, "limit": {"type": "integer"}},
+        [],
+    ),
+    "agent_mailbox_wait": (
+        "wait",
+        "Wait briefly for live mail and acknowledge what was read.",
+        {"after_id": {"type": "integer"}, "timeout_seconds": {"type": "number"}},
+        [],
+    ),
+}
+
+
+def dynamic_mailbox_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "name": name,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        }
+        for name, (_, description, properties, required) in _MAILBOX_TOOLS.items()
+    ]
+
+
+async def mailbox_tool_result(
+    params: object, options_by_thread: Mapping[str, CodexAppServerOptions]
+) -> dict[str, Any] | None:
+    if not isinstance(params, dict) or params.get("namespace") is not None:
+        return None
+    thread_id = params.get("threadId")
+    tool = params.get("tool")
+    options = options_by_thread.get(thread_id) if isinstance(thread_id, str) else None
+    mailbox = options.core.mailbox if options is not None else None
+    specification = _MAILBOX_TOOLS.get(tool) if isinstance(tool, str) else None
+    arguments = params.get("arguments")
+    if mailbox is None or specification is None or not isinstance(arguments, dict):
+        return None
+    try:
+        value = await getattr(mailbox, specification[0])(**arguments)
+        return {"contentItems": [{"type": "inputText", "text": json.dumps(value)}], "success": True}
+    except (MailboxError, TypeError, ValueError) as exc:
+        return {"contentItems": [{"type": "inputText", "text": str(exc)}], "success": False}
+    except Exception:
+        logger.exception("Codex mailbox tool failed")
+        return {"contentItems": [{"type": "inputText", "text": "Mailbox tool failed"}], "success": False}
 
 
 class CodexToolEvents:

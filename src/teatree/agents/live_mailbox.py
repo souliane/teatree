@@ -27,6 +27,7 @@ from teatree.agents.live_delivery import (
     PeerDelivery,
     RemoteReceipts,
     SendReceipt,
+    peer_identity,
     refused_receipt,
     send_fields,
 )
@@ -40,7 +41,14 @@ from teatree.agents.live_federation import (
     remote_peers,
     send_remote,
 )
-from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
+from teatree.agents.live_ingress import (
+    IngressRefusedError,
+    OperatorIngress,
+    PeerRole,
+    PeerSocket,
+    classify_peer,
+    peer_credentials,
+)
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 logger = logging.getLogger(__name__)
@@ -160,7 +168,7 @@ class LiveMailboxBroker:
         task: LiveTask | PushOnlyTask | None = None,
         can_receive: bool = True,
     ) -> MailboxIdentity:
-        if not room or not harness or not label:
+        if (not room and harness != "interactive") or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
@@ -246,12 +254,10 @@ class LiveMailboxBroker:
             if not isinstance(request, dict):
                 _reject("Invalid mailbox request")
             method = request.get("method")
-            if isinstance(method, str) and method.startswith("live."):
-                result = await self._ingress.serve(method, request, writer.get_extra_info("socket"))
-            elif isinstance(method, str) and method.startswith("relay."):
-                result = await self._relay.serve(method, request, writer.get_extra_info("socket"))
-            else:
-                result = await self._dispatch(request)
+            if method == "peer.join":
+                await self._handle_join(reader, writer)
+                return
+            result = await self._route_request(request, writer)
             response = {"result": result}
         except IngressRefusedError as exc:
             response = {"error": str(exc), "code": exc.code.value}
@@ -271,6 +277,32 @@ class LiveMailboxBroker:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def _handle_join(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        identity = self._join(writer.get_extra_info("socket"))
+        try:
+            payload = {"result": {"address": identity.address, "token": identity.token}}
+            writer.write(json.dumps(payload).encode() + b"\n")
+            await writer.drain()
+            await reader.read()
+        finally:
+            self.unregister(identity.address)
+            writer.close()
+            await writer.wait_closed()
+
+    async def _route_request(self, request: MailboxRequest, writer: asyncio.StreamWriter) -> object:
+        method = request.get("method")
+        if isinstance(method, str) and method.startswith("live."):
+            return await self._ingress.serve(method, request, writer.get_extra_info("socket"))
+        if isinstance(method, str) and method.startswith("relay."):
+            return await self._relay.serve(method, request, writer.get_extra_info("socket"))
+        return await self._dispatch(request)
+
+    def _join(self, sock: PeerSocket | None) -> MailboxIdentity:
+        role = classify_peer(peer_credentials(sock), worker_pid=os.getpid(), own_uid=os.getuid())
+        if role is not PeerRole.OPERATOR:
+            raise IngressRefusedError(RejectCode.PERMISSION_DENIED, "Interactive mailbox join requires an operator")
+        return self.register(room="", harness="interactive", label="attended")
 
     async def _dispatch(self, request: MailboxRequest) -> object:
         token = request.get("token")
@@ -297,14 +329,7 @@ class LiveMailboxBroker:
 
     @staticmethod
     def _identity(participant: _Participant) -> PeerIdentity:
-        return {
-            "address": participant.address,
-            "harness": participant.harness,
-            "label": participant.label,
-            "ticket": participant.room,
-            "phase": participant.phase,
-            "can_receive": participant.can_receive,
-        }
+        return peer_identity(participant)
 
     def identity_of(self, address: str) -> PeerIdentity | None:
         with self._lock:

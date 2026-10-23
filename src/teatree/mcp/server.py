@@ -26,7 +26,7 @@ registers: a phase's deliverable tool or, for planning, reviewing and critic_rev
 the three peer-mailbox tools. Other read-only phases retain only mailbox self and peers.
 
 The live agent mailbox is a separate, addressed communication surface, present
-only when the runner binds this MCP child to a running TeaTree task.
+when the runner binds a task or an operator-authenticated attended child joins a worker.
 
 A registered overlay contributes its own tools through
 ``overlay.connectors.mcp_tool_group()``, which hands over an

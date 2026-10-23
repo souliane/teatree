@@ -5,14 +5,19 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Never
+from typing import TYPE_CHECKING, Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.codex_auth_cache import resolve_codex_home
 from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.utils.ports import running_in_container
+
+if TYPE_CHECKING:
+    from teatree.agents.harness_registry import HarnessBuildContext
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +156,25 @@ def codex_model_unavailable_reason(code_home: Path, model: str) -> str | None:
     if model in slugs:
         return None
     return f"model {model!r} is not in the Codex catalog ({catalog_path}, fetched {catalog.get('fetched_at', '?')})"
+
+
+def codex_worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
+    if context.phase and (
+        reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
+    ):
+        return f"phase {context.phase!r} {reason.lower()}"
+    if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):
+        # Codex 0.155.1 has no app-server switch to ignore user rules, and an ALLOW skips the approval gate.
+        return f"execpolicy rules would bypass TeaTree approvals: {', '.join(str(rule) for rule in rules)}"
+    if context.phase == "architectural_review" and context.task is not None and container_is_the_sandbox():
+        from teatree.agents.codex_app_server_route import (  # noqa: PLC0415 — Django models are not importable at agents import time
+            starts_in_managed_main_clone,
+        )
+
+        if starts_in_managed_main_clone(context.task):
+            return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
+    home = resolve_codex_home()
+    return codex_login_unavailable_reason(home) or codex_model_unavailable_reason(home, context.model)
 
 
 def codex_container_unavailable_reason() -> str | None:

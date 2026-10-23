@@ -21,7 +21,7 @@ TOOL_SEAMS = {
 }
 
 INSTRUCTIONS = (
-    "- agent_mailbox_self(): your TeaTree-assigned address and harness.\n"
+    "- agent_mailbox_self(): your TeaTree-assigned address and harness. Attended peers have no ticket.\n"
     "- agent_mailbox_peers(): live TeaTree tasks on this host, with ticket, phase, harness and receive status.\n"
     "- agent_mailbox_send(to, text, key): send and wait up to 20 seconds for the peer's session to accept it; "
     "acceptance is not obedience; retry with the same key, never a new one.\n"

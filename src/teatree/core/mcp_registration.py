@@ -30,6 +30,7 @@ MCP_JSON_FILENAME = ".mcp.json"
 TEATREE_MCP_SERVER_NAME = "teatree"
 EXPECTED_COMMAND = "t3"
 EXPECTED_ARGS = ("mcp", "serve")
+PLUGIN_ARGS = (*EXPECTED_ARGS, "--interactive")
 #: Appended for a dispatch whose phase may not write through the server.
 READ_ONLY_ARG = "--read-only"
 #: Names one write tool a read-only server still registers.
@@ -87,7 +88,7 @@ def read_declared_mcp_servers(path: Path) -> dict[str, dict]:
 
 def launches_teatree_server(entry: Mapping[str, object]) -> bool:
     args = entry.get("args")
-    return entry.get("command") == EXPECTED_COMMAND and isinstance(args, list) and tuple(args) == EXPECTED_ARGS
+    return entry.get("command") == EXPECTED_COMMAND and isinstance(args, list) and tuple(args) == PLUGIN_ARGS
 
 
 def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
@@ -113,7 +114,7 @@ def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
             ok=False,
             message=(
                 f"{path} declares '{TEATREE_MCP_SERVER_NAME}' as {entry.get('command')!r} {entry.get('args')!r} — "
-                f"expected {EXPECTED_COMMAND!r} {list(EXPECTED_ARGS)}."
+                f"expected {EXPECTED_COMMAND!r} {list(PLUGIN_ARGS)}."
             ),
         )
     return McpRegistrationOutcome(
@@ -130,6 +131,7 @@ __all__ = [
     "EXPECTED_ARGS",
     "EXPECTED_COMMAND",
     "MCP_JSON_FILENAME",
+    "PLUGIN_ARGS",
     "READ_ONLY_ARG",
     "TEATREE_MCP_SERVER_NAME",
     "McpRegistrationOutcome",
