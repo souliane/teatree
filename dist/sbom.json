@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.165",
+      "description": "requirements line 38: claude-agent-sdk==0.2.167",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.165",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.167",
       "type": "library",
-      "version": "0.2.165"
+      "version": "0.2.167"
     },
     {
       "bom-ref": "requirements-L40",
@@ -812,7 +812,7 @@
     },
     {
       "bom-ref": "requirements-L173",
-      "description": "requirements line 173: playwright==1.63.0",
+      "description": "requirements line 173: playwright==1.64.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -821,9 +821,9 @@
         }
       ],
       "name": "playwright",
-      "purl": "pkg:pypi/playwright@1.63.0",
+      "purl": "pkg:pypi/playwright@1.64.0",
       "type": "library",
-      "version": "1.63.0"
+      "version": "1.64.0"
     },
     {
       "bom-ref": "requirements-L175",
@@ -917,7 +917,7 @@
     },
     {
       "bom-ref": "requirements-L197",
-      "description": "requirements line 197: pydantic-settings==2.15.0",
+      "description": "requirements line 197: pydantic-settings==2.16.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -926,9 +926,9 @@
         }
       ],
       "name": "pydantic-settings",
-      "purl": "pkg:pypi/pydantic-settings@2.15.0",
+      "purl": "pkg:pypi/pydantic-settings@2.16.0",
       "type": "library",
-      "version": "2.15.0"
+      "version": "2.16.0"
     },
     {
       "bom-ref": "requirements-L199",
@@ -1291,8 +1291,8 @@
       "version": "4.16.0"
     },
     {
-      "bom-ref": "requirements-L278",
-      "description": "requirements line 278: typing-inspection==0.4.4",
+      "bom-ref": "requirements-L279",
+      "description": "requirements line 279: typing-inspection==0.4.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1306,8 +1306,8 @@
       "version": "0.4.4"
     },
     {
-      "bom-ref": "requirements-L285",
-      "description": "requirements line 285: tzdata==2026.5 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L286",
+      "description": "requirements line 286: tzdata==2026.5 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1321,8 +1321,8 @@
       "version": "2026.5"
     },
     {
-      "bom-ref": "requirements-L287",
-      "description": "requirements line 287: urllib3==2.8.0",
+      "bom-ref": "requirements-L288",
+      "description": "requirements line 288: urllib3==2.8.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1336,8 +1336,8 @@
       "version": "2.8.0"
     },
     {
-      "bom-ref": "requirements-L289",
-      "description": "requirements line 289: uvicorn==0.54.0 ; sys_platform != 'emscripten'",
+      "bom-ref": "requirements-L290",
+      "description": "requirements line 290: uvicorn==0.54.0 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1351,8 +1351,8 @@
       "version": "0.54.0"
     },
     {
-      "bom-ref": "requirements-L291",
-      "description": "requirements line 291: whitenoise==6.12.0",
+      "bom-ref": "requirements-L292",
+      "description": "requirements line 292: whitenoise==6.12.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1539,22 +1539,22 @@
       "ref": "requirements-L261"
     },
     {
-      "ref": "requirements-L278"
+      "ref": "requirements-L279"
     },
     {
-      "ref": "requirements-L285"
+      "ref": "requirements-L286"
     },
     {
-      "ref": "requirements-L287"
-    },
-    {
-      "ref": "requirements-L289"
+      "ref": "requirements-L288"
     },
     {
       "ref": "requirements-L29"
     },
     {
-      "ref": "requirements-L291"
+      "ref": "requirements-L290"
+    },
+    {
+      "ref": "requirements-L292"
     },
     {
       "ref": "requirements-L3"
