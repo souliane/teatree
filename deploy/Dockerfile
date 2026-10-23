@@ -112,7 +112,7 @@ RUN apt-get update -qq && \
         echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
         exit 1; \
     fi && \
-    npm install -g @anthropic-ai/claude-code@2.1.294 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
+    npm install -g @anthropic-ai/claude-code@2.1.300 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 
@@ -139,7 +139,7 @@ RUN apt-get update -qq && \
 # (1.57.0 today — read it there, the clone decides) and installs that browser
 # itself at run time; bump its line here when that lock moves.
 RUN npx --yes playwright@1.57.0 install-deps chromium && \
-    npx --yes playwright@1.63.0 install-deps chromium && \
+    npx --yes playwright@1.64.0 install-deps chromium && \
     rm -rf /var/lib/apt/lists/*
 
 # The OS packages the HOSTED PROJECT needs at IMPORT time — the third class after "tools
